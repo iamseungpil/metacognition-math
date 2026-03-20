@@ -15,6 +15,7 @@ export WANDB_API_KEY="2f4e627868f1f9dad10bcb1a14fbf96817e6baa9"
 export WANDB_PROJECT="metacot-math"
 export PYTHONPATH="${PROJECT_DIR}:${PYTHONPATH}"
 export TOKENIZERS_PARALLELISM=false
+export OPENSSL_CONF=/dev/null  # Workaround for FIPS selftest failure on this node
 
 echo "Project dir: $PROJECT_DIR"
 echo "Python: $(which python)"
