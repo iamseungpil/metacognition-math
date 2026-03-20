@@ -18,7 +18,7 @@ lambda2_end: 0.5
 lambda_warmup_steps: 1000
 
 # Gnosis
-gnosis_model_path: /scratch/metacognition/checkpoints/gnosis_probe
+gnosis_model_path: /scratch/metacognition/checkpoints/simple_probe
 gnosis_retrain_interval: 500
 
 # Checkpointing
