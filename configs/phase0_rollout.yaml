@@ -11,7 +11,7 @@ sampling:
   max_tokens: 2048
 
 vllm:
-  tensor_parallel_size: 4
+  tensor_parallel_size: 1  # Single GPU to avoid CUDA fork issue with torch 2.5.1
   gpu_memory_utilization: 0.90
   max_model_len: 4096
 
