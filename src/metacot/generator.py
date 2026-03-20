@@ -15,8 +15,31 @@ from src.metacot.prompt import (
 
 
 def get_trapi_client():
-    """Create TRAPI Azure OpenAI client with proper auth."""
+    """Create TRAPI Azure OpenAI client with proper auth.
+
+    Auth strategy (per TRAPI memory):
+    1. SDK with azure_ad_token_provider (auto-refreshes, never cache tokens)
+    2. ChainedTokenCredential: AzureCli → ManagedIdentity
+    3. Fallback: TRAPI_TOKEN env var for environments without azure.identity
+    """
+    import os
     from openai import AzureOpenAI
+
+    endpoint = "https://trapi.research.microsoft.com/gcr/shared"
+    api_version = "2025-04-01-preview"
+
+    # Fallback: if TRAPI_TOKEN env is set (e.g. Docker or pre-auth'd environment)
+    trapi_token = os.environ.get("TRAPI_TOKEN")
+    if trapi_token:
+        print("Using TRAPI_TOKEN env var (pre-authenticated)")
+        client = AzureOpenAI(
+            azure_endpoint=endpoint,
+            azure_ad_token=trapi_token,
+            api_version=api_version,
+        )
+        return client
+
+    # Primary: SDK with token provider (auto-refresh per request)
     from azure.identity import (
         ChainedTokenCredential,
         AzureCliCredential,
@@ -34,9 +57,9 @@ def get_trapi_client():
     )
 
     client = AzureOpenAI(
-        azure_endpoint="https://trapi.research.microsoft.com/gcr/shared",
-        azure_ad_token_provider=credential,
-        api_version="2025-04-01-preview",
+        azure_endpoint=endpoint,
+        azure_ad_token_provider=credential,  # auto-refreshes, never cache!
+        api_version=api_version,
     )
     return client
 
@@ -92,7 +115,8 @@ def generate_single_chain(
 
         except Exception as e:
             if attempt < max_retries - 1:
-                wait = 2 ** attempt
+                # TRAPI memory: 429 needs 30s→60s→120s backoff
+                wait = 30 * (2 ** attempt)
                 print(f"Retry {attempt+1} after error: {e}. Waiting {wait}s...")
                 time.sleep(wait)
             else:
