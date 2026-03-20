@@ -8,16 +8,19 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_DIR"
 
+export OPENSSL_CONF=/dev/null  # MUST be set before conda activate / any python import
+
 eval "$(conda shell.bash hook 2>/dev/null || true)"
 conda activate ptca 2>/dev/null || echo "Warning: ptca env not found"
 
+export OPENSSL_CONF=/dev/null  # Re-set after conda activate in case it resets env
 export WANDB_API_KEY="2f4e627868f1f9dad10bcb1a14fbf96817e6baa9"
 export WANDB_PROJECT="metacot-math"
 export PYTHONPATH="${PROJECT_DIR}:${PYTHONPATH}"
 export TOKENIZERS_PARALLELISM=false
-export OPENSSL_CONF=/dev/null  # Workaround for FIPS selftest failure on this node
 
 echo "Project dir: $PROJECT_DIR"
+echo "OPENSSL_CONF: $OPENSSL_CONF"
 echo "Python: $(which python)"
 python -c "import torch; print(f'torch={torch.__version__}, GPUs={torch.cuda.device_count()}')"
 
