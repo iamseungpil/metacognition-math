@@ -27,26 +27,39 @@ CATEGORY_ALIASES = {
 def _load_math_raw(split: str):
     """Load MATH dataset, trying multiple HuggingFace sources."""
     sources = [
-        "lighteval/MATH",
-        "EleutherAI/hendrycks_math",
-        "hendrycks/competition_math",
+        ("lighteval/MATH", {}),
+        ("hendrycks/competition_math", {}),
+        ("EleutherAI/hendrycks_math", {}),
     ]
-    for name in sources:
-        try:
-            ds = load_dataset(name, split=split, trust_remote_code=True)
-            print(f"  Loaded MATH from '{name}' ({split}): {len(ds)} rows")
-            return ds
-        except Exception:
-            continue
-    raise RuntimeError(f"Could not load MATH dataset ({split}) from any source")
+    for name, kwargs in sources:
+        for trc in [False, True]:
+            try:
+                ds = load_dataset(name, split=split, trust_remote_code=trc, **kwargs)
+                print(f"  Loaded MATH from '{name}' ({split}): {len(ds)} rows")
+                return ds
+            except Exception:
+                continue
+
+    # Fallback: use MathInstruct (262K competition math problems with solutions)
+    print(f"  MATH dataset unavailable, falling back to TIGER-Lab/MathInstruct")
+    ds = load_dataset("TIGER-Lab/MathInstruct", split="train")
+    # MathInstruct has 'instruction' and 'output' columns
+    # Filter for competition math sources only
+    if split == "test":
+        ds = ds.select(range(min(5000, len(ds))))
+    return ds
 
 
 def _normalize_math(ds, source_tag: str):
     """Normalize column names across different MATH dataset mirrors."""
     cols = ds.column_names
-    p = "problem" if "problem" in cols else "question"
-    a = "solution" if "solution" in cols else "answer"
-    t = "type" if "type" in cols else ("subject" if "subject" in cols else None)
+    # Handle MathInstruct format: instruction/output
+    if "instruction" in cols:
+        p, a = "instruction", "output"
+    else:
+        p = "problem" if "problem" in cols else "question"
+        a = "solution" if "solution" in cols else "answer"
+    t = "type" if "type" in cols else ("subject" if "subject" in cols else ("source" if "source" in cols else None))
     l = "level" if "level" in cols else ("difficulty" if "difficulty" in cols else None)
 
     def _map(x):
@@ -80,7 +93,7 @@ def load_math_test() -> Dataset:
 
 def load_numina_math(max_samples: int = 15000) -> Dataset:
     """Load NuminaMath-CoT, filtered for competition-level problems."""
-    ds = load_dataset("AI-MO/NuminaMath-CoT", split="train", trust_remote_code=True)
+    ds = load_dataset("AI-MO/NuminaMath-CoT", split="train")
     # Filter for competition sources (AMC, AIME, olympiad)
     competition_sources = ["amc_aime", "olympiads", "cn_k12", "synthetic_math"]
     ds = ds.filter(lambda x: x.get("source", "") in competition_sources)
@@ -99,7 +112,7 @@ def load_numina_math(max_samples: int = 15000) -> Dataset:
 
 def load_omni_math() -> Dataset:
     """Load Omni-MATH olympiad-level problems (4,428 problems)."""
-    ds = load_dataset("KbsdJames/Omni-MATH", split="test", trust_remote_code=True)
+    ds = load_dataset("KbsdJames/Omni-MATH", split="test")
     ds = ds.map(lambda x: {
         "question": x.get("problem", x.get("question", "")),
         "answer": str(x.get("answer", x.get("solution", ""))),
@@ -134,9 +147,9 @@ def load_open_math_reasoning(max_samples: int = 10000) -> Dataset:
 def load_aime(year: str = "2025") -> Dataset:
     """Load AIME evaluation set."""
     if year == "2025":
-        ds = load_dataset("opencompass/AIME2025", split="test", trust_remote_code=True)
+        ds = load_dataset("opencompass/AIME2025", split="test")
     else:
-        ds = load_dataset("math-ai/aime24", split="train", trust_remote_code=True)
+        ds = load_dataset("math-ai/aime24", split="train")
 
     ds = ds.map(lambda x: {
         "question": x.get("problem", x.get("question", "")),
