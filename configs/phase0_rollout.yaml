@@ -3,22 +3,16 @@ model: Qwen/Qwen2.5-7B-Instruct
 output_dir: /scratch/metacognition/rollouts
 
 rollouts_per_problem: 8
-batch_size: 128
+batch_size: 8  # HF generate, smaller batches (device_map=auto across 4 GPUs)
 
 sampling:
   temperature: 0.7
   top_p: 0.95
-  max_tokens: 2048
-
-vllm:
-  tensor_parallel_size: 4
-  gpu_memory_utilization: 0.90
-  max_model_len: 4096
+  max_tokens: 1024  # reduced for faster iteration; can increase later
 
 data:
   use_numina: true
-  numina_max: 15000
-  use_omni: true
-  use_openmr: true
-  openmr_max: 10000
-  math_max: null  # use all 7500
+  numina_max: 5000   # start smaller for first run, scale up after validation
+  use_omni: false     # add after first run succeeds
+  use_openmr: false   # add after first run succeeds
+  math_max: 2000      # start with 2000 MATH problems
