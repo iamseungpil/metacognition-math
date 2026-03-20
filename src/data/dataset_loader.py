@@ -24,17 +24,49 @@ CATEGORY_ALIASES = {
 }
 
 
+def _load_math_raw(split: str):
+    """Load MATH dataset, trying multiple HuggingFace sources."""
+    sources = [
+        "lighteval/MATH",
+        "EleutherAI/hendrycks_math",
+        "hendrycks/competition_math",
+    ]
+    for name in sources:
+        try:
+            ds = load_dataset(name, split=split, trust_remote_code=True)
+            print(f"  Loaded MATH from '{name}' ({split}): {len(ds)} rows")
+            return ds
+        except Exception:
+            continue
+    raise RuntimeError(f"Could not load MATH dataset ({split}) from any source")
+
+
+def _normalize_math(ds, source_tag: str):
+    """Normalize column names across different MATH dataset mirrors."""
+    cols = ds.column_names
+    p = "problem" if "problem" in cols else "question"
+    a = "solution" if "solution" in cols else "answer"
+    t = "type" if "type" in cols else ("subject" if "subject" in cols else None)
+    l = "level" if "level" in cols else ("difficulty" if "difficulty" in cols else None)
+
+    def _map(x):
+        cat_raw = x.get(t, "") if t else ""
+        diff_raw = x.get(l, "") if l else ""
+        return {
+            "question": x[p],
+            "answer": x[a],
+            "category": CATEGORY_ALIASES.get(cat_raw, "other"),
+            "difficulty": DIFFICULTY_MAP.get(diff_raw, "medium"),
+            "source": source_tag,
+        }
+    ds = ds.map(_map)
+    return ds.select_columns(["question", "answer", "category", "difficulty", "source"])
+
+
 def load_math_train(max_samples: Optional[int] = None) -> Dataset:
     """Load MATH competition train set (7,500 problems)."""
-    ds = load_dataset("hendrycks/competition_math", split="train", trust_remote_code=True)
-    ds = ds.map(lambda x: {
-        "question": x["problem"],
-        "answer": x["solution"],
-        "category": CATEGORY_ALIASES.get(x.get("type", ""), "other"),
-        "difficulty": DIFFICULTY_MAP.get(x.get("level", ""), "medium"),
-        "source": "math_train",
-    })
-    ds = ds.select_columns(["question", "answer", "category", "difficulty", "source"])
+    ds = _load_math_raw("train")
+    ds = _normalize_math(ds, "math_train")
     if max_samples:
         ds = ds.select(range(min(max_samples, len(ds))))
     return ds
@@ -42,15 +74,8 @@ def load_math_train(max_samples: Optional[int] = None) -> Dataset:
 
 def load_math_test() -> Dataset:
     """Load MATH competition test set (5,000 problems)."""
-    ds = load_dataset("hendrycks/competition_math", split="test", trust_remote_code=True)
-    ds = ds.map(lambda x: {
-        "question": x["problem"],
-        "answer": x["solution"],
-        "category": CATEGORY_ALIASES.get(x.get("type", ""), "other"),
-        "difficulty": DIFFICULTY_MAP.get(x.get("level", ""), "medium"),
-        "source": "math_test",
-    })
-    return ds.select_columns(["question", "answer", "category", "difficulty", "source"])
+    ds = _load_math_raw("test")
+    return _normalize_math(ds, "math_test")
 
 
 def load_numina_math(max_samples: int = 15000) -> Dataset:
