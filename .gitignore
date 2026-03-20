@@ -6,9 +6,9 @@ dist/
 build/
 .eggs/
 
-# Data and checkpoints (stored on /scratch/)
-data/
-checkpoints/
+# Data and checkpoints (stored on /scratch/, top-level only)
+/data/
+/checkpoints/
 *.parquet
 *.pt
 *.safetensors
