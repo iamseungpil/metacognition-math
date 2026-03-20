@@ -1,14 +1,13 @@
-"""Rollout generation for math problems using HF generate (multi-GPU data parallel)."""
+"""Rollout generation for math problems using vLLM (4-GPU tensor parallel)."""
 import json
 import time
 from pathlib import Path
 
 import pandas as pd
-import torch
 import wandb
 import yaml
 
-from src.data.dataset_loader import extract_boxed_answer, extract_numeric_answer
+from src.data.dataset_loader import extract_boxed_answer
 
 
 MATH_SYSTEM_PROMPT = (
@@ -44,8 +43,8 @@ def check_correctness(model_answer: str, gold_answer: str, source: str = "") -> 
 
 
 def generate_rollouts(config_path: str):
-    """Generate rollouts using HF model.generate() with multi-GPU data parallel."""
-    from transformers import AutoTokenizer, AutoModelForCausalLM
+    """Generate rollouts using vLLM with tensor parallelism across 4 GPUs."""
+    from vllm import LLM, SamplingParams
 
     with open(config_path) as f:
         config = yaml.safe_load(f)
@@ -65,7 +64,10 @@ def generate_rollouts(config_path: str):
     temperature = config.get("sampling", {}).get("temperature", 0.7)
     top_p = config.get("sampling", {}).get("top_p", 0.95)
     max_tokens = config.get("sampling", {}).get("max_tokens", 2048)
-    batch_size = config.get("batch_size", 8)  # smaller for HF generate
+    tp_size = config.get("vllm", {}).get("tensor_parallel_size", 4)
+    gpu_util = config.get("vllm", {}).get("gpu_memory_utilization", 0.90)
+    max_model_len = config.get("vllm", {}).get("max_model_len", 4096)
+    batch_size = config.get("batch_size", 128)
 
     # Load datasets
     from src.data.dataset_loader import load_all_train
@@ -75,21 +77,24 @@ def generate_rollouts(config_path: str):
     print(f"Generating {rollouts_per_problem} rollouts per problem")
     print(f"Total rollouts: {len(dataset) * rollouts_per_problem}")
 
-    # Load model with device_map="auto" for multi-GPU
-    print(f"Loading model {model_id} across GPUs...")
-    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "left"  # for batch generation
-
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",  # spread across all GPUs
+    # Init vLLM with tensor parallel across all GPUs
+    print(f"Loading vLLM model {model_id} with TP={tp_size}...")
+    llm = LLM(
+        model=model_id,
+        tensor_parallel_size=tp_size,
+        gpu_memory_utilization=gpu_util,
+        max_model_len=max_model_len,
+        dtype="bfloat16",
         trust_remote_code=True,
     )
-    model.eval()
-    print(f"Model loaded. Device map: {model.hf_device_map if hasattr(model, 'hf_device_map') else 'single'}")
+    tokenizer = llm.get_tokenizer()
+
+    sampling_params = SamplingParams(
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
+        n=rollouts_per_problem,
+    )
 
     # Process in batches
     all_results = []
@@ -109,33 +114,19 @@ def generate_rollouts(config_path: str):
             )
             prompts.append(prompt)
 
+        # Generate all rollouts in one vLLM call (n=rollouts_per_problem)
         t0 = time.time()
+        outputs = llm.generate(prompts, sampling_params=sampling_params)
+        elapsed = time.time() - t0
 
-        # Generate K rollouts per problem
-        for k in range(rollouts_per_problem):
-            inputs = tokenizer(
-                prompts, return_tensors="pt", padding=True, truncation=True,
-                max_length=2048,
-            ).to(model.device if hasattr(model, 'device') else "cuda:0")
-
-            with torch.no_grad():
-                output_ids = model.generate(
-                    **inputs,
-                    max_new_tokens=max_tokens,
-                    do_sample=True,
-                    temperature=temperature,
-                    top_p=top_p,
-                    pad_token_id=tokenizer.pad_token_id,
+        # Parse results
+        for i, output in enumerate(outputs):
+            row = batch[i]
+            for j, completion in enumerate(output.outputs):
+                response_text = completion.text
+                is_correct = check_correctness(
+                    response_text, row["answer"], row["source"]
                 )
-
-            # Decode only new tokens
-            for i in range(len(prompts)):
-                input_len = inputs["input_ids"][i].shape[0]
-                gen_ids = output_ids[i][input_len:]
-                response_text = tokenizer.decode(gen_ids, skip_special_tokens=True)
-                row = batch[i]
-                is_correct = check_correctness(response_text, row["answer"], row["source"])
-
                 all_results.append({
                     "problem_id": f"{row['source']}_{batch_start + i}",
                     "question": row["question"],
@@ -143,38 +134,34 @@ def generate_rollouts(config_path: str):
                     "category": row["category"],
                     "difficulty": row["difficulty"],
                     "source": row["source"],
-                    "rollout_idx": k,
+                    "rollout_idx": j,
                     "completion": response_text,
                     "final_answer": extract_boxed_answer(response_text) or "",
                     "is_correct": is_correct,
-                    "num_tokens": len(gen_ids),
-                    "finish_reason": "stop",
+                    "num_tokens": len(completion.token_ids),
+                    "finish_reason": completion.finish_reason,
                 })
 
-            del inputs, output_ids
-            torch.cuda.empty_cache()
-
-        elapsed = time.time() - t0
         batch_count += 1
-
-        # Log to wandb
         batch_results = all_results[-(len(batch) * rollouts_per_problem):]
         batch_correct = sum(r["is_correct"] for r in batch_results)
         batch_total = len(batch_results)
+
         wandb.log({
             "phase0/batch": batch_count,
             "phase0/rollouts_total": len(all_results),
             "phase0/batch_accuracy": batch_correct / max(batch_total, 1),
             "phase0/cumulative_accuracy": sum(r["is_correct"] for r in all_results) / max(len(all_results), 1),
             "phase0/throughput_per_sec": batch_total / max(elapsed, 1),
+            "phase0/progress_pct": len(all_results) / (total * rollouts_per_problem) * 100,
         })
         print(
-            f"Batch {batch_start}-{batch_end}/{total} done in {elapsed:.1f}s "
+            f"Batch {batch_count}: {batch_start}-{batch_end}/{total} in {elapsed:.1f}s "
             f"({len(all_results)} rollouts, acc={batch_correct/max(batch_total,1):.3f})"
         )
 
         # Periodic save
-        if batch_count % 10 == 0:
+        if batch_count % 5 == 0:
             _save_checkpoint(all_results, output_dir, f"partial_{batch_count}")
 
     # Final save
