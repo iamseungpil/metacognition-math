@@ -6,7 +6,6 @@ from pathlib import Path
 import pandas as pd
 import torch
 import yaml
-import wandb
 from datasets import Dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
@@ -50,14 +49,10 @@ def run_sft(config_path: str):
     model_name = config["model_name_or_path"]
     data_path = config["dataset_path"]
     output_dir = config["output_dir"]
-    wandb_project = config.get("wandb_project", "metacot-math")
-
-    # Wandb
-    wandb.init(
-        project=wandb_project,
-        name=config.get("run_name", "metacot-sft"),
-        config=config,
-    )
+    # Let HuggingFace Trainer handle wandb init via report_to="wandb"
+    import os
+    os.environ["WANDB_PROJECT"] = config.get("wandb_project", "metacot-math")
+    os.environ["WANDB_NAME"] = config.get("run_name", "metacot-sft")
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     if tokenizer.pad_token is None:
@@ -70,7 +65,10 @@ def run_sft(config_path: str):
         use_cache=False,
     )
 
-    train_dataset = prepare_sft_dataset(data_path, tokenizer)
+    full_dataset = prepare_sft_dataset(data_path, tokenizer)
+    split = full_dataset.train_test_split(test_size=0.05, seed=42)
+    train_dataset = split["train"]
+    eval_dataset = split["test"]
 
     from transformers import TrainingArguments, Trainer, DataCollatorForSeq2Seq
 
@@ -87,6 +85,8 @@ def run_sft(config_path: str):
         save_steps=config.get("save_steps", 500),
         save_total_limit=3,
         report_to="wandb",
+        eval_strategy="steps",
+        eval_steps=config.get("save_steps", 500),
         deepspeed=config.get("deepspeed", None),
         gradient_checkpointing=True,
         remove_unused_columns=False,
@@ -100,15 +100,14 @@ def run_sft(config_path: str):
         model=model,
         args=training_args,
         train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         data_collator=data_collator,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
     )
 
     trainer.train()
     trainer.save_model(output_dir)
     tokenizer.save_pretrained(output_dir)
-
-    wandb.finish()
     print(f"SFT model saved to {output_dir}")
 
 

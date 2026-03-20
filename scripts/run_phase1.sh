@@ -1,13 +1,9 @@
 #!/bin/bash
-set -e
-cd "$(dirname "$0")/.."
+source "$(dirname "$0")/common.sh"
 
 echo "========================================="
 echo "Phase 1: Meta-CoT Data Generation + SFT"
 echo "========================================="
-
-export PYTHONPATH="${PWD}:${PYTHONPATH}"
-export TOKENIZERS_PARALLELISM=false
 
 # Step 1.1: Generate Meta-CoT chains via TRAPI
 echo "[Phase 1.1] Generating Meta-CoT chains via GPT-5.4..."
@@ -28,7 +24,7 @@ accelerate launch \
     -m src.training.sft \
     --config configs/phase1_sft.yaml
 
-# Backup checkpoint to persistent storage
+# Backup checkpoint
 echo "[Backup] Copying SFT checkpoint to /mnt/input/..."
 cp -r /scratch/metacognition/checkpoints/phase1_sft /mnt/input/metacognition/phase1_sft
 

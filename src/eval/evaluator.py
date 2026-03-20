@@ -108,6 +108,20 @@ def evaluate_model(config_path: str):
     return results_all
 
 
+def _load_olympmath():
+    """Load OlymMATH benchmark (RUCAIBox/OlymMATH)."""
+    from datasets import load_dataset
+    ds = load_dataset("RUCAIBox/OlymMATH", split="test", trust_remote_code=True)
+    ds = ds.map(lambda x: {
+        "question": x.get("problem", x.get("question", "")),
+        "answer": str(x.get("answer", "")),
+        "category": "olympiad",
+        "difficulty": "hard",
+        "source": "olympmath",
+    })
+    return ds
+
+
 def _load_benchmark(name: str, cfg: dict):
     """Load a benchmark dataset."""
     try:
@@ -116,7 +130,9 @@ def _load_benchmark(name: str, cfg: dict):
             return load_aime(year)
         elif "math" in name.lower() and "test" in name.lower():
             return load_math_test()
-        elif "olym" in name.lower():
+        elif "olympmath" in name.lower():
+            return _load_olympmath()
+        elif "omni" in name.lower():
             return load_omni_math()
         else:
             from datasets import load_dataset
@@ -156,7 +172,8 @@ def _score_benchmark(
                 correct = check_correctness(text, gold)
             sample_correct.append(correct)
 
-        correct_at_1.append(np.mean(sample_correct))  # unbiased pass@1
+        # pass@1: use first sample (unbiased since vLLM samples are i.i.d.)
+        correct_at_1.append(sample_correct[0])
         correct_at_k.append(any(sample_correct))
 
         per_problem.append({

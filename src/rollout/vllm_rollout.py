@@ -1,12 +1,11 @@
 """vLLM-based rollout generation for math problems."""
 import json
-import os
 import time
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 import torch
+import wandb
 import yaml
 
 from src.data.dataset_loader import extract_boxed_answer, extract_numeric_answer
@@ -62,6 +61,13 @@ def generate_rollouts(config_path: str):
     model_id = config["model"]
     output_dir = Path(config["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    wandb.init(
+        project=config.get("wandb_project", "metacot-math"),
+        name="phase0-rollout",
+        config=config,
+        reinit=True,
+    )
 
     rollouts_per_problem = config.get("rollouts_per_problem", 8)
     temperature = config.get("sampling", {}).get("temperature", 0.7)
@@ -143,6 +149,16 @@ def generate_rollouts(config_path: str):
                     "finish_reason": completion.finish_reason,
                 })
 
+        # Log to wandb
+        batch_correct = sum(r["is_correct"] for r in all_results[-len(outputs) * rollouts_per_problem:])
+        batch_total = len(outputs) * rollouts_per_problem
+        wandb.log({
+            "phase0/batch": batch_count,
+            "phase0/rollouts_total": len(all_results),
+            "phase0/batch_accuracy": batch_correct / max(batch_total, 1),
+            "phase0/cumulative_accuracy": sum(r["is_correct"] for r in all_results) / max(len(all_results), 1),
+            "phase0/throughput_per_sec": batch_total / max(elapsed, 1),
+        })
         print(
             f"Batch {batch_start}-{batch_end}/{total} done in {elapsed:.1f}s "
             f"({len(all_results)} rollouts so far)"
@@ -155,6 +171,7 @@ def generate_rollouts(config_path: str):
 
     # Final save
     _save_checkpoint(all_results, output_dir, "final")
+    wandb.finish()
     print(f"Done! {len(all_results)} rollouts saved to {output_dir}")
     return all_results
 

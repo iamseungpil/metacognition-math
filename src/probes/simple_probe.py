@@ -204,3 +204,28 @@ def train_simple_probe(
 
     print(f"Best AUROC: {best_auroc:.4f}")
     return best_auroc
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data-dir", required=True)
+    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--hidden-dim", type=int, default=3584)
+    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    args = parser.parse_args()
+
+    import wandb
+    run = wandb.init(project="metacot-math", name="simple-probe-baseline")
+    train_simple_probe(
+        data_dir=args.data_dir,
+        output_dir=args.output_dir,
+        hidden_dim=args.hidden_dim,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        lr=args.lr,
+        wandb_run=run,
+    )
+    wandb.finish()

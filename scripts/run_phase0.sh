@@ -1,15 +1,10 @@
 #!/bin/bash
-set -e
-cd "$(dirname "$0")/.."
+source "$(dirname "$0")/common.sh"
 
 echo "========================================="
 echo "Phase 0: Rollout Generation + Profiling"
 echo "========================================="
 
-export PYTHONPATH="${PWD}:${PYTHONPATH}"
-export TOKENIZERS_PARALLELISM=false
-
-# Create output dirs
 mkdir -p /scratch/metacognition/{rollouts,profiles,gnosis_data}
 
 # Step 0.1-0.2: Generate rollouts with vLLM

@@ -1,6 +1,5 @@
 """Metacognitive reward functions for GRPO training."""
 import re
-import torch
 from typing import Optional
 
 
@@ -47,36 +46,38 @@ def compute_r_meta(
     weak_categories: list,
     lambda1: float = 0.5,
     lambda2: float = 0.0,
-) -> float:
+) -> dict:
     """Combined metacognitive reward R_meta.
 
     R_meta = R_correct + lambda1 * R_calib + lambda2 * R_strat
+    Returns dict with total and individual components for logging.
     """
     r_correct = compute_r_correct(is_correct)
     r_calib = compute_r_calib(c_text, p_hat)
     r_strat = compute_r_strat(strategy_category, weak_categories)
-    return r_correct + lambda1 * r_calib + lambda2 * r_strat
+    total = r_correct + lambda1 * r_calib + lambda2 * r_strat
+    return {
+        "total": total,
+        "r_correct": r_correct,
+        "r_calib": r_calib,
+        "r_strat": r_strat,
+    }
 
 
 def extract_confidence_from_chain(chain_text: str) -> Optional[float]:
     """Extract numeric confidence from Meta-CoT Stage 2 output."""
-    match = re.search(r'confidence[:\s]+([0-9]+\.?[0-9]*)', chain_text, re.IGNORECASE)
-    if match:
-        try:
-            val = float(match.group(1))
-            return max(0.0, min(1.0, val))
-        except ValueError:
-            pass
-    return None
+    from src.metacot.prompt import parse_metacot_stages
+    parsed = parse_metacot_stages(chain_text)
+    return parsed.get("confidence")
 
 
 def extract_strategy_target(chain_text: str) -> Optional[str]:
     """Extract the target category from Meta-CoT Stage 3."""
-    # Sorted longest first to match "intermediate_algebra" before "algebra"
+    # Match categories used in dataset_loader.py, longest first
     categories = [
         "intermediate_algebra", "counting_probability", "number_theory",
-        "combinatorics", "precalculus", "prealgebra", "geometry",
-        "algebra", "calculus", "olympiad",
+        "precalculus", "prealgebra", "geometry", "algebra",
+        "competition", "olympiad",
     ]
     chain_lower = chain_text.lower()
     for cat in categories:

@@ -90,13 +90,20 @@ def run_grpo(config_path: str):
     ).cuda()
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_steps)
 
     # Load problems
     dataset = MathProblemDataset(problems_path)
     dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
 
-    # Optional: load Gnosis probe for R_calib
-    gnosis_model = _load_gnosis_if_available(config.get("gnosis_model_path"))
+    # Load probe for R_calib (try simple_probe first, then gnosis)
+    probe_path = config.get("gnosis_model_path")
+    if probe_path and not Path(probe_path).exists():
+        # Fallback to simple_probe checkpoint
+        simple_path = str(Path(probe_path).parent / "simple_probe")
+        if Path(simple_path).exists():
+            probe_path = simple_path
+    gnosis_model = _load_gnosis_if_available(probe_path)
 
     step = 0
     epoch = 0
@@ -128,6 +135,7 @@ def run_grpo(config_path: str):
             rollout_texts = []
             rollout_log_probs = []
             rewards = []
+            reward_components = []
 
             model.eval()
             with torch.no_grad():
@@ -160,7 +168,7 @@ def run_grpo(config_path: str):
                     p_hat = _get_gnosis_score(gnosis_model, model, tokenizer, prompt + gen_text)
                     strategy_cat = extract_strategy_target(gen_text)
 
-                    r = compute_r_meta(
+                    r_dict = compute_r_meta(
                         is_correct=is_correct,
                         c_text=c_text,
                         p_hat=p_hat,
@@ -169,7 +177,8 @@ def run_grpo(config_path: str):
                         lambda1=lambda1,
                         lambda2=lambda2,
                     )
-                    rewards.append(r)
+                    rewards.append(r_dict["total"])
+                    reward_components.append(r_dict)
 
             # GRPO: compute advantages
             advantages = compute_grpo_advantages(rewards, group_size)
@@ -212,10 +221,10 @@ def run_grpo(config_path: str):
                 total_loss_val += loss.item()
 
                 del outputs, logits, input_ids_full, attention_mask
-                torch.cuda.empty_cache()
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
+            scheduler.step()
 
             # Metrics
             avg_reward = np.mean(rewards)
@@ -233,6 +242,11 @@ def run_grpo(config_path: str):
             step += 1
 
             if step % 10 == 0:
+                # Aggregate reward components
+                avg_r_correct = np.mean([rc["r_correct"] for rc in reward_components])
+                avg_r_calib = np.mean([rc["r_calib"] for rc in reward_components])
+                avg_r_strat = np.mean([rc["r_strat"] for rc in reward_components])
+
                 metrics = {
                     "grpo/step": step,
                     "grpo/loss": total_loss_val,
@@ -240,8 +254,12 @@ def run_grpo(config_path: str):
                     "grpo/running_reward": running_reward,
                     "grpo/avg_correct": avg_correct,
                     "grpo/running_correct": running_correct,
+                    "grpo/r_correct": avg_r_correct,
+                    "grpo/r_calib": avg_r_calib,
+                    "grpo/r_strat": avg_r_strat,
                     "grpo/lambda1": lambda1,
                     "grpo/lambda2": lambda2,
+                    "grpo/lr": scheduler.get_last_lr()[0],
                     "grpo/answer_entropy": answer_entropy,
                     "grpo/unique_answers": unique_answers,
                     "grpo/reward_std": np.std(rewards),
