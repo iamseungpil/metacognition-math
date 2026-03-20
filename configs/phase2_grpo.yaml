@@ -1,0 +1,28 @@
+# Phase 2: GRPO with R_meta
+model_path: /scratch/metacognition/checkpoints/phase1_sft
+problems_path: /scratch/metacognition/rollouts/rollouts_final.parquet
+profile_path: /scratch/metacognition/profiles/capability_profile.json
+output_dir: /scratch/metacognition/checkpoints/phase2_grpo
+
+# GRPO params
+group_size: 8
+max_steps: 2000
+learning_rate: 5.0e-6
+max_tokens: 2048
+
+# Lambda scheduling
+lambda1_start: 0.5
+lambda1_end: 1.0
+lambda2_start: 0.0
+lambda2_end: 0.5
+lambda_warmup_steps: 1000
+
+# Gnosis
+gnosis_model_path: /scratch/metacognition/checkpoints/gnosis_probe
+gnosis_retrain_interval: 500
+
+# Checkpointing
+save_every: 500
+
+wandb_project: metacot-math
+run_name: metacot-grpo-qwen2.5-7b

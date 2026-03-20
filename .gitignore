@@ -1,0 +1,26 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Data and checkpoints (stored on /scratch/)
+data/
+checkpoints/
+*.parquet
+*.pt
+*.safetensors
+*.bin
+
+# Wandb
+wandb/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

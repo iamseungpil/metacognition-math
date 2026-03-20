@@ -1,0 +1,14 @@
+# Phase 1.2: Meta-CoT SFT training
+model_name_or_path: Qwen/Qwen2.5-7B-Instruct
+dataset_path: /scratch/metacognition/metacot_chains/metacot_sft.parquet
+output_dir: /scratch/metacognition/checkpoints/phase1_sft
+
+num_train_epochs: 3
+per_device_train_batch_size: 2
+gradient_accumulation_steps: 4
+learning_rate: 2.0e-5
+save_steps: 500
+deepspeed: configs/ds_zero2.json
+
+wandb_project: metacot-math
+run_name: metacot-sft-qwen2.5-7b

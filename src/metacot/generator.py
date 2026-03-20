@@ -1,0 +1,240 @@
+"""Meta-CoT chain generation using TRAPI (GPT-5.4)."""
+import json
+import time
+from pathlib import Path
+from typing import Optional
+
+import pandas as pd
+import yaml
+
+from src.metacot.prompt import (
+    META_COT_SYSTEM_PROMPT,
+    build_metacot_user_prompt,
+    parse_metacot_stages,
+)
+
+
+def get_trapi_client():
+    """Create TRAPI Azure OpenAI client with proper auth."""
+    from openai import AzureOpenAI
+    from azure.identity import (
+        ChainedTokenCredential,
+        AzureCliCredential,
+        ManagedIdentityCredential,
+        get_bearer_token_provider,
+    )
+
+    scope = "api://trapi/.default"
+    credential = get_bearer_token_provider(
+        ChainedTokenCredential(
+            AzureCliCredential(),
+            ManagedIdentityCredential(),
+        ),
+        scope,
+    )
+
+    client = AzureOpenAI(
+        azure_endpoint="https://trapi.research.microsoft.com/gcr/shared",
+        azure_ad_token_provider=credential,
+        api_version="2025-04-01-preview",
+    )
+    return client
+
+
+def generate_single_chain(
+    client,
+    profile: dict,
+    question: str,
+    model_answer: str,
+    correct_answer: str,
+    is_correct: bool,
+    data_pool_summary: str = "",
+    model_name: str = "gpt-5.4_2026-03-05",
+    max_retries: int = 3,
+) -> dict:
+    """Generate a single Meta-CoT chain via TRAPI."""
+    user_prompt = build_metacot_user_prompt(
+        profile=profile,
+        question=question,
+        model_answer=model_answer,
+        correct_answer=correct_answer,
+        is_correct=is_correct,
+        data_pool_summary=data_pool_summary,
+    )
+
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": META_COT_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                max_completion_tokens=2048,
+                temperature=0.7,
+            )
+            chain_text = response.choices[0].message.content
+            parsed = parse_metacot_stages(chain_text)
+
+            if parsed["valid"]:
+                return {
+                    "chain": chain_text,
+                    "parsed": parsed,
+                    "usage": {
+                        "prompt_tokens": response.usage.prompt_tokens,
+                        "completion_tokens": response.usage.completion_tokens,
+                    },
+                }
+            elif attempt < max_retries - 1:
+                continue
+            else:
+                return {"chain": chain_text, "parsed": parsed, "usage": None}
+
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait = 2 ** attempt
+                print(f"Retry {attempt+1} after error: {e}. Waiting {wait}s...")
+                time.sleep(wait)
+            else:
+                return {"chain": "", "parsed": {"valid": False}, "error": str(e), "usage": None}
+
+
+def generate_metacot_dataset(config_path: str):
+    """Generate Meta-CoT chains for a batch of rollouts."""
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+
+    rollouts_path = config["rollouts_path"]
+    profile_path = config["profile_path"]
+    output_dir = Path(config["output_dir"])
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    max_chains = config.get("max_chains", 10000)
+    correct_ratio = config.get("correct_ratio", 0.5)
+    model_name = config.get("trapi_model", "gpt-5.4_2026-03-05")
+
+    # Load data
+    df = pd.read_parquet(rollouts_path)
+    with open(profile_path) as f:
+        profile = json.load(f)
+
+    # Balance correct/incorrect
+    correct = df[df["is_correct"]].drop_duplicates("problem_id")
+    incorrect = df[~df["is_correct"]].drop_duplicates("problem_id")
+
+    n_correct = int(max_chains * correct_ratio)
+    n_incorrect = max_chains - n_correct
+
+    if len(correct) > n_correct:
+        correct = correct.sample(n=n_correct, random_state=42)
+    if len(incorrect) > n_incorrect:
+        incorrect = incorrect.sample(n=n_incorrect, random_state=42)
+
+    selected = pd.concat([correct, incorrect]).sample(frac=1, random_state=42)
+    print(f"Generating {len(selected)} Meta-CoT chains ({len(correct)} correct, {len(incorrect)} incorrect)")
+
+    client = get_trapi_client()
+    results = []
+    total_tokens = 0
+
+    for i, (_, row) in enumerate(selected.iterrows()):
+        result = generate_single_chain(
+            client=client,
+            profile=profile,
+            question=row["question"],
+            model_answer=row["completion"],
+            correct_answer=row["gold_answer"],
+            is_correct=row["is_correct"],
+            model_name=model_name,
+        )
+
+        results.append({
+            "problem_id": row["problem_id"],
+            "question": row["question"],
+            "gold_answer": row["gold_answer"],
+            "model_answer": row["completion"],
+            "is_correct": row["is_correct"],
+            "category": row["category"],
+            "difficulty": row["difficulty"],
+            "metacot_chain": result["chain"],
+            "confidence": result["parsed"].get("confidence"),
+            "problem_count": result["parsed"].get("problem_count"),
+            "has_l1l2l3": result["parsed"].get("has_l1l2l3", False),
+            "chain_valid": result["parsed"].get("valid", False),
+        })
+
+        if result.get("usage"):
+            total_tokens += result["usage"]["prompt_tokens"] + result["usage"]["completion_tokens"]
+
+        if (i + 1) % 100 == 0:
+            valid = sum(1 for r in results if r["chain_valid"])
+            print(
+                f"  [{i+1}/{len(selected)}] valid={valid}/{len(results)} "
+                f"tokens_used={total_tokens:,}"
+            )
+
+        # Periodic save
+        if (i + 1) % 1000 == 0:
+            _save_results(results, output_dir, f"checkpoint_{i+1}")
+
+    _save_results(results, output_dir, "final")
+    valid_count = sum(1 for r in results if r["chain_valid"])
+    print(f"Done! {valid_count}/{len(results)} valid chains. Total tokens: {total_tokens:,}")
+    return results
+
+
+def _save_results(results: list, output_dir: Path, tag: str):
+    df = pd.DataFrame(results)
+    df.to_parquet(output_dir / f"metacot_{tag}.parquet", index=False)
+
+
+def build_sft_dataset(metacot_path: str, output_path: str):
+    """Convert Meta-CoT chains to SFT training format.
+
+    Each training example: user asks the problem, assistant outputs the
+    full 5-stage Meta-CoT chain (without the correct answer revealed).
+    """
+    df = pd.read_parquet(metacot_path)
+    df = df[df["chain_valid"]]
+
+    sft_data = []
+    for _, row in df.iterrows():
+        # SFT format: question -> Meta-CoT chain (no correct answer in input)
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a math problem solver with metacognitive awareness. "
+                    "For each problem, solve it step by step, then analyze your "
+                    "solution quality, plan what to study next, select practice "
+                    "problems, and predict your improvement."
+                ),
+            },
+            {"role": "user", "content": row["question"]},
+            {"role": "assistant", "content": row["metacot_chain"]},
+        ]
+        sft_data.append({
+            "messages": json.dumps(messages),
+            "problem_id": row["problem_id"],
+            "is_correct": row["is_correct"],
+            "category": row["category"],
+        })
+
+    out_df = pd.DataFrame(sft_data)
+    out_df.to_parquet(output_path, index=False)
+    print(f"SFT dataset: {len(out_df)} examples saved to {output_path}")
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--build-sft", action="store_true")
+    parser.add_argument("--metacot-path", default=None)
+    parser.add_argument("--sft-output", default=None)
+    args = parser.parse_args()
+
+    if args.build_sft:
+        build_sft_dataset(args.metacot_path, args.sft_output)
+    else:
+        generate_metacot_dataset(args.config)

@@ -1,0 +1,9 @@
+# Phase 1.1: Meta-CoT chain generation via TRAPI
+rollouts_path: /scratch/metacognition/rollouts/rollouts_final.parquet
+profile_path: /scratch/metacognition/profiles/capability_profile.json
+output_dir: /scratch/metacognition/metacot_chains
+
+max_chains: 10000
+correct_ratio: 0.5
+trapi_model: gpt-5.4_2026-03-05
+concurrent_requests: 50
