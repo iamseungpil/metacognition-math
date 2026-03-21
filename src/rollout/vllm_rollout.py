@@ -22,23 +22,42 @@ def build_chat_messages(question: str, system_prompt: str = MATH_SYSTEM_PROMPT):
     ]
 
 
+def _extract_final_answer(text: str) -> str:
+    """Extract final answer from text, handling multiple formats."""
+    import re
+    # Try \boxed{} first
+    boxed = extract_boxed_answer(text)
+    if boxed:
+        return boxed.strip()
+    # Try "The answer is X" pattern (MathInstruct format)
+    match = re.search(r'(?:the answer is|answer:\s*|= )\s*(.+?)(?:\.|$)', text, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    # Last line fallback
+    lines = text.strip().split('\n')
+    return lines[-1].strip() if lines else ""
+
+
 def check_correctness(model_answer: str, gold_answer: str, source: str = "") -> bool:
     """Check if model answer matches gold answer."""
-    model_boxed = extract_boxed_answer(model_answer)
-    if model_boxed is None:
+    model_final = _extract_final_answer(model_answer)
+    gold_final = _extract_final_answer(gold_answer)
+
+    if not model_final:
         return False
 
-    gold_boxed = extract_boxed_answer(gold_answer)
-    gold_compare = gold_boxed.strip() if gold_boxed else gold_answer.strip()
-    model_compare = model_boxed.strip()
-
-    if model_compare == gold_compare:
+    # Direct string match
+    if model_final == gold_final:
         return True
+    # Numeric comparison
     try:
-        if abs(float(model_compare) - float(gold_compare)) < 1e-6:
+        if abs(float(model_final) - float(gold_final)) < 1e-6:
             return True
     except (ValueError, TypeError):
         pass
+    # Normalized comparison (strip whitespace, lowercase)
+    if model_final.lower().strip() == gold_final.lower().strip():
+        return True
     return False
 
 
@@ -242,13 +261,17 @@ def build_profile(rollouts_path: str, output_path: str):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", required=True)
+    parser.add_argument("--config", default=None)
     parser.add_argument("--profile-only", action="store_true")
     parser.add_argument("--rollouts-path", default=None)
     parser.add_argument("--profile-output", default=None)
     args = parser.parse_args()
 
     if args.profile_only:
+        if not args.rollouts_path or not args.profile_output:
+            parser.error("--profile-only requires --rollouts-path and --profile-output")
         build_profile(args.rollouts_path, args.profile_output)
     else:
+        if not args.config:
+            parser.error("--config is required for rollout generation")
         generate_rollouts(args.config)

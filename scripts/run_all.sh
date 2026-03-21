@@ -34,8 +34,13 @@ echo "========================================="
 
 mkdir -p /scratch/metacognition/{rollouts,profiles,gnosis_data}
 
-echo "[Phase 0.1] Generating rollouts..."
-python -m src.rollout.vllm_rollout --config configs/phase0_rollout.yaml
+# Skip Phase 0.1 if rollouts already exist
+if [ -f /scratch/metacognition/rollouts/rollouts_final.parquet ]; then
+    echo "[Phase 0.1] SKIP — rollouts_final.parquet already exists"
+else
+    echo "[Phase 0.1] Generating rollouts..."
+    python -m src.rollout.vllm_rollout --config configs/phase0_rollout.yaml
+fi
 
 echo "[Phase 0.3] Building capability profile..."
 python -m src.rollout.vllm_rollout \

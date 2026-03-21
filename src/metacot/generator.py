@@ -252,13 +252,17 @@ def build_sft_dataset(metacot_path: str, output_path: str):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", required=True)
+    parser.add_argument("--config", default=None)
     parser.add_argument("--build-sft", action="store_true")
     parser.add_argument("--metacot-path", default=None)
     parser.add_argument("--sft-output", default=None)
     args = parser.parse_args()
 
     if args.build_sft:
+        if not args.metacot_path or not args.sft_output:
+            parser.error("--build-sft requires --metacot-path and --sft-output")
         build_sft_dataset(args.metacot_path, args.sft_output)
     else:
+        if not args.config:
+            parser.error("--config is required for Meta-CoT generation")
         generate_metacot_dataset(args.config)
