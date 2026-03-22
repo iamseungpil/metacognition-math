@@ -91,6 +91,23 @@ def load_math_test() -> Dataset:
     return _normalize_math(ds, "math_test")
 
 
+def load_gsm8k(max_samples: Optional[int] = None) -> Dataset:
+    """Load GSM8K train set (grade school math, 7,473 problems)."""
+    ds = load_dataset("openai/gsm8k", "main", split="train")
+    ds = ds.map(lambda x: {
+        "question": x["question"],
+        "answer": x["answer"],
+        "category": "arithmetic",
+        "difficulty": "easy",
+        "source": "gsm8k",
+    })
+    ds = ds.select_columns(["question", "answer", "category", "difficulty", "source"])
+    if max_samples:
+        ds = ds.select(range(min(max_samples, len(ds))))
+    print(f"  Loaded GSM8K: {len(ds)} problems")
+    return ds
+
+
 def load_numina_math(max_samples: int = 15000) -> Dataset:
     """Load NuminaMath-CoT, filtered for competition-level problems."""
     ds = load_dataset("AI-MO/NuminaMath-CoT", split="train")
@@ -168,6 +185,10 @@ def load_all_train(config: Optional[dict] = None) -> Dataset:
 
     print("Loading MATH train...")
     datasets_list.append(load_math_train(config.get("math_max", None)))
+
+    if config.get("use_gsm8k", True):
+        print("Loading GSM8K...")
+        datasets_list.append(load_gsm8k(config.get("gsm8k_max", None)))
 
     if config.get("use_numina", True):
         print("Loading NuminaMath-CoT...")

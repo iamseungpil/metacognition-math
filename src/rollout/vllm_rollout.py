@@ -36,8 +36,12 @@ def _extract_final_answer(text: str) -> str:
     boxed = extract_boxed_answer(text)
     if boxed:
         return boxed.strip()
+    # Try GSM8K format "#### 42"
+    gsm_match = re.search(r'####\s*(.+?)(?:\n|$)', text)
+    if gsm_match:
+        return gsm_match.group(1).strip()
     # Try "The answer is X" pattern (MathInstruct format)
-    match = re.search(r'(?:the answer is|answer:\s*|= )\s*(.+?)(?:\.|$)', text, re.IGNORECASE)
+    match = re.search(r'(?:the answer is|answer:\s*)\s*(.+?)(?:\.|$)', text, re.IGNORECASE)
     if match:
         return match.group(1).strip()
     # Last line fallback

@@ -1,9 +1,9 @@
-# Phase 0: Rollout generation with vLLM (4-GPU tensor parallel)
+# Phase 0: Rollout generation with vLLM
 model: Qwen/Qwen2.5-7B-Instruct
 output_dir: /scratch/metacognition/rollouts
 
 rollouts_per_problem: 8
-batch_size: 128  # vLLM handles large batches efficiently
+batch_size: 128
 
 sampling:
   temperature: 0.7
@@ -11,13 +11,15 @@ sampling:
   max_tokens: 2048
 
 vllm:
-  tensor_parallel_size: 1  # Single GPU to avoid CUDA fork issue with torch 2.5.1
+  tensor_parallel_size: 1
   gpu_memory_utilization: 0.90
   max_model_len: 4096
 
 data:
+  use_gsm8k: true
+  gsm8k_max: 3000     # grade school math (easy baseline)
+  math_max: 2000       # competition math (MathInstruct)
   use_numina: true
-  numina_max: 5000
+  numina_max: 5000     # AMC/AIME/olympiad level
   use_omni: false
   use_openmr: false
-  math_max: 2000
