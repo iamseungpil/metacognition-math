@@ -246,19 +246,36 @@ def build_sft_dataset(metacot_path: str, output_path: str):
 
     sft_data = []
     for _, row in df.iterrows():
-        # SFT format: question -> Meta-CoT chain (no correct answer in input)
+        # SFT format: solution with \boxed{answer} FIRST, then Meta-CoT analysis
+        # This ensures model can still produce extractable answers for eval
+        from src.data.dataset_loader import extract_boxed_answer
+        gold_boxed = extract_boxed_answer(row["gold_answer"])
+        if gold_boxed:
+            answer_line = f"\\boxed{{{gold_boxed}}}"
+        else:
+            answer_line = f"The answer is {row['gold_answer']}"
+
+        # Combine: model's solution attempt + answer + metacognitive analysis
+        assistant_content = (
+            f"{row['model_answer']}\n\n"
+            f"Final Answer: {answer_line}\n\n"
+            f"--- Metacognitive Analysis ---\n"
+            f"{row['metacot_chain']}"
+        )
+
         messages = [
             {
                 "role": "system",
                 "content": (
                     "You are a math problem solver with metacognitive awareness. "
-                    "For each problem, solve it step by step, then analyze your "
-                    "solution quality, plan what to study next, select practice "
+                    "For each problem: (1) solve it step by step and put your final "
+                    "answer in \\boxed{{}}, then (2) analyze your solution quality, "
+                    "diagnose errors, plan what to study next, select practice "
                     "problems, and predict your improvement."
                 ),
             },
             {"role": "user", "content": row["question"]},
-            {"role": "assistant", "content": row["metacot_chain"]},
+            {"role": "assistant", "content": assistant_content},
         ]
         sft_data.append({
             "messages": json.dumps(messages),

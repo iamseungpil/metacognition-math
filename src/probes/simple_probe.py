@@ -99,6 +99,56 @@ def collate_hidden_states(batch):
     }
 
 
+def _compute_ece(probs, labels, n_bins=15):
+    """Expected Calibration Error — measures probability calibration quality."""
+    bin_boundaries = np.linspace(0, 1, n_bins + 1)
+    ece = 0.0
+    for i in range(n_bins):
+        mask = (probs >= bin_boundaries[i]) & (probs < bin_boundaries[i + 1])
+        if mask.sum() == 0:
+            continue
+        bin_acc = labels[mask].mean()
+        bin_conf = probs[mask].mean()
+        ece += mask.sum() / len(probs) * abs(bin_acc - bin_conf)
+    return float(ece)
+
+
+def calibrate_temperature(model, val_loader, device="cuda", lr=0.01, max_iter=50):
+    """Learn a temperature parameter to improve probe calibration (post-hoc)."""
+    temperature = torch.nn.Parameter(torch.ones(1, device=device))
+    optimizer = torch.optim.LBFGS([temperature], lr=lr, max_iter=max_iter)
+
+    all_logits, all_labels = [], []
+    model.eval()
+    with torch.no_grad():
+        for batch in val_loader:
+            hs = batch["hidden_states"].to(device)
+            mask = batch["attention_mask"].to(device)
+            labels = batch["labels"].to(device)
+            # Get raw logits (before sigmoid)
+            if mask is not None:
+                m = mask.unsqueeze(-1).float()
+                pooled = (hs * m).sum(dim=1) / m.sum(dim=1).clamp(min=1)
+            else:
+                pooled = hs.mean(dim=1)
+            logits = model.net(pooled).squeeze(-1)
+            all_logits.append(logits)
+            all_labels.append(labels)
+
+    all_logits = torch.cat(all_logits)
+    all_labels = torch.cat(all_labels)
+
+    def closure():
+        optimizer.zero_grad()
+        scaled = torch.sigmoid(all_logits / temperature)
+        loss = F.binary_cross_entropy(scaled, all_labels)
+        loss.backward()
+        return loss
+
+    optimizer.step(closure)
+    return temperature.item()
+
+
 def train_simple_probe(
     data_dir: str,
     output_dir: str,
@@ -176,6 +226,9 @@ def train_simple_probe(
         acc = accuracy_score(all_labels, preds)
         f1 = f1_score(all_labels, preds)
 
+        # ECE (Expected Calibration Error) — are probabilities well-calibrated?
+        ece = _compute_ece(all_probs, all_labels, n_bins=15)
+
         metrics = {
             "epoch": epoch,
             "train_loss": np.mean(train_losses),
@@ -183,6 +236,7 @@ def train_simple_probe(
             "val_auroc": auroc,
             "val_accuracy": acc,
             "val_f1": f1,
+            "val_ece": ece,
             "val_prob_mean": float(all_probs.mean()),
             "val_prob_std": float(all_probs.std()),
         }

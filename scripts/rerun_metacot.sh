@@ -114,5 +114,15 @@ with open("/scratch/metacognition/eval_results.json", "w") as f:
     json.dump(results, f)
 PYEOF
 
+# Step 5: Self-directed curriculum learning (Phase 3)
+echo ""
+echo "=== Step 5: Self-Directed Curriculum Learning ==="
+python -m src.training.curriculum \
+    --model-path /scratch/metacognition/checkpoints/phase2_grpo/final \
+    --data-pool /scratch/metacognition/rollouts/rollouts_final.parquet \
+    --output-dir /scratch/metacognition/curriculum \
+    --n-cycles 1 \
+    --problems-per-cycle 500
+
 echo ""
 echo "RERUN_COMPLETE"
