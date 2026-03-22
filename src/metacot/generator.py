@@ -158,10 +158,15 @@ def generate_metacot_dataset(config_path: str):
     print(f"Generating {len(selected)} Meta-CoT chains ({len(correct)} correct, {len(incorrect)} incorrect)")
 
     client = get_trapi_client()
+    concurrent = config.get("concurrent_requests", 20)
     results = []
     total_tokens = 0
+    rows_list = list(selected.iterrows())
 
-    for i, (_, row) in enumerate(selected.iterrows()):
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _process_row(idx_row):
+        i, row = idx_row
         result = generate_single_chain(
             client=client,
             profile=profile,
@@ -171,35 +176,45 @@ def generate_metacot_dataset(config_path: str):
             is_correct=row["is_correct"],
             model_name=model_name,
         )
+        return i, row, result
 
-        results.append({
-            "problem_id": row["problem_id"],
-            "question": row["question"],
-            "gold_answer": row["gold_answer"],
-            "model_answer": row["completion"],
-            "is_correct": row["is_correct"],
-            "category": row["category"],
-            "difficulty": row["difficulty"],
-            "metacot_chain": result["chain"],
-            "confidence": result["parsed"].get("confidence"),
-            "problem_count": result["parsed"].get("problem_count"),
-            "has_l1l2l3": result["parsed"].get("has_l1l2l3", False),
-            "chain_valid": result["parsed"].get("valid", False),
-        })
+    print(f"Using {concurrent} concurrent workers", flush=True)
 
-        if result.get("usage"):
-            total_tokens += result["usage"]["prompt_tokens"] + result["usage"]["completion_tokens"]
+    with ThreadPoolExecutor(max_workers=concurrent) as executor:
+        futures = {executor.submit(_process_row, (i, row)): i for i, (_, row) in enumerate(rows_list)}
+        done_count = 0
 
-        if (i + 1) % 100 == 0:
-            valid = sum(1 for r in results if r["chain_valid"])
-            print(
-                f"  [{i+1}/{len(selected)}] valid={valid}/{len(results)} "
-                f"tokens_used={total_tokens:,}"
-            )
+        for future in as_completed(futures):
+            i, row, result = future.result()
+            results.append({
+                "problem_id": row["problem_id"],
+                "question": row["question"],
+                "gold_answer": row["gold_answer"],
+                "model_answer": row["completion"],
+                "is_correct": row["is_correct"],
+                "category": row["category"],
+                "difficulty": row["difficulty"],
+                "metacot_chain": result["chain"],
+                "confidence": result["parsed"].get("confidence"),
+                "problem_count": result["parsed"].get("problem_count"),
+                "has_l1l2l3": result["parsed"].get("has_l1l2l3", False),
+                "chain_valid": result["parsed"].get("valid", False),
+            })
 
-        # Periodic save
-        if (i + 1) % 1000 == 0:
-            _save_results(results, output_dir, f"checkpoint_{i+1}")
+            if result.get("usage"):
+                total_tokens += result["usage"]["prompt_tokens"] + result["usage"]["completion_tokens"]
+
+            done_count += 1
+            if done_count % 50 == 0:
+                valid = sum(1 for r in results if r["chain_valid"])
+                print(
+                    f"  [{done_count}/{len(selected)}] valid={valid}/{len(results)} "
+                    f"tokens_used={total_tokens:,}",
+                    flush=True,
+                )
+
+            if done_count % 500 == 0:
+                _save_results(results, output_dir, f"checkpoint_{done_count}")
 
     _save_results(results, output_dir, "final")
     valid_count = sum(1 for r in results if r["chain_valid"])
