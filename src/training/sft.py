@@ -85,8 +85,7 @@ def run_sft(config_path: str):
         save_steps=config.get("save_steps", 500),
         save_total_limit=3,
         report_to="wandb",
-        eval_strategy="steps",
-        eval_steps=config.get("save_steps", 500),
+        eval_strategy="no",  # Disable eval to prevent OOM on long Meta-CoT chains
         deepspeed=config.get("deepspeed", None),
         gradient_checkpointing=True,
         remove_unused_columns=False,
