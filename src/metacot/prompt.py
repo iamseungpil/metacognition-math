@@ -1,42 +1,37 @@
 """Meta-CoT prompt templates for GPT-5.4 data generation."""
 
 META_COT_SYSTEM_PROMPT = """\
-You are training an AI model to develop metacognitive reasoning. Given the \
-model's capability profile, a math problem, the model's (possibly wrong) \
-answer, and the correct answer, generate a complete 5-stage Meta-CoT chain.
+You are generating training data for a math-solving AI that has metacognitive \
+awareness. You will be given the model's capability profile and a math problem.
 
-The chain must be a single continuous reasoning process where each stage \
-flows naturally into the next. Do NOT separate stages with headers or \
-labels in the output — write them as one coherent text. However, ensure \
-all five stages are present in order.
+Generate a complete solution that demonstrates THREE phases of metacognitive reasoning:
 
-**Stage 1 — Solve**: Reproduce or summarize the model's solution attempt. \
-Show the key reasoning steps.
+**Phase 1 — Pre-solve Assessment** (BEFORE attempting the solution):
+- Identify the problem category and key concepts needed
+- State the model's estimated probability of solving correctly (use the profile)
+- Flag specific risks: "This requires [concept], which I get right only [X]% of the time"
+- Identify what information or reasoning approach is needed
 
-**Stage 2 — Diagnose**: Analyze whether the solution is correct. State a \
-numeric confidence score (0.0 to 1.0). Identify the specific error type \
-and which math category/subcategory it falls under.
+**Phase 2 — Solve with Epistemic Awareness** (DURING the solution):
+- Solve step by step, BUT explicitly mark uncertain steps
+- Use phrases like "Let me verify this step", "Wait, is this correct?", \
+"I'm not confident about this calculation, let me double-check"
+- When uncertain, try an alternative approach and compare
+- State confidence at key decision points
+- Put final answer in \\boxed{}
 
-**Stage 3 — Strategize**: Based on the diagnosis, propose a concrete \
-learning plan. State exactly how many similar problems to practice (5-10) \
-and at what difficulty level. If correct, suggest harder problems to push \
-the boundary.
-
-**Stage 4 — Select**: Choose problems from the data pool. Justify each \
-selection with three criteria:
-  L1 (relevance): domain match
-  L2 (curriculum): appropriate difficulty progression
-  L3 (metacognition): targets the diagnosed weakness
-
-**Stage 5 — Predict**: Make a numeric prediction of accuracy improvement \
-after studying the selected problems. State expected category accuracy \
-before and after.
+**Phase 3 — Post-solve Reflection** (AFTER the solution):
+- Verify the answer by substitution or alternative method
+- If errors were found during solving, explain what went wrong and how it was fixed
+- State what additional practice would help: specific topic, difficulty level
+- Predict improvement after practice
 
 Requirements:
-- Stage 2 MUST include a numeric confidence (e.g., "confidence: 0.35")
-- Stage 3 MUST include a concrete problem count
-- Stage 4 MUST include L1/L2/L3 reasoning
-- Stage 5 MUST include numeric predictions
+- Phase 1 MUST appear BEFORE any calculations
+- Phase 2 MUST contain at least 2 epistemic expressions (uncertainty markers)
+- Phase 2 MUST end with \\boxed{answer}
+- Phase 3 MUST include specific study recommendations
+- Use the capability profile to make realistic probability estimates
 """
 
 
@@ -51,101 +46,99 @@ def build_metacot_user_prompt(
     """Build the user prompt for Meta-CoT chain generation."""
     profile_str = _format_profile(profile)
 
-    status = "CORRECT" if is_correct else "INCORRECT"
-
+    # Tell GPT-5.4 whether the model got it right, so it can generate
+    # realistic epistemic verbalization (uncertain when wrong, confident when right)
     return f"""\
 === MODEL CAPABILITY PROFILE ===
 {profile_str}
 
-=== PROBLEM ===
+=== MATH PROBLEM ===
 {question}
 
-=== MODEL'S ANSWER ({status}) ===
-{model_answer}
-
-=== CORRECT ANSWER ===
+=== REFERENCE ANSWER ===
 {correct_answer}
 
-=== DATA POOL SUMMARY ===
-{data_pool_summary if data_pool_summary else "Full MATH + NuminaMath + Omni-MATH pool available with problems across all categories and difficulty levels."}
-
-Generate the complete 5-stage Meta-CoT chain now.
+Generate the 3-phase metacognitive solution following the system instructions.
 """
 
 
 def _format_profile(profile: dict) -> str:
-    lines = [
-        f"Model: {profile.get('model', 'Qwen2.5-7B')}",
-        f"Overall pass@1: {profile.get('overall_pass_at_1', 0):.3f}",
-        f"Overall majority vote: {profile.get('overall_pass_at_majority', 0):.3f}",
-        "",
-        "Category accuracy (majority vote):",
-    ]
-    for cat, diffs in profile.get("category_accuracy", {}).items():
-        parts = [f"{d}={v:.2f}" for d, v in diffs.items()]
-        lines.append(f"  {cat}: {', '.join(parts)}")
+    """Format capability profile for prompt."""
+    lines = []
+    lines.append(f"Overall pass rate: {profile.get('overall_pass_at_1', 0):.1%}")
+
+    cat_acc = profile.get("category_accuracy", {})
+    if cat_acc:
+        lines.append("Category accuracy:")
+        for cat, diffs in cat_acc.items():
+            if isinstance(diffs, dict):
+                for diff, acc in diffs.items():
+                    lines.append(f"  {cat}/{diff}: {acc:.1%}")
+            else:
+                lines.append(f"  {cat}: {diffs:.1%}")
 
     weak = profile.get("weak_categories", [])
     if weak:
-        lines.append(f"\nWeak categories: {', '.join(weak)}")
+        lines.append(f"Weak categories: {', '.join(weak)}")
 
     return "\n".join(lines)
 
 
 def parse_metacot_stages(chain_text: str) -> dict:
-    """Parse a Meta-CoT chain into its 5 stages.
-
-    Returns dict with keys: solve, diagnose, strategize, select, predict,
-    plus extracted fields: confidence, problem_count, predicted_accuracy.
-    """
+    """Parse Meta-CoT chain to extract key information."""
     import re
 
     result = {
         "raw": chain_text,
         "confidence": None,
-        "problem_count": None,
-        "predicted_accuracy": None,
-        "has_l1l2l3": False,
-        "valid": True,
+        "has_pre_assessment": False,
+        "has_epistemic": False,
+        "has_boxed_answer": False,
+        "has_reflection": False,
+        "epistemic_count": 0,
+        "valid": False,
     }
 
+    chain_lower = chain_text.lower()
+
     # Extract confidence
-    conf_match = re.search(r'confidence[:\s]+([0-9]+\.?[0-9]*)', chain_text, re.IGNORECASE)
+    conf_match = re.search(r'(?:confidence|probability)[:\s]+([0-9]+\.?[0-9]*)', chain_text, re.IGNORECASE)
     if conf_match:
         try:
             result["confidence"] = float(conf_match.group(1))
         except ValueError:
             pass
 
-    # Extract problem count from strategize
-    count_match = re.search(r'(\d+)\s*(?:similar\s+)?problems?\s+to\s+(?:practice|study|solve)', chain_text, re.IGNORECASE)
-    if not count_match:
-        count_match = re.search(r'practice\s+(\d+)\s+problems?', chain_text, re.IGNORECASE)
-    if count_match:
-        try:
-            result["problem_count"] = int(count_match.group(1))
-        except ValueError:
-            pass
+    # Check for pre-solve assessment
+    pre_indicators = ["problem category", "probability of solving", "this requires",
+                      "key concepts", "estimated probability", "this is a",
+                      "i get right only", "risk", "before solving"]
+    result["has_pre_assessment"] = any(ind in chain_lower for ind in pre_indicators)
 
-    # Check L1/L2/L3
-    result["has_l1l2l3"] = all(
-        re.search(rf'L{i}', chain_text) for i in [1, 2, 3]
+    # Count epistemic expressions
+    epistemic_phrases = [
+        "wait", "let me verify", "let me check", "is this correct",
+        "i'm not sure", "not confident", "double-check", "let me reconsider",
+        "hmm", "alternatively", "on second thought", "actually",
+        "let me re-examine", "this doesn't seem right", "확인",
+    ]
+    result["epistemic_count"] = sum(1 for phrase in epistemic_phrases if phrase in chain_lower)
+    result["has_epistemic"] = result["epistemic_count"] >= 2
+
+    # Check for boxed answer
+    result["has_boxed_answer"] = "\\boxed" in chain_text
+
+    # Check for post-solve reflection
+    reflection_indicators = ["practice", "study", "improvement", "additional",
+                            "recommend", "next time", "reflection", "verify the answer"]
+    result["has_reflection"] = any(ind in chain_lower for ind in reflection_indicators)
+
+    # Valid = has all three phases
+    result["valid"] = (
+        result["has_pre_assessment"]
+        and result["has_epistemic"]
+        and (result["has_boxed_answer"] or len(chain_text) > 300)
+        and result["has_reflection"]
     )
-
-    # Extract predicted accuracy
-    pred_match = re.search(r'(?:predict|expect|estimate).*?(\d+\.?\d*)\s*%', chain_text, re.IGNORECASE)
-    if not pred_match:
-        pred_match = re.search(r'accuracy.*?(\d+\.?\d*)\s*(?:%|$)', chain_text, re.IGNORECASE)
-    if pred_match:
-        try:
-            val = float(pred_match.group(1))
-            result["predicted_accuracy"] = val / 100 if val > 1 else val
-        except ValueError:
-            pass
-
-    # Validate: chain has meaningful content (at least 200 chars and contains key stages)
-    has_stages = sum(1 for s in ["solve", "diagnose", "strategize", "select", "predict"]
-                     if s in chain_text.lower()) >= 3
-    result["valid"] = len(chain_text) > 200 and has_stages
 
     return result
