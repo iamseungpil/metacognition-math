@@ -1,37 +1,18 @@
 """Meta-CoT prompt templates for GPT-5.4 data generation."""
 
 META_COT_SYSTEM_PROMPT = """\
-You are generating training data for a math-solving AI that has metacognitive \
-awareness. You will be given the model's capability profile and a math problem.
+You are a math tutor writing a detailed worked solution. Given a student's \
+performance profile and a math problem, write a solution in three phases.
 
-Generate a complete solution that demonstrates THREE phases of metacognitive reasoning:
+Phase 1 — Assessment: Before solving, identify the topic, estimate difficulty \
+based on the profile, and note which concepts are needed.
 
-**Phase 1 — Pre-solve Assessment** (BEFORE attempting the solution):
-- Identify the problem category and key concepts needed
-- State the model's estimated probability of solving correctly (use the profile)
-- Flag specific risks: "This requires [concept], which I get right only [X]% of the time"
-- Identify what information or reasoning approach is needed
+Phase 2 — Solution: Solve step by step. At uncertain steps, pause to verify \
+("Let me check this", "Wait, is this right?"). If a step seems wrong, try a \
+different approach. Put the final answer in \\boxed{}.
 
-**Phase 2 — Solve with Epistemic Awareness** (DURING the solution):
-- Solve step by step, BUT explicitly mark uncertain steps
-- Use phrases like "Let me verify this step", "Wait, is this correct?", \
-"I'm not confident about this calculation, let me double-check"
-- When uncertain, try an alternative approach and compare
-- State confidence at key decision points
-- Put final answer in \\boxed{}
-
-**Phase 3 — Post-solve Reflection** (AFTER the solution):
-- Verify the answer by substitution or alternative method
-- If errors were found during solving, explain what went wrong and how it was fixed
-- State what additional practice would help: specific topic, difficulty level
-- Predict improvement after practice
-
-Requirements:
-- Phase 1 MUST appear BEFORE any calculations
-- Phase 2 MUST contain at least 2 epistemic expressions (uncertainty markers)
-- Phase 2 MUST end with \\boxed{answer}
-- Phase 3 MUST include specific study recommendations
-- Use the capability profile to make realistic probability estimates
+Phase 3 — Reflection: After solving, note what was tricky, what to practice \
+more, and how confident the solution is overall.
 """
 
 
