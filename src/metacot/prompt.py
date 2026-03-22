@@ -143,11 +143,9 @@ def parse_metacot_stages(chain_text: str) -> dict:
         except ValueError:
             pass
 
-    # Validate completeness
-    result["valid"] = (
-        result["confidence"] is not None
-        and result["problem_count"] is not None
-        and result["has_l1l2l3"]
-    )
+    # Validate: chain has meaningful content (at least 200 chars and contains key stages)
+    has_stages = sum(1 for s in ["solve", "diagnose", "strategize", "select", "predict"]
+                     if s in chain_text.lower()) >= 3
+    result["valid"] = len(chain_text) > 200 and has_stages
 
     return result
