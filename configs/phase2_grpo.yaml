@@ -6,8 +6,8 @@ output_dir: /scratch/metacognition/checkpoints/phase2_grpo
 
 # GRPO params
 group_size: 4
-max_steps: 50
-learning_rate: 5.0e-6
+max_steps: 200
+learning_rate: 1.0e-5
 max_tokens: 512
 
 # Lambda scheduling
