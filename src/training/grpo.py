@@ -125,8 +125,10 @@ def run_grpo(config_path: str):
             lambda1 = lambda1_start + (lambda1_end - lambda1_start) * progress
             lambda2 = lambda2_start + (lambda2_end - lambda2_start) * progress
 
-            # Generate G rollouts
-            messages = build_chat_messages(question)
+            # Generate G rollouts — use Meta-CoT system prompt so model
+            # produces 5-stage chain (Solve/Diagnose/Strategize/Select/Predict)
+            from src.rollout.vllm_rollout import METACOT_SYSTEM_PROMPT
+            messages = build_chat_messages(question, system_prompt=METACOT_SYSTEM_PROMPT)
             prompt = tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )

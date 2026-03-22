@@ -14,6 +14,13 @@ MATH_SYSTEM_PROMPT = (
     "Please reason step by step, and put your final answer within \\boxed{}."
 )
 
+METACOT_SYSTEM_PROMPT = (
+    "You are a math problem solver with metacognitive awareness. "
+    "For each problem, solve it step by step, then analyze your "
+    "solution quality, plan what to study next, select practice "
+    "problems, and predict your improvement."
+)
+
 
 def build_chat_messages(question: str, system_prompt: str = MATH_SYSTEM_PROMPT):
     return [

@@ -234,7 +234,15 @@ def build_sft_dataset(metacot_path: str, output_path: str):
     full 5-stage Meta-CoT chain (without the correct answer revealed).
     """
     df = pd.read_parquet(metacot_path)
+    # Re-validate with relaxed criteria (3+ stage keywords, >200 chars)
+    def _is_valid(chain):
+        if not chain or len(chain) < 200:
+            return False
+        text = chain.lower()
+        return sum(1 for s in ["solve", "diagnose", "strategize", "select", "predict"] if s in text) >= 3
+    df["chain_valid"] = df["metacot_chain"].apply(_is_valid)
     df = df[df["chain_valid"]]
+    print(f"Valid chains after re-validation: {len(df)}")
 
     sft_data = []
     for _, row in df.iterrows():
