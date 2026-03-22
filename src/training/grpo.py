@@ -137,6 +137,7 @@ def run_grpo(config_path: str):
             rewards = []
             reward_components = []
 
+            # Generate rollouts (no output_scores to save VRAM)
             model.eval()
             with torch.no_grad():
                 for g in range(group_size):
@@ -146,21 +147,12 @@ def run_grpo(config_path: str):
                         do_sample=True,
                         temperature=0.7,
                         top_p=0.95,
-                        return_dict_in_generate=True,
-                        output_scores=True,
+                        pad_token_id=tokenizer.pad_token_id,
                     )
 
-                    gen_ids = output.sequences[0, input_ids.shape[1]:]
+                    gen_ids = output[0, input_ids.shape[1]:]
                     gen_text = tokenizer.decode(gen_ids, skip_special_tokens=True)
                     rollout_texts.append(gen_text)
-
-                    # Compute log probs
-                    scores = torch.stack(output.scores, dim=0)  # (T, 1, V)
-                    log_probs = F.log_softmax(scores, dim=-1)
-                    token_log_probs = log_probs[
-                        range(len(gen_ids)), 0, gen_ids
-                    ]
-                    rollout_log_probs.append(token_log_probs)
 
                     # Compute reward
                     is_correct = check_correctness(gen_text, gold_answer)
@@ -179,6 +171,8 @@ def run_grpo(config_path: str):
                     )
                     rewards.append(r_dict["total"])
                     reward_components.append(r_dict)
+
+                    del output, gen_ids
 
             # GRPO: compute advantages
             advantages = compute_grpo_advantages(rewards, group_size)

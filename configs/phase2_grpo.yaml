@@ -5,10 +5,10 @@ profile_path: /scratch/metacognition/profiles/capability_profile.json
 output_dir: /scratch/metacognition/checkpoints/phase2_grpo
 
 # GRPO params
-group_size: 8
-max_steps: 2000
+group_size: 4
+max_steps: 50
 learning_rate: 5.0e-6
-max_tokens: 2048
+max_tokens: 512
 
 # Lambda scheduling
 lambda1_start: 0.5
