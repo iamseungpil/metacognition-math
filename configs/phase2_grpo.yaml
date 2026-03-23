@@ -14,7 +14,7 @@ lambda1: 0.5    # R_calibration weight
 lambda2: 0.3    # R_progress weight
 
 # Gnosis probe
-probe_path: /scratch/metacognition/checkpoints/simple_probe
+probe_path: /scratch/metacognition/checkpoints/probe_meta_sft
 
 # Checkpointing
 save_every: 100
