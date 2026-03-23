@@ -231,13 +231,9 @@ def run_grpo(config_path: str):
             optimizer.step()
             scheduler.step()
 
-            # Memory cleanup
-            del rollout_full_ids, rollout_meta_positions, rollout_step_rewards
-            torch.cuda.empty_cache()
-
             step += 1
 
-            # Metrics
+            # Metrics (before cleanup)
             avg_reward = np.mean(rollout_totals)
             avg_correct = np.mean([
                 1.0 if check_correctness(t, gold_answer) else 0.0
@@ -246,10 +242,12 @@ def run_grpo(config_path: str):
             avg_meta_blocks = np.mean([
                 len(pos) for pos in rollout_meta_positions
             ])
-
-            # Average step-level metrics
             all_calibs = [sr["r_calib"] for srs in rollout_step_rewards for sr in srs]
             all_progress = [sr["r_progress"] for srs in rollout_step_rewards for sr in srs]
+
+            # Memory cleanup
+            del rollout_full_ids, rollout_meta_positions, rollout_step_rewards
+            torch.cuda.empty_cache()
 
             if step % 10 == 0:
                 metrics = {
