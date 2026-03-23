@@ -1,28 +1,23 @@
-# Phase 2: GRPO with R_meta
-model_path: /scratch/metacognition/checkpoints/phase1_sft
+# Phase 2: Stepwise GRPO with <|meta|> boundaries
+model_path: /scratch/metacognition/checkpoints/meta_sft
 problems_path: /scratch/metacognition/rollouts/rollouts_final.parquet
-profile_path: /scratch/metacognition/profiles/capability_profile.json
-output_dir: /scratch/metacognition/checkpoints/phase2_grpo
+output_dir: /scratch/metacognition/checkpoints/meta_grpo
 
 # GRPO params
 group_size: 4
 max_steps: 200
-learning_rate: 1.0e-5
+learning_rate: 5.0e-6
 max_tokens: 512
 
-# Lambda scheduling
-lambda1_start: 0.5
-lambda1_end: 1.0
-lambda2_start: 0.0
-lambda2_end: 0.5
-lambda_warmup_steps: 1000
+# Stepwise reward weights
+lambda1: 0.5    # R_calibration weight
+lambda2: 0.3    # R_progress weight
 
-# Gnosis
-gnosis_model_path: /scratch/metacognition/checkpoints/simple_probe
-gnosis_retrain_interval: 500
+# Gnosis probe
+probe_path: /scratch/metacognition/checkpoints/simple_probe
 
 # Checkpointing
-save_every: 500
+save_every: 100
 
 wandb_project: metacot-math
-run_name: metacot-grpo-qwen2.5-7b
+run_name: metacot-stepwise-grpo

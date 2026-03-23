@@ -73,10 +73,10 @@ def generate_single_chain(
     is_correct: bool,
     data_pool_summary: str = "",
     model_name: str = "gpt-5.4_2026-03-05",
-    max_retries: int = 3,
+    max_retries: int = 20,
     rollout_pass_rate: float = None,
 ) -> dict:
-    """Generate a single Meta-CoT chain via TRAPI."""
+    """Generate a single Meta-CoT chain via TRAPI. Retries up to 20 times on 429."""
     user_prompt = build_metacot_user_prompt(
         profile=profile,
         question=question,
@@ -89,37 +89,40 @@ def generate_single_chain(
 
     for attempt in range(max_retries):
         try:
-            response = client.chat.completions.create(
+            response = client.responses.create(
                 model=model_name,
-                messages=[
-                    {"role": "system", "content": META_COT_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                max_completion_tokens=2048,
-                temperature=0.7,
+                instructions=META_COT_SYSTEM_PROMPT,
+                input=user_prompt,
             )
-            chain_text = response.choices[0].message.content
+            chain_text = response.output_text
             parsed = parse_meta_blocks(chain_text)
+
+            usage_data = None
+            if hasattr(response, 'usage') and response.usage:
+                usage_data = {
+                    "prompt_tokens": getattr(response.usage, 'input_tokens', 0),
+                    "completion_tokens": getattr(response.usage, 'output_tokens', 0),
+                }
 
             if parsed["valid"]:
                 return {
                     "chain": chain_text,
                     "parsed": parsed,
-                    "usage": {
-                        "prompt_tokens": response.usage.prompt_tokens,
-                        "completion_tokens": response.usage.completion_tokens,
-                    },
+                    "usage": usage_data,
                 }
             elif attempt < max_retries - 1:
                 continue
             else:
-                return {"chain": chain_text, "parsed": parsed, "usage": None}
+                return {"chain": chain_text, "parsed": parsed, "usage": usage_data}
 
         except Exception as e:
             if attempt < max_retries - 1:
-                # TRAPI memory: 429 needs 30s→60s→120s backoff
-                wait = 30 * (2 ** attempt)
-                print(f"Retry {attempt+1} after error: {e}. Waiting {wait}s...")
+                import random
+                # Exponential backoff with jitter to prevent thundering herd
+                base_wait = min(30 * (2 ** attempt), 300)  # cap at 5 min
+                jitter = random.uniform(0, base_wait * 0.5)
+                wait = base_wait + jitter
+                print(f"Retry {attempt+1} after error: {e}. Waiting {wait:.0f}s...")
                 time.sleep(wait)
             else:
                 return {"chain": "", "parsed": {"valid": False}, "error": str(e), "usage": None}
