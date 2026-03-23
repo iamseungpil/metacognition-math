@@ -240,36 +240,26 @@ def build_sft_dataset(metacot_path: str, output_path: str):
 
     sft_data = []
     for _, row in df.iterrows():
-        # SFT format: solution with \boxed{answer} FIRST, then Meta-CoT analysis
-        # This ensures model can still produce extractable answers for eval
-        from src.data.dataset_loader import extract_boxed_answer
-        gold_boxed = extract_boxed_answer(row["gold_answer"])
-        if gold_boxed:
-            answer_line = f"\\boxed{{{gold_boxed}}}"
-        else:
-            answer_line = f"The answer is {row['gold_answer']}"
-
-        # Combine: model's solution attempt + answer + metacognitive analysis
-        assistant_content = (
-            f"{row['model_answer']}\n\n"
-            f"Final Answer: {answer_line}\n\n"
-            f"--- Metacognitive Analysis ---\n"
-            f"{row['metacot_chain']}"
-        )
-
+        # SFT format: Meta-CoT chain IS the full assistant response
+        # It already contains Phase 1 (assessment) → Phase 2 (solve + \boxed{}) → Phase 3 (reflection)
+        # Do NOT prepend model_answer — it would override the metacognitive format
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "You are a math problem solver with metacognitive awareness. "
-                    "For each problem: (1) solve it step by step and put your final "
-                    "answer in \\boxed{{}}, then (2) analyze your solution quality, "
-                    "diagnose errors, plan what to study next, select practice "
-                    "problems, and predict your improvement."
+                    "You are a math tutor writing a detailed worked solution. "
+                    "Given a student's performance profile and a math problem, "
+                    "write a solution in three phases.\n"
+                    "Phase 1 — Assessment: Before solving, identify the topic, "
+                    "estimate difficulty based on the profile, and note which "
+                    "concepts are needed.\n"
+                    "Phase 2 — Solution: Solve step by step. At uncertain steps, "
+                    "pause to verify. Put the final answer in \\boxed{}.\n"
+                    "Phase 3 — Reflection: Note what was tricky, what to practice more."
                 ),
             },
             {"role": "user", "content": row["question"]},
-            {"role": "assistant", "content": assistant_content},
+            {"role": "assistant", "content": row["metacot_chain"]},
         ]
         sft_data.append({
             "messages": json.dumps(messages),
