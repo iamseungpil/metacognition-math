@@ -17,9 +17,9 @@ def prepare_sft_dataset(data_path: str, tokenizer, max_length: int = 4096) -> Da
     def tokenize_row(row):
         messages = json.loads(row["messages"])
 
-        # Use chat_template's built-in tokenization for consistency
-        # Tokenize prompt (system + user + generation prompt) to find boundary
-        prompt_messages = messages[:2]  # system + user
+        # Tokenize prompt (all messages except the last assistant) to find boundary
+        # Messages can be [user, assistant] or [system, user, assistant]
+        prompt_messages = messages[:-1]  # everything except assistant response
         prompt_ids = tokenizer.apply_chat_template(
             prompt_messages, tokenize=True, add_generation_prompt=True
         )
