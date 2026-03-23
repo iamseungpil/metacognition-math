@@ -30,8 +30,8 @@ def prepare_sft_dataset(data_path: str, tokenizer) -> Dataset:
             messages, tokenize=True, add_generation_prompt=False
         )
 
-        # Truncate to max_length
-        max_len = 4096
+        # Truncate to max_length (2048 to prevent OOM with long Meta-CoT chains)
+        max_len = 2048
         if len(full_ids) > max_len:
             full_ids = full_ids[:max_len]
 
