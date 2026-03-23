@@ -10,7 +10,7 @@ from datasets import Dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 
-def prepare_sft_dataset(data_path: str, tokenizer) -> Dataset:
+def prepare_sft_dataset(data_path: str, tokenizer, max_length: int = 4096) -> Dataset:
     """Load and tokenize Meta-CoT SFT data."""
     df = pd.read_parquet(data_path)
 
@@ -30,8 +30,7 @@ def prepare_sft_dataset(data_path: str, tokenizer) -> Dataset:
             messages, tokenize=True, add_generation_prompt=False
         )
 
-        # Truncate to max_length (2048 to prevent OOM with long Meta-CoT chains)
-        max_len = 2048
+        max_len = max_length
         if len(full_ids) > max_len:
             full_ids = full_ids[:max_len]
 
@@ -76,7 +75,7 @@ def run_sft(config_path: str):
         use_cache=False,
     )
 
-    full_dataset = prepare_sft_dataset(data_path, tokenizer)
+    full_dataset = prepare_sft_dataset(data_path, tokenizer, max_length=config.get("max_length", 4096))
     split = full_dataset.train_test_split(test_size=0.05, seed=42)
     train_dataset = split["train"]
     eval_dataset = split["test"]
