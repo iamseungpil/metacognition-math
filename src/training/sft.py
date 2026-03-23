@@ -16,25 +16,36 @@ def prepare_sft_dataset(data_path: str, tokenizer) -> Dataset:
 
     def tokenize_row(row):
         messages = json.loads(row["messages"])
-        # Tokenize prompt (system + user) to find its length for label masking
-        prompt_messages = messages[:2]  # system + user
-        prompt_text = tokenizer.apply_chat_template(
-            prompt_messages, tokenize=False, add_generation_prompt=True
-        )
-        prompt_len = len(tokenizer(prompt_text, add_special_tokens=False)["input_ids"])
 
-        full_text = tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=False
+        # Use chat_template's built-in tokenization for consistency
+        # Tokenize prompt (system + user + generation prompt) to find boundary
+        prompt_messages = messages[:2]  # system + user
+        prompt_ids = tokenizer.apply_chat_template(
+            prompt_messages, tokenize=True, add_generation_prompt=True
         )
-        encoded = tokenizer(
-            full_text, truncation=True, max_length=4096, return_tensors=None
+        prompt_len = len(prompt_ids)
+
+        # Tokenize full conversation (system + user + assistant)
+        full_ids = tokenizer.apply_chat_template(
+            messages, tokenize=True, add_generation_prompt=False
         )
+
+        # Truncate to max_length
+        max_len = 4096
+        if len(full_ids) > max_len:
+            full_ids = full_ids[:max_len]
+
         # Mask prompt tokens with -100 so model only learns assistant output
-        labels = encoded["input_ids"].copy()
+        labels = full_ids.copy()
         for i in range(min(prompt_len, len(labels))):
             labels[i] = -100
-        encoded["labels"] = labels
-        return encoded
+
+        attention_mask = [1] * len(full_ids)
+        return {
+            "input_ids": full_ids,
+            "attention_mask": attention_mask,
+            "labels": labels,
+        }
 
     ds = Dataset.from_pandas(df)
     ds = ds.map(tokenize_row, remove_columns=df.columns.tolist())
