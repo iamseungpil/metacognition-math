@@ -10,7 +10,7 @@ import yaml
 from src.metacot.prompt import (
     META_COT_SYSTEM_PROMPT,
     build_metacot_user_prompt,
-    parse_metacot_stages,
+    parse_meta_blocks,
 )
 
 
@@ -74,6 +74,7 @@ def generate_single_chain(
     data_pool_summary: str = "",
     model_name: str = "gpt-5.4_2026-03-05",
     max_retries: int = 3,
+    rollout_pass_rate: float = None,
 ) -> dict:
     """Generate a single Meta-CoT chain via TRAPI."""
     user_prompt = build_metacot_user_prompt(
@@ -83,6 +84,7 @@ def generate_single_chain(
         correct_answer=correct_answer,
         is_correct=is_correct,
         data_pool_summary=data_pool_summary,
+        rollout_pass_rate=rollout_pass_rate,
     )
 
     for attempt in range(max_retries):
@@ -97,7 +99,7 @@ def generate_single_chain(
                 temperature=0.7,
             )
             chain_text = response.choices[0].message.content
-            parsed = parse_metacot_stages(chain_text)
+            parsed = parse_meta_blocks(chain_text)
 
             if parsed["valid"]:
                 return {
@@ -157,6 +159,9 @@ def generate_metacot_dataset(config_path: str):
     selected = pd.concat([correct, incorrect]).sample(frac=1, random_state=42)
     print(f"Generating {len(selected)} Meta-CoT chains ({len(correct)} correct, {len(incorrect)} incorrect)")
 
+    # Compute per-problem pass rates for rollout-based probability
+    pass_rates = df.groupby("problem_id")["is_correct"].mean().to_dict()
+
     client = get_trapi_client()
     concurrent = config.get("concurrent_requests", 20)
     results = []
@@ -175,6 +180,7 @@ def generate_metacot_dataset(config_path: str):
             correct_answer=row["gold_answer"],
             is_correct=row["is_correct"],
             model_name=model_name,
+            rollout_pass_rate=pass_rates.get(row["problem_id"], 0.5),
         )
         return i, row, result
 
@@ -228,36 +234,16 @@ def _save_results(results: list, output_dir: Path, tag: str):
 
 
 def build_sft_dataset(metacot_path: str, output_path: str):
-    """Convert Meta-CoT chains to SFT training format.
-
-    Each training example: user asks the problem, assistant outputs the
-    full 5-stage Meta-CoT chain (without the correct answer revealed).
-    """
+    """Convert Meta-CoT chains to SFT training format with <|meta|> tokens."""
     df = pd.read_parquet(metacot_path)
-    # Use existing chain_valid from generation, no re-validation
     df = df[df["chain_valid"]]
     print(f"Valid chains: {len(df)}")
 
     sft_data = []
     for _, row in df.iterrows():
-        # SFT format: Meta-CoT chain IS the full assistant response
-        # It already contains Phase 1 (assessment) → Phase 2 (solve + \boxed{}) → Phase 3 (reflection)
-        # Do NOT prepend model_answer — it would override the metacognitive format
+        # No system prompt — model should naturally produce <|meta|> blocks
+        # when given any math problem
         messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a math tutor writing a detailed worked solution. "
-                    "Given a student's performance profile and a math problem, "
-                    "write a solution in three phases.\n"
-                    "Phase 1 — Assessment: Before solving, identify the topic, "
-                    "estimate difficulty based on the profile, and note which "
-                    "concepts are needed.\n"
-                    "Phase 2 — Solution: Solve step by step. At uncertain steps, "
-                    "pause to verify. Put the final answer in \\boxed{}.\n"
-                    "Phase 3 — Reflection: Note what was tricky, what to practice more."
-                ),
-            },
             {"role": "user", "content": row["question"]},
             {"role": "assistant", "content": row["metacot_chain"]},
         ]

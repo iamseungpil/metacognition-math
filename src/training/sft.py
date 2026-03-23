@@ -68,12 +68,22 @@ def run_sft(config_path: str):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    # Add <|meta|> special tokens for metacognitive blocks
+    from src.metacot.prompt import META_START, META_END
+    num_added = tokenizer.add_special_tokens({
+        "additional_special_tokens": [META_START, META_END]
+    })
+    print(f"Added {num_added} special tokens: {META_START}, {META_END}")
+
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=torch.bfloat16,
         trust_remote_code=True,
         use_cache=False,
     )
+    if num_added > 0:
+        model.resize_token_embeddings(len(tokenizer))
+        print(f"Resized embeddings to {len(tokenizer)}")
 
     full_dataset = prepare_sft_dataset(data_path, tokenizer, max_length=config.get("max_length", 4096))
     split = full_dataset.train_test_split(test_size=0.05, seed=42)
