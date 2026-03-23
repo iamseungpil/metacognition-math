@@ -129,16 +129,18 @@ def parse_meta_blocks(text: str) -> dict:
     for i, block in enumerate(blocks):
         block_lower = block.lower()
 
-        # Extract confidence values
+        # Extract confidence values (0.XX or XX% after probability/confidence keyword)
         conf_matches = re.findall(
-            r'(?:probability|confidence)[:\s]+([0-9]+\.?[0-9]*)',
+            r'(?:probability|confidence)[:\s]+([0-9]+\.?[0-9]*)\s*%?',
             block, re.IGNORECASE
         )
         for m in conf_matches:
             val = float(m)
             if val > 1.0:
                 val /= 100.0
-            result["confidences"].append(min(1.0, max(0.0, val)))
+            val = min(1.0, max(0.0, val))
+            if val > 0.001:  # skip near-zero (likely parsing artifacts)
+                result["confidences"].append(val)
 
         # Classify block position
         if any(kw in block_lower for kw in ["can i solve", "probability of solving", "watch out"]):

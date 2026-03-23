@@ -119,7 +119,7 @@ def generate_single_chain(
             if attempt < max_retries - 1:
                 import random
                 # Exponential backoff with jitter to prevent thundering herd
-                base_wait = min(30 * (2 ** attempt), 300)  # cap at 5 min
+                base_wait = min(5 * (2 ** attempt), 120)  # start 5s, cap at 2 min
                 jitter = random.uniform(0, base_wait * 0.5)
                 wait = base_wait + jitter
                 print(f"Retry {attempt+1} after error: {e}. Waiting {wait:.0f}s...")
@@ -204,9 +204,9 @@ def generate_metacot_dataset(config_path: str):
                 "category": row["category"],
                 "difficulty": row["difficulty"],
                 "metacot_chain": result["chain"],
-                "confidence": result["parsed"].get("confidence"),
-                "problem_count": result["parsed"].get("problem_count"),
-                "has_l1l2l3": result["parsed"].get("has_l1l2l3", False),
+                "confidences": result["parsed"].get("confidences", []),
+                "num_meta_blocks": result["parsed"].get("num_blocks", 0),
+                "has_pre_assessment": result["parsed"].get("has_pre_assessment", False),
                 "chain_valid": result["parsed"].get("valid", False),
             })
 

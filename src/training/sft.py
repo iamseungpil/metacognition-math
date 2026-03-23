@@ -60,7 +60,6 @@ def run_sft(config_path: str):
     data_path = config["dataset_path"]
     output_dir = config["output_dir"]
     # Let HuggingFace Trainer handle wandb init via report_to="wandb"
-    import os
     os.environ["WANDB_PROJECT"] = config.get("wandb_project", "metacot-math")
     os.environ["WANDB_NAME"] = config.get("run_name", "metacot-sft")
 
@@ -121,7 +120,7 @@ def run_sft(config_path: str):
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         data_collator=data_collator,
-        processing_class=tokenizer,
+        tokenizer=tokenizer,
     )
 
     trainer.train()

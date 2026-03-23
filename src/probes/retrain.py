@@ -15,9 +15,7 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from src.metacot.prompt import META_START, META_END
-from src.training.stepwise import find_meta_token_positions
 from src.probes.simple_probe import SimpleCorrectnessProbe, train_simple_probe
-from src.rollout.vllm_rollout import build_chat_messages, check_correctness
 
 
 def extract_hidden_states_from_sft_model(

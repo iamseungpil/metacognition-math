@@ -12,7 +12,7 @@ import wandb
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from src.metacot.prompt import META_START, META_END, parse_meta_blocks
+from src.metacot.prompt import META_START, META_END
 from src.training.stepwise import (
     find_meta_token_positions,
     get_hidden_states_at_meta,
@@ -105,7 +105,11 @@ def run_grpo(config_path: str):
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_steps)
 
     # Load probe
-    probe = _load_probe(config.get("probe_path"), device="cuda")
+    probe = _load_probe(
+        config.get("probe_path"),
+        hidden_dim=config.get("hidden_dim", 3584),
+        device="cuda",
+    )
 
     # Load problems
     dataset = MathProblemDataset(problems_path)
@@ -123,8 +127,12 @@ def run_grpo(config_path: str):
             question = batch["question"][0]
             gold_answer = batch["gold_answer"][0]
 
-            # Build prompt (no system prompt — model should naturally use <|meta|>)
-            prompt_ids = tokenizer.encode(question, return_tensors="pt").cuda()
+            # Use chat template to match SFT training format
+            messages = [{"role": "user", "content": question}]
+            prompt_ids = tokenizer.apply_chat_template(
+                messages, tokenize=True, add_generation_prompt=True,
+                return_tensors="pt",
+            ).cuda()
             prompt_len = prompt_ids.shape[1]
 
             # Generate G rollouts
@@ -154,8 +162,15 @@ def run_grpo(config_path: str):
                     # Find <|meta|> positions
                     meta_positions = find_meta_token_positions(full_ids, tokenizer)
                     rollout_meta_positions.append(meta_positions)
+                    del output
 
-                    # Get Gnosis scores at each meta position
+                # Get Gnosis scores separately (outside generate loop to save memory)
+                for g in range(group_size):
+                    full_ids = rollout_full_ids[g]
+                    meta_positions = rollout_meta_positions[g]
+                    gen_text = tokenizer.decode(full_ids[prompt_len:], skip_special_tokens=False)
+                    clean_text = rollout_texts[g]
+
                     if probe is not None and meta_positions:
                         hidden_states = get_hidden_states_at_meta(
                             model, full_ids.unsqueeze(0),
@@ -163,23 +178,21 @@ def run_grpo(config_path: str):
                             meta_positions,
                         )
                         gnosis_scores = compute_gnosis_scores(probe, hidden_states)
+                        del hidden_states
                     else:
                         gnosis_scores = [0.5] * max(len(meta_positions), 1)
 
-                    # Compute step-level rewards
                     is_correct = check_correctness(clean_text, gold_answer)
-                    step_rewards = compute_stepwise_rewards(
+                    srs = compute_stepwise_rewards(
                         gen_text, is_correct, gnosis_scores,
                         lambda1=lambda1, lambda2=lambda2,
                     )
-                    rollout_step_rewards.append(step_rewards)
-
-                    del output
+                    rollout_step_rewards.append(srs)
 
             # Compute per-rollout total reward for GRPO advantage
             rollout_totals = [
-                sum(sr["total"] for sr in step_rewards)
-                for step_rewards in rollout_step_rewards
+                sum(sr["total"] for sr in srs)
+                for srs in rollout_step_rewards
             ]
             advantages = compute_grpo_advantages(rollout_totals, group_size)
 
@@ -187,15 +200,16 @@ def run_grpo(config_path: str):
             model.train()
             optimizer.zero_grad()
             total_loss_val = 0.0
+            n_contributing = sum(1 for a in advantages if abs(a) >= 1e-8)
 
             for g in range(group_size):
                 adv = advantages[g]
                 if abs(adv) < 1e-8:
                     continue
 
-                full_ids = rollout_full_ids[g].unsqueeze(0)
-                attention_mask = torch.ones_like(full_ids)
-                meta_positions = rollout_meta_positions[g]
+                g_full_ids = rollout_full_ids[g].unsqueeze(0)
+                g_attention_mask = torch.ones_like(g_full_ids)
+                g_meta_positions = rollout_meta_positions[g]
 
                 # Scale step rewards by GRPO advantage
                 scaled_rewards = [
@@ -204,18 +218,22 @@ def run_grpo(config_path: str):
                 ]
 
                 loss = compute_step_level_loss(
-                    model, full_ids, attention_mask,
-                    meta_positions, scaled_rewards, prompt_len,
+                    model, g_full_ids, g_attention_mask,
+                    g_meta_positions, scaled_rewards, prompt_len,
                 )
-                loss = loss / group_size
+                loss = loss / max(n_contributing, 1)
                 loss.backward()
                 total_loss_val += loss.item()
 
-                del full_ids, attention_mask
+                del g_full_ids, g_attention_mask
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             scheduler.step()
+
+            # Memory cleanup
+            del rollout_full_ids, rollout_meta_positions, rollout_step_rewards
+            torch.cuda.empty_cache()
 
             step += 1
 
