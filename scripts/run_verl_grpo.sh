@@ -12,9 +12,7 @@ export WANDB_API_KEY=2f4e627868f1f9dad10bcb1a14fbf96817e6baa9
 echo "=== Preparing verl training data ==="
 python << 'PYEOF'
 import pandas as pd
-import json
 
-# Convert rollouts to verl format
 df = pd.read_parquet("rollouts/rollouts_final.parquet")
 problems = df.drop_duplicates("problem_id")
 
@@ -34,12 +32,41 @@ val_df.to_parquet("verl_val.parquet", index=False)
 print(f"Train: {len(train_df)}, Val: {len(val_df)}")
 PYEOF
 
+echo "=== Registering custom reward function ==="
+# verl uses data_source to route to reward functions
+# We register "metacot_math" as our custom scorer
+python << 'PYEOF'
+# Patch verl's reward registry to include our custom reward
+import verl.utils.reward_score as rs
+import importlib
+import sys
+
+# Our custom reward
+sys.path.insert(0, "/scratch/metacognition")
+from src.training.verl_reward import compute_score
+
+# Register for "metacot_math" data_source
+original_fn = rs.default_compute_score
+
+def patched_compute_score(data_source, solution_str, ground_truth, extra_info=None, **kwargs):
+    if data_source == "metacot_math":
+        return compute_score(data_source, solution_str, ground_truth, extra_info, **kwargs)
+    return original_fn(data_source, solution_str, ground_truth, extra_info, **kwargs)
+
+rs.default_compute_score = patched_compute_score
+print("Custom reward registered for metacot_math")
+
+# Save the patched module path for verl to use
+import pickle
+with open("/tmp/verl_reward_patch.pkl", "wb") as f:
+    pickle.dump(patched_compute_score, f)
+PYEOF
+
 echo "=== Starting verl GRPO (4 GPU) ==="
 python -m agentlightning.verl \
     algorithm.adv_estimator=grpo \
     data.train_files=verl_train.parquet \
     data.val_files=verl_val.parquet \
-    data.custom_reward_function=src.training.verl_reward.compute_score \
     actor_rollout_ref.model.path=checkpoints/meta_sft \
     trainer.n_gpus_per_node=4 \
     data.train_batch_size=32 \
