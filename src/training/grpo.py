@@ -165,15 +165,20 @@ def run_grpo(config_path: str):
                     meta_positions = find_meta_token_positions(full_ids, tokenizer)
                     num_meta = len(meta_positions)
 
-                    # Gnosis scores at each <|meta|> position
-                    if probe is not None and meta_positions:
-                        hidden_states = get_hidden_states_at_meta(
-                            model, full_ids.unsqueeze(0),
-                            torch.ones_like(full_ids).unsqueeze(0),
-                            meta_positions,
-                        )
-                        gnosis_scores = compute_gnosis_scores(probe, hidden_states)
-                        del hidden_states
+                    # Gnosis: compute p̂ from full sequence (probe was trained this way)
+                    if probe is not None:
+                        with torch.no_grad():
+                            outputs = model(
+                                full_ids.unsqueeze(0),
+                                attention_mask=torch.ones_like(full_ids).unsqueeze(0),
+                                output_hidden_states=True,
+                            )
+                            last_hidden = outputs.hidden_states[-1]  # (1, S, D)
+                            p_hat = probe(last_hidden.float()).item()
+                            del outputs, last_hidden
+                            torch.cuda.empty_cache()
+                        # Use same p̂ for all steps (full-sequence prediction)
+                        gnosis_scores = [p_hat] * max(num_meta, 1)
                     else:
                         gnosis_scores = [0.5] * max(num_meta, 1)
 
