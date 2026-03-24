@@ -98,10 +98,10 @@ def run_grpo(config_path: str):
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
-        device_map="auto",  # Spread across all GPUs
         trust_remote_code=True,
         use_cache=False,
-    )
+    ).cuda()
+    model.gradient_checkpointing_enable()  # Save VRAM for long sequences
     if num_added > 0:
         model.resize_token_embeddings(len(tokenizer))
 
@@ -135,7 +135,7 @@ def run_grpo(config_path: str):
             prompt_ids = tokenizer.apply_chat_template(
                 messages, tokenize=True, add_generation_prompt=True,
                 return_tensors="pt",
-            ).to(model.device if hasattr(model, 'device') else "cuda:0")
+            ).cuda()
             prompt_len = prompt_ids.shape[1]
 
             # Generate G rollouts
