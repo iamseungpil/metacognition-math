@@ -1,125 +1,83 @@
-"""Metacognitive reward functions for GRPO training.
+"""Metacognitive reward functions for stepwise GRPO.
 
-Reward components:
-- R_correct: Did the model solve the problem?
-- R_calibration: Does the model's stated confidence match probe's p̂?
-- R_epistemic: When the model expresses uncertainty + changes approach, does it help?
+Three rewards:
+- R_correct: strong reward for solving the problem (+2.0)
+- R_calib: per-step calibration (model confidence vs probe p̂)
+- R_penalty: penalty for not using <|meta|> self-reflection
 """
 import re
 from typing import Optional
 
 
 def compute_r_correct(is_correct: bool) -> float:
-    return 1.0 if is_correct else 0.0
+    """Strong reward for correct answer."""
+    return 2.0 if is_correct else 0.0
 
 
-def compute_r_calibration(c_text: Optional[float], p_hat: float) -> float:
-    """How accurately does the model know its own ability?
-
-    c_text: model's self-stated confidence (from generated text)
-    p_hat: probe's prediction from hidden states (ground truth)
-    """
+def compute_r_calib(c_text: Optional[float], p_hat: float) -> float:
+    """Per-step calibration: how well model's stated confidence matches probe."""
     if c_text is None:
         return 0.0
     return max(0.0, 1.0 - abs(c_text - p_hat))
 
 
-def compute_r_epistemic(chain_text: str, is_correct: bool) -> float:
-    """Does self-correction behavior actually help?
-
-    Rewards:
-    - Model expresses uncertainty + changes approach + correct → 1.0
-    - Model expresses uncertainty + changes approach + wrong → 0.2
-    - Model expresses uncertainty but doesn't change approach → 0.0
-    - No uncertainty expression → 0.0
-    """
-    text_lower = chain_text.lower()
-
-    # Detect epistemic expressions (uncertainty markers)
-    epistemic_phrases = [
-        "wait", "let me verify", "let me check", "is this correct",
-        "i'm not sure", "not confident", "double-check", "let me reconsider",
-        "hmm", "on second thought", "actually", "let me re-examine",
-        "this doesn't seem right",
-    ]
-    has_epistemic = any(p in text_lower for p in epistemic_phrases)
-    if not has_epistemic:
+def compute_r_penalty(num_meta_blocks: int) -> float:
+    """Penalty for not using <|meta|> self-reflection."""
+    if num_meta_blocks >= 2:
         return 0.0
-
-    # Detect approach change (model actually redirected reasoning)
-    redirect_phrases = [
-        "alternatively", "instead", "let me try", "different approach",
-        "another way", "let me redo", "starting over", "reconsider",
-        "better approach", "try again",
-    ]
-    has_redirect = any(p in text_lower for p in redirect_phrases)
-    if not has_redirect:
-        return 0.0
-
-    return 1.0 if is_correct else 0.2
-
-
-def extract_confidence_from_chain(chain_text: str) -> Optional[float]:
-    """Extract numeric confidence from model's output."""
-    patterns = [
-        r'confidence[:\s]+([0-9]+\.?[0-9]*)',
-        r'probability[:\s]+([0-9]+\.?[0-9]*)\s*%?',
-        r'([0-9]+\.?[0-9]*)\s*%\s*(?:confidence|chance|probability)',
-        r'estimated.*?([0-9]+\.?[0-9]*)\s*%',
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, chain_text, re.IGNORECASE)
-        if match:
-            val = float(match.group(1))
-            if val > 1.0:
-                val = val / 100.0  # Convert percentage
-            return max(0.0, min(1.0, val))
-    return None
+    elif num_meta_blocks == 1:
+        return -0.3
+    else:
+        return -0.5
 
 
 def compute_reward(
     is_correct: bool,
     chain_text: str,
-    c_text: Optional[float],
-    p_hat: float,
-    reward_mode: str = "RL-B",
-    lambda1: float = 0.5,
-    lambda2: float = 0.3,
+    gnosis_scores: list,
+    model_confidences: list,
+    num_meta_blocks: int,
+    lambda_calib: float = 1.0,
 ) -> dict:
-    """Compute reward based on experiment mode.
+    """Compute total reward with all 3 components.
 
-    Modes:
-    - RL-A: R_correct only
-    - RL-B: R_correct + λ₁·R_calibration
-    - RL-C: R_correct + λ₁·R_calibration + λ₂·R_epistemic
-    - RL-D: R_calibration only
+    Total = R_correct + λ · mean(R_calib_per_step) + R_penalty
     """
     r_correct = compute_r_correct(is_correct)
-    r_calib = compute_r_calibration(c_text, p_hat)
-    r_epistemic = compute_r_epistemic(chain_text, is_correct)
+    r_penalty = compute_r_penalty(num_meta_blocks)
 
-    if reward_mode == "RL-A":
-        total = r_correct
-    elif reward_mode == "RL-B":
-        total = r_correct + lambda1 * r_calib
-    elif reward_mode == "RL-C":
-        total = r_correct + lambda1 * r_calib + lambda2 * r_epistemic
-    elif reward_mode == "RL-D":
-        total = r_calib
-    else:
-        total = r_correct + lambda1 * r_calib
+    # Per-step calibration (average across all meta steps)
+    step_calibs = []
+    n_steps = max(len(gnosis_scores), len(model_confidences))
+    for k in range(n_steps):
+        p_hat = gnosis_scores[k] if k < len(gnosis_scores) else 0.5
+        c_text = model_confidences[k] if k < len(model_confidences) else None
+        step_calibs.append(compute_r_calib(c_text, p_hat))
+
+    avg_calib = sum(step_calibs) / max(len(step_calibs), 1) if step_calibs else 0.0
+
+    total = r_correct + lambda_calib * avg_calib + r_penalty
 
     return {
         "total": total,
         "r_correct": r_correct,
-        "r_calib": r_calib,
-        "r_epistemic": r_epistemic,
-        "reward_mode": reward_mode,
+        "r_calib_avg": avg_calib,
+        "r_calib_per_step": step_calibs,
+        "r_penalty": r_penalty,
+        "num_meta_blocks": num_meta_blocks,
     }
 
 
-def compute_grpo_advantages(rewards: list, group_size: int = 8) -> list:
-    """Compute GRPO normalized advantages within a group."""
+def extract_confidence_from_chain(chain_text: str) -> Optional[float]:
+    """Extract numeric confidence from model output."""
+    from src.metacot.prompt import parse_meta_blocks
+    parsed = parse_meta_blocks(chain_text)
+    confs = parsed.get("confidences", [])
+    return confs[0] if confs else None
+
+
+def compute_grpo_advantages(rewards: list) -> list:
+    """GRPO normalized advantages within a group."""
     if len(rewards) < 2:
         return [0.0] * len(rewards)
     mean_r = sum(rewards) / len(rewards)

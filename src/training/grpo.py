@@ -1,4 +1,14 @@
-"""Stepwise GRPO training with <|meta|> boundaries and Gnosis probe."""
+"""Stepwise GRPO with Agent Lightning pattern + Gnosis probe.
+
+Key features:
+- <|meta|> boundaries define steps (Agent Lightning credit assignment)
+- 3 rewards: R_correct(+2), R_calib(λ=1.0), R_penalty(no meta → -0.5)
+- Gnosis probe at each <|meta|> position for p̂
+- device_map="auto" for 4-GPU utilization
+- max_tokens=2048 for full meta reasoning
+- Probe auto-retrain every 200 steps if AUROC drops
+- Comprehensive wandb logging of gnosis metrics
+"""
 import json
 import time
 from pathlib import Path
@@ -12,15 +22,14 @@ import wandb
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from src.metacot.prompt import META_START, META_END
+from src.metacot.prompt import META_START, META_END, parse_meta_blocks
 from src.training.stepwise import (
     find_meta_token_positions,
     get_hidden_states_at_meta,
     compute_gnosis_scores,
-    compute_stepwise_rewards,
     compute_step_level_loss,
 )
-from src.training.rewards import compute_grpo_advantages
+from src.training.rewards import compute_reward, compute_grpo_advantages
 from src.rollout.vllm_rollout import check_correctness
 from src.probes.simple_probe import SimpleCorrectnessProbe
 
@@ -44,21 +53,18 @@ class MathProblemDataset(Dataset):
 
 
 def _load_probe(probe_path: str, hidden_dim: int = 3584, device: str = "cuda"):
-    """Load trained Gnosis/SimpleProbe."""
     if not probe_path or not Path(probe_path).exists():
-        print("No probe found, using p_hat=0.5 for all steps")
+        print("No probe found, using p_hat=0.5 for all steps", flush=True)
         return None
-
     probe = SimpleCorrectnessProbe(hidden_dim=hidden_dim)
     state = torch.load(Path(probe_path) / "best_probe.pt", map_location="cpu", weights_only=True)
     probe.load_state_dict(state)
-    probe.to(device).to(torch.bfloat16).eval()  # Match model dtype
-    print(f"Probe loaded from {probe_path}")
+    probe.to(device).to(torch.bfloat16).eval()
+    print(f"Probe loaded from {probe_path}", flush=True)
     return probe
 
 
 def run_grpo(config_path: str):
-    """Run stepwise GRPO with <|meta|> boundaries."""
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
@@ -68,11 +74,10 @@ def run_grpo(config_path: str):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     group_size = config.get("group_size", 4)
-    max_steps = config.get("max_steps", 200)
+    max_steps = config.get("max_steps", 1000)
     lr = config.get("learning_rate", 5e-6)
-    max_tokens = config.get("max_tokens", 512)
-    lambda1 = config.get("lambda1", 0.5)
-    lambda2 = config.get("lambda2", 0.3)
+    max_tokens = config.get("max_tokens", 2048)
+    lambda_calib = config.get("lambda_calib", 1.0)
 
     wandb.init(
         project=config.get("wandb_project", "metacot-math"),
@@ -81,12 +86,11 @@ def run_grpo(config_path: str):
         reinit=True,
     )
 
-    # Load model + tokenizer with special tokens
+    # Load model with device_map="auto" for 4-GPU
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Ensure <|meta|> tokens are in tokenizer
     num_added = tokenizer.add_special_tokens({
         "additional_special_tokens": [META_START, META_END]
     })
@@ -94,10 +98,10 @@ def run_grpo(config_path: str):
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
+        device_map="auto",  # Spread across all GPUs
         trust_remote_code=True,
         use_cache=False,
-    ).cuda()
-
+    )
     if num_added > 0:
         model.resize_token_embeddings(len(tokenizer))
 
@@ -111,7 +115,6 @@ def run_grpo(config_path: str):
         device="cuda",
     )
 
-    # Load problems
     dataset = MathProblemDataset(problems_path)
     dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
 
@@ -127,19 +130,19 @@ def run_grpo(config_path: str):
             question = batch["question"][0]
             gold_answer = batch["gold_answer"][0]
 
-            # Use chat template to match SFT training format
+            # Chat template for consistent format with SFT
             messages = [{"role": "user", "content": question}]
             prompt_ids = tokenizer.apply_chat_template(
                 messages, tokenize=True, add_generation_prompt=True,
                 return_tensors="pt",
-            ).cuda()
+            ).to(model.device if hasattr(model, 'device') else "cuda:0")
             prompt_len = prompt_ids.shape[1]
 
             # Generate G rollouts
             rollout_texts = []
             rollout_full_ids = []
-            rollout_meta_positions = []
-            rollout_step_rewards = []
+            rollout_rewards = []
+            rollout_meta_info = []
 
             model.eval()
             with torch.no_grad():
@@ -159,18 +162,10 @@ def run_grpo(config_path: str):
                     rollout_texts.append(clean_text)
                     rollout_full_ids.append(full_ids)
 
-                    # Find <|meta|> positions
                     meta_positions = find_meta_token_positions(full_ids, tokenizer)
-                    rollout_meta_positions.append(meta_positions)
-                    del output
+                    num_meta = len(meta_positions)
 
-                # Get Gnosis scores separately (outside generate loop to save memory)
-                for g in range(group_size):
-                    full_ids = rollout_full_ids[g]
-                    meta_positions = rollout_meta_positions[g]
-                    gen_text = tokenizer.decode(full_ids[prompt_len:], skip_special_tokens=False)
-                    clean_text = rollout_texts[g]
-
+                    # Gnosis scores at each <|meta|> position
                     if probe is not None and meta_positions:
                         hidden_states = get_hidden_states_at_meta(
                             model, full_ids.unsqueeze(0),
@@ -180,23 +175,37 @@ def run_grpo(config_path: str):
                         gnosis_scores = compute_gnosis_scores(probe, hidden_states)
                         del hidden_states
                     else:
-                        gnosis_scores = [0.5] * max(len(meta_positions), 1)
+                        gnosis_scores = [0.5] * max(num_meta, 1)
 
+                    # Parse model confidences from <|meta|> blocks
+                    parsed = parse_meta_blocks(gen_text)
+                    model_confs = parsed["confidences"]
+
+                    # Compute reward
                     is_correct = check_correctness(clean_text, gold_answer)
-                    srs = compute_stepwise_rewards(
-                        gen_text, is_correct, gnosis_scores,
-                        lambda1=lambda1, lambda2=lambda2,
+                    reward_dict = compute_reward(
+                        is_correct=is_correct,
+                        chain_text=gen_text,
+                        gnosis_scores=gnosis_scores,
+                        model_confidences=model_confs,
+                        num_meta_blocks=num_meta,
+                        lambda_calib=lambda_calib,
                     )
-                    rollout_step_rewards.append(srs)
+                    rollout_rewards.append(reward_dict)
+                    rollout_meta_info.append({
+                        "num_meta": num_meta,
+                        "gnosis_scores": gnosis_scores,
+                        "model_confs": model_confs,
+                        "is_correct": is_correct,
+                        "meta_positions": meta_positions,
+                    })
+                    del output
 
-            # Compute per-rollout total reward for GRPO advantage
-            rollout_totals = [
-                sum(sr["total"] for sr in srs)
-                for srs in rollout_step_rewards
-            ]
-            advantages = compute_grpo_advantages(rollout_totals, group_size)
+            # GRPO advantages
+            totals = [r["total"] for r in rollout_rewards]
+            advantages = compute_grpo_advantages(totals)
 
-            # Policy gradient with step-level rewards
+            # Policy gradient
             model.train()
             optimizer.zero_grad()
             total_loss_val = 0.0
@@ -207,25 +216,30 @@ def run_grpo(config_path: str):
                 if abs(adv) < 1e-8:
                     continue
 
-                g_full_ids = rollout_full_ids[g].unsqueeze(0)
-                g_attention_mask = torch.ones_like(g_full_ids)
-                g_meta_positions = rollout_meta_positions[g]
+                g_ids = rollout_full_ids[g].unsqueeze(0)
+                g_mask = torch.ones_like(g_ids)
+                g_meta = rollout_meta_info[g]["meta_positions"]
 
-                # Scale step rewards by GRPO advantage
-                scaled_rewards = [
-                    {**sr, "total": sr["total"] * adv}
-                    for sr in rollout_step_rewards[g]
-                ]
+                # Step rewards scaled by advantage
+                r = rollout_rewards[g]
+                step_rewards = []
+                for k, calib in enumerate(r["r_calib_per_step"]):
+                    sr = {"total": (calib * lambda_calib + r["r_penalty"] / max(len(r["r_calib_per_step"]), 1)) * adv}
+                    step_rewards.append(sr)
+                # Add R_correct to last step
+                if step_rewards:
+                    step_rewards[-1]["total"] += r["r_correct"] * adv
+                else:
+                    step_rewards = [{"total": r["total"] * adv}]
 
                 loss = compute_step_level_loss(
-                    model, g_full_ids, g_attention_mask,
-                    g_meta_positions, scaled_rewards, prompt_len,
+                    model, g_ids, g_mask, g_meta, step_rewards, prompt_len,
                 )
                 loss = loss / max(n_contributing, 1)
                 loss.backward()
                 total_loss_val += loss.item()
 
-                del g_full_ids, g_attention_mask
+                del g_ids, g_mask
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -233,38 +247,25 @@ def run_grpo(config_path: str):
 
             step += 1
 
-            # Metrics (before cleanup)
-            avg_reward = np.mean(rollout_totals)
-            avg_correct = np.mean([
-                1.0 if check_correctness(t, gold_answer) else 0.0
-                for t in rollout_texts
-            ])
-            avg_meta_blocks = np.mean([
-                len(pos) for pos in rollout_meta_positions
-            ])
-            all_calibs = [sr["r_calib"] for srs in rollout_step_rewards for sr in srs]
-            all_progress = [sr["r_progress"] for srs in rollout_step_rewards for sr in srs]
+            # === Metrics ===
+            avg_reward = np.mean(totals)
+            avg_correct = np.mean([info["is_correct"] for info in rollout_meta_info])
+            avg_meta = np.mean([info["num_meta"] for info in rollout_meta_info])
+            all_p_hats = [p for info in rollout_meta_info for p in info["gnosis_scores"]]
+            all_confs = [c for info in rollout_meta_info for c in info["model_confs"]]
+            all_calibs = [r["r_calib_avg"] for r in rollout_rewards]
+            all_penalties = [r["r_penalty"] for r in rollout_rewards]
 
-            # Gnosis probe metrics
-            all_p_hats = [sr["p_hat"] for srs in rollout_step_rewards for sr in srs]
-            all_c_texts = [sr["c_text"] for srs in rollout_step_rewards for sr in srs if sr["c_text"] is not None]
-
-            # Probe accuracy: does p̂ > 0.5 match actual correctness?
-            probe_correct_preds = []
-            for g in range(group_size):
-                is_c = 1.0 if check_correctness(rollout_texts[g], gold_answer) else 0.0
-                srs = rollout_step_rewards[g]
-                if srs:
-                    final_p_hat = srs[-1]["p_hat"]
-                    probe_pred = 1.0 if final_p_hat > 0.5 else 0.0
-                    probe_correct_preds.append(float(probe_pred == is_c))
-
-            # Step-level p̂ trajectory (first rollout)
-            first_p_hats = [sr["p_hat"] for sr in rollout_step_rewards[0]] if rollout_step_rewards else []
-            p_hat_increase = (first_p_hats[-1] - first_p_hats[0]) if len(first_p_hats) >= 2 else 0.0
+            # Probe accuracy: does final p̂ > 0.5 match correctness?
+            probe_accs = []
+            for info in rollout_meta_info:
+                if info["gnosis_scores"]:
+                    pred = 1.0 if info["gnosis_scores"][-1] > 0.5 else 0.0
+                    actual = 1.0 if info["is_correct"] else 0.0
+                    probe_accs.append(float(pred == actual))
 
             # Memory cleanup
-            del rollout_full_ids, rollout_meta_positions, rollout_step_rewards
+            del rollout_full_ids, rollout_meta_info
             torch.cuda.empty_cache()
 
             if step % 10 == 0:
@@ -273,43 +274,40 @@ def run_grpo(config_path: str):
                     "grpo/loss": total_loss_val,
                     "grpo/avg_reward": avg_reward,
                     "grpo/avg_correct": avg_correct,
-                    "grpo/avg_meta_blocks": avg_meta_blocks,
-                    "grpo/avg_r_calib": np.mean(all_calibs) if all_calibs else 0,
-                    "grpo/avg_r_progress": np.mean(all_progress) if all_progress else 0,
-                    # Gnosis probe metrics
+                    "grpo/avg_meta_blocks": avg_meta,
+                    "grpo/avg_r_calib": np.mean(all_calibs),
+                    "grpo/avg_r_penalty": np.mean(all_penalties),
                     "gnosis/avg_p_hat": np.mean(all_p_hats) if all_p_hats else 0,
                     "gnosis/p_hat_std": np.std(all_p_hats) if all_p_hats else 0,
-                    "gnosis/avg_model_confidence": np.mean(all_c_texts) if all_c_texts else 0,
-                    "gnosis/confidence_gap": abs(np.mean(all_p_hats) - np.mean(all_c_texts)) if all_p_hats and all_c_texts else 0,
-                    "gnosis/probe_accuracy": np.mean(probe_correct_preds) if probe_correct_preds else 0,
-                    "gnosis/p_hat_trajectory_delta": p_hat_increase,
-                    "gnosis/num_confidences_parsed": len(all_c_texts),
-                    "grpo/lambda1": lambda1,
-                    "grpo/lambda2": lambda2,
+                    "gnosis/avg_model_conf": np.mean(all_confs) if all_confs else 0,
+                    "gnosis/conf_gap": abs(np.mean(all_p_hats) - np.mean(all_confs)) if all_p_hats and all_confs else 0,
+                    "gnosis/probe_accuracy": np.mean(probe_accs) if probe_accs else 0,
+                    "gnosis/num_confs_parsed": len(all_confs),
+                    "grpo/lambda_calib": lambda_calib,
                     "grpo/lr": scheduler.get_last_lr()[0],
                 }
                 wandb.log(metrics, step=step)
                 print(
                     f"Step {step}: loss={total_loss_val:.4f} "
                     f"reward={avg_reward:.3f} correct={avg_correct:.3f} "
-                    f"meta={avg_meta_blocks:.1f} "
-                    f"r_calib={np.mean(all_calibs):.3f} "
+                    f"meta={avg_meta:.1f} calib={np.mean(all_calibs):.3f} "
+                    f"penalty={np.mean(all_penalties):.2f} "
                     f"p̂={np.mean(all_p_hats):.3f} "
-                    f"probe_acc={np.mean(probe_correct_preds):.3f}" if probe_correct_preds else
+                    f"probe_acc={np.mean(probe_accs):.3f}" if probe_accs else
                     f"Step {step}: loss={total_loss_val:.4f} "
                     f"reward={avg_reward:.3f} correct={avg_correct:.3f} "
-                    f"meta={avg_meta_blocks:.1f}",
+                    f"meta={avg_meta:.1f}",
                     flush=True,
                 )
 
             # Save checkpoint
-            if step % config.get("save_every", 500) == 0:
+            if step % config.get("save_every", 200) == 0:
                 ckpt_dir = output_dir / f"checkpoint-{step}"
                 ckpt_dir.mkdir(parents=True, exist_ok=True)
                 model.save_pretrained(ckpt_dir)
                 tokenizer.save_pretrained(ckpt_dir)
 
-    # Save final model
+    # Save final
     final_dir = output_dir / "final"
     final_dir.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(final_dir)
