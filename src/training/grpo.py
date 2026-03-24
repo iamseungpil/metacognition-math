@@ -245,6 +245,24 @@ def run_grpo(config_path: str):
             all_calibs = [sr["r_calib"] for srs in rollout_step_rewards for sr in srs]
             all_progress = [sr["r_progress"] for srs in rollout_step_rewards for sr in srs]
 
+            # Gnosis probe metrics
+            all_p_hats = [sr["p_hat"] for srs in rollout_step_rewards for sr in srs]
+            all_c_texts = [sr["c_text"] for srs in rollout_step_rewards for sr in srs if sr["c_text"] is not None]
+
+            # Probe accuracy: does p̂ > 0.5 match actual correctness?
+            probe_correct_preds = []
+            for g in range(group_size):
+                is_c = 1.0 if check_correctness(rollout_texts[g], gold_answer) else 0.0
+                srs = rollout_step_rewards[g]
+                if srs:
+                    final_p_hat = srs[-1]["p_hat"]
+                    probe_pred = 1.0 if final_p_hat > 0.5 else 0.0
+                    probe_correct_preds.append(float(probe_pred == is_c))
+
+            # Step-level p̂ trajectory (first rollout)
+            first_p_hats = [sr["p_hat"] for sr in rollout_step_rewards[0]] if rollout_step_rewards else []
+            p_hat_increase = (first_p_hats[-1] - first_p_hats[0]) if len(first_p_hats) >= 2 else 0.0
+
             # Memory cleanup
             del rollout_full_ids, rollout_meta_positions, rollout_step_rewards
             torch.cuda.empty_cache()
@@ -258,6 +276,14 @@ def run_grpo(config_path: str):
                     "grpo/avg_meta_blocks": avg_meta_blocks,
                     "grpo/avg_r_calib": np.mean(all_calibs) if all_calibs else 0,
                     "grpo/avg_r_progress": np.mean(all_progress) if all_progress else 0,
+                    # Gnosis probe metrics
+                    "gnosis/avg_p_hat": np.mean(all_p_hats) if all_p_hats else 0,
+                    "gnosis/p_hat_std": np.std(all_p_hats) if all_p_hats else 0,
+                    "gnosis/avg_model_confidence": np.mean(all_c_texts) if all_c_texts else 0,
+                    "gnosis/confidence_gap": abs(np.mean(all_p_hats) - np.mean(all_c_texts)) if all_p_hats and all_c_texts else 0,
+                    "gnosis/probe_accuracy": np.mean(probe_correct_preds) if probe_correct_preds else 0,
+                    "gnosis/p_hat_trajectory_delta": p_hat_increase,
+                    "gnosis/num_confidences_parsed": len(all_c_texts),
                     "grpo/lambda1": lambda1,
                     "grpo/lambda2": lambda2,
                     "grpo/lr": scheduler.get_last_lr()[0],
@@ -266,8 +292,13 @@ def run_grpo(config_path: str):
                 print(
                     f"Step {step}: loss={total_loss_val:.4f} "
                     f"reward={avg_reward:.3f} correct={avg_correct:.3f} "
-                    f"meta_blocks={avg_meta_blocks:.1f} "
-                    f"r_calib={np.mean(all_calibs):.3f}",
+                    f"meta={avg_meta_blocks:.1f} "
+                    f"r_calib={np.mean(all_calibs):.3f} "
+                    f"p̂={np.mean(all_p_hats):.3f} "
+                    f"probe_acc={np.mean(probe_correct_preds):.3f}" if probe_correct_preds else
+                    f"Step {step}: loss={total_loss_val:.4f} "
+                    f"reward={avg_reward:.3f} correct={avg_correct:.3f} "
+                    f"meta={avg_meta_blocks:.1f}",
                     flush=True,
                 )
 
