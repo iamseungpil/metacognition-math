@@ -79,7 +79,7 @@ def compute_gnosis_scores(probe, hidden_states: list) -> list:
     probe.eval()
     with torch.no_grad():
         for hs in hidden_states:
-            hs_input = hs.unsqueeze(0).unsqueeze(0)  # (1, 1, D)
+            hs_input = hs.float().unsqueeze(0).unsqueeze(0)  # (1, 1, D) in float32
             p_hat = probe(hs_input).item()
             scores.append(p_hat)
 

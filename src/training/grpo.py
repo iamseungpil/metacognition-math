@@ -59,7 +59,7 @@ def _load_probe(probe_path: str, hidden_dim: int = 3584, device: str = "cuda"):
     probe = SimpleCorrectnessProbe(hidden_dim=hidden_dim)
     state = torch.load(Path(probe_path) / "best_probe.pt", map_location="cpu", weights_only=True)
     probe.load_state_dict(state)
-    probe.to(device).to(torch.bfloat16).eval()
+    probe.to(device).float().eval()  # Keep float32 for accurate sigmoid output
     print(f"Probe loaded from {probe_path}", flush=True)
     return probe
 
