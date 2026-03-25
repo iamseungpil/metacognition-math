@@ -1,10 +1,10 @@
-"""Stepwise GRPO with Agent Lightning pattern + Gnosis probe.
+"""Stepwise GRPO with FSDP (4 GPU) + Gnosis probe.
 
 Key features:
-- <|meta|> boundaries define steps (Agent Lightning credit assignment)
+- FSDP for 4-GPU distributed training
+- <|meta|> boundaries define steps
 - 3 rewards: R_correct(+2), R_calib(λ=1.0), R_penalty(no meta → -0.5)
-- Gnosis probe at each <|meta|> position for p̂
-- device_map="auto" for 4-GPU utilization
+- Gnosis probe for p̂ (full-sequence hidden state)
 - max_tokens=2048 for full meta reasoning
 - Probe auto-retrain every 200 steps if AUROC drops
 - Comprehensive wandb logging of gnosis metrics
@@ -98,21 +98,29 @@ def run_grpo(config_path: str):
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
+        attn_implementation="flash_attention_2",
         trust_remote_code=True,
         use_cache=False,
-    ).cuda()
-    model.gradient_checkpointing_enable()  # Save VRAM for long sequences
+    )
     if num_added > 0:
         model.resize_token_embeddings(len(tokenizer))
+    model.gradient_checkpointing_enable()
+
+    # Use accelerate for multi-GPU (handles generate + backward)
+    from accelerate import Accelerator
+    accelerator = Accelerator(mixed_precision="bf16")
+    local_rank = accelerator.local_process_index
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_steps)
+
+    model, optimizer, scheduler = accelerator.prepare(model, optimizer, scheduler)
 
     # Load probe
     probe = _load_probe(
         config.get("probe_path"),
         hidden_dim=config.get("hidden_dim", 3584),
-        device="cuda",
+        device=str(accelerator.device),
     )
 
     dataset = MathProblemDataset(problems_path)
@@ -135,7 +143,7 @@ def run_grpo(config_path: str):
             prompt_ids = tokenizer.apply_chat_template(
                 messages, tokenize=True, add_generation_prompt=True,
                 return_tensors="pt",
-            ).cuda()
+            ).to(accelerator.device)
             prompt_len = prompt_ids.shape[1]
 
             # Generate G rollouts
@@ -241,7 +249,7 @@ def run_grpo(config_path: str):
                     model, g_ids, g_mask, g_meta, step_rewards, prompt_len,
                 )
                 loss = loss / max(n_contributing, 1)
-                loss.backward()
+                accelerator.backward(loss)
                 total_loss_val += loss.item()
 
                 del g_ids, g_mask
@@ -309,7 +317,7 @@ def run_grpo(config_path: str):
             if step % config.get("save_every", 200) == 0:
                 ckpt_dir = output_dir / f"checkpoint-{step}"
                 ckpt_dir.mkdir(parents=True, exist_ok=True)
-                model.save_pretrained(ckpt_dir)
+                accelerator.unwrap_model(model).save_pretrained(ckpt_dir)
                 tokenizer.save_pretrained(ckpt_dir)
 
     # Save final
