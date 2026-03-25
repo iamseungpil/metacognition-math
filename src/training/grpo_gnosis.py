@@ -528,7 +528,7 @@ def main():
         args=training_args,
         train_dataset=train_dataset,
         reward_funcs=metacot_reward_fn,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         peft_config=lora_config,
         lambda_gnosis=args.lambda_gnosis,
     )
