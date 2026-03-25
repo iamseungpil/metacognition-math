@@ -463,9 +463,7 @@ def main():
         num_generations=args.num_generations,
         max_completion_length=args.max_completion_length,
         max_prompt_length=2048,
-        use_vllm=True,
-        vllm_mode="colocate",
-        vllm_gpu_memory_utilization=0.35,
+        use_vllm=False,  # ptca env has vLLM 0.6.6 (too old for colocate)
         per_device_train_batch_size=1,
         gradient_accumulation_steps=4,
         learning_rate=5e-6,

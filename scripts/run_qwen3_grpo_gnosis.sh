@@ -11,14 +11,18 @@ export OPENSSL_ia32cap="~0x200000200000000"
 sudo sed -i 's/^\.include.*fips.*//g; s/^fips = fips_sect/# fips = fips_sect/g; s/^activate = 1/# activate = 1/g' /etc/ssl/openssl.cnf 2>/dev/null || true
 
 source /opt/conda/etc/profile.d/conda.sh
-conda activate verl
+# Use ptca env (no FIPS issues, unlike verl env)
+conda activate ptca
 export OPENSSL_CONF=/dev/null
+
+# Install TRL and PEFT if not present
+pip install trl peft --quiet 2>/dev/null || true
 cd /scratch/metacognition
 export PYTHONPATH=/scratch/metacognition
 
 # Patch gnosis_repo's Qwen3 model into installed transformers (avoid full override)
 # This symlinks only the Gnosis-modified Qwen3 model files, not the entire transformers package
-INSTALLED_TRANSFORMERS=$(conda run -n verl python -c "import transformers, os; print(os.path.dirname(transformers.__file__))" 2>/dev/null)
+INSTALLED_TRANSFORMERS=$(python -c "import transformers, os; print(os.path.dirname(transformers.__file__))" 2>/dev/null)
 echo "Installed transformers at: $INSTALLED_TRANSFORMERS"
 
 # Backup and symlink Qwen3 model with Gnosis
