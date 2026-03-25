@@ -212,8 +212,11 @@ def load_all_train(config: Optional[dict] = None) -> Dataset:
 
 
 def extract_boxed_answer(text: str) -> Optional[str]:
-    """Extract answer from \\boxed{...} in model output."""
-    pattern = r'\\boxed\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}'
+    """Extract answer from \\boxed{...} in model output.
+
+    Handles nested braces up to 2 levels, e.g. \\boxed{\\frac{1}{\\sqrt{2}}}.
+    """
+    pattern = r'\\boxed\{((?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\}'
     matches = re.findall(pattern, text)
     if matches:
         return matches[-1].strip()

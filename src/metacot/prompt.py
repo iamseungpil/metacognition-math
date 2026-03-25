@@ -130,8 +130,9 @@ def parse_meta_blocks(text: str) -> dict:
         block_lower = block.lower()
 
         # Extract confidence values (0.XX or XX% after probability/confidence keyword)
+        # Also matches Korean: 확률 (probability), 확신 (confidence)
         conf_matches = re.findall(
-            r'(?:probability|confidence)[:\s]+([0-9]+\.?[0-9]*)\s*%?',
+            r'(?:probability|confidence|확률|확신)[:\s]+([0-9]+\.?[0-9]*)\s*%?',
             block, re.IGNORECASE
         )
         for m in conf_matches:

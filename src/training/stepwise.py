@@ -25,7 +25,10 @@ def find_meta_token_positions(input_ids: torch.Tensor, tokenizer) -> list:
     if meta_start_id == unk_id or meta_end_id == unk_id:
         return []  # tokens not in vocab, return empty
 
-    ids = input_ids.squeeze(0).tolist() if input_ids.dim() > 1 else input_ids.tolist()
+    if isinstance(input_ids, torch.Tensor):
+        ids = input_ids.squeeze(0).tolist() if input_ids.dim() > 1 else input_ids.tolist()
+    else:
+        ids = list(input_ids)
     blocks = []
     i = 0
     while i < len(ids):

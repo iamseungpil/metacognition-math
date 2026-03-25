@@ -19,7 +19,6 @@ Critic-reviewed fixes (v2):
 import argparse
 import json
 import os
-import re
 
 import pandas as pd
 import torch
@@ -29,91 +28,13 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from trl import GRPOConfig, GRPOTrainer
 from peft import LoraConfig
 
+from src.metacot.prompt import META_START, META_END, parse_meta_blocks
+from src.rollout.vllm_rollout import check_correctness
+from src.training.stepwise import find_meta_token_positions as find_meta_positions_in_ids
+
 
 # ─── Constants ───
-META_START = "<|meta|>"
-META_END = "<|/meta|>"
 LAMBDA_GNOSIS = 0.5
-
-
-# ─── Meta-CoT parsing ───
-def parse_meta_blocks(text):
-    start_esc = re.escape(META_START)
-    end_esc = re.escape(META_END)
-    blocks = re.findall(rf'{start_esc}(.*?){end_esc}', text, re.DOTALL)
-    confidences = []
-    for block in blocks:
-        matches = re.findall(
-            r'(?:probability|confidence|확률|확신)[:\s]*(\d+(?:\.\d+)?%?)',
-            block, re.IGNORECASE
-        )
-        for m in matches:
-            try:
-                c = float(m.rstrip('%'))
-                if c > 1.0:
-                    c /= 100.0
-                confidences.append(max(0.0, min(1.0, c)))
-            except ValueError:
-                pass
-    return {"num_blocks": len(blocks), "confidences": confidences}
-
-
-def extract_answer(text):
-    # Handle nested braces up to 2 levels: \boxed{\frac{1}{\sqrt{2}}}
-    pattern = r'\\boxed\{((?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\}'
-    matches = re.findall(pattern, text)
-    if matches:
-        return matches[-1].strip()
-    m = re.search(r'####\s*(.+?)(?:\n|$)', text)
-    if m:
-        return m.group(1).strip()
-    m = re.search(r'(?:the answer is|answer:\s*)\s*(.+?)(?:\.|$)', text, re.IGNORECASE)
-    if m:
-        return m.group(1).strip()
-    return ""
-
-
-def check_correctness(model_answer, gold_answer):
-    model_final = extract_answer(model_answer)
-    gold_str = str(gold_answer).strip()
-    gold_final = extract_answer(gold_str) or gold_str
-    if not model_final:
-        return False
-    if model_final == gold_final:
-        return True
-    try:
-        if abs(float(model_final) - float(gold_final)) < 1e-6:
-            return True
-    except (ValueError, TypeError):
-        pass
-    return model_final.lower().strip() == gold_final.lower().strip()
-
-
-def find_meta_positions_in_ids(token_ids, tokenizer):
-    """Find <|meta|>...<|/meta|> block positions in token ID sequence."""
-    if tokenizer is None:
-        return []
-    meta_start_id = tokenizer.convert_tokens_to_ids(META_START)
-    meta_end_id = tokenizer.convert_tokens_to_ids(META_END)
-    unk_id = getattr(tokenizer, 'unk_token_id', None)
-    if meta_start_id == unk_id or meta_end_id == unk_id:
-        return []
-
-    ids = token_ids.tolist() if isinstance(token_ids, torch.Tensor) else token_ids
-    blocks = []
-    i = 0
-    while i < len(ids):
-        if ids[i] == meta_start_id:
-            for j in range(i + 1, len(ids)):
-                if ids[j] == meta_end_id:
-                    blocks.append((i, j))
-                    i = j + 1
-                    break
-            else:
-                i += 1
-        else:
-            i += 1
-    return blocks
 
 
 def compute_stepwise_importance(
