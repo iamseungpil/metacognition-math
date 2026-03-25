@@ -483,7 +483,7 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         args.model_path,
         torch_dtype=torch.bfloat16,
-        attn_implementation="eager",  # Required for Gnosis attention extraction
+        attn_implementation="sdpa",  # Gnosis uses eager_attention_forward when output_attentions=True
         trust_remote_code=True,
         use_cache=False,
     )
