@@ -11,8 +11,10 @@ source /opt/conda/etc/profile.d/conda.sh
 conda activate ptca
 export OPENSSL_CONF=/dev/null
 
-# TRL 0.28.0: Qwen3 support + PyTorch 2.5 compat (FSDPModule is lazy import)
-pip install "peft>=0.10" "trl==0.28.0" --quiet 2>/dev/null || true
+# Upgrade PyTorch to 2.6 for TRL compat, then install latest TRL
+pip install torch==2.6.0+cu124 --index-url https://download.pytorch.org/whl/cu124 --quiet 2>/dev/null || true
+pip install "peft>=0.10" "trl>=0.28" "transformers>=4.57" --quiet 2>/dev/null || true
+echo "Installed: torch=$(python -c 'import torch;print(torch.__version__)'), trl=$(python -c 'import trl;print(trl.__version__)')"
 
 cd /scratch/metacognition
 export PYTHONPATH=/scratch/metacognition
