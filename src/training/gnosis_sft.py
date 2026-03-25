@@ -91,7 +91,9 @@ def collate_fn(batch):
 
 
 def train_gnosis(args):
-    accelerator = Accelerator(mixed_precision="bf16")
+    # No mixed precision — BCE loss is unsafe with autocast
+    # Backbone is frozen anyway, so bf16 autocast not needed for memory
+    accelerator = Accelerator()
 
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
