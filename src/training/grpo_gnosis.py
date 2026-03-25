@@ -229,9 +229,77 @@ class MetaCotGRPOTrainer(GRPOTrainer):
 
         # Gnosis head unfreeze will be added in Phase 2
 
-    # No compute_loss override — use parent's _compute_loss directly.
-    # Stepwise weights applied via modified advantages in _generate_and_score_completions.
-    # Gnosis correctness loss will be added in Phase 2 (after basic GRPO works).
+    def _compute_loss(self, model, inputs):
+        """Agent Lightning style: per-token stepwise reward weighting.
+
+        Identical to parent's _compute_loss, but multiplies per_token_loss
+        by stepwise_weights (from <|meta|> step boundaries) BEFORE aggregation.
+
+        This gives each step a different effective reward:
+          Step k tokens: loss_t *= reward_k / mean(reward)
+        R_correct is distributed to ALL steps equally.
+        """
+        prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
+        completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
+        input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
+        attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
+        logits_to_keep = completion_ids.size(1)
+
+        per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
+
+        if self.beta != 0.0:
+            ref_per_token_logps = inputs["ref_per_token_logps"]
+            per_token_kl = (
+                torch.exp(ref_per_token_logps - per_token_logps)
+                - (ref_per_token_logps - per_token_logps) - 1
+            )
+
+        advantages = inputs["advantages"]
+        old_per_token_logps = (
+            per_token_logps.detach() if inputs["old_per_token_logps"] is None
+            else inputs["old_per_token_logps"]
+        )
+        coef_1 = torch.exp(per_token_logps - old_per_token_logps)
+        coef_2 = torch.clamp(coef_1, 1 - self.epsilon_low, 1 + self.epsilon_high)
+
+        if self.args.delta is not None:
+            coef_1 = torch.clamp(coef_1, max=self.args.delta)
+
+        per_token_loss1 = coef_1 * advantages.unsqueeze(1)
+        per_token_loss2 = coef_2 * advantages.unsqueeze(1)
+        per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+
+        # ─── AGENT LIGHTNING: stepwise per-token reward weighting ───
+        stepwise_weights = inputs.get("stepwise_weights")
+        if stepwise_weights is not None:
+            per_token_loss = per_token_loss * stepwise_weights
+
+        if self.beta != 0.0:
+            per_token_loss = per_token_loss + self.beta * per_token_kl
+
+        if self.loss_type == "grpo":
+            loss = ((per_token_loss * completion_mask).sum(-1) / completion_mask.sum(-1).clamp(min=1.0)).mean()
+        elif self.loss_type == "bnpo":
+            loss = (per_token_loss * completion_mask).sum() / completion_mask.sum().clamp(min=1.0)
+        elif self.loss_type == "dr_grpo":
+            loss = (per_token_loss * completion_mask).sum() / (per_token_loss.size(0) * self.max_completion_length)
+        else:
+            raise ValueError(f"Unknown loss type: {self.loss_type}")
+
+        # Metrics (same as parent)
+        mode = "train" if self.model.training else "eval"
+        if self.beta != 0.0:
+            mean_kl = (per_token_kl * completion_mask).sum() / completion_mask.sum()
+            self._metrics[mode]["kl"].append(self.accelerator.gather(mean_kl).nanmean().item())
+
+        is_low_clipped = (coef_1 < 1 - self.epsilon_low) & (advantages.unsqueeze(1) < 0)
+        is_high_clipped = (coef_1 > 1 + self.epsilon_high) & (advantages.unsqueeze(1) > 0)
+        low_clip = ((is_low_clipped * completion_mask).sum(-1) / completion_mask.sum(-1).clamp(min=1.0)).mean()
+        high_clip = ((is_high_clipped * completion_mask).sum(-1) / completion_mask.sum(-1).clamp(min=1.0)).mean()
+        self._metrics[mode]["clip_ratio/low_mean"].append(self.accelerator.gather(low_clip).nanmean().item())
+        self._metrics[mode]["clip_ratio/high_mean"].append(self.accelerator.gather(high_clip).nanmean().item())
+
+        return loss
 
     def _generate_and_score_completions(self, inputs):
         """Override to:
