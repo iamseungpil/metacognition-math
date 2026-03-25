@@ -204,15 +204,7 @@ class MetaCotGRPOTrainer(GRPOTrainer):
         self.lambda_gnosis = lambda_gnosis
         self._cached_ground_truths = []
 
-        # FIX B5: Re-enable gradients for Gnosis heads (PEFT freezes everything)
-        gnosis_prefixes = ("stop_head", "attn_extractor", "hid_extractor", "conf_extractor")
-        n_unfrozen = 0
-        for name, param in self.model.named_parameters():
-            if any(p in name for p in gnosis_prefixes):
-                param.requires_grad_(True)
-                n_unfrozen += 1
-        if n_unfrozen > 0:
-            print(f"[MetaCotGRPO] Unfroze {n_unfrozen} Gnosis head parameters for training")
+        # Parent handles Gnosis head unfreeze via enable_correctness_head=True
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         if return_outputs:
@@ -504,8 +496,9 @@ def main():
         bf16=True,
         gradient_checkpointing=True,
         beta=0.0,  # No KL (GRPO uses group advantages)
-        # Gnosis correctness head handled by our compute_loss override
-        enable_correctness_head=False,
+        # Gnosis correctness head — let parent handle freeze/unfreeze
+        enable_correctness_head=True,
+        freeze_except_stop_head=False,  # Train BOTH base (LoRA) + Gnosis head
         logging_steps=1,
         save_steps=200,
         save_total_limit=3,
