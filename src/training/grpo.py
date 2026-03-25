@@ -155,9 +155,10 @@ def run_grpo(config_path: str):
             rollout_meta_info = []
 
             model.eval()
+            unwrapped = accelerator.unwrap_model(model)
             with torch.no_grad():
                 for g in range(group_size):
-                    output = model.generate(
+                    output = unwrapped.generate(
                         prompt_ids,
                         max_new_tokens=max_tokens,
                         do_sample=True,
@@ -178,7 +179,7 @@ def run_grpo(config_path: str):
                     # Gnosis: compute p̂ from full sequence (probe was trained this way)
                     if probe is not None:
                         with torch.no_grad():
-                            outputs = model(
+                            outputs = unwrapped(
                                 full_ids.unsqueeze(0),
                                 attention_mask=torch.ones_like(full_ids).unsqueeze(0),
                                 output_hidden_states=True,
