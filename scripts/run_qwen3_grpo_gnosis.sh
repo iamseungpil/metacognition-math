@@ -15,8 +15,10 @@ source /opt/conda/etc/profile.d/conda.sh
 conda activate ptca
 export OPENSSL_CONF=/dev/null
 
-# Install TRL and PEFT if not present
-pip install trl peft --quiet 2>/dev/null || true
+# Install PEFT if not present (TRL comes from gnosis_repo)
+pip install peft --quiet 2>/dev/null || true
+# Remove installed TRL to avoid conflict with gnosis_repo's version
+pip uninstall trl -y --quiet 2>/dev/null || true
 cd /scratch/metacognition
 export PYTHONPATH=/scratch/metacognition
 
