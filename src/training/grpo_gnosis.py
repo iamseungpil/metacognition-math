@@ -474,9 +474,12 @@ def main():
 
     lora_config = LoraConfig(
         r=args.lora_rank,
-        lora_alpha=args.lora_rank,  # FIX: scaling factor = 1.0 (not 2.0)
+        lora_alpha=args.lora_rank,  # scaling factor = 1.0
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
                         "gate_proj", "up_proj", "down_proj"],
+        # modules_to_save: these are trained fully (not through LoRA)
+        # Gnosis head params must be trainable for correctness_loss
+        modules_to_save=["stop_head", "attn_extractor", "hid_extractor", "conf_extractor"],
         lora_dropout=0.05,
         task_type="CAUSAL_LM",
     )
