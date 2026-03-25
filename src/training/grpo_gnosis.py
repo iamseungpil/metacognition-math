@@ -349,6 +349,8 @@ def main():
         lora_alpha=args.lora_rank,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
                         "gate_proj", "up_proj", "down_proj"],
+        # Gnosis heads trained with full params (not LoRA)
+        modules_to_save=["stop_head", "attn_extractor", "hid_extractor", "conf_extractor"],
         lora_dropout=0.05,
         task_type="CAUSAL_LM",
     )
