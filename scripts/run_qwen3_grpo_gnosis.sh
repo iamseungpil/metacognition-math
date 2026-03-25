@@ -29,8 +29,9 @@ echo "Model: checkpoints/qwen3_meta_sft"
 echo "Gnosis: Full (attention + hidden + confidence)"
 echo "Stepwise: Agent Lightning style (R_correct to ALL steps)"
 
-# Single GPU first to verify, then scale to multi-GPU
-python src/training/grpo_gnosis.py \
+# Multi-GPU (4x A100) — single GPU OOMs on Qwen3-8B
+accelerate launch --num_processes 4 --multi_gpu \
+    src/training/grpo_gnosis.py \
     --model_path checkpoints/qwen3_meta_sft \
     --train_data verl_train.parquet \
     --output_dir checkpoints/qwen3_grpo_gnosis \
