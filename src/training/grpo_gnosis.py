@@ -251,6 +251,16 @@ class MetaCotGRPOTrainer(GRPOTrainer):
         self.lambda_gnosis = lambda_gnosis
         self._cached_ground_truths = []
 
+        # FIX B5: Re-enable gradients for Gnosis heads (PEFT freezes everything)
+        gnosis_prefixes = ("stop_head", "attn_extractor", "hid_extractor", "conf_extractor")
+        n_unfrozen = 0
+        for name, param in self.model.named_parameters():
+            if any(p in name for p in gnosis_prefixes):
+                param.requires_grad_(True)
+                n_unfrozen += 1
+        if n_unfrozen > 0:
+            print(f"[MetaCotGRPO] Unfroze {n_unfrozen} Gnosis head parameters for training")
+
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         if return_outputs:
             raise ValueError("MetaCotGRPOTrainer does not support returning outputs")
@@ -534,7 +544,7 @@ def main():
         max_prompt_length=2048,
         use_vllm=True,
         vllm_mode="colocate",
-        vllm_gpu_memory_utilization=0.4,
+        vllm_gpu_memory_utilization=0.35,
         per_device_train_batch_size=1,
         gradient_accumulation_steps=4,
         learning_rate=5e-6,
