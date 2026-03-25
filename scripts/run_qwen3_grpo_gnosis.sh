@@ -34,6 +34,20 @@ fi
 # Copy gnosis Qwen3 files over installed ones
 cp /scratch/metacognition/gnosis_repo/transformers/src/transformers/models/qwen3/modeling_qwen3.py "$INSTALLED_TRANSFORMERS/models/qwen3/modeling_qwen3.py" 2>/dev/null
 cp /scratch/metacognition/gnosis_repo/transformers/src/transformers/models/qwen3/feature_extractors.py "$INSTALLED_TRANSFORMERS/models/qwen3/feature_extractors.py" 2>/dev/null
+# Also patch the forward() to not require correctness_labels during generate
+python3 -c "
+f = '$INSTALLED_TRANSFORMERS/models/qwen3/modeling_qwen3.py'
+with open(f) as fh: code = fh.read()
+# Replace the ValueError raise with a pass/return
+old = 'raise ValueError(\"\`correctness_labels\` (shape (B,) or (B,1), values in {-1,0,1}) is required for training.\")'
+new = 'pass  # Allow forward without correctness_labels (needed for generate)'
+if old in code:
+    code = code.replace(old, new)
+    with open(f, 'w') as fh: fh.write(code)
+    print('Patched Qwen3 forward: correctness_labels no longer required')
+else:
+    print('Qwen3 forward already patched or pattern not found')
+" 2>/dev/null
 echo "Patched Qwen3 model with Gnosis feature extractors"
 
 # Patch gnosis_repo TRL: replace assertion with auto-unfreeze
