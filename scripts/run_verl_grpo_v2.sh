@@ -10,10 +10,23 @@ cd /scratch/metacognition
 export PYTHONPATH=/scratch/metacognition
 export WANDB_API_KEY=2f4e627868f1f9dad10bcb1a14fbf96817e6baa9
 
-# Fix OpenSSL FIPS issue for all child processes
-export LD_PRELOAD=""
+# Fix OpenSSL FIPS issue — must be set before ANY process starts
 export OPENSSL_CONF=/dev/null
 export OPENSSL_ia32cap="~0x200000200000000"
+
+# Disable FIPS at system level if possible
+if [ -f /etc/ssl/fipsmodule.cnf ]; then
+    sudo mv /etc/ssl/fipsmodule.cnf /etc/ssl/fipsmodule.cnf.bak 2>/dev/null || true
+fi
+if [ -f /etc/ssl/openssl.cnf ]; then
+    sudo cp /etc/ssl/openssl.cnf /etc/ssl/openssl.cnf.bak 2>/dev/null
+    sudo sed -i 's/^\.include.*fips.*//g' /etc/ssl/openssl.cnf 2>/dev/null || true
+    sudo sed -i 's/^fips = fips_sect/# fips = fips_sect/g' /etc/ssl/openssl.cnf 2>/dev/null || true
+    sudo sed -i 's/^activate = 1/# activate = 1/g' /etc/ssl/openssl.cnf 2>/dev/null || true
+fi
+
+# Set Ray environment to propagate OPENSSL_CONF
+export RAY_RUNTIME_ENV_HOOK='{"env_vars": {"OPENSSL_CONF": "/dev/null"}}'
 
 # Kill any existing training
 pkill -f "grpo\|verl\|vllm\|ray" 2>/dev/null || true
