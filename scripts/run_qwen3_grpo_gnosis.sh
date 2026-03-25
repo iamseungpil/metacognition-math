@@ -11,8 +11,9 @@ source /opt/conda/etc/profile.d/conda.sh
 conda activate ptca
 export OPENSSL_CONF=/dev/null
 
-# Verified compatible: torch 2.6 + transformers 4.51 (Qwen3) + trl 0.19 (GRPOTrainer)
-pip install "transformers==4.51.3" "trl==0.19.1" "peft>=0.10" "accelerate>=1.4" --quiet 2>/dev/null || true
+# Pin: torch 2.5.1 + transformers 4.51.3 (Qwen3) + trl 0.19.1 (GRPOTrainer)
+# flash-attn 2.8.3 needs torch 2.5 (not 2.6)
+pip install "transformers==4.51.3" "trl==0.19.1" "peft>=0.10" --quiet 2>/dev/null || true
 echo "Installed: torch=$(python -c 'import torch;print(torch.__version__)'), trl=$(python -c 'import trl;print(trl.__version__)'), tf=$(python -c 'import transformers;print(transformers.__version__)')"
 
 cd /scratch/metacognition

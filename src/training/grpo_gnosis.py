@@ -22,8 +22,13 @@ import os
 
 import pandas as pd
 import torch
-from datasets import Dataset
 
+# Monkey-patch FSDPModule for PyTorch 2.5 compatibility with TRL 0.19+
+import torch.distributed.fsdp as _fsdp_mod
+if not hasattr(_fsdp_mod, "FSDPModule"):
+    _fsdp_mod.FSDPModule = type("FSDPModule", (), {})
+
+from datasets import Dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from trl import GRPOConfig, GRPOTrainer
 from peft import LoraConfig
