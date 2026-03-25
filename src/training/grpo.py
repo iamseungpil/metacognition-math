@@ -79,14 +79,20 @@ def run_grpo(config_path: str):
     max_tokens = config.get("max_tokens", 2048)
     lambda_calib = config.get("lambda_calib", 1.0)
 
-    wandb.init(
-        project=config.get("wandb_project", "metacot-math"),
-        name=config.get("run_name", "metacot-stepwise-grpo"),
-        config=config,
-        reinit=True,
-    )
+    # Use accelerate for multi-GPU
+    from accelerate import Accelerator
+    accelerator = Accelerator(mixed_precision="bf16")
 
-    # Load model with device_map="auto" for 4-GPU
+    # Only main process logs to wandb
+    if accelerator.is_main_process:
+        wandb.init(
+            project=config.get("wandb_project", "metacot-math"),
+            name=config.get("run_name", "metacot-stepwise-grpo"),
+            config=config,
+            reinit=True,
+        )
+
+    # Load model
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -106,11 +112,6 @@ def run_grpo(config_path: str):
         model.resize_token_embeddings(len(tokenizer))
     model.gradient_checkpointing_enable()
 
-    # Use accelerate for multi-GPU (handles generate + backward)
-    from accelerate import Accelerator
-    accelerator = Accelerator(mixed_precision="bf16")
-    local_rank = accelerator.local_process_index
-
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_steps)
 
@@ -125,6 +126,7 @@ def run_grpo(config_path: str):
 
     dataset = MathProblemDataset(problems_path)
     dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
+    dataloader = accelerator.prepare(dataloader)
 
     step = 0
     epoch = 0
@@ -254,7 +256,7 @@ def run_grpo(config_path: str):
 
                 del g_ids, g_mask
 
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            accelerator.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             scheduler.step()
 
@@ -281,7 +283,7 @@ def run_grpo(config_path: str):
             del rollout_full_ids, rollout_meta_info
             torch.cuda.empty_cache()
 
-            if step % 10 == 0:
+            if step % 10 == 0 and accelerator.is_main_process:
                 metrics = {
                     "grpo/step": step,
                     "grpo/loss": total_loss_val,
@@ -314,19 +316,19 @@ def run_grpo(config_path: str):
                 )
 
             # Save checkpoint
-            if step % config.get("save_every", 200) == 0:
+            if step % config.get("save_every", 200) == 0 and accelerator.is_main_process:
                 ckpt_dir = output_dir / f"checkpoint-{step}"
                 ckpt_dir.mkdir(parents=True, exist_ok=True)
                 accelerator.unwrap_model(model).save_pretrained(ckpt_dir)
                 tokenizer.save_pretrained(ckpt_dir)
 
     # Save final
-    final_dir = output_dir / "final"
-    final_dir.mkdir(parents=True, exist_ok=True)
-    model.save_pretrained(final_dir)
-    tokenizer.save_pretrained(final_dir)
-
-    wandb.finish()
+    if accelerator.is_main_process:
+        final_dir = output_dir / "final"
+        final_dir.mkdir(parents=True, exist_ok=True)
+        accelerator.unwrap_model(model).save_pretrained(final_dir)
+        tokenizer.save_pretrained(final_dir)
+        wandb.finish()
     print(f"GRPO training done. Model saved to {final_dir}", flush=True)
 
 
