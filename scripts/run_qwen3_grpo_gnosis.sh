@@ -65,10 +65,9 @@ echo "Gnosis: Full (attention + hidden + confidence feature extractors)"
 echo "Reward: R_correct + R_calib + R_penalty + stepwise importance"
 echo "Generation: vLLM colocate, 4 GPU"
 
-# FIX A1: Use accelerate for multi-GPU launch
-# TRL GRPOTrainer with vLLM colocate needs distributed environment
-accelerate launch --num_processes 4 --multi_gpu \
-    src/training/grpo_gnosis.py \
+# First test with single GPU to catch errors, then scale to 4
+# Set CUDA_VISIBLE_DEVICES=0 for single GPU test
+python src/training/grpo_gnosis.py \
     --model_path checkpoints/qwen3_meta_sft \
     --train_data verl_train.parquet \
     --output_dir checkpoints/qwen3_grpo_gnosis \
