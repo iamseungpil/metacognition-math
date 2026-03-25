@@ -10,9 +10,15 @@ cd /scratch/metacognition
 export PYTHONPATH=/scratch/metacognition
 export WANDB_API_KEY=2f4e627868f1f9dad10bcb1a14fbf96817e6baa9
 
+# Fix OpenSSL FIPS issue for all child processes
+export LD_PRELOAD=""
+export OPENSSL_CONF=/dev/null
+export OPENSSL_ia32cap="~0x200000200000000"
+
 # Kill any existing training
-pkill -f "grpo\|verl\|vllm" 2>/dev/null || true
-sleep 2
+pkill -f "grpo\|verl\|vllm\|ray" 2>/dev/null || true
+ray stop --force 2>/dev/null || true
+sleep 3
 
 echo "=== Preparing verl training data ==="
 python << 'PYEOF'
@@ -60,7 +66,7 @@ python -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
     data.train_files=verl_train.parquet \
     data.val_files=verl_val.parquet \
-    data.train_batch_size=16 \
+    data.train_batch_size=8 \
     data.max_prompt_length=2048 \
     data.max_response_length=2048 \
     actor_rollout_ref.model.path=checkpoints/meta_sft \
@@ -81,9 +87,9 @@ python -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.clip_ratio_low=0.2 \
     actor_rollout_ref.actor.clip_ratio_high=0.3 \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
-    actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
-    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2 \
-    actor_rollout_ref.ref.fsdp_config.param_offload=True \
+    actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
+    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
+    actor_rollout_ref.ref.fsdp_config.param_offload=False \
     algorithm.use_kl_in_reward=False \
     custom_reward_function.path=src/training/verl_reward_fn.py \
     custom_reward_function.name=compute_score \
