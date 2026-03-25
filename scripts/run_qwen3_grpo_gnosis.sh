@@ -11,8 +11,8 @@ source /opt/conda/etc/profile.d/conda.sh
 conda activate ptca
 export OPENSSL_CONF=/dev/null
 
-# Install compatible versions (TRL 0.15 works with PyTorch 2.5)
-pip install "peft>=0.10" "trl>=0.15,<0.17" --quiet 2>/dev/null || true
+# TRL 0.28.0: Qwen3 support + PyTorch 2.5 compat (FSDPModule is lazy import)
+pip install "peft>=0.10" "trl==0.28.0" --quiet 2>/dev/null || true
 
 cd /scratch/metacognition
 export PYTHONPATH=/scratch/metacognition
