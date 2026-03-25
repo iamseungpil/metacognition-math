@@ -3,6 +3,5 @@ deepspeed_config:
   deepspeed_config_file: configs/ds_zero3.json
   zero3_init_flag: true
 distributed_type: DEEPSPEED
-mixed_precision: bf16
 num_machines: 1
 num_processes: 4
