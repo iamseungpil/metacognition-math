@@ -1,23 +1,20 @@
-"""GRPO + Stepwise Credit Assignment (Agent Lightning Transition Mode).
+"""GRPO + Stepwise Credit Assignment (Per-Token Step Rewards).
 
-Key design:
-- Generate full completion, split by <|meta|> boundaries into steps
-- Each step becomes a SEPARATE training example
-- R_correct: SAME for all steps (final correctness)
-- R_calib: PER-STEP (each step's confidence vs actual outcome)
-- R_penalty: SAME for all steps
-- GRPO normalizes across all steps from all rollouts of same prompt
-  → each step competes with the same step from other rollouts
+Design:
+- Generate full completion, find <|meta|> step boundaries
+- Each step gets its own reward: R_correct(same) + R_calib_k(per-step) + R_penalty(same)
+- Per-token advantages: expand sequence-level advantage by step-level reward ratios
+- Keeps batch size constant (DDP-compatible, no step splitting)
+- Full Gnosis: patched Qwen3 model with attention+hidden+confidence extractors
 
-Critic-reviewed and fixed (v4):
-- FIX #1: ground_truth cached before super()
-- FIX #2: skip_special_tokens=False for <|meta|>
-- FIX #3: stepwise rewards non-negative
-- FIX #7: Agent Lightning transition mode (step splitting)
+Reward structure:
+  Step k advantage = sequence_advantage * (step_k_reward / mean_step_reward)
+  → Steps with better calibration get amplified gradient signal
+  → Steps with poor calibration get reduced gradient signal
+  → R_correct is the SAME for all steps (final correctness)
 """
 import argparse
 import json
-import math
 import os
 import re
 
@@ -25,7 +22,7 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 
-# Monkey-patch FSDPModule for PyTorch 2.5 compatibility with TRL 0.19+
+# Monkey-patch FSDPModule for PyTorch 2.5 compat with TRL 0.19
 import torch.distributed.fsdp as _fsdp_mod
 if not hasattr(_fsdp_mod, "FSDPModule"):
     _fsdp_mod.FSDPModule = type("FSDPModule", (), {})
@@ -69,35 +66,62 @@ def check_correctness(model_answer, gold_answer):
     return model_final.lower().strip() == gold_final.lower().strip()
 
 
-def compute_step_reward(is_correct, confidence, num_meta_blocks):
-    """Compute reward for a single step.
+def compute_per_token_step_advantages(
+    completion_ids, completion_text, is_correct, sequence_advantage, tokenizer
+):
+    """Compute per-token advantages from step-level rewards.
 
-    R_correct: same for ALL steps (2.0 if correct, 0.0 if not)
-    R_calib: per-step (1 - |confidence - actual|)
-    R_penalty: same for ALL steps (based on total meta block count)
+    Each <|meta|> step gets: R_correct(same) + R_calib_k(per-step) + R_penalty(same)
+    The per-token advantage = sequence_advantage * (step_reward / mean_step_reward)
+
+    This amplifies gradient for well-calibrated steps and reduces it for poorly calibrated ones.
     """
+    parsed = parse_meta_blocks(completion_text)
+    num_meta = parsed["num_blocks"]
+    confidences = parsed["confidences"]
+    comp_len = completion_ids.shape[-1] if isinstance(completion_ids, torch.Tensor) else len(completion_ids)
+
+    # Base rewards (same for all steps)
     r_correct = 2.0 if is_correct else 0.0
+    r_penalty = 0.0 if num_meta >= 2 else (-0.3 if num_meta == 1 else -0.5)
 
-    if num_meta_blocks >= 2:
-        r_penalty = 0.0
-    elif num_meta_blocks == 1:
-        r_penalty = -0.3
-    else:
-        r_penalty = -0.5
+    meta_positions = find_meta_positions_in_ids(completion_ids, tokenizer)
 
-    r_calib = 0.0
-    if confidence is not None:
-        actual = 1.0 if is_correct else 0.0
-        r_calib = max(0.0, 1.0 - abs(confidence - actual))
+    if not meta_positions or num_meta == 0:
+        # No meta blocks: uniform advantage
+        return torch.ones(comp_len)
 
-    return r_correct + r_calib + r_penalty
+    # Compute per-step rewards
+    n_steps = max(len(meta_positions), 1)
+    step_rewards = []
+    for k in range(n_steps):
+        conf_k = confidences[k] if k < len(confidences) else None
+        r_calib_k = 0.0
+        if conf_k is not None:
+            actual = 1.0 if is_correct else 0.0
+            r_calib_k = max(0.0, 1.0 - abs(conf_k - actual))
+        step_reward = r_correct + r_calib_k + r_penalty
+        step_rewards.append(max(step_reward, 0.01))  # clamp positive
+
+    mean_reward = sum(step_rewards) / len(step_rewards) if step_rewards else 1.0
+    mean_reward = max(mean_reward, 0.01)
+
+    # Build per-token multiplier
+    multiplier = torch.ones(comp_len)
+    current_step = 0
+    for t in range(comp_len):
+        while (current_step < n_steps - 1 and
+               current_step < len(meta_positions) and
+               t > meta_positions[current_step][1]):
+            current_step += 1
+        if current_step < len(step_rewards):
+            multiplier[t] = step_rewards[current_step] / mean_reward
+
+    return multiplier
 
 
-# ─── Reward function for TRL (sequence-level, called by parent) ───
 def metacot_reward_fn(completions, ground_truth=None, **kwargs):
-    """Sequence-level reward for initial GRPO advantage computation.
-    These advantages are REPLACED by step-level advantages in our override.
-    """
+    """Sequence-level reward for GRPO advantage computation."""
     rewards = []
     for i, completion in enumerate(completions):
         text = completion[0]["content"] if isinstance(completion, list) else str(completion)
@@ -110,7 +134,6 @@ def metacot_reward_fn(completions, ground_truth=None, **kwargs):
 
         r_correct = 2.0 if is_correct else 0.0
         r_penalty = 0.0 if num_meta >= 2 else (-0.3 if num_meta == 1 else -0.5)
-
         r_calib = 0.0
         if confidences:
             avg_conf = sum(confidences) / len(confidences)
@@ -121,178 +144,143 @@ def metacot_reward_fn(completions, ground_truth=None, **kwargs):
     return rewards
 
 
-def _compute_grpo_advantages(rewards):
-    """GRPO group normalization: z-score within group."""
-    if len(rewards) < 2:
-        return [0.0] * len(rewards)
-    mean_r = sum(rewards) / len(rewards)
-    var_r = sum((r - mean_r) ** 2 for r in rewards) / len(rewards)
-    std_r = max(var_r ** 0.5, 1e-8)
-    return [(r - mean_r) / std_r for r in rewards]
-
-
-# ─── Custom GRPO Trainer: Agent Lightning Transition Mode ───
 class MetaCotGRPOTrainer(GRPOTrainer):
-    """GRPO with step-level splitting (Agent Lightning transition mode).
+    """GRPO with per-token step-level advantages (DDP-compatible).
 
-    Each <|meta|> step becomes a separate training example:
-    - Step k prompt = original_prompt + all tokens before step k
-    - Step k completion = tokens of step k (until next <|meta|> or end)
-    - Step k reward = R_correct(same) + R_calib_k(per-step) + R_penalty(same)
-    - GRPO advantages computed across all steps from all rollouts
+    Instead of splitting steps into separate examples (breaks DDP),
+    we expand the sequence-level advantage into per-token advantages
+    using step-level reward ratios from <|meta|> boundaries.
     """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._cached_ground_truths = []
+        self._step_multipliers = {}  # cache per-token multipliers
 
     def _generate_and_score_completions(self, inputs):
-        """Generate full completions, then split into per-step training examples."""
-        # Cache ground truths before super() consumes inputs
+        """Cache ground truths and compute per-token step multipliers."""
         if isinstance(inputs, list):
-            self._cached_ground_truths = [
-                x.get("ground_truth", "") for x in inputs
-            ]
+            self._cached_ground_truths = [x.get("ground_truth", "") for x in inputs]
         elif isinstance(inputs, dict):
             self._cached_ground_truths = inputs.get("ground_truth", [])
 
-        # Get full completions from parent
         outputs = super()._generate_and_score_completions(inputs)
 
         B = outputs["completion_ids"].shape[0]
+        comp_len = outputs["completion_ids"].shape[1]
         device = outputs["completion_ids"].device
         tokenizer = self.processing_class
         num_gens = getattr(self.args, 'num_generations', 1)
         n_prompts = len(self._cached_ground_truths)
 
-        # Collect per-step data
-        all_step_prompt_ids = []
-        all_step_completion_ids = []
-        all_step_rewards = []
-        all_step_old_logps = []  # will be None, recomputed by parent
+        step_multipliers = torch.ones(B, comp_len, device=device)
+        n_steps_total = 0
+        n_with_meta = 0
 
         for i in range(B):
-            prompt_ids_i = outputs["prompt_ids"][i]
-            comp_ids_i = outputs["completion_ids"][i]
-            full_ids_i = torch.cat([prompt_ids_i, comp_ids_i])
+            comp_ids = outputs["completion_ids"][i]
+            comp_text = tokenizer.decode(comp_ids, skip_special_tokens=False)
 
-            # Decode with special tokens preserved
-            comp_text = tokenizer.decode(comp_ids_i, skip_special_tokens=False)
-            full_text = tokenizer.decode(full_ids_i, skip_special_tokens=False)
-
-            # Get ground truth
             prompt_idx = i // num_gens if num_gens > 0 else i
             gt = self._cached_ground_truths[prompt_idx] if prompt_idx < n_prompts else ""
-            is_correct = check_correctness(full_text, str(gt))
+            is_correct = check_correctness(comp_text, str(gt))
 
-            # Find <|meta|> boundaries in completion
-            meta_positions = find_meta_positions_in_ids(comp_ids_i, tokenizer)
-            parsed = parse_meta_blocks(comp_text)
-            num_meta = parsed["num_blocks"]
-            confidences = parsed["confidences"]
+            seq_adv = outputs["advantages"][i].item()
+            multiplier = compute_per_token_step_advantages(
+                comp_ids, comp_text, is_correct, seq_adv, tokenizer,
+            )
 
-            if not meta_positions:
-                # No meta blocks: keep as single example
-                reward = compute_step_reward(is_correct, None, 0)
-                all_step_prompt_ids.append(prompt_ids_i)
-                all_step_completion_ids.append(comp_ids_i)
-                all_step_rewards.append(reward)
+            if len(multiplier) >= comp_len:
+                step_multipliers[i] = multiplier[:comp_len].to(device)
             else:
-                # Split by <|meta|> boundaries
-                prompt_len = prompt_ids_i.shape[0]
-                step_boundaries = []
+                step_multipliers[i, :len(multiplier)] = multiplier.to(device)
 
-                for k, (start, end) in enumerate(meta_positions):
-                    step_start = 0 if k == 0 else meta_positions[k - 1][1] + 1
-                    step_end = end + 1  # include the </meta> token
-                    step_boundaries.append((step_start, step_end))
+            meta_pos = find_meta_positions_in_ids(comp_ids, tokenizer)
+            n_steps_total += max(len(meta_pos), 1)
+            if meta_pos:
+                n_with_meta += 1
 
-                # Last segment: from last meta end to end of completion
-                if meta_positions:
-                    last_end = meta_positions[-1][1] + 1
-                    if last_end < comp_ids_i.shape[0]:
-                        step_boundaries.append((last_end, comp_ids_i.shape[0]))
+        outputs["step_multipliers"] = step_multipliers
 
-                for k, (s_start, s_end) in enumerate(step_boundaries):
-                    # Step k prompt = original prompt + all tokens before this step
-                    step_prompt = torch.cat([prompt_ids_i, comp_ids_i[:s_start]])
-                    # Step k completion = this step's tokens
-                    step_completion = comp_ids_i[s_start:s_end]
+        mode = "train" if self.model.training else "eval"
+        self._metrics[mode]["meta_block_ratio"].append(n_with_meta / max(B, 1))
+        self._metrics[mode]["avg_steps_per_completion"].append(n_steps_total / max(B, 1))
 
-                    if step_completion.shape[0] == 0:
-                        continue
+        return outputs
 
-                    # Per-step reward: R_correct(same) + R_calib_k + R_penalty
-                    conf_k = confidences[k] if k < len(confidences) else None
-                    reward_k = compute_step_reward(is_correct, conf_k, num_meta)
+    def _compute_loss(self, model, inputs):
+        """GRPO loss with per-token step advantages.
 
-                    all_step_prompt_ids.append(step_prompt)
-                    all_step_completion_ids.append(step_completion)
-                    all_step_rewards.append(reward_k)
+        per_token_advantage = sequence_advantage * step_multiplier
+        step_multiplier = step_reward / mean_step_reward (always > 0)
 
-        if not all_step_prompt_ids:
-            # Fallback: return original outputs unchanged
-            return outputs
+        This is DDP-safe because batch size doesn't change.
+        """
+        prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
+        completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
+        input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
+        attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
+        logits_to_keep = completion_ids.size(1)
 
-        # Pad to uniform lengths
-        max_prompt_len = max(p.shape[0] for p in all_step_prompt_ids)
-        max_comp_len = max(c.shape[0] for c in all_step_completion_ids)
-        B_new = len(all_step_prompt_ids)
+        per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
 
-        pad_id = tokenizer.pad_token_id or 0
+        if self.beta != 0.0:
+            ref_per_token_logps = inputs["ref_per_token_logps"]
+            per_token_kl = (
+                torch.exp(ref_per_token_logps - per_token_logps)
+                - (ref_per_token_logps - per_token_logps) - 1
+            )
 
-        padded_prompt_ids = torch.full((B_new, max_prompt_len), pad_id, device=device, dtype=torch.long)
-        padded_prompt_mask = torch.zeros(B_new, max_prompt_len, device=device, dtype=torch.long)
-        padded_comp_ids = torch.full((B_new, max_comp_len), pad_id, device=device, dtype=torch.long)
-        padded_comp_mask = torch.zeros(B_new, max_comp_len, device=device, dtype=torch.long)
-
-        for j in range(B_new):
-            p_len = all_step_prompt_ids[j].shape[0]
-            c_len = all_step_completion_ids[j].shape[0]
-            # Right-align prompt (pad left)
-            padded_prompt_ids[j, max_prompt_len - p_len:] = all_step_prompt_ids[j]
-            padded_prompt_mask[j, max_prompt_len - p_len:] = 1
-            # Left-align completion (pad right)
-            padded_comp_ids[j, :c_len] = all_step_completion_ids[j]
-            padded_comp_mask[j, :c_len] = 1
-
-        # Compute GRPO advantages from step-level rewards
-        advantages = torch.tensor(
-            _compute_grpo_advantages(all_step_rewards),
-            device=device, dtype=torch.float32
+        advantages = inputs["advantages"]
+        old_per_token_logps = (
+            per_token_logps.detach() if inputs["old_per_token_logps"] is None
+            else inputs["old_per_token_logps"]
         )
+        coef_1 = torch.exp(per_token_logps - old_per_token_logps)
+        coef_2 = torch.clamp(coef_1, 1 - self.epsilon_low, 1 + self.epsilon_high)
 
-        # Build new outputs
-        new_outputs = {
-            "prompt_ids": padded_prompt_ids,
-            "prompt_mask": padded_prompt_mask,
-            "completion_ids": padded_comp_ids,
-            "completion_mask": padded_comp_mask,
-            "advantages": advantages,
-            "old_per_token_logps": None,  # will be recomputed
-        }
+        if self.args.delta is not None:
+            coef_1 = torch.clamp(coef_1, max=self.args.delta)
 
-        # Copy any other keys from original outputs
-        for key in outputs:
-            if key not in new_outputs:
-                new_outputs[key] = outputs[key]
+        # Per-token step advantages: expand sequence advantage by step multiplier
+        step_multipliers = inputs.get("step_multipliers")
+        if step_multipliers is not None:
+            per_token_advantages = advantages.unsqueeze(1) * step_multipliers
+        else:
+            per_token_advantages = advantages.unsqueeze(1)
+
+        per_token_loss1 = coef_1 * per_token_advantages
+        per_token_loss2 = coef_2 * per_token_advantages
+        per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+
+        if self.beta != 0.0:
+            per_token_loss = per_token_loss + self.beta * per_token_kl
+
+        if self.loss_type == "grpo":
+            loss = ((per_token_loss * completion_mask).sum(-1) / completion_mask.sum(-1).clamp(min=1.0)).mean()
+        elif self.loss_type == "bnpo":
+            loss = (per_token_loss * completion_mask).sum() / completion_mask.sum().clamp(min=1.0)
+        elif self.loss_type == "dr_grpo":
+            loss = (per_token_loss * completion_mask).sum() / (per_token_loss.size(0) * self.max_completion_length)
+        else:
+            raise ValueError(f"Unknown loss type: {self.loss_type}")
 
         # Metrics
         mode = "train" if self.model.training else "eval"
-        n_steps_total = B_new
-        n_with_meta = sum(1 for r in all_step_rewards if r > 0)
-        avg_reward = sum(all_step_rewards) / max(len(all_step_rewards), 1)
-        self._metrics[mode]["step_count"].append(float(n_steps_total))
-        self._metrics[mode]["avg_step_reward"].append(avg_reward)
-        self._metrics[mode]["reward"].append(avg_reward)
+        if self.beta != 0.0:
+            mean_kl = (per_token_kl * completion_mask).sum() / completion_mask.sum()
+            self._metrics[mode]["kl"].append(self.accelerator.gather(mean_kl).nanmean().item())
 
-        print(f"[Step split] {B} completions → {B_new} step examples, "
-              f"avg_reward={avg_reward:.3f}, avg_steps={B_new/max(B,1):.1f}")
+        is_low_clipped = (coef_1 < 1 - self.epsilon_low) & (per_token_advantages < 0)
+        is_high_clipped = (coef_1 > 1 + self.epsilon_high) & (per_token_advantages > 0)
+        low_clip = ((is_low_clipped * completion_mask).sum(-1) / completion_mask.sum(-1).clamp(min=1.0)).mean()
+        high_clip = ((is_high_clipped * completion_mask).sum(-1) / completion_mask.sum(-1).clamp(min=1.0)).mean()
+        self._metrics[mode]["clip_ratio/low_mean"].append(self.accelerator.gather(low_clip).nanmean().item())
+        self._metrics[mode]["clip_ratio/high_mean"].append(self.accelerator.gather(high_clip).nanmean().item())
 
-        return new_outputs
+        return loss
 
 
-# ─── Dataset preparation ───
 def prepare_dataset(data_path):
     df = pd.read_parquet(data_path)
     records = []
@@ -319,7 +307,6 @@ def main():
     parser.add_argument("--num_generations", type=int, default=4)
     parser.add_argument("--max_completion_length", type=int, default=2048)
     parser.add_argument("--lora_rank", type=int, default=32)
-    parser.add_argument("--lambda_gnosis", type=float, default=0.5)
     args = parser.parse_args()
 
     os.environ["WANDB_PROJECT"] = "metacot-math"
@@ -349,7 +336,6 @@ def main():
         lora_alpha=args.lora_rank,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
                         "gate_proj", "up_proj", "down_proj"],
-        # Gnosis heads trained with full params (not LoRA)
         modules_to_save=["stop_head", "attn_extractor", "hid_extractor", "conf_extractor"],
         lora_dropout=0.05,
         task_type="CAUSAL_LM",
@@ -375,16 +361,16 @@ def main():
         save_steps=200,
         save_total_limit=3,
         report_to="wandb",
-        run_name="qwen3-grpo-stepwise-transition",
+        run_name="qwen3-grpo-stepwise-v2",
         remove_unused_columns=False,
     )
 
     train_dataset = prepare_dataset(args.train_data)
-    print(f"=== MetaCot GRPO: Agent Lightning Transition Mode ===")
+    print(f"=== MetaCot GRPO: Per-Token Step Advantages ===")
     print(f"Dataset: {len(train_dataset)} problems")
-    print(f"Step splitting: each <|meta|> step = separate training example")
-    print(f"R_correct: same for ALL steps | R_calib: per-step | R_penalty: same")
-    print(f"GRPO: steps compete across rollouts")
+    print(f"Step rewards: R_correct(same) + R_calib_k(per-step) + R_penalty(same)")
+    print(f"Per-token advantage = seq_advantage * (step_reward / mean_step_reward)")
+    print(f"DDP-compatible: batch size constant, no step splitting")
 
     trainer = MetaCotGRPOTrainer(
         model=model,
