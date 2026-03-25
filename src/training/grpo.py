@@ -79,9 +79,9 @@ def run_grpo(config_path: str):
     max_tokens = config.get("max_tokens", 2048)
     lambda_calib = config.get("lambda_calib", 1.0)
 
-    # Use accelerate for multi-GPU
+    # Use accelerate + DeepSpeed ZeRO-3 for multi-GPU
     from accelerate import Accelerator
-    accelerator = Accelerator(mixed_precision="bf16")
+    accelerator = Accelerator()
 
     # Only main process logs to wandb
     if accelerator.is_main_process:
