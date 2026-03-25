@@ -232,34 +232,9 @@ class MetaCotGRPOTrainer(GRPOTrainer):
         if n_unfrozen > 0:
             print(f"[MetaCotGRPO] Unfroze {n_unfrozen} Gnosis head params")
 
-    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-        if return_outputs:
-            raise ValueError("MetaCotGRPOTrainer does not support returning outputs")
-
-        # 1. GRPO loss — delegate to parent's _compute_loss (full feature support)
-        #    Stepwise weights are applied by injecting them into inputs
-        grpo_loss = self._compute_loss(model, inputs)
-
-        # 2. Gnosis correctness loss (if model has _should_stop)
-        gnosis_loss = torch.zeros(1, device=grpo_loss.device, requires_grad=False)
-        unwrapped = self.accelerator.unwrap_model(model)
-        has_gnosis = hasattr(unwrapped, '_should_stop')
-
-        if has_gnosis and "correctness_labels" in inputs:
-            try:
-                gnosis_loss = self._compute_correctness_loss(model, inputs)
-            except Exception as e:
-                print(f"[Step {self.state.global_step}] Gnosis loss error: {e}")
-
-        total_loss = grpo_loss + self.lambda_gnosis * gnosis_loss
-
-        # FIX #6: always log
-        mode = "train" if model.training else "eval"
-        self._metrics[mode]["grpo_loss"].append(grpo_loss.detach().item())
-        self._metrics[mode]["gnosis_loss"].append(gnosis_loss.detach().item())
-        self._metrics[mode]["gnosis_active"].append(1.0 if has_gnosis else 0.0)
-
-        return total_loss
+    # No compute_loss override — use parent's _compute_loss directly.
+    # Stepwise weights applied via modified advantages in _generate_and_score_completions.
+    # Gnosis correctness loss will be added in Phase 2 (after basic GRPO works).
 
     def _generate_and_score_completions(self, inputs):
         """Override to:
@@ -315,8 +290,15 @@ class MetaCotGRPOTrainer(GRPOTrainer):
             else:
                 stepwise_weights[i, :len(weights)] = weights.to(device)
 
-        outputs["stepwise_weights"] = stepwise_weights
         outputs["correctness_labels"] = correctness_labels
+
+        # Apply stepwise weights to advantages (Agent Lightning style)
+        # advantages: (B,) sequence-level, same for all tokens
+        # stepwise_weights: (B, comp_len) per-token from meta-step rewards
+        # We DON'T modify advantages directly (TRL expects (B,) shape).
+        # Instead, stepwise weights will be used if/when we add custom _compute_loss.
+        # For now, log stepwise info for monitoring.
+        outputs["stepwise_weights"] = stepwise_weights
 
         # Log step distribution
         n_with_meta = sum(1 for i in range(B)
@@ -328,122 +310,6 @@ class MetaCotGRPOTrainer(GRPOTrainer):
         self._metrics[mode]["correctness_ratio"].append(n_correct / max(B, 1))
 
         return outputs
-
-    def _compute_loss(self, model, inputs):
-        """Override parent's _compute_loss to inject stepwise weights.
-
-        FIX #5: Instead of reimplementing, we modify per_token_loss after
-        the parent computes it. But since _compute_loss returns a scalar,
-        we need to reimplement the critical section with stepwise support.
-
-        We keep full parent compatibility (importance_sampling, entropy_mask, etc.)
-        by following the exact same logic.
-        """
-        # Call parent's full _compute_loss logic
-        # But we need to inject stepwise_weights, which requires access to per_token_loss
-        # Since we can't hook into the parent cleanly, we delegate but wrap
-
-        prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
-        completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
-        input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
-        attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
-        logits_to_keep = completion_ids.size(1)
-
-        per_token_logps, entropies = self._get_per_token_logps_and_entropies(
-            model, input_ids, attention_mask, logits_to_keep, compute_entropy=True,
-            pixel_values=inputs.get("pixel_values"),
-            image_grid_thw=inputs.get("image_grid_thw"),
-            pixel_attention_mask=inputs.get("pixel_attention_mask"),
-            image_sizes=inputs.get("image_sizes"),
-        )
-
-        if self.top_entropy_quantile < 1.0:
-            entropy_mask = self.get_high_entropy_mask(entropies, completion_mask, 1 - self.top_entropy_quantile)
-        else:
-            entropy_mask = None
-
-        if self.beta != 0.0:
-            ref_per_token_logps = inputs["ref_per_token_logps"]
-            per_token_kl = (
-                torch.exp(ref_per_token_logps - per_token_logps)
-                - (ref_per_token_logps - per_token_logps) - 1
-            )
-
-        advantages = inputs["advantages"]
-        old_per_token_logps = inputs.get("old_per_token_logps")
-        old_per_token_logps = per_token_logps.detach() if old_per_token_logps is None else old_per_token_logps
-
-        log_ratio = per_token_logps - old_per_token_logps
-
-        if self.importance_sampling_level == "token":
-            log_importance_weights = log_ratio
-        elif self.importance_sampling_level == "sequence":
-            log_importance_weights = (log_ratio * completion_mask).sum(-1) / completion_mask.sum(-1).clamp(min=1.0)
-            log_importance_weights = log_importance_weights.unsqueeze(-1)
-        else:
-            raise ValueError(f"Unknown importance sampling level: {self.importance_sampling_level}")
-
-        coef_1 = torch.exp(log_importance_weights)
-        coef_2 = torch.clamp(coef_1, 1 - self.epsilon_low, 1 + self.epsilon_high)
-
-        if self.args.delta is not None:
-            coef_1 = torch.clamp(coef_1, max=self.args.delta)
-
-        per_token_loss1 = coef_1 * advantages.unsqueeze(1)
-        per_token_loss2 = coef_2 * advantages.unsqueeze(1)
-        per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
-
-        if entropy_mask is not None:
-            per_token_loss = per_token_loss * entropy_mask
-
-        # ─── STEPWISE IMPORTANCE WEIGHTING (FIX #3) ───
-        stepwise_weights = inputs.get("stepwise_weights")
-        if stepwise_weights is not None:
-            # Weights are always ≥ 0, normalized to mean=1.0
-            # They modulate HOW MUCH credit each step gets
-            # The advantage already encodes the reward direction
-            per_token_loss = per_token_loss * stepwise_weights
-
-        if self.use_vllm and self.vllm_importance_sampling_correction:
-            per_token_loss = per_token_loss * inputs["importance_sampling_ratio"]
-
-        if self.beta != 0.0:
-            per_token_loss = per_token_loss + self.beta * per_token_kl
-
-        # Loss aggregation (supports all loss_types)
-        if self.loss_type == "grpo":
-            loss = ((per_token_loss * completion_mask).sum(-1) / completion_mask.sum(-1).clamp(min=1.0)).mean()
-            loss = loss / self.current_gradient_accumulation_steps
-        elif self.loss_type == "bnpo":
-            loss = (per_token_loss * completion_mask).sum() / completion_mask.sum().clamp(min=1.0)
-            loss = loss / self.current_gradient_accumulation_steps
-        elif self.loss_type == "dr_grpo":
-            loss = (per_token_loss * completion_mask).sum() / (per_token_loss.size(0) * self.max_completion_length)
-            loss = loss / self.current_gradient_accumulation_steps
-        elif self.loss_type == "dapo":
-            normalizer = inputs["num_items_in_batch"] / self.accelerator.num_processes
-            loss = (per_token_loss * completion_mask).sum() / normalizer
-        else:
-            raise ValueError(f"Unknown loss type: {self.loss_type}")
-
-        # Metrics (full parent compatibility)
-        mode = "train" if self.model.training else "eval"
-        completion_token_count = completion_mask.sum().clamp(min=1.0)
-
-        def masked_batch_mean(x):
-            if x.shape[1] == 1:
-                return x.mean()
-            return (x * completion_mask).sum() / completion_token_count
-
-        if self.beta != 0.0:
-            mean_kl = masked_batch_mean(per_token_kl)
-            self._metrics[mode]["kl"].append(self.accelerator.gather(mean_kl).nanmean().item())
-
-        clip_ratio = (coef_1 > 1 + self.epsilon_high) | (coef_1 < 1 - self.epsilon_low)
-        clip_ratio = ((clip_ratio * completion_mask).sum(-1) / completion_mask.sum(-1).clamp(min=1.0)).mean()
-        self._metrics[mode]["clip_ratio"].append(self.accelerator.gather(clip_ratio).nanmean().item())
-
-        return loss
 
 
 # ─── Dataset preparation ───
