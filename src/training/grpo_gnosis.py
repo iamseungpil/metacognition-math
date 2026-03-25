@@ -29,8 +29,40 @@ from trl import GRPOConfig, GRPOTrainer
 from peft import LoraConfig
 
 from src.metacot.prompt import META_START, META_END, parse_meta_blocks
-from src.rollout.vllm_rollout import check_correctness
 from src.training.stepwise import find_meta_token_positions as find_meta_positions_in_ids
+import re
+
+
+def _extract_answer(text):
+    """Extract answer from \\boxed{} or other formats."""
+    pattern = r'\\boxed\{((?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\}'
+    matches = re.findall(pattern, text)
+    if matches:
+        return matches[-1].strip()
+    m = re.search(r'####\s*(.+?)(?:\n|$)', text)
+    if m:
+        return m.group(1).strip()
+    m = re.search(r'(?:the answer is|answer:\s*)\s*(.+?)(?:\.|$)', text, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    return ""
+
+
+def check_correctness(model_answer, gold_answer):
+    """Check if model answer matches gold answer."""
+    model_final = _extract_answer(model_answer)
+    gold_str = str(gold_answer).strip()
+    gold_final = _extract_answer(gold_str) or gold_str
+    if not model_final:
+        return False
+    if model_final == gold_final:
+        return True
+    try:
+        if abs(float(model_final) - float(gold_final)) < 1e-6:
+            return True
+    except (ValueError, TypeError):
+        pass
+    return model_final.lower().strip() == gold_final.lower().strip()
 
 
 # ─── Constants ───
