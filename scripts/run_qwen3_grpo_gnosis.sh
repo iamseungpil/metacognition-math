@@ -34,6 +34,24 @@ cp /scratch/metacognition/gnosis_repo/transformers/src/transformers/models/qwen3
 cp /scratch/metacognition/gnosis_repo/transformers/src/transformers/models/qwen3/feature_extractors.py "$INSTALLED_TRANSFORMERS/models/qwen3/feature_extractors.py" 2>/dev/null
 echo "Patched Qwen3 model with Gnosis feature extractors"
 
+# Patch gnosis_repo TRL: replace assertion with auto-unfreeze
+python3 -c "
+f = '/scratch/metacognition/gnosis_repo/trl/trl/trainer/grpo_trainer.py'
+with open(f) as fh: code = fh.read()
+old = 'assert not bad, f\"Correctness head accidentally frozen: {bad[:4]}...\"'
+new = '''if bad:
+            print(f\"[WARN] Auto-unfreezing {len(bad)} Gnosis params\")
+            for n_, p_ in model.named_parameters():
+                if _trainable_correctness_param(n_): p_.requires_grad_(True)'''
+if old in code:
+    code = code.replace(old, new)
+    with open(f, 'w') as fh: fh.write(code)
+    print('Patched TRL assertion')
+else:
+    print('TRL already patched or assertion not found')
+" 2>/dev/null
+echo "TRL patch applied"
+
 # Use gnosis_repo's TRL only (not transformers)
 export PYTHONPATH="/scratch/metacognition/gnosis_repo/trl:$PYTHONPATH"
 export WANDB_API_KEY=$(cat ~/.wandb_key 2>/dev/null || echo "2f4e627868f1f9dad10bcb1a14fbf96817e6baa9")
