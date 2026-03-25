@@ -11,32 +11,15 @@ source /opt/conda/etc/profile.d/conda.sh
 conda activate ptca
 export OPENSSL_CONF=/dev/null
 
-# Install PEFT if not present
-pip install peft --quiet 2>/dev/null || true
-# Remove installed TRL to use gnosis_repo version
-pip uninstall trl -y --quiet 2>/dev/null || true
+# Install PEFT and TRL if not present
+pip install peft trl --quiet 2>/dev/null || true
 
 cd /scratch/metacognition
 export PYTHONPATH=/scratch/metacognition
 
-# Step 1: Copy Gnosis-modified Qwen3 files into installed transformers
-INSTALLED_TRANSFORMERS=$(python -c "import transformers, os; print(os.path.dirname(transformers.__file__))")
-echo "Installed transformers at: $INSTALLED_TRANSFORMERS"
-
-cp /scratch/metacognition/gnosis_repo/transformers/src/transformers/models/qwen3/modeling_qwen3.py \
-   "$INSTALLED_TRANSFORMERS/models/qwen3/modeling_qwen3.py"
-cp /scratch/metacognition/gnosis_repo/transformers/src/transformers/models/qwen3/feature_extractors.py \
-   "$INSTALLED_TRANSFORMERS/models/qwen3/feature_extractors.py"
-echo "Copied Gnosis Qwen3 model files"
-
-# Step 2: Patch Qwen3 forward to skip Gnosis head during generate()
-python scripts/patch_qwen3_forward.py
-
-# Step 3: Patch TRL assertion (auto-unfreeze instead of assert)
-python scripts/patch_trl_assertion.py
-
-# Step 4: Set PYTHONPATH for gnosis TRL
-export PYTHONPATH="/scratch/metacognition/gnosis_repo/trl:$PYTHONPATH"
+# Phase 1: Use standard Qwen3 + TRL (no Gnosis model modifications)
+# Gnosis integration will be added in Phase 2 after basic GRPO works
+echo "Using standard Qwen3 model + pip TRL"
 export WANDB_API_KEY=$(cat ~/.wandb_key 2>/dev/null || echo "2f4e627868f1f9dad10bcb1a14fbf96817e6baa9")
 
 echo "=== Phase 3: GRPO + Full Gnosis ==="

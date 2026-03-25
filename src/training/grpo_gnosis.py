@@ -222,15 +222,7 @@ class MetaCotGRPOTrainer(GRPOTrainer):
         self.lambda_gnosis = lambda_gnosis
         self._cached_ground_truths = []
 
-        # Unfreeze Gnosis heads (PEFT freezes everything not in target_modules)
-        gnosis_prefixes = ("stop_head", "attn_extractor", "hid_extractor", "conf_extractor")
-        n_unfrozen = 0
-        for name, param in self.model.named_parameters():
-            if any(p in name for p in gnosis_prefixes):
-                param.requires_grad_(True)
-                n_unfrozen += 1
-        if n_unfrozen > 0:
-            print(f"[MetaCotGRPO] Unfroze {n_unfrozen} Gnosis head params")
+        # Gnosis head unfreeze will be added in Phase 2
 
     # No compute_loss override — use parent's _compute_loss directly.
     # Stepwise weights applied via modified advantages in _generate_and_score_completions.
@@ -357,7 +349,7 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         args.model_path,
         torch_dtype=torch.bfloat16,
-        attn_implementation="sdpa",  # Gnosis uses eager_attention_forward when output_attentions=True
+        attn_implementation="sdpa",
         trust_remote_code=True,
         use_cache=False,
     )
@@ -369,9 +361,7 @@ def main():
         lora_alpha=args.lora_rank,  # scaling factor = 1.0
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
                         "gate_proj", "up_proj", "down_proj"],
-        # modules_to_save: these are trained fully (not through LoRA)
-        # Gnosis head params must be trainable for correctness_loss
-        modules_to_save=["stop_head", "attn_extractor", "hid_extractor", "conf_extractor"],
+        # modules_to_save for Gnosis heads (Phase 2)
         lora_dropout=0.05,
         task_type="CAUSAL_LM",
     )
@@ -391,9 +381,7 @@ def main():
         bf16=True,
         gradient_checkpointing=True,
         beta=0.0,  # No KL (GRPO uses group advantages)
-        # Gnosis handled by our compute_loss override (not parent's)
-        # TRL assertion patched by patch_trl_assertion.py
-        enable_correctness_head=False,
+        # Phase 1: standard GRPO (Gnosis in Phase 2)
         logging_steps=1,
         save_steps=200,
         save_total_limit=3,
