@@ -148,7 +148,7 @@ def run_grpo(config_path: str):
             ).to(accelerator.device)
             prompt_len = prompt_ids.shape[1]
 
-            # Generate G rollouts
+            # Generate G rollouts (batched for GPU efficiency)
             rollout_texts = []
             rollout_full_ids = []
             rollout_rewards = []
@@ -157,17 +157,29 @@ def run_grpo(config_path: str):
             model.eval()
             unwrapped = accelerator.unwrap_model(model)
             with torch.no_grad():
-                for g in range(group_size):
-                    output = unwrapped.generate(
-                        prompt_ids,
-                        max_new_tokens=max_tokens,
-                        do_sample=True,
-                        temperature=0.7,
-                        top_p=0.95,
-                        pad_token_id=tokenizer.pad_token_id,
-                    )
+                # Batch generate all rollouts at once
+                batch_prompt = prompt_ids.repeat(group_size, 1)  # (G, seq_len)
+                batch_attn = torch.ones_like(batch_prompt)
+                batch_output = unwrapped.generate(
+                    batch_prompt,
+                    attention_mask=batch_attn,
+                    max_new_tokens=max_tokens,
+                    do_sample=True,
+                    temperature=0.7,
+                    top_p=0.95,
+                    pad_token_id=tokenizer.pad_token_id,
+                )
+                del batch_prompt, batch_attn
 
-                    full_ids = output[0]
+                # Process each rollout
+                for g in range(group_size):
+                    full_ids = batch_output[g]
+                    # Trim padding if present
+                    if tokenizer.pad_token_id is not None:
+                        non_pad = (full_ids != tokenizer.pad_token_id).nonzero(as_tuple=True)[0]
+                        if len(non_pad) > 0:
+                            full_ids = full_ids[:non_pad[-1] + 1]
+
                     gen_text = tokenizer.decode(full_ids[prompt_len:], skip_special_tokens=False)
                     clean_text = tokenizer.decode(full_ids[prompt_len:], skip_special_tokens=True)
                     rollout_texts.append(clean_text)
@@ -215,7 +227,7 @@ def run_grpo(config_path: str):
                         "is_correct": is_correct,
                         "meta_positions": meta_positions,
                     })
-                    del output
+                del batch_output
 
             # GRPO advantages
             totals = [r["total"] for r in rollout_rewards]
