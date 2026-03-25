@@ -69,25 +69,27 @@ def check_correctness(model_answer, gold_answer):
 LAMBDA_GNOSIS = 0.5
 
 
-def compute_stepwise_importance(
+def compute_stepwise_rewards(
     completion_ids,
     completion_text,
     is_correct,
     tokenizer,
+    lambda_calib=1.0,
+    lambda_progress=0.3,
 ):
-    """Compute per-token importance weights based on <|meta|> step boundaries.
+    """Compute per-step rewards based on <|meta|> step boundaries.
 
-    FIX #3: Weights are always non-negative (importance, not reward).
-    The GRPO advantage already encodes the reward direction.
-    Stepwise weights only modulate HOW MUCH credit each step gets.
+    Agent Lightning style: R_correct is assigned to ALL steps equally.
+    R_calib and R_progress vary per step.
 
-    Design:
-    - Steps with meta blocks → higher importance (model is reflecting)
-    - Last step (with answer) → highest importance
-    - No meta blocks → uniform low importance + penalty via reward function
+    Step reward_k = R_correct + λ_calib * R_calib_k + λ_progress * R_progress_k
+
+    Per-token weights are the step rewards, clamped to ≥ 0.01 to avoid
+    gradient inversion. The GRPO sequence-level advantage controls direction;
+    step rewards control relative credit distribution.
 
     Returns:
-        weights: (completion_len,) tensor, always ≥ 0, normalized to mean=1.0
+        weights: (completion_len,) tensor, ≥ 0, normalized to mean=1.0
         info: dict for logging
     """
     parsed = parse_meta_blocks(completion_text)
@@ -95,55 +97,71 @@ def compute_stepwise_importance(
     confidences = parsed["confidences"]
 
     comp_len = len(completion_ids) if isinstance(completion_ids, list) else completion_ids.shape[-1]
-
     meta_positions = find_meta_positions_in_ids(completion_ids, tokenizer)
 
-    if not meta_positions or num_meta == 0:
-        # No meta blocks: uniform importance (penalty handled by reward function)
-        weights = torch.ones(comp_len)
-        return weights, {"num_steps": 0, "has_meta": False}
+    # R_correct: assigned to ALL steps equally
+    r_correct = 2.0 if is_correct else 0.0
 
-    # Assign importance per step:
-    #   - Each step gets base importance 1.0
-    #   - Steps with high confidence gap get bonus (model is actively calibrating)
-    #   - Last step gets 2x importance (contains answer)
+    if not meta_positions or num_meta == 0:
+        # No meta blocks: uniform weight with penalty
+        r_penalty = -0.5
+        total = r_correct + r_penalty
+        weights = torch.ones(comp_len) * max(total, 0.01)
+        weights = weights / weights.mean().clamp(min=1e-8)
+        return weights, {"num_steps": 0, "has_meta": False, "total_reward": total}
+
+    # Compute per-step rewards (Agent Lightning style)
     n_steps = len(meta_positions)
-    step_importances = []
+    step_rewards = []
+    prev_conf = 0.5
 
     for k in range(n_steps):
-        importance = 1.0
+        c_text = confidences[k] if k < len(confidences) else None
 
-        # Bonus for having confidence (model is actively self-assessing)
-        if k < len(confidences):
-            importance += 0.5
+        # R_calib: how well does stated confidence match actual outcome
+        if c_text is not None:
+            actual = 1.0 if is_correct else 0.0
+            r_calib_k = max(0.0, 1.0 - abs(c_text - actual))
+        else:
+            r_calib_k = 0.0
 
-        # Last step: answer region, most important
-        if k == n_steps - 1:
-            importance *= 2.0
+        # R_progress: is confidence moving in the right direction?
+        if c_text is not None:
+            r_progress_k = (c_text - prev_conf) if is_correct else (prev_conf - c_text)
+            prev_conf = c_text
+        else:
+            r_progress_k = 0.0
 
-        step_importances.append(importance)
+        # R_meta: bonus for using meta blocks
+        r_meta = 0.1 if num_meta >= 2 else 0.0
 
-    # Assign per-token importance based on step boundaries
-    weights = torch.ones(comp_len) * 0.5  # baseline for non-meta tokens
+        # Total step reward: R_correct same for ALL steps
+        total_k = r_correct + lambda_calib * r_calib_k + lambda_progress * r_progress_k + r_meta
+        step_rewards.append(total_k)
 
+    # Assign per-token weights based on step boundaries
+    weights = torch.zeros(comp_len)
     current_step = 0
     for t in range(comp_len):
         while (current_step < n_steps - 1 and
                current_step < len(meta_positions) and
                t > meta_positions[current_step][1]):
             current_step += 1
+        if current_step < len(step_rewards):
+            weights[t] = step_rewards[current_step]
 
-        if current_step < len(step_importances):
-            weights[t] = step_importances[current_step]
+    # Clamp to non-negative (avoid gradient inversion)
+    weights = weights.clamp(min=0.01)
 
     # Normalize to mean=1.0 (preserves total gradient magnitude)
     weights = weights / weights.mean().clamp(min=1e-8)
 
     return weights, {
         "num_steps": n_steps,
-        "step_importances": step_importances,
+        "step_rewards": step_rewards,
         "has_meta": True,
         "confidences": confidences,
+        "avg_step_reward": sum(step_rewards) / len(step_rewards),
     }
 
 
@@ -281,7 +299,7 @@ class MetaCotGRPOTrainer(GRPOTrainer):
             correctness_labels[i] = 1.0 if is_correct else 0.0
 
             # FIX #3: compute importance weights (always non-negative)
-            weights, info = compute_stepwise_importance(
+            weights, info = compute_stepwise_rewards(
                 comp_ids, comp_text, is_correct, tokenizer,
             )
             if len(weights) >= comp_len:
