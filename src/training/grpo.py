@@ -104,7 +104,7 @@ def run_grpo(config_path: str):
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
-        attn_implementation="flash_attention_2",
+        attn_implementation="sdpa",  # Use PyTorch SDPA (compatible with torch 2.5)
         trust_remote_code=True,
         use_cache=False,
     )
