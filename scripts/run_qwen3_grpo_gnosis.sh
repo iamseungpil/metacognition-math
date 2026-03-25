@@ -2,7 +2,14 @@
 # Phase 3: GRPO + Full Gnosis on Qwen3-8B Meta SFT
 # Uses gnosis_repo's TRL GRPOTrainer with vLLM colocate, 4 GPU
 set -e
+
+# Fix OpenSSL FIPS — MUST be before any import
 export OPENSSL_CONF=/dev/null
+export OPENSSL_ia32cap="~0x200000200000000"
+
+# Disable FIPS at system level
+sudo sed -i 's/^\.include.*fips.*//g; s/^fips = fips_sect/# fips = fips_sect/g; s/^activate = 1/# activate = 1/g' /etc/ssl/openssl.cnf 2>/dev/null || true
+
 source /opt/conda/etc/profile.d/conda.sh
 conda activate verl
 export OPENSSL_CONF=/dev/null
