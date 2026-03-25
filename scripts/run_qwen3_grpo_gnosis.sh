@@ -36,9 +36,9 @@ cp /scratch/metacognition/gnosis_repo/transformers/src/transformers/models/qwen3
 cp /scratch/metacognition/gnosis_repo/transformers/src/transformers/models/qwen3/feature_extractors.py "$INSTALLED_TRANSFORMERS/models/qwen3/feature_extractors.py" 2>/dev/null
 # Patch the forward() to skip Gnosis head when correctness_labels is None
 # This is needed because TRL calls model.generate() in training mode
-python3 << 'PYEOF'
+python3 << PYEOF
 import re
-f = "$INSTALLED_TRANSFORMERS/models/qwen3/modeling_qwen3.py"
+f = "${INSTALLED_TRANSFORMERS}/models/qwen3/modeling_qwen3.py"
 with open(f) as fh:
     code = fh.read()
 
