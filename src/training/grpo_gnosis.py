@@ -385,6 +385,7 @@ def main():
         warmup_ratio=0.1,
         bf16=True,
         gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
         beta=0.0,  # No KL (GRPO uses group advantages)
         # Phase 1: standard GRPO (Gnosis in Phase 2)
         logging_steps=1,
