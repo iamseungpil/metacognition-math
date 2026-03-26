@@ -122,7 +122,7 @@ def load_filtered_data(data_path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["baseline", "meta"], required=True)
+    parser.add_argument("--mode", choices=["baseline", "meta", "filtered"], required=True)
     parser.add_argument("--model_path", default="checkpoints/qwen3_meta_sft")
     parser.add_argument("--data_path", default="verl_train_filtered.parquet")
     parser.add_argument("--output_dir", default=None)
@@ -162,11 +162,16 @@ def main():
         dataset = load_gsm8k_grpo(args.max_problems)
         run_name = f"grpo-baseline-gsm8k-{args.max_steps}steps"
         print(f"=== BASELINE GRPO (GSM8K, binary reward) ===")
-    else:
+    elif args.mode == "meta":
         reward_fn = meta_reward_fn
         dataset = load_filtered_data(args.data_path)
         run_name = f"grpo-meta-filtered-{args.max_steps}steps"
-        print(f"=== META GRPO (filtered data, meta reward) ===")
+        print(f"=== META GRPO (filtered data, vanilla GRPOTrainer) ===")
+    else:
+        reward_fn = baseline_reward_fn
+        dataset = load_filtered_data(args.data_path)
+        run_name = f"grpo-filtered-baseline-{args.max_steps}steps"
+        print(f"=== FILTERED BASELINE (filtered data, binary reward) ===")
 
     print(f"Dataset: {len(dataset)} problems")
     print(f"Reward: {reward_fn.__name__}")
