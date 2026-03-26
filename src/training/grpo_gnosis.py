@@ -352,7 +352,7 @@ def main():
         save_steps=200,
         save_total_limit=3,
         report_to="wandb",
-        run_name="qwen3-grpo-probe",
+        run_name=f"grpo-probe-step{args.max_steps}-{torch.cuda.device_count()}gpu",
         remove_unused_columns=False,
     )
 
