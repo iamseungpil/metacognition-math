@@ -21,9 +21,9 @@ print(f"  51-90%:             {((pass_rates['pass_rate'] > 0.5) & (pass_rates['p
 print(f"  91-99%:             {((pass_rates['pass_rate'] > 0.9) & (pass_rates['pass_rate'] < 1.0)).sum()}")
 print(f"  100% (always right): {(pass_rates['pass_rate'] == 1.0).sum()}")
 
-# Filter: keep 10-90% pass rate
-good = pass_rates[(pass_rates["pass_rate"] >= 0.1) & (pass_rates["pass_rate"] <= 0.9)]
-print(f"\nFiltered: {len(good)} problems (pass rate 10-90%)")
+# Filter: keep 25-75% pass rate (tighter for better GRPO signal)
+good = pass_rates[(pass_rates["pass_rate"] >= 0.25) & (pass_rates["pass_rate"] <= 0.75)]
+print(f"\nFiltered: {len(good)} problems (pass rate 25-75%)")
 
 # Build GRPO training data (same format as verl_train.parquet)
 problems = df.drop_duplicates("problem_id")[["problem_id", "question", "gold_answer"]]
