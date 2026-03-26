@@ -127,7 +127,7 @@ def main():
     parser.add_argument("--data_path", default="verl_train_filtered.parquet")
     parser.add_argument("--output_dir", default=None)
     parser.add_argument("--max_steps", type=int, default=100)
-    parser.add_argument("--num_generations", type=int, default=32)
+    parser.add_argument("--num_generations", type=int, default=8)
     parser.add_argument("--max_problems", type=int, default=500)
     args = parser.parse_args()
 

@@ -304,7 +304,7 @@ def main():
     parser.add_argument("--train_data", required=True)
     parser.add_argument("--output_dir", default="checkpoints/qwen3_grpo_probe")
     parser.add_argument("--max_steps", type=int, default=1000)
-    parser.add_argument("--num_generations", type=int, default=32)
+    parser.add_argument("--num_generations", type=int, default=8)
     parser.add_argument("--max_completion_length", type=int, default=2048)
     parser.add_argument("--lora_rank", type=int, default=32)
     args = parser.parse_args()
