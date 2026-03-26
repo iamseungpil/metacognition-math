@@ -338,11 +338,11 @@ def main():
         num_generations=args.num_generations,
         max_completion_length=args.max_completion_length,
         max_prompt_length=2048,
-        temperature=0.8,  # higher for more diverse rollouts → reward variance
+        temperature=1.0,  # high for diverse rollouts → mix of correct/incorrect
         use_vllm=False,
         per_device_train_batch_size=1,
         gradient_accumulation_steps=4,
-        learning_rate=5e-6,
+        learning_rate=5e-5,  # 10x higher for LoRA (standard for LoRA GRPO)
         lr_scheduler_type="cosine",
         warmup_ratio=0.0,  # no warmup — start learning immediately
         bf16=True,
