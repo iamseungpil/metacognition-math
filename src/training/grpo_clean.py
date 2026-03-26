@@ -247,7 +247,6 @@ def main():
         args=training_args,
         train_dataset=dataset,
         reward_funcs=reward_funcs,
-        reward_weights=reward_weights,
         processing_class=tokenizer,
         peft_config=lora_config,
     )
