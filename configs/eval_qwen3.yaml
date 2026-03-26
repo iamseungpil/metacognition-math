@@ -17,25 +17,30 @@ benchmarks:
   - name: gsm8k
     dataset: openai/gsm8k
     split: test
-    type: open_ended
   - name: math_test
     dataset: hendrycks/competition_math
     split: test
-    type: open_ended
 
-  # OOD — harder, not in training data
-  - name: aime2024
-    dataset: math-ai/aime24
-    split: train
-    type: open_ended
+  # OOD Tier 1 — zero/near-zero contamination
   - name: aime2025
-    dataset: opencompass/AIME2025
+    dataset: math-ai/aime25
     split: test
-    type: open_ended
-  - name: olympmath
-    dataset: RUCAIBox/OlymMATH
+  - name: aime2024
+    dataset: HuggingFaceH4/aime_2024
+    split: train
+  - name: olympmath_easy
+    dataset: RUC-AIBOX/OlymMATH
+    config: en-easy
     split: test
-    type: open_ended
+  - name: olympmath_hard
+    dataset: RUC-AIBOX/OlymMATH
+    config: en-hard
+    split: test
+
+  # OOD Tier 2 — applied STEM, tests generalization
+  - name: minerva
+    dataset: math-ai/minervamath
+    split: test
 
 # Generation settings
 max_tokens: 2048

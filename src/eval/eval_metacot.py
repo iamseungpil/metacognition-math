@@ -53,10 +53,13 @@ def check_correctness(model_answer, gold_answer):
     return model_final.lower().strip() == gold_final.lower().strip()
 
 
-def load_benchmark(name, dataset_id, split, max_problems=None):
+def load_benchmark(name, dataset_id, split, max_problems=None, config=None):
     """Load benchmark dataset."""
     try:
-        ds = load_dataset(dataset_id, split=split, trust_remote_code=True)
+        if config:
+            ds = load_dataset(dataset_id, config, split=split, trust_remote_code=True)
+        else:
+            ds = load_dataset(dataset_id, split=split, trust_remote_code=True)
     except Exception:
         try:
             ds = load_dataset(dataset_id, trust_remote_code=True)
@@ -201,7 +204,7 @@ def main():
     print("Loading benchmarks...")
     all_problems = []
     for bench in config["benchmarks"]:
-        problems = load_benchmark(bench["name"], bench["dataset"], bench.get("split", "test"), args.max_problems)
+        problems = load_benchmark(bench["name"], bench["dataset"], bench.get("split", "test"), args.max_problems, bench.get("config"))
         all_problems.extend(problems)
     print(f"Total: {len(all_problems)} problems\n")
 
