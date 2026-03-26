@@ -30,6 +30,6 @@ accelerate launch --num_processes 4 --multi_gpu \
     --mode $MODE \
     --model_path checkpoints/qwen3_meta_sft \
     --max_steps 50 \
-    --num_generations 32
+    --num_generations 8
 
 echo "=== DEBUG $MODE DONE ==="
