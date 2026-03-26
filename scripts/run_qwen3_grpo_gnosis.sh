@@ -15,6 +15,11 @@ pip install "trl==0.19.1" "peft>=0.10" --quiet 2>/dev/null || true
 cd /scratch/metacognition
 export PYTHONPATH=/scratch/metacognition
 export WANDB_API_KEY=$(cat ~/.wandb_key 2>/dev/null || echo "2f4e627868f1f9dad10bcb1a14fbf96817e6baa9")
+# Force new wandb run (don't resume previous)
+export WANDB_RUN_ID=""
+export WANDB_RESUME="never"
+# Clean previous wandb state
+rm -rf /scratch/metacognition/checkpoints/qwen3_grpo_probe/wandb 2>/dev/null
 
 echo "=== Phase 3: GRPO + SimpleProbe ==="
 echo "Model: Qwen3-8B Meta SFT + LoRA"
