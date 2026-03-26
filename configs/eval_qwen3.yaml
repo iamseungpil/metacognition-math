@@ -9,8 +9,8 @@ models:
     path: /scratch/metacognition/checkpoints/base_sft
   - name: qwen3-meta-sft
     path: /scratch/metacognition/checkpoints/qwen3_meta_sft
-  - name: qwen3-grpo-probe
-    path: /scratch/metacognition/checkpoints/qwen3_grpo_probe/final
+  - name: qwen3-grpo-clean
+    path: /scratch/metacognition/checkpoints/grpo_clean_meta_filtered/checkpoint-200
 
 benchmarks:
   # In-distribution (seen during training)
