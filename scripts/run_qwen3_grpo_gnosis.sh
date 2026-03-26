@@ -28,6 +28,7 @@ accelerate launch --num_processes 4 --multi_gpu \
     --probe_path checkpoints/simple_probe_qwen3/best_probe.pt \
     --train_data verl_train.parquet \
     --output_dir checkpoints/qwen3_grpo_probe \
+    --max_completion_length 1024 \
     --max_steps 1000
 
 echo "=== Phase 3 DONE ==="

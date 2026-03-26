@@ -179,11 +179,46 @@ class MetaCotGRPOTrainer(GRPOTrainer):
             if meta_pos:
                 n_with_meta += 1
 
+        # Recompute rewards with probe-based R_calib and update advantages
+        new_rewards = []
+        for i in range(B):
+            comp_text = tokenizer.decode(outputs["completion_ids"][i], skip_special_tokens=False)
+            prompt_idx = i // num_gens if num_gens > 0 else i
+            gt = self._cached_ground_truths[prompt_idx] if prompt_idx < n_prompts else ""
+            is_correct = check_correctness(comp_text, str(gt))
+
+            parsed = parse_meta_blocks(comp_text)
+            num_meta = parsed["num_blocks"]
+            confidences = parsed["confidences"]
+
+            r_correct = 2.0 if is_correct else 0.0
+            r_penalty = 0.0 if num_meta >= 2 else (-0.3 if num_meta == 1 else -0.5)
+
+            # PROBE-BASED R_calib: |c_text - p̂| (not binary actual)
+            p_hat = probe_scores[i]
+            r_calib = 0.0
+            if confidences:
+                avg_conf = sum(confidences) / len(confidences)
+                r_calib = max(0.0, 1.0 - abs(avg_conf - p_hat))
+
+            new_rewards.append(r_correct + r_calib + r_penalty)
+
+        # GRPO advantage: z-normalize within group
+        if len(new_rewards) >= 2:
+            mean_r = sum(new_rewards) / len(new_rewards)
+            var_r = sum((r - mean_r) ** 2 for r in new_rewards) / len(new_rewards)
+            std_r = max(var_r ** 0.5, 1e-8)
+            new_advantages = [(r - mean_r) / std_r for r in new_rewards]
+        else:
+            new_advantages = [0.0] * len(new_rewards)
+
+        outputs["advantages"] = torch.tensor(new_advantages, device=device, dtype=torch.float32)
+
         # Log metrics
         mode = "train" if self.model.training else "eval"
         self._metrics[mode]["meta_block_ratio"].append(n_with_meta / max(B, 1))
-        if probe_scores:
-            self._metrics[mode]["probe/mean_p_hat"].append(sum(probe_scores) / len(probe_scores))
+        self._metrics[mode]["probe/mean_p_hat"].append(sum(probe_scores) / len(probe_scores))
+        self._metrics[mode]["reward"].append(sum(new_rewards) / len(new_rewards))
 
         return outputs
 
@@ -271,7 +306,7 @@ def main():
         gradient_accumulation_steps=4,
         learning_rate=5e-6,
         lr_scheduler_type="cosine",
-        warmup_ratio=0.1,
+        warmup_ratio=0.03,
         bf16=True,
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
