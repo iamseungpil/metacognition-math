@@ -323,8 +323,14 @@ def main():
     else:
         print(f"WARNING: Probe not found at {args.probe_path}")
 
-    # Full training (no LoRA) — LoRA was too restrictive for GRPO
-    lora_config = None
+    lora_config = LoraConfig(
+        r=args.lora_rank,
+        lora_alpha=args.lora_rank * 2,  # scaling 2x for stronger updates
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                        "gate_proj", "up_proj", "down_proj"],
+        lora_dropout=0.05,
+        task_type="CAUSAL_LM",
+    )
 
     training_args = GRPOConfig(
         output_dir=args.output_dir,
@@ -336,7 +342,7 @@ def main():
         use_vllm=False,
         per_device_train_batch_size=1,
         gradient_accumulation_steps=4,
-        learning_rate=1e-6,  # full training, conservative LR
+        learning_rate=1e-4,  # high LR for LoRA GRPO
         lr_scheduler_type="cosine",
         warmup_ratio=0.03,
         bf16=True,
@@ -363,6 +369,7 @@ def main():
         train_dataset=train_dataset,
         reward_funcs=metacot_reward_fn,
         processing_class=tokenizer,
+        peft_config=lora_config,
         probe=probe,
     )
 
