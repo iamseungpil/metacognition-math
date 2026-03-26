@@ -368,8 +368,8 @@ def main():
         bf16=True,
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
-        beta=0.04,  # small KL penalty for visible loss signal
-        num_iterations=2,  # reuse batch 2x → ratio diverges from 1.0 → loss ≠ 0
+        beta=0.001,  # DeepSeek-R1 value (0.04 is too large)
+        num_iterations=1,  # DeepSeek default (loss=0 is normal with this)
         logging_steps=1,
         save_steps=200,
         save_total_limit=3,
