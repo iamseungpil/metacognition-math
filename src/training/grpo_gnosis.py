@@ -119,7 +119,11 @@ class MetaCotGRPOTrainer(GRPOTrainer):
 
     def __init__(self, *args, probe=None, **kwargs):
         super().__init__(*args, **kwargs)
-        self.probe = probe
+        # Move probe to the correct device for this DDP rank
+        if probe is not None:
+            self.probe = probe.to(self.accelerator.device)
+        else:
+            self.probe = None
         self._cached_ground_truths = []
 
     def _generate_and_score_completions(self, inputs):
