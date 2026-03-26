@@ -141,9 +141,14 @@ class MetaCotGRPOTrainer(GRPOTrainer):
         num_gens = getattr(self.args, 'num_generations', 1)
         n_prompts = len(self._cached_ground_truths)
 
-        # Compute probe scores and per-step calibration
-        probe_scores = []
+        # Per-step probe scoring: 1 forward pass → slice hidden at each <|meta|>
+        new_rewards = []
+        all_p_hats = []
+        all_r_calibs = []
         n_with_meta = 0
+        n_steps_total = 0
+
+        unwrapped = self.accelerator.unwrap_model(self.model)
 
         for i in range(B):
             comp_ids = outputs["completion_ids"][i]
@@ -152,13 +157,27 @@ class MetaCotGRPOTrainer(GRPOTrainer):
             gt = self._cached_ground_truths[prompt_idx] if prompt_idx < n_prompts else ""
             is_correct = check_correctness(comp_text, str(gt))
 
-            # Probe score (p̂) — run on full completion
-            p_hat = 0.5  # default
-            if self.probe is not None:
+            parsed = parse_meta_blocks(comp_text)
+            num_meta = parsed["num_blocks"]
+            confidences = parsed["confidences"]
+            meta_positions = find_meta_token_positions(comp_ids, tokenizer)
+
+            r_correct = 2.0 if is_correct else 0.0
+            r_penalty = 0.0 if num_meta >= 2 else (-0.3 if num_meta == 1 else -0.5)
+
+            if meta_positions:
+                n_with_meta += 1
+                n_steps_total += len(meta_positions)
+
+            # 1 forward pass → get all hidden states
+            step_calibs = []
+            step_p_hats = []
+            if self.probe is not None and meta_positions:
                 try:
                     full_ids = torch.cat([outputs["prompt_ids"][i], comp_ids])
                     full_mask = torch.cat([outputs["prompt_mask"][i], outputs["completion_mask"][i]])
-                    unwrapped = self.accelerator.unwrap_model(self.model)
+                    prompt_len = outputs["prompt_ids"][i].shape[0]
+
                     with torch.no_grad():
                         out = unwrapped(
                             full_ids.unsqueeze(0),
@@ -166,42 +185,49 @@ class MetaCotGRPOTrainer(GRPOTrainer):
                             output_hidden_states=True,
                             use_cache=False,
                         )
-                        last_hidden = out.hidden_states[-1]
-                        p_hat = self.probe(last_hidden.float(), full_mask.unsqueeze(0).float()).item()
+                        hidden = out.hidden_states[-1]  # (1, S, D)
+
+                    # Per-step probe: slice hidden at each <|/meta|> position
+                    for k, (start, end) in enumerate(meta_positions):
+                        abs_end = prompt_len + end + 1  # absolute position in full_ids
+                        abs_end = min(abs_end, hidden.shape[1])
+
+                        h_prefix = hidden[:, :abs_end, :]  # hidden up to this step
+                        m_prefix = full_mask[:abs_end].unsqueeze(0).float()
+
+                        p_hat_k = self.probe(h_prefix.float(), m_prefix).item()
+                        step_p_hats.append(p_hat_k)
+
+                        # R_calib_k = 1 - |c_text_k - p̂_k|
+                        conf_k = confidences[k] if k < len(confidences) else None
+                        if conf_k is not None:
+                            r_calib_k = max(0.0, 1.0 - abs(conf_k - p_hat_k))
+                        else:
+                            r_calib_k = 0.0
+                        step_calibs.append(r_calib_k)
+
+                    del out, hidden
+                    torch.cuda.empty_cache()
+
                 except Exception as e:
                     if i == 0:
                         print(f"[Probe error] {e}")
 
-            probe_scores.append(p_hat)
+            # Aggregate per-step R_calib → mean
+            if step_calibs:
+                r_calib = sum(step_calibs) / len(step_calibs)
+            else:
+                # Fallback: text-based if no probe or no meta blocks
+                r_calib = 0.0
+                if confidences:
+                    avg_conf = sum(confidences) / len(confidences)
+                    actual = 1.0 if is_correct else 0.0
+                    r_calib = max(0.0, 1.0 - abs(avg_conf - actual))
 
-            # Count meta blocks
-            meta_pos = find_meta_token_positions(comp_ids, tokenizer)
-            if meta_pos:
-                n_with_meta += 1
-
-        # Recompute rewards with probe-based R_calib and update advantages
-        new_rewards = []
-        for i in range(B):
-            comp_text = tokenizer.decode(outputs["completion_ids"][i], skip_special_tokens=False)
-            prompt_idx = i // num_gens if num_gens > 0 else i
-            gt = self._cached_ground_truths[prompt_idx] if prompt_idx < n_prompts else ""
-            is_correct = check_correctness(comp_text, str(gt))
-
-            parsed = parse_meta_blocks(comp_text)
-            num_meta = parsed["num_blocks"]
-            confidences = parsed["confidences"]
-
-            r_correct = 2.0 if is_correct else 0.0
-            r_penalty = 0.0 if num_meta >= 2 else (-0.3 if num_meta == 1 else -0.5)
-
-            # PROBE-BASED R_calib: |c_text - p̂| (not binary actual)
-            p_hat = probe_scores[i]
-            r_calib = 0.0
-            if confidences:
-                avg_conf = sum(confidences) / len(confidences)
-                r_calib = max(0.0, 1.0 - abs(avg_conf - p_hat))
-
-            new_rewards.append(r_correct + r_calib + r_penalty)
+            total_reward = r_correct + r_calib + r_penalty
+            new_rewards.append(total_reward)
+            all_p_hats.extend(step_p_hats if step_p_hats else [0.5])
+            all_r_calibs.extend(step_calibs if step_calibs else [r_calib])
 
         # GRPO advantage: z-normalize within group
         if len(new_rewards) >= 2:
@@ -217,8 +243,10 @@ class MetaCotGRPOTrainer(GRPOTrainer):
         # Log metrics
         mode = "train" if self.model.training else "eval"
         self._metrics[mode]["meta_block_ratio"].append(n_with_meta / max(B, 1))
-        self._metrics[mode]["probe/mean_p_hat"].append(sum(probe_scores) / len(probe_scores))
+        self._metrics[mode]["probe/mean_p_hat"].append(sum(all_p_hats) / max(len(all_p_hats), 1))
+        self._metrics[mode]["probe/mean_r_calib"].append(sum(all_r_calibs) / max(len(all_r_calibs), 1))
         self._metrics[mode]["reward"].append(sum(new_rewards) / len(new_rewards))
+        self._metrics[mode]["avg_steps_per_completion"].append(n_steps_total / max(B, 1))
 
         return outputs
 
