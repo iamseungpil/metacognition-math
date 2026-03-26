@@ -10,6 +10,10 @@ export OPENSSL_CONF=/dev/null
 
 cd /scratch/metacognition
 export PYTHONPATH=/scratch/metacognition
+
+# Restore standard Qwen3 model (remove Gnosis patches from previous runs)
+pip install transformers==4.51.3 --force-reinstall --no-deps --quiet 2>/dev/null || true
+echo "Restored standard Qwen3 model"
 export WANDB_API_KEY=$(cat ~/.wandb_key 2>/dev/null || echo "2f4e627868f1f9dad10bcb1a14fbf96817e6baa9")
 
 echo "=== Phase 2: Simple Probe Training ==="
