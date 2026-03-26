@@ -15,11 +15,8 @@ pip install "trl==0.19.1" "peft>=0.10" --quiet 2>/dev/null || true
 cd /scratch/metacognition
 export PYTHONPATH=/scratch/metacognition
 export WANDB_API_KEY=$(cat ~/.wandb_key 2>/dev/null || echo "2f4e627868f1f9dad10bcb1a14fbf96817e6baa9")
-# Force new wandb run (don't resume previous)
-export WANDB_RUN_ID=""
-export WANDB_RESUME="never"
-# Clean previous wandb state
-rm -rf /scratch/metacognition/checkpoints/qwen3_grpo_probe/wandb 2>/dev/null
+# Force new wandb run with unique ID
+export WANDB_RUN_ID="grpo-probe-$(date +%m%d-%H%M)"
 
 echo "=== Phase 3: GRPO + SimpleProbe ==="
 echo "Model: Qwen3-8B Meta SFT + LoRA"
@@ -32,7 +29,7 @@ accelerate launch --num_processes 4 --multi_gpu \
     --model_path checkpoints/qwen3_meta_sft \
     --probe_path checkpoints/simple_probe_qwen3/best_probe.pt \
     --train_data verl_train.parquet \
-    --output_dir checkpoints/qwen3_grpo_probe \
+    --output_dir checkpoints/qwen3_grpo_probe_v2 \
     --max_completion_length 1024 \
     --max_steps 1000
 
