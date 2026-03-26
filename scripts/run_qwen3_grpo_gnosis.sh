@@ -18,18 +18,21 @@ export WANDB_API_KEY=$(cat ~/.wandb_key 2>/dev/null || echo "2f4e627868f1f9dad10
 # Force new wandb run with unique ID
 export WANDB_RUN_ID="grpo-probe-$(date +%m%d-%H%M)"
 
-echo "=== Phase 3: GRPO + SimpleProbe ==="
+# Filter training data by pass rate (keep 10-90%)
+python scripts/filter_by_passrate.py
+
+echo "=== Phase 3: GRPO + SimpleProbe (filtered data) ==="
 echo "Model: Qwen3-8B Meta SFT + LoRA"
 echo "Probe: SimpleCorrectnessProbe (AUROC ~0.95)"
-echo "Rewards: R_correct + R_calib(probe) + R_penalty(meta)"
+echo "Data: filtered by pass rate 10-90% (reward variance guaranteed)"
 echo "4 GPU DDP"
 
 accelerate launch --num_processes 4 --multi_gpu \
     src/training/grpo_gnosis.py \
     --model_path checkpoints/qwen3_meta_sft \
     --probe_path checkpoints/simple_probe_qwen3/best_probe.pt \
-    --train_data verl_train.parquet \
-    --output_dir checkpoints/qwen3_grpo_probe_v2 \
+    --train_data verl_train_filtered.parquet \
+    --output_dir checkpoints/qwen3_grpo_filtered \
     --max_completion_length 1024 \
     --max_steps 1000
 
