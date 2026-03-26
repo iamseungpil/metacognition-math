@@ -368,7 +368,8 @@ def main():
         bf16=True,
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
-        beta=0.0,
+        beta=0.04,  # small KL penalty for visible loss signal
+        num_iterations=2,  # reuse batch 2x → ratio diverges from 1.0 → loss ≠ 0
         logging_steps=1,
         save_steps=200,
         save_total_limit=3,
