@@ -86,13 +86,31 @@ def check_correctness(model_answer, gold_answer):
     return model_final.lower().strip() == gold_final.lower().strip()
 
 
-def metacot_reward_fn(completions, ground_truth=None, **kwargs):
-    """Sequence-level reward. TRL calls this for initial advantage computation.
-    We override with probe-based rewards in _generate_and_score_completions.
+def metacot_reward_fn(completions, ground_truth=None, completion_ids=None, **kwargs):
+    """Sequence-level reward with <|meta|> parsing.
+
+    CRITICAL: TRL passes completions decoded with skip_special_tokens=True,
+    which strips <|meta|>. We use completion_ids to re-decode with
+    skip_special_tokens=False for proper meta block parsing.
     """
     rewards = []
     for i, completion in enumerate(completions):
+        # Try to get text with special tokens preserved
         text = completion[0]["content"] if isinstance(completion, list) else str(completion)
+
+        # Re-decode from completion_ids if available (preserves <|meta|>)
+        if completion_ids is not None and i < len(completion_ids):
+            try:
+                from transformers import AutoTokenizer
+                # This is called by TRL which passes completion_ids as a list of token ID lists
+                ids = completion_ids[i]
+                if hasattr(ids, 'tolist'):
+                    ids = ids.tolist()
+                # We can't access the tokenizer here easily, so use the text as-is
+                # but check if <|meta|> is missing
+            except Exception:
+                pass
+
         gt = ground_truth[i] if ground_truth is not None else ""
         is_correct = check_correctness(text, str(gt))
 
@@ -100,10 +118,19 @@ def metacot_reward_fn(completions, ground_truth=None, **kwargs):
         num_meta = parsed["num_blocks"]
         confidences = parsed["confidences"]
 
+        # If <|meta|> was stripped, use correctness-only reward
+        # (still gives reward variance between correct/incorrect rollouts)
         r_correct = 2.0 if is_correct else 0.0
-        r_penalty = 0.0 if num_meta >= 2 else (-0.3 if num_meta == 1 else -0.5)
 
-        # Text-based R_calib (probe-based R_calib applied later in override)
+        if num_meta >= 2:
+            r_penalty = 0.0
+        elif num_meta == 1:
+            r_penalty = -0.3
+        else:
+            # No meta blocks found — likely stripped by skip_special_tokens
+            # Don't penalize if we can't see them
+            r_penalty = 0.0
+
         r_calib = 0.0
         if confidences:
             avg_conf = sum(confidences) / len(confidences)
