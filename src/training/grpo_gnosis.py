@@ -147,6 +147,7 @@ class MetaCotGRPOTrainer(GRPOTrainer):
         all_r_calibs = []
         n_with_meta = 0
         n_steps_total = 0
+        n_direction_changes = 0  # confidence decrease during rollout
 
         unwrapped = self.accelerator.unwrap_model(self.model)
 
@@ -229,6 +230,13 @@ class MetaCotGRPOTrainer(GRPOTrainer):
             all_p_hats.extend(step_p_hats if step_p_hats else [0.5])
             all_r_calibs.extend(step_calibs if step_calibs else [r_calib])
 
+            # Track direction changes (confidence decrease)
+            if len(confidences) >= 2:
+                for ci in range(1, len(confidences)):
+                    if confidences[ci] < confidences[ci-1] - 0.1:
+                        n_direction_changes += 1
+                        break
+
         # GRPO advantage: z-normalize within group
         if len(new_rewards) >= 2:
             mean_r = sum(new_rewards) / len(new_rewards)
@@ -247,6 +255,7 @@ class MetaCotGRPOTrainer(GRPOTrainer):
         self._metrics[mode]["probe/mean_r_calib"].append(sum(all_r_calibs) / max(len(all_r_calibs), 1))
         self._metrics[mode]["reward"].append(sum(new_rewards) / len(new_rewards))
         self._metrics[mode]["avg_steps_per_completion"].append(n_steps_total / max(B, 1))
+        self._metrics[mode]["direction_change_ratio"].append(n_direction_changes / max(B, 1))
 
         return outputs
 
