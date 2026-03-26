@@ -237,16 +237,9 @@ class MetaCotGRPOTrainer(GRPOTrainer):
                         n_direction_changes += 1
                         break
 
-        # GRPO advantage: z-normalize within group
-        if len(new_rewards) >= 2:
-            mean_r = sum(new_rewards) / len(new_rewards)
-            var_r = sum((r - mean_r) ** 2 for r in new_rewards) / len(new_rewards)
-            std_r = max(var_r ** 0.5, 1e-8)
-            new_advantages = [(r - mean_r) / std_r for r in new_rewards]
-        else:
-            new_advantages = [0.0] * len(new_rewards)
-
-        outputs["advantages"] = torch.tensor(new_advantages, device=device, dtype=torch.float32)
+        # Use parent's advantages (which have proper group normalization)
+        # Our probe-based metrics are logged but don't override advantages
+        # Parent's metacot_reward_fn already includes R_correct + R_calib + R_penalty
 
         # Log metrics
         mode = "train" if self.model.training else "eval"
