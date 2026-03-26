@@ -304,7 +304,7 @@ def main():
     parser.add_argument("--train_data", required=True)
     parser.add_argument("--output_dir", default="checkpoints/qwen3_grpo_probe")
     parser.add_argument("--max_steps", type=int, default=1000)
-    parser.add_argument("--num_generations", type=int, default=8)
+    parser.add_argument("--num_generations", type=int, default=16)
     parser.add_argument("--max_completion_length", type=int, default=2048)
     parser.add_argument("--lora_rank", type=int, default=32)
     args = parser.parse_args()
@@ -360,9 +360,9 @@ def main():
         max_prompt_length=2048,
         temperature=1.0,  # high for diverse rollouts → mix of correct/incorrect
         use_vllm=False,
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=4,
-        learning_rate=1e-4,  # high LR for LoRA GRPO
+        per_device_train_batch_size=4,  # 4 prompts/GPU × 4 GPUs = 16 prompts
+        gradient_accumulation_steps=1,  # no accumulation (batch already large)
+        learning_rate=5e-6,  # DeepSeek-R1 level (3e-6), conservative with LoRA
         lr_scheduler_type="cosine",
         warmup_ratio=0.03,
         bf16=True,
