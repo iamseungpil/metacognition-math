@@ -23,8 +23,8 @@ echo "Starting vLLM server on GPU 0..."
 CUDA_VISIBLE_DEVICES=0 trl vllm-serve \
     --model $MODEL_PATH \
     --tensor-parallel-size 1 \
-    --gpu-memory-utilization 0.9 \
-    --max-model-len 4096 \
+    --gpu-memory-utilization 0.7 \
+    --max-model-len 2048 \
     --dtype bfloat16 &
 VLLM_PID=$!
 echo "vLLM PID: $VLLM_PID"
@@ -41,7 +41,11 @@ done
 
 # Step 2: Training on GPU 1-3
 echo "Starting training on GPU 1-3..."
-CUDA_VISIBLE_DEVICES=1,2,3 accelerate launch --config_file configs/accelerate_ds3.yaml \
+# Training on GPU 1,2,3 with DeepSpeed ZeRO-3
+export CUDA_VISIBLE_DEVICES=1,2,3
+accelerate launch \
+    --num_processes 3 \
+    --config_file configs/accelerate_ds3.yaml \
     src/training/grpo_v2.py \
     --mode $MODE \
     --max_steps $STEPS \
