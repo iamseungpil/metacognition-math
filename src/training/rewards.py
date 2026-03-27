@@ -172,23 +172,29 @@ def meta_quality_reward(completions, **kwargs):
     return rewards
 
 
-# ─── R3: Calibration (Rewarding Doubt) ───
+# ─── R3: Calibration (Group-based Doubt, CoCA style) ───
 
 def calibration_reward(completions, ground_truth=None, **kwargs):
-    """Log scoring rule (Rewarding Doubt), summed across meta blocks.
+    """Group-based Brier score calibration (CoCA/Rewarding Doubt hybrid).
 
-    correct + high conf → small negative (good)
-    correct + low conf  → large negative (bad, underconfident)
-    wrong + low conf    → small negative (good, knows it doesn't know)
-    wrong + high conf   → large negative (bad, overconfident)
+    Uses group empirical accuracy as target (not binary per-sample):
+      p̂ = fraction of group that got correct answer
+      r = -(stated_confidence - p̂)² per meta block, summed
 
-    Summation: more meta blocks = stronger signal.
+    This gives smoother calibration signal than binary correct/wrong.
     """
-    rewards = []
+    # First pass: compute group accuracy
+    correct_flags = []
     for i, c in enumerate(completions):
         text = _get_text(c)
         gt = ground_truth[i] if ground_truth is not None else ""
-        is_correct = _check_correctness(text, gt)
+        correct_flags.append(1.0 if _check_correctness(text, gt) else 0.0)
+    group_accuracy = sum(correct_flags) / max(len(correct_flags), 1)
+
+    # Second pass: compute calibration reward per completion
+    rewards = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
         blocks = _parse_meta_blocks(text)
 
         if not blocks or all(b["confidence"] is None for b in blocks):
@@ -201,18 +207,27 @@ def calibration_reward(completions, ground_truth=None, **kwargs):
             conf = block["confidence"]
             if conf is None:
                 continue
-            if is_correct:
-                r += math.log(max(conf, 0.01))
-            else:
-                r += math.log(max(1.0 - conf, 0.01))
+            # Brier score: -(conf - p̂)²
+            r += -(conf - group_accuracy) ** 2
             n += 1
 
-        # Normalize to reasonable range: log(0.01)=-4.6, log(0.99)=-0.01
-        # Scale so typical values are in [-2, 0]
+        # Also add log scoring (Rewarding Doubt) for individual correctness
+        is_correct = bool(correct_flags[i])
+        last_conf = None
+        for block in reversed(blocks):
+            if block["confidence"] is not None:
+                last_conf = block["confidence"]
+                break
+        if last_conf is not None:
+            if is_correct:
+                r += math.log(max(last_conf, 0.01))
+            else:
+                r += math.log(max(1.0 - last_conf, 0.01))
+            n += 1
+
         if n > 0:
-            r = r / n  # average per block, then scale by count
-            r = r * min(n, 3)  # summation effect capped at 3
-        rewards.append(max(r, -5.0))  # floor
+            r = r / n  # average
+        rewards.append(max(r, -5.0))
     return rewards
 
 
