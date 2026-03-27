@@ -162,7 +162,7 @@ def main():
     parser.add_argument("--data_path", default="verl_train_filtered.parquet")
     parser.add_argument("--output_dir", default=None)
     parser.add_argument("--max_steps", type=int, default=200)
-    parser.add_argument("--num_generations", type=int, default=4)
+    parser.add_argument("--num_generations", type=int, default=6)
     args = parser.parse_args()
 
     if args.output_dir is None:
@@ -223,19 +223,22 @@ def main():
         num_generations=args.num_generations,
         max_completion_length=1024,
         max_prompt_length=512,
-        temperature=1.0,
-        use_vllm=False,
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=4,
+        temperature=0.9,
+        # vLLM server mode: generation on separate GPU
+        use_vllm=True,
+        vllm_server_host="localhost",
+        vllm_server_port=8000,
+        # Training on 3 GPUs
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=2,
         learning_rate=5e-6,
         lr_scheduler_type="cosine",
         warmup_ratio=0.05,
         bf16=True,
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
-        ds3_gather_for_generation=False,  # Avoid OOM: generate with sharded params
-        beta=0.001,
-        num_iterations=1,
+        beta=0.04,  # Higher beta for visible loss (was 0.001 → loss=0)
+        num_iterations=2,  # >1 makes loss non-zero (ratio != 1 after step 1)
         logging_steps=1,
         save_steps=100,
         save_total_limit=2,
