@@ -19,7 +19,7 @@ STEPS=${2:-200}
 
 echo "=== GRPO v2: $MODE, $STEPS steps ==="
 
-accelerate launch --num_processes 4 --multi_gpu \
+accelerate launch --config_file configs/accelerate_ds3.yaml \
     src/training/grpo_v2.py \
     --mode $MODE \
     --max_steps $STEPS \
