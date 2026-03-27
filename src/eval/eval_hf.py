@@ -20,30 +20,15 @@ from peft import PeftModel
 from src.metacot.prompt import parse_meta_blocks
 
 
+from src.training.rewards import _check_correctness, _extract_answer_fallback
+
+
 def extract_answer(text):
-    pattern = r'\\boxed\{((?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\}'
-    matches = re.findall(pattern, text)
-    if matches:
-        return matches[-1].strip()
-    m = re.search(r'####\s*(.+?)(?:\n|$)', text)
-    if m:
-        return m.group(1).strip()
-    return ""
+    return _extract_answer_fallback(text)
 
 
 def check_correctness(pred, gold):
-    p = extract_answer(pred)
-    g = extract_answer(str(gold)) or str(gold).strip()
-    if not p:
-        return False
-    if p == g:
-        return True
-    try:
-        if abs(float(p) - float(g)) < 1e-6:
-            return True
-    except (ValueError, TypeError):
-        pass
-    return p.lower().strip() == g.lower().strip()
+    return _check_correctness(pred, gold)
 
 
 def load_benchmarks(names, max_problems=30):
