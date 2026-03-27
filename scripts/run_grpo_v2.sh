@@ -41,7 +41,7 @@ done
 
 # Step 2: Training on GPU 1-3
 echo "Starting training on GPU 1-3..."
-CUDA_VISIBLE_DEVICES=1,2,3 accelerate launch --num_processes 3 --multi_gpu \
+CUDA_VISIBLE_DEVICES=1,2,3 accelerate launch --config_file configs/accelerate_ds3.yaml \
     src/training/grpo_v2.py \
     --mode $MODE \
     --max_steps $STEPS \
