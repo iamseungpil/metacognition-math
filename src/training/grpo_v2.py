@@ -162,7 +162,7 @@ def main():
     parser.add_argument("--data_path", default="verl_train_filtered.parquet")
     parser.add_argument("--output_dir", default=None)
     parser.add_argument("--max_steps", type=int, default=200)
-    parser.add_argument("--num_generations", type=int, default=8)
+    parser.add_argument("--num_generations", type=int, default=4)
     args = parser.parse_args()
 
     if args.output_dir is None:
@@ -226,13 +226,14 @@ def main():
         temperature=1.0,
         use_vllm=False,
         per_device_train_batch_size=1,
-        gradient_accumulation_steps=2,
-        learning_rate=2e-6,
+        gradient_accumulation_steps=4,
+        learning_rate=5e-6,
         lr_scheduler_type="cosine",
         warmup_ratio=0.05,
         bf16=True,
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
+        ds3_gather_for_generation=False,  # Avoid OOM: generate with sharded params
         beta=0.001,
         num_iterations=1,
         logging_steps=1,
