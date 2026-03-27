@@ -162,7 +162,7 @@ def main():
     parser.add_argument("--data_path", default="verl_train_filtered.parquet")
     parser.add_argument("--output_dir", default=None)
     parser.add_argument("--max_steps", type=int, default=200)
-    parser.add_argument("--num_generations", type=int, default=4)
+    parser.add_argument("--num_generations", type=int, default=8)
     args = parser.parse_args()
 
     if args.output_dir is None:
@@ -217,7 +217,7 @@ def main():
     print(f"Full FT (no LoRA)")
     print(f"Dataset: {len(dataset)} problems")
 
-    # Verified config: Open-R1 Issue #475 (7B on 4xA100, confirmed working)
+    # Config based on Open-R1 patterns, adapted for 4xA100 80GB
     training_args = GRPOConfig(
         output_dir=args.output_dir,
         max_steps=args.max_steps,
@@ -225,23 +225,22 @@ def main():
         max_completion_length=1024,
         max_prompt_length=512,
         temperature=0.9,
-        # vLLM colocate (all 4 GPUs shared between training and generation)
-        use_vllm=True,
-        vllm_gpu_memory_utilization=0.3,
-        # Conservative batch for 4xA100 Full FT
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=4,
-        learning_rate=1e-6,
+        # HF generate (no vLLM) — allows hidden state access for probe reward
+        use_vllm=False,
+        # Batch: 4 GPU × 4 batch × 2 accum = 32, 32/8 gen = 4 unique prompts
+        per_device_train_batch_size=4,
+        gradient_accumulation_steps=2,
+        learning_rate=5e-6,
         lr_scheduler_type="cosine",
         warmup_ratio=0.1,
         bf16=True,
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
-        # Loss settings (dr_grpo: modern best practice, no length bias)
+        # Loss: dr_grpo (Open-R1 default, no length bias)
         loss_type="dr_grpo",
         beta=0.04,
         scale_rewards=False,
-        num_iterations=2,
+        num_iterations=2,  # >1 for non-zero loss display
         # Logging
         logging_steps=1,
         save_steps=100,

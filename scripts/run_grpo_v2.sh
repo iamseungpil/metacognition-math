@@ -1,6 +1,7 @@
 #!/bin/bash
-# GRPO v2: Full FT + vLLM colocate + ZeRO-3 (4 GPU)
-# Verified config from Open-R1 Issue #475 (7B on 4xA100)
+# GRPO v2: Full FT + FSDP + HF generate (4 GPU)
+# Based on Open-R1 patterns, adapted for 4xA100 80GB
+# Usage: bash scripts/run_grpo_v2.sh E1 200
 set -e
 
 source /opt/conda/etc/profile.d/conda.sh
@@ -15,9 +16,10 @@ STEPS=${2:-200}
 MODEL_PATH=${3:-checkpoints/qwen3_meta_sft}
 
 echo "=== GRPO v2: $MODE, $STEPS steps ==="
-echo "Config: ZeRO-3 + vLLM colocate, 4xA100, Full FT"
+echo "Config: FSDP FULL_SHARD + HF generate, 4xA100, Full FT"
+echo "Batch: 4/GPU × 4GPU × 2accum = 32, num_gen=8 → 4 unique prompts/step"
 
-accelerate launch --config_file configs/accelerate_grpo.yaml \
+accelerate launch --config_file configs/accelerate_fsdp.yaml \
     src/training/grpo_v2.py \
     --mode $MODE \
     --max_steps $STEPS \

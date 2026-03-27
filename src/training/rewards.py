@@ -3,17 +3,62 @@
 Four independent reward functions, each usable with vanilla GRPOTrainer.
 GDPO (per-reward normalization) prevents strong rewards from drowning weak ones.
 
-R1: correctness_reward   — binary +1/-1
+R1: correctness_reward   — sympy-based math verification (Open-R1 style)
 R2: meta_quality_reward  — meta block presence, length, Q&A structure
 R3: calibration_reward   — Rewarding Doubt log scoring rule, summation across blocks
 R4: uncertainty_meta_reward — (1-conf) weighted meta quality, summation
+
+Reference: Open-R1 (https://github.com/huggingface/open-r1)
 """
 import math
 import re
 
+# Math verification via sympy (same as Open-R1)
+try:
+    from math_verify import parse, verify
+    from latex2sympy2_extended import NormalizationConfig
+    HAS_MATH_VERIFY = True
+except ImportError:
+    HAS_MATH_VERIFY = False
 
-def _extract_answer(text):
-    """Extract boxed or #### answer."""
+
+def _check_correctness(pred_text, gold):
+    """Verify math answer using sympy (Open-R1 style).
+
+    Handles: fractions, decimals, LaTeX expressions, boxed answers, etc.
+    Fallback to string matching if math_verify not available.
+    """
+    if HAS_MATH_VERIFY:
+        try:
+            gold_parsed = parse(
+                str(gold),
+                extraction_mode="first_match",
+                extraction_config=[{"boxed_match_priority": 0}],
+            )
+            pred_parsed = parse(
+                str(pred_text),
+                extraction_mode="first_match",
+                extraction_config=[{"boxed_match_priority": 0}],
+            )
+            return bool(verify(gold_parsed, pred_parsed))
+        except Exception:
+            pass  # fallback to string matching
+
+    # Fallback: string matching
+    p = _extract_answer_fallback(pred_text)
+    g = _extract_answer_fallback(str(gold))
+    if not p or not g:
+        return False
+    if p == g:
+        return True
+    try:
+        return abs(float(p) - float(g)) < 1e-6
+    except (ValueError, TypeError):
+        return p.lower().strip() == g.lower().strip()
+
+
+def _extract_answer_fallback(text):
+    """Fallback answer extraction (string-based)."""
     pattern = r'\\boxed\{((?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\}'
     matches = re.findall(pattern, text)
     if matches:
@@ -21,40 +66,8 @@ def _extract_answer(text):
     m = re.search(r'####\s*(.+?)(?:\n|$)', text)
     if m:
         return m.group(1).strip()
-    return ""
-
-
-def _check_correctness(pred_text, gold):
-    p = _extract_answer(pred_text)
-    g = _extract_answer(str(gold))
-    # If gold has no boxed/####, try extracting the last number as answer
-    if not g:
-        # Try "the answer is X" pattern
-        m = re.search(r'(?:answer|result)\s+(?:is|=)\s+[\\$]*(-?[\d,.]+(?:/\d+)?)', str(gold), re.IGNORECASE)
-        if m:
-            g = m.group(1).strip()
-        else:
-            # Last resort: extract last number from gold
-            nums = re.findall(r'(-?\d+(?:\.\d+)?(?:/\d+)?)', str(gold))
-            if nums:
-                g = nums[-1]
-            else:
-                g = str(gold).strip()
-    if not p:
-        return False
-    if p == g:
-        return True
-    # Normalize: strip $, commas, whitespace
-    p_norm = re.sub(r'[\$,\s]', '', p)
-    g_norm = re.sub(r'[\$,\s]', '', g)
-    if p_norm == g_norm:
-        return True
-    try:
-        if abs(float(p_norm) - float(g_norm)) < 1e-6:
-            return True
-    except (ValueError, TypeError):
-        pass
-    return p_norm.lower() == g_norm.lower()
+    nums = re.findall(r'(-?\d+(?:\.\d+)?)', text)
+    return nums[-1] if nums else ""
 
 
 def _get_text(completion):
