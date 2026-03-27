@@ -49,9 +49,9 @@ def _apply_gdpo_patch():
 
     original_method = GRPOTrainer._generate_and_score_completions
 
-    def patched_method(self, inputs, mode="train"):
+    def patched_method(self, inputs):
         # Call original to get all data
-        result = original_method(self, inputs, mode)
+        result = original_method(self, inputs)
 
         # Only patch if we have multiple reward functions
         if not hasattr(self, '_gdpo_enabled') or not self._gdpo_enabled:
