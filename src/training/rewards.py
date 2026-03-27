@@ -26,17 +26,35 @@ def _extract_answer(text):
 
 def _check_correctness(pred_text, gold):
     p = _extract_answer(pred_text)
-    g = _extract_answer(str(gold)) or str(gold).strip()
+    g = _extract_answer(str(gold))
+    # If gold has no boxed/####, try extracting the last number as answer
+    if not g:
+        # Try "the answer is X" pattern
+        m = re.search(r'(?:answer|result)\s+(?:is|=)\s+[\\$]*(-?[\d,.]+(?:/\d+)?)', str(gold), re.IGNORECASE)
+        if m:
+            g = m.group(1).strip()
+        else:
+            # Last resort: extract last number from gold
+            nums = re.findall(r'(-?\d+(?:\.\d+)?(?:/\d+)?)', str(gold))
+            if nums:
+                g = nums[-1]
+            else:
+                g = str(gold).strip()
     if not p:
         return False
     if p == g:
         return True
+    # Normalize: strip $, commas, whitespace
+    p_norm = re.sub(r'[\$,\s]', '', p)
+    g_norm = re.sub(r'[\$,\s]', '', g)
+    if p_norm == g_norm:
+        return True
     try:
-        if abs(float(p) - float(g)) < 1e-6:
+        if abs(float(p_norm) - float(g_norm)) < 1e-6:
             return True
     except (ValueError, TypeError):
         pass
-    return p.lower().strip() == g.lower().strip()
+    return p_norm.lower() == g_norm.lower()
 
 
 def _get_text(completion):
