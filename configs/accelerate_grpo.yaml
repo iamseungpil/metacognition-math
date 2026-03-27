@@ -8,7 +8,6 @@ deepspeed_config:
   zero_stage: 3
 distributed_type: DEEPSPEED
 downcast_bf16: 'no'
-machine_rank: 0
 mixed_precision: bf16
 num_machines: 1
 num_processes: 4

@@ -225,9 +225,8 @@ def main():
         max_completion_length=1024,
         max_prompt_length=512,
         temperature=0.9,
-        # vLLM colocate — proven working (loss=0.067, 15s/step)
-        use_vllm=True,
-        vllm_gpu_memory_utilization=0.3,
+        # HF generate (no vLLM, no veRL — just TRL)
+        use_vllm=False,
         # Batch: 4 GPU × 1 batch × 4 accum = 16, 16/4 gen = 4 unique prompts
         per_device_train_batch_size=1,
         gradient_accumulation_steps=4,
@@ -266,6 +265,23 @@ def main():
     if use_gdpo:
         trainer._gdpo_enabled = True
         trainer._last_rewards_per_func = None
+
+    # Response logging callback
+    from transformers import TrainerCallback
+    class ResponseLogger(TrainerCallback):
+        def __init__(self, output_dir):
+            self.output_dir = output_dir
+            os.makedirs(os.path.join(output_dir, "responses"), exist_ok=True)
+
+        def on_log(self, args, state, control, logs=None, **kwargs):
+            step = state.global_step
+            if step % 10 == 0 and logs:
+                log_path = os.path.join(self.output_dir, "responses", f"step_{step:04d}.json")
+                with open(log_path, "w") as f:
+                    json.dump({"step": step, "logs": {k: str(v) for k, v in logs.items()}}, f, indent=2)
+                print(f"  [Step {step}] reward={logs.get('reward', '?')}, loss={logs.get('loss', '?')}")
+
+    trainer.add_callback(ResponseLogger(args.output_dir))
 
     trainer.train()
     trainer.save_model(args.output_dir + "/final")
