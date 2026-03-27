@@ -125,6 +125,22 @@ def correctness_reward(completions, ground_truth=None, **kwargs):
     return rewards
 
 
+# ─── R1b: Format Reward (Open-R1 style) ───
+
+def format_reward(completions, **kwargs):
+    """Reward for using \\boxed{} answer format.
+
+    +1 if completion contains \\boxed{...}
+    0 otherwise
+    """
+    rewards = []
+    for c in completions:
+        text = _get_text(c)
+        has_boxed = bool(re.search(r'\\boxed\{', text))
+        rewards.append(1.0 if has_boxed else 0.0)
+    return rewards
+
+
 # ─── R2: Meta Quality ───
 
 def meta_quality_reward(completions, **kwargs):

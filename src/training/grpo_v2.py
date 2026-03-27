@@ -30,7 +30,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from trl import GRPOConfig, GRPOTrainer
 
 from src.training.rewards import (
-    correctness_reward, meta_quality_reward,
+    correctness_reward, format_reward, meta_quality_reward,
     calibration_reward, uncertainty_meta_reward,
 )
 
@@ -172,11 +172,11 @@ def main():
 
     # ─── Select rewards by mode ───
     reward_configs = {
-        "E1": ([correctness_reward], [1.0]),
-        "E2": ([correctness_reward, meta_quality_reward], [1.0, 1.0]),
-        "E3": ([correctness_reward, meta_quality_reward, calibration_reward], [1.0, 1.0, 0.5]),
-        "E4": ([correctness_reward, meta_quality_reward, calibration_reward, uncertainty_meta_reward],
-               [1.0, 1.0, 0.5, 0.5]),
+        "E1": ([correctness_reward, format_reward], [1.0, 0.5]),
+        "E2": ([correctness_reward, format_reward, meta_quality_reward], [1.0, 0.5, 1.0]),
+        "E3": ([correctness_reward, format_reward, meta_quality_reward, calibration_reward], [1.0, 0.5, 1.0, 0.5]),
+        "E4": ([correctness_reward, format_reward, meta_quality_reward, calibration_reward, uncertainty_meta_reward],
+               [1.0, 0.5, 1.0, 0.5, 0.5]),
     }
     reward_funcs, reward_weights = reward_configs[args.mode]
     use_gdpo = args.mode in ("E3", "E4")  # GDPO when 3+ rewards
