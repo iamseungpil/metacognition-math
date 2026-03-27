@@ -30,16 +30,8 @@ def _check_correctness(pred_text, gold):
     """
     if HAS_MATH_VERIFY:
         try:
-            gold_parsed = parse(
-                str(gold),
-                extraction_mode="first_match",
-                extraction_config=[{"boxed_match_priority": 0}],
-            )
-            pred_parsed = parse(
-                str(pred_text),
-                extraction_mode="first_match",
-                extraction_config=[{"boxed_match_priority": 0}],
-            )
+            gold_parsed = parse(str(gold), extraction_mode="first_match")
+            pred_parsed = parse(str(pred_text), extraction_mode="first_match")
             return bool(verify(gold_parsed, pred_parsed))
         except Exception:
             pass  # fallback to string matching
