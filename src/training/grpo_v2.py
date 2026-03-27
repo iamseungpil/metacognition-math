@@ -162,7 +162,7 @@ def main():
     parser.add_argument("--data_path", default="verl_train_filtered.parquet")
     parser.add_argument("--output_dir", default=None)
     parser.add_argument("--max_steps", type=int, default=200)
-    parser.add_argument("--num_generations", type=int, default=8)
+    parser.add_argument("--num_generations", type=int, default=4)
     args = parser.parse_args()
 
     if args.output_dir is None:
@@ -225,11 +225,12 @@ def main():
         max_completion_length=1024,
         max_prompt_length=512,
         temperature=0.9,
-        # HF generate (no vLLM) — allows hidden state access for probe reward
-        use_vllm=False,
-        # Batch: 4 GPU × 4 batch × 2 accum = 32, 32/8 gen = 4 unique prompts
-        per_device_train_batch_size=4,
-        gradient_accumulation_steps=2,
+        # vLLM colocate — proven working (loss=0.067, 15s/step)
+        use_vllm=True,
+        vllm_gpu_memory_utilization=0.3,
+        # Batch: 4 GPU × 1 batch × 4 accum = 16, 16/4 gen = 4 unique prompts
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=4,
         learning_rate=5e-6,
         lr_scheduler_type="cosine",
         warmup_ratio=0.1,
