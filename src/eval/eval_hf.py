@@ -34,7 +34,7 @@ def check_correctness(pred, gold):
 def load_benchmarks(names, max_problems=30):
     benchmarks = {
         "gsm8k": ("openai/gsm8k", "main", "test", "question", "answer"),
-        "math_test": ("hendrycks/competition_math", None, "test", "problem", "solution"),
+        "math500": ("HuggingFaceH4/MATH-500", None, "test", "problem", "solution"),
         "aime2024": ("HuggingFaceH4/aime_2024", None, "train", "problem", "answer"),
     }
     all_problems = []
