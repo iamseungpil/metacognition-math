@@ -162,7 +162,7 @@ def main():
     parser.add_argument("--data_path", default="verl_train_filtered.parquet")
     parser.add_argument("--output_dir", default=None)
     parser.add_argument("--max_steps", type=int, default=200)
-    parser.add_argument("--num_generations", type=int, default=6)
+    parser.add_argument("--num_generations", type=int, default=4)
     args = parser.parse_args()
 
     if args.output_dir is None:
@@ -217,6 +217,7 @@ def main():
     print(f"Full FT (no LoRA)")
     print(f"Dataset: {len(dataset)} problems")
 
+    # Verified config: Open-R1 Issue #475 (7B on 4xA100, confirmed working)
     training_args = GRPOConfig(
         output_dir=args.output_dir,
         max_steps=args.max_steps,
@@ -224,21 +225,24 @@ def main():
         max_completion_length=1024,
         max_prompt_length=512,
         temperature=0.9,
-        # vLLM server mode: generation on separate GPU
+        # vLLM colocate (all 4 GPUs shared between training and generation)
         use_vllm=True,
-        vllm_server_host="localhost",
-        vllm_server_port=8000,
-        # Training on 3 GPUs
-        per_device_train_batch_size=2,
-        gradient_accumulation_steps=2,
-        learning_rate=5e-6,
+        vllm_gpu_memory_utilization=0.3,
+        # Conservative batch for 4xA100 Full FT
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=4,
+        learning_rate=1e-6,
         lr_scheduler_type="cosine",
-        warmup_ratio=0.05,
+        warmup_ratio=0.1,
         bf16=True,
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
-        beta=0.04,  # Higher beta for visible loss (was 0.001 → loss=0)
-        num_iterations=2,  # >1 makes loss non-zero (ratio != 1 after step 1)
+        # Loss settings (dr_grpo: modern best practice, no length bias)
+        loss_type="dr_grpo",
+        beta=0.04,
+        scale_rewards=False,
+        num_iterations=2,
+        # Logging
         logging_steps=1,
         save_steps=100,
         save_total_limit=2,
@@ -246,6 +250,7 @@ def main():
         run_name=run_name,
         remove_unused_columns=False,
         reward_weights=reward_weights,
+        log_completions=True,
     )
 
     trainer = GRPOTrainer(
