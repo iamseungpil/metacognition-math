@@ -401,7 +401,14 @@ def stepwise_probe_reward(completions, ground_truth=None, **kwargs):
         text = _get_text(c)
         gt = ground_truth[i] if ground_truth is not None else ""
         correct_flags.append(1.0 if _check_correctness(text, gt) else 0.0)
-    group_accuracy = sum(correct_flags) / max(len(correct_flags), 1)
+    raw_accuracy = sum(correct_flags) / max(len(correct_flags), 1)
+    # With small batches, group_accuracy is degenerate (0 or 1).
+    # Smooth toward 0.5 prior to give meaningful pre-meta calibration signal.
+    # At batch>=4 (GRPO standard), smoothing effect is small.
+    _PRIOR = 0.5
+    _PRIOR_WEIGHT = 2  # equivalent to 2 pseudo-observations
+    n = len(correct_flags)
+    group_accuracy = (raw_accuracy * n + _PRIOR * _PRIOR_WEIGHT) / (n + _PRIOR_WEIGHT)
 
     # Second pass: stepwise scoring
     rewards = []
