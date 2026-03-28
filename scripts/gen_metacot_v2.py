@@ -23,22 +23,23 @@ from src.metacot.prompt_v2 import META_COT_V2_SYSTEM_PROMPT, build_metacot_v2_pr
 
 
 def get_trapi_client():
-    """Create TRAPI client."""
+    """Create TRAPI client (matching skilldiscovery/gpt_agent.py pattern)."""
     from openai import AzureOpenAI
-    endpoint = "https://trapi.research.microsoft.com/gcr/shared"
+    endpoint = "https://trapi.research.microsoft.com/gcr/shared/openai"
     api_version = "2025-04-01-preview"
+    trapi_scope = "api://trapi/.default"
 
     # Try env var token first
     token = os.environ.get("TRAPI_TOKEN")
     if token:
         return AzureOpenAI(azure_endpoint=endpoint, api_key=token, api_version=api_version)
 
-    # Try Azure CLI credential
+    # Try Azure CLI credential with correct TRAPI scope
     try:
-        from azure.identity import AzureCliCredential
-        cred = AzureCliCredential()
-        token_obj = cred.get_token("https://cognitiveservices.azure.com/.default")
-        return AzureOpenAI(azure_endpoint=endpoint, api_key=token_obj.token, api_version=api_version)
+        from azure.identity import AzureCliCredential, get_bearer_token_provider
+        provider = get_bearer_token_provider(AzureCliCredential(), trapi_scope)
+        token = provider()
+        return AzureOpenAI(azure_endpoint=endpoint, api_key=token, api_version=api_version)
     except Exception:
         pass
 

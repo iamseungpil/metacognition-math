@@ -42,7 +42,7 @@ def diversify_confidence(text, target_conf_range=(0.3, 0.8)):
 
         return f"{keyword} {new_conf:.2f}"
 
-    pattern = r'((?:probability|confidence)[:\s]*(?:about\s+)?)\s*(\d+\.?\d*)'
+    pattern = r'((?:probability|confidence)[:\s\w]*?)\s*(\d+\.\d+)'
     return re.sub(pattern, replace_conf, text, flags=re.IGNORECASE)
 
 
