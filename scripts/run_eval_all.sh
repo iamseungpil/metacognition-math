@@ -26,4 +26,10 @@ CUDA_VISIBLE_DEVICES=0 python src/eval/eval_hf.py \
     --benchmarks $BENCHMARKS --max_problems $MAX \
     --output_dir results 2>&1 | tee results/eval_e3_v2.log
 
+echo "=== Eval: GRPO E5 (stepwise) ==="
+CUDA_VISIBLE_DEVICES=0 python src/eval/eval_hf.py \
+    --model_path checkpoints/grpo_v2_E5/checkpoint-200 \
+    --benchmarks $BENCHMARKS --max_problems $MAX \
+    --output_dir results 2>&1 | tee results/eval_e5.log
+
 echo "=== ALL EVAL DONE ==="
