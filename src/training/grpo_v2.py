@@ -32,7 +32,7 @@ from trl import GRPOConfig, GRPOTrainer
 from src.training.rewards import (
     correctness_reward, format_reward, meta_quality_reward,
     calibration_reward, uncertainty_meta_reward,
-    stepwise_trajectory_reward,
+    stepwise_trajectory_reward, probe_calibration_reward,
 )
 
 
@@ -157,7 +157,7 @@ class SampleSaver:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["E1", "E2", "E3", "E4", "E5"], default="E1")
+    parser.add_argument("--mode", choices=["E1", "E2", "E3", "E4", "E5", "E6"], default="E1")
     parser.add_argument("--model_path", default="checkpoints/qwen3_meta_sft")
     parser.add_argument("--data", choices=["gsm8k", "filtered"], default="filtered")
     parser.add_argument("--data_path", default="verl_train_filtered.parquet")
@@ -180,9 +180,11 @@ def main():
                [1.0, 0.5, 1.0, 0.5, 0.5]),
         "E5": ([correctness_reward, format_reward, meta_quality_reward, stepwise_trajectory_reward],
                [1.0, 0.5, 0.5, 1.0]),  # stepwise gets highest weight
+        "E6": ([correctness_reward, format_reward, meta_quality_reward, probe_calibration_reward],
+               [1.0, 0.5, 0.5, 1.5]),  # probe gets highest weight
     }
     reward_funcs, reward_weights = reward_configs[args.mode]
-    use_gdpo = args.mode in ("E3", "E4", "E5")  # GDPO when 3+ rewards
+    use_gdpo = args.mode in ("E3", "E4", "E5", "E6")  # GDPO when 3+ rewards
 
     if use_gdpo:
         _apply_gdpo_patch()

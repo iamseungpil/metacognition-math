@@ -330,3 +330,80 @@ def stepwise_trajectory_reward(completions, ground_truth=None, **kwargs):
 
         rewards.append(max(r, -3.0))
     return rewards
+
+
+# ─── R6: Probe Calibration Reward ───
+
+# Global probe state (loaded once, reused)
+_probe_model = None
+_probe_head = None
+_probe_tokenizer = None
+
+
+def _load_probe(model_path="checkpoints/qwen3_meta_sft",
+                probe_path="checkpoints/simple_probe_qwen3/best_probe.pt"):
+    """Load probe model and head once (lazy init)."""
+    global _probe_model, _probe_head, _probe_tokenizer
+    if _probe_model is not None:
+        return
+
+    import torch
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+
+    print("Loading probe model (frozen)...")
+    _probe_tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    _probe_model = AutoModelForCausalLM.from_pretrained(
+        model_path, torch_dtype=torch.bfloat16, trust_remote_code=True,
+    )
+    _probe_model.eval()
+    # Don't put on GPU yet — will use training model's device
+
+    print("Loading probe head...")
+    _probe_head = torch.load(probe_path, map_location="cpu")
+    _probe_head.eval()
+    print(f"Probe loaded: model={model_path}, head={probe_path}")
+
+
+def probe_calibration_reward(completions, ground_truth=None,
+                              model=None, tokenizer=None, **kwargs):
+    """Calibration reward using hidden state probe.
+
+    Uses the TRAINING model's hidden states (no separate model needed).
+    Requires model and tokenizer to be passed via closure.
+
+    R = -(stated_confidence - probe_p_hat)²
+    Forces model's stated confidence to match its internal belief.
+    """
+    import torch
+
+    rewards = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        blocks = _parse_meta_blocks(text)
+
+        # Get stated confidence
+        confs = [b["confidence"] for b in blocks if b["confidence"] is not None]
+        if not confs:
+            rewards.append(0.0)
+            continue
+        stated_conf = confs[-1]  # last meta block confidence
+
+        # TODO: When model/tokenizer are available via closure,
+        # compute probe p_hat from hidden states:
+        #   inputs = tokenizer(text, return_tensors="pt").to(model.device)
+        #   with torch.no_grad():
+        #       outputs = model(**inputs, output_hidden_states=True)
+        #       hidden = outputs.hidden_states[-1][:, -1, :].float()
+        #       p_hat = probe_head(hidden).sigmoid().item()
+        #   r = -(stated_conf - p_hat) ** 2
+
+        # For now: use group accuracy as proxy for p_hat
+        gt = ground_truth[i] if ground_truth is not None else ""
+        is_correct = _check_correctness(text, gt)
+        p_hat = 1.0 if is_correct else 0.0
+
+        # Brier score against binary outcome (like Rewarding Doubt)
+        r = -(stated_conf - p_hat) ** 2
+        rewards.append(r)
+
+    return rewards
