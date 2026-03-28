@@ -95,7 +95,7 @@ def evaluate(model, tokenizer, problems, num_samples=1, max_tokens=1024):
                 "avg_confidence": avg_conf,
                 "answer_extracted": extract_answer(gen),
                 "gold_answer": prob["gold_answer"][:50],
-                "completion": gen[:500],  # for qualitative analysis
+                "completion": gen,  # full completion for qualitative analysis
             })
 
         if (idx + 1) % 10 == 0:
