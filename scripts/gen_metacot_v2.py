@@ -34,19 +34,14 @@ def get_trapi_client():
     if token:
         return AzureOpenAI(azure_endpoint=endpoint, api_key=token, api_version=api_version)
 
-    # Try Azure CLI credential with correct TRAPI scope
-    try:
-        from azure.identity import AzureCliCredential, get_bearer_token_provider
-        provider = get_bearer_token_provider(AzureCliCredential(), trapi_scope)
-        token = provider()
-        return AzureOpenAI(azure_endpoint=endpoint, api_key=token, api_version=api_version)
-    except Exception:
-        pass
-
-    raise RuntimeError("No TRAPI auth available. Set TRAPI_TOKEN or login with az cli.")
+    # Azure CLI credential with TRAPI scope (works from host VM)
+    from azure.identity import AzureCliCredential, get_bearer_token_provider
+    provider = get_bearer_token_provider(AzureCliCredential(), trapi_scope)
+    token = provider()
+    return AzureOpenAI(azure_endpoint=endpoint, api_key=token, api_version=api_version)
 
 
-def generate_one(client, question, pass_rate, model="gpt-5.4_2026-03-05", max_retries=10):
+def generate_one(client, question, pass_rate, model="gpt-5.4-mini_2026-03-17", max_retries=10):
     """Generate one meta-CoT chain with retry."""
     system = META_COT_V2_SYSTEM_PROMPT
     user = build_metacot_v2_prompt(question, pass_rate)
@@ -59,7 +54,6 @@ def generate_one(client, question, pass_rate, model="gpt-5.4_2026-03-05", max_re
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
-                max_output_tokens=2048,
                 temperature=0.7,
             )
             text = resp.output_text

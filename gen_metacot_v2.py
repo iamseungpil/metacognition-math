@@ -35,7 +35,50 @@ from src.metacot.prompt_v2 import (
     META_END,
     build_metacot_v2_prompt,
 )
-from src.metacot.generator import get_trapi_client
+def get_trapi_client_v2():
+    """Create TRAPI Azure OpenAI client.
+
+    Auth strategy:
+    1. TRAPI_TOKEN env var (set from local az CLI, ~72min validity)
+    2. Token file at /tmp/trapi_token.txt (can be refreshed externally)
+    3. Fallback to generator.py's get_trapi_client() (AzureCli→ManagedIdentity)
+    """
+    from openai import AzureOpenAI
+
+    endpoint = "https://trapi.research.microsoft.com/gcr/shared"
+    api_version = "2025-04-01-preview"
+
+    # Strategy 1: env var
+    trapi_token = os.environ.get("TRAPI_TOKEN")
+    if trapi_token:
+        print("Auth: Using TRAPI_TOKEN env var")
+        return AzureOpenAI(
+            azure_endpoint=endpoint,
+            azure_ad_token=trapi_token,
+            api_version=api_version,
+        )
+
+    # Strategy 2: token file (refreshable externally)
+    token_file = "/tmp/trapi_token.txt"
+    if os.path.exists(token_file):
+        with open(token_file) as f:
+            token = f.read().strip()
+        if token:
+            print(f"Auth: Using token file {token_file}")
+            # Use token provider that re-reads file (for refresh)
+            def _token_provider():
+                with open(token_file) as f:
+                    return f.read().strip()
+            return AzureOpenAI(
+                azure_endpoint=endpoint,
+                azure_ad_token_provider=_token_provider,
+                api_version=api_version,
+            )
+
+    # Strategy 3: fallback to generator.py
+    print("Auth: Falling back to generator.py get_trapi_client()")
+    from src.metacot.generator import get_trapi_client
+    return get_trapi_client()
 
 
 def parse_meta_blocks_v2(text: str) -> dict:
@@ -216,26 +259,32 @@ def load_problems_and_pass_rates():
     problems_df = pd.DataFrame(problems)
     print(f"Extracted {len(problems_df)} questions")
 
-    # Load rollouts for pass rate computation
+    # Load rollouts for pass rate computation (memory-efficient)
     rollouts_path = "/scratch/metacognition/rollouts/rollouts_final.parquet"
     if os.path.exists(rollouts_path):
-        rollouts = pd.read_parquet(rollouts_path)
-        # Compute per-problem pass rates
-        pass_rates = rollouts.groupby("problem_id")["is_correct"].mean().to_dict()
-        print(f"Computed pass rates for {len(pass_rates)} problems from rollouts")
+        # Only load needed columns
+        rollouts = pd.read_parquet(
+            rollouts_path,
+            columns=["problem_id", "question", "is_correct"],
+        )
+        print(f"Loaded rollouts: {len(rollouts)} rows", flush=True)
 
-        # Try to match by question text
-        # Build question -> pass_rate mapping from rollouts
-        q_to_pr = {}
-        for pid, rate in pass_rates.items():
-            q_rows = rollouts[rollouts["problem_id"] == pid]["question"]
-            if len(q_rows) > 0:
-                q_to_pr[q_rows.iloc[0]] = rate
+        # Compute pass rates and question mapping in a single groupby
+        grouped = rollouts.groupby("problem_id").agg(
+            pass_rate=("is_correct", "mean"),
+            question=("question", "first"),
+        )
+        q_to_pr = dict(zip(grouped["question"], grouped["pass_rate"]))
+        print(f"Computed pass rates for {len(q_to_pr)} problems", flush=True)
+
+        # Free rollouts from memory
+        del rollouts, grouped
+        import gc; gc.collect()
 
         # Assign pass rates
         problems_df["rollout_pass_rate"] = problems_df["question"].map(q_to_pr)
         matched = problems_df["rollout_pass_rate"].notna().sum()
-        print(f"Matched pass rates: {matched}/{len(problems_df)}")
+        print(f"Matched pass rates: {matched}/{len(problems_df)}", flush=True)
 
         # Fill missing with 0.5 (default medium difficulty)
         problems_df["rollout_pass_rate"] = problems_df["rollout_pass_rate"].fillna(0.5)
@@ -305,16 +354,48 @@ def run_generation(
     print(f"  Medium (0.4-0.8): {((selected['rollout_pass_rate'] > 0.4) & (selected['rollout_pass_rate'] <= 0.8)).sum()}")
     print(f"  Hard (<=0.4): {(selected['rollout_pass_rate'] <= 0.4).sum()}")
 
+    # Check for resume from checkpoint
+    os.makedirs(output_dir, exist_ok=True)
+    resume_path = os.path.join(output_dir, "metacot_v2_raw_resume.parquet")
+    results = []
+    done_questions = set()
+
+    # Look for latest checkpoint to resume from
+    import glob as glob_mod
+    checkpoints = sorted(glob_mod.glob(os.path.join(output_dir, "metacot_v2_raw_*.parquet")))
+    if checkpoints:
+        latest_ckpt = checkpoints[-1]
+        try:
+            prev_df = pd.read_parquet(latest_ckpt)
+            for _, r in prev_df.iterrows():
+                results.append(r.to_dict())
+                done_questions.add(r["question"])
+            print(f"\nResuming from {latest_ckpt}: {len(results)} previous results")
+        except Exception as e:
+            print(f"\nCould not load checkpoint {latest_ckpt}: {e}")
+
+    # Filter out already-done questions
+    if done_questions:
+        remaining = selected[~selected["question"].isin(done_questions)]
+        print(f"Remaining to generate: {len(remaining)} (skipping {len(done_questions)} done)")
+    else:
+        remaining = selected
+
+    if len(remaining) == 0:
+        print("All chains already generated!")
+        sft_path = _build_sft_format(results, output_dir)
+        print(f"SFT data saved to: {sft_path}")
+        return sft_path
+
     # Initialize TRAPI client
     print("\nInitializing TRAPI client...")
-    client = get_trapi_client()
+    client = get_trapi_client_v2()
     print("TRAPI client ready")
 
-    # Generate chains
-    os.makedirs(output_dir, exist_ok=True)
-    results = []
+    # Generate chains in batches to reduce memory pressure
     total_tokens = 0
     start_time = time.time()
+    batch_size = min(50, len(remaining))
 
     def _process(row_tuple):
         _, row = row_tuple
@@ -326,58 +407,63 @@ def run_generation(
         )
         return row, result
 
+    total_target = len(remaining) + len(results)
     print(f"\nStarting generation with {workers} concurrent workers...\n", flush=True)
 
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {
-            executor.submit(_process, row_tuple): i
-            for i, row_tuple in enumerate(selected.iterrows())
-        }
+    rows_list = list(remaining.iterrows())
+    for batch_start in range(0, len(rows_list), batch_size):
+        batch = rows_list[batch_start:batch_start + batch_size]
 
-        for future in as_completed(futures):
-            try:
-                row, result = future.result()
-            except Exception as exc:
-                print(f"  Worker exception: {exc}", flush=True)
-                continue
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(_process, row_tuple): i
+                for i, row_tuple in enumerate(batch)
+            }
 
-            chain_text = result.get("chain", "")
-            parsed = result.get("parsed", {})
+            for future in as_completed(futures):
+                try:
+                    row, result = future.result()
+                except Exception as exc:
+                    print(f"  Worker exception: {exc}", flush=True)
+                    continue
 
-            results.append({
-                "question": row["question"],
-                "ground_truth": row["ground_truth"],
-                "rollout_pass_rate": row["rollout_pass_rate"],
-                "metacot_chain": chain_text,
-                "num_meta_blocks": parsed.get("num_blocks", 0),
-                "confidences": json.dumps(parsed.get("confidences", [])),
-                "has_error_fix": parsed.get("has_error_fix", False),
-                "has_final_verification": parsed.get("has_final_verification", False),
-                "chain_valid": parsed.get("valid", False),
-                "attempts": result.get("attempts", 0),
-                "error": result.get("error", ""),
-            })
+                chain_text = result.get("chain", "")
+                parsed = result.get("parsed", {})
 
-            if result.get("usage"):
-                u = result["usage"]
-                total_tokens += (u.get("prompt_tokens", 0) + u.get("completion_tokens", 0))
+                results.append({
+                    "question": row["question"],
+                    "ground_truth": row["ground_truth"],
+                    "rollout_pass_rate": row["rollout_pass_rate"],
+                    "metacot_chain": chain_text,
+                    "num_meta_blocks": parsed.get("num_blocks", 0),
+                    "confidences": json.dumps(parsed.get("confidences", [])),
+                    "has_error_fix": parsed.get("has_error_fix", False),
+                    "has_final_verification": parsed.get("has_final_verification", False),
+                    "chain_valid": parsed.get("valid", False),
+                    "attempts": result.get("attempts", 0),
+                    "error": result.get("error", ""),
+                })
 
-            done = len(results)
-            if done % 20 == 0:
-                elapsed = time.time() - start_time
-                valid = sum(1 for r in results if r["chain_valid"])
-                rate = done / elapsed * 3600 if elapsed > 0 else 0
-                print(
-                    f"  [{done}/{len(selected)}] "
-                    f"valid={valid}/{done} ({valid/done:.1%}) "
-                    f"tokens={total_tokens:,} "
-                    f"rate={rate:.0f}/hr "
-                    f"elapsed={elapsed:.0f}s",
-                    flush=True,
-                )
+                if result.get("usage"):
+                    u = result["usage"]
+                    total_tokens += (u.get("prompt_tokens", 0) + u.get("completion_tokens", 0))
 
-            if done % checkpoint_interval == 0:
-                _save_checkpoint(results, output_dir, done)
+                done = len(results)
+                if done % 20 == 0:
+                    elapsed = time.time() - start_time
+                    valid = sum(1 for r in results if r["chain_valid"])
+                    rate = (done - len(done_questions)) / elapsed * 3600 if elapsed > 0 else 0
+                    print(
+                        f"  [{done}/{total_target}] "
+                        f"valid={valid}/{done} ({valid/done:.1%}) "
+                        f"tokens={total_tokens:,} "
+                        f"rate={rate:.0f}/hr "
+                        f"elapsed={elapsed:.0f}s",
+                        flush=True,
+                    )
+
+                if done % checkpoint_interval == 0:
+                    _save_checkpoint(results, output_dir, done)
 
     # Final save
     elapsed = time.time() - start_time
@@ -429,6 +515,9 @@ def _save_checkpoint(results, output_dir, tag):
     df = pd.DataFrame(results)
     path = os.path.join(output_dir, f"metacot_v2_raw_{tag}.parquet")
     df.to_parquet(path, index=False)
+    # Also save as resume checkpoint (always latest)
+    resume_path = os.path.join(output_dir, "metacot_v2_raw_resume.parquet")
+    df.to_parquet(resume_path, index=False)
     valid = sum(1 for r in results if r["chain_valid"])
     print(f"  >> Checkpoint saved: {path} ({valid}/{len(results)} valid)", flush=True)
 

@@ -1,6 +1,6 @@
 # Phase 2: Qwen3-8B Meta-CoT v2 SFT (diverse confidence)
 model_name_or_path: Qwen/Qwen3-8B
-dataset_path: /scratch/metacognition/sft_data/metacot_v2_sft.parquet
+dataset_path: /scratch/metacognition/sft_data/metacot_v2_trapi.parquet
 output_dir: /scratch/metacognition/checkpoints/qwen3_metacot_v2_sft
 
 num_train_epochs: 3
