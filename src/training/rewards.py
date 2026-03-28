@@ -364,6 +364,124 @@ def _load_probe(model_path="checkpoints/qwen3_meta_sft",
     print(f"Probe loaded: model={model_path}, head={probe_path}")
 
 
+def stepwise_probe_reward(completions, ground_truth=None, **kwargs):
+    """Stepwise credit assignment: independent reward per meta block position.
+
+    Each completion's meta blocks are classified by position (pre/mid/post)
+    and scored independently based on confidence accuracy at that stage.
+
+    Scoring:
+      Pre-meta (first block):
+        base = -(conf - group_accuracy)^2
+        +0.3 if conf < 0.5 (starts uncertain = good)
+        -0.3 if conf > 0.9 (starts overconfident = bad)
+
+      Mid-meta (middle blocks):
+        +0.5 if error-correction pattern detected ("wait", "wrong", "actually", "fix")
+        -0.2 if conf > 0.95 (overconfident mid-stream)
+
+      Post-meta (last block before \\boxed{}):
+        Brier: -(conf - correct)^2 where correct in {0,1}
+        Log (Rewarding Doubt):
+          correct: +0.5 * log(conf)
+          wrong:   +0.5 * log(1-conf)
+
+    Final: R = 0.2 * mean(pre) + 0.3 * mean(mid) + 0.5 * post
+    Returns: list[float], one per completion (TRL GRPOTrainer compatible).
+    """
+    # Error-correction keywords regex (compiled once)
+    _error_correction_re = re.compile(
+        r'\b(wait|wrong|fix|actually|mistake|no,|let me re|hold on|incorrect|error)\b',
+        re.IGNORECASE,
+    )
+
+    # First pass: compute group accuracy for pre-meta target
+    correct_flags = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        gt = ground_truth[i] if ground_truth is not None else ""
+        correct_flags.append(1.0 if _check_correctness(text, gt) else 0.0)
+    group_accuracy = sum(correct_flags) / max(len(correct_flags), 1)
+
+    # Second pass: stepwise scoring
+    rewards = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        blocks = _parse_meta_blocks(text)
+        is_correct = bool(correct_flags[i])
+
+        # Filter to blocks with confidence values
+        conf_blocks = [b for b in blocks if b["confidence"] is not None]
+        if not conf_blocks:
+            rewards.append(0.0)
+            continue
+
+        pre_scores = []
+        mid_scores = []
+        post_score = None
+
+        n_blocks = len(conf_blocks)
+        for idx, block in enumerate(conf_blocks):
+            conf = block["confidence"]
+            block_text = block["text"]
+
+            if idx == 0 and n_blocks >= 2:
+                # --- Pre-meta (first block, only when >=2 blocks) ---
+                score = -(conf - group_accuracy) ** 2
+                if conf < 0.5:
+                    score += 0.3
+                elif conf > 0.9:
+                    score -= 0.3
+                pre_scores.append(score)
+
+            elif idx == n_blocks - 1:
+                # --- Post-meta (last block) ---
+                target = 1.0 if is_correct else 0.0
+                score = -(conf - target) ** 2  # Brier
+                # Rewarding Doubt log scoring
+                conf_clamped = max(0.01, min(0.99, conf))
+                if is_correct:
+                    score += 0.5 * math.log(conf_clamped)
+                else:
+                    score += 0.5 * math.log(1.0 - conf_clamped)
+                post_score = score
+
+            else:
+                # --- Mid-meta (middle blocks) ---
+                score = 0.0
+                if _error_correction_re.search(block_text):
+                    score += 0.5
+                if conf > 0.95:
+                    score -= 0.2
+                mid_scores.append(score)
+
+        # Handle edge case: single block => treat it as post
+        if n_blocks == 1:
+            conf = conf_blocks[0]["confidence"]
+            target = 1.0 if is_correct else 0.0
+            score = -(conf - target) ** 2
+            conf_clamped = max(0.01, min(0.99, conf))
+            if is_correct:
+                score += 0.5 * math.log(conf_clamped)
+            else:
+                score += 0.5 * math.log(1.0 - conf_clamped)
+            post_score = score
+
+        # Weighted combination: 0.2 pre + 0.3 mid + 0.5 post
+        r = 0.0
+        if pre_scores:
+            r += 0.2 * (sum(pre_scores) / len(pre_scores))
+        if mid_scores:
+            r += 0.3 * (sum(mid_scores) / len(mid_scores))
+        if post_score is not None:
+            r += 0.5 * post_score
+
+        # Clamp to avoid extreme negatives destabilizing training
+        rewards.append(max(r, -3.0))
+
+    return rewards
+
+
 def probe_calibration_reward(completions, ground_truth=None,
                               model=None, tokenizer=None, **kwargs):
     """Calibration reward using hidden state probe.
