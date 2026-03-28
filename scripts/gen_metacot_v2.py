@@ -25,7 +25,7 @@ from src.metacot.prompt_v2 import META_COT_V2_SYSTEM_PROMPT, build_metacot_v2_pr
 def get_trapi_client():
     """Create TRAPI client (matching skilldiscovery/gpt_agent.py pattern)."""
     from openai import AzureOpenAI
-    endpoint = "https://trapi.research.microsoft.com/gcr/shared/openai"
+    endpoint = "https://trapi.research.microsoft.com/gcr/shared"
     api_version = "2025-04-01-preview"
     trapi_scope = "api://trapi/.default"
 
