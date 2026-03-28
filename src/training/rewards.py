@@ -269,3 +269,64 @@ def uncertainty_meta_reward(completions, ground_truth=None, **kwargs):
 
         rewards.append(r)
     return rewards
+
+
+# ─── R5: Stepwise Confidence Trajectory ───
+
+def stepwise_trajectory_reward(completions, ground_truth=None, **kwargs):
+    """Reward confidence trajectory: start low, end accurate.
+
+    Ideal: pre-meta conf ~0.3 → mid-meta conf ~0.6 → post-meta conf matches accuracy
+
+    Components:
+    1. Pre-meta should be uncertain (conf < 0.7 → bonus)
+    2. Confidence should generally increase (monotonic bonus)
+    3. Final confidence should match group accuracy (Brier)
+    4. If wrong, final conf should be low (Rewarding Doubt)
+    """
+    # Compute group accuracy
+    correct_flags = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        gt = ground_truth[i] if ground_truth is not None else ""
+        correct_flags.append(1.0 if _check_correctness(text, gt) else 0.0)
+    group_accuracy = sum(correct_flags) / max(len(correct_flags), 1)
+
+    rewards = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        blocks = _parse_meta_blocks(text)
+        is_correct = bool(correct_flags[i])
+
+        if not blocks or all(b["confidence"] is None for b in blocks):
+            rewards.append(0.0)
+            continue
+
+        confs = [b["confidence"] for b in blocks if b["confidence"] is not None]
+        if not confs:
+            rewards.append(0.0)
+            continue
+
+        r = 0.0
+
+        # 1. Pre-meta uncertainty bonus: first conf should be low
+        if confs[0] < 0.5:
+            r += 0.3  # "starts uncertain = good"
+        elif confs[0] > 0.9:
+            r -= 0.3  # "starts overconfident = bad"
+
+        # 2. Monotonic increase bonus
+        increases = sum(1 for j in range(1, len(confs)) if confs[j] >= confs[j-1])
+        if len(confs) > 1:
+            r += 0.2 * (increases / (len(confs) - 1))  # fraction of increasing steps
+
+        # 3. Final confidence accuracy (Brier + Doubt)
+        final_conf = confs[-1]
+        r += -(final_conf - group_accuracy) ** 2  # Brier
+        if is_correct:
+            r += 0.5 * math.log(max(final_conf, 0.01))  # Doubt
+        else:
+            r += 0.5 * math.log(max(1.0 - final_conf, 0.01))
+
+        rewards.append(max(r, -3.0))
+    return rewards
