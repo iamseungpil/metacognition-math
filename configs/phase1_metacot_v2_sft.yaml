@@ -1,0 +1,14 @@
+# Phase 2: Qwen3-8B Meta-CoT v2 SFT (diverse confidence)
+model_name_or_path: Qwen/Qwen3-8B
+dataset_path: /scratch/metacognition/sft_data/metacot_v2_sft.parquet
+output_dir: /scratch/metacognition/checkpoints/qwen3_metacot_v2_sft
+
+num_train_epochs: 3
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+learning_rate: 2.0e-5
+max_length: 4096
+save_steps: 200
+
+wandb_project: metacot-math
+run_name: qwen3-metacot-v2-sft
