@@ -225,7 +225,7 @@ def main():
         output_dir=args.output_dir,
         max_steps=args.max_steps,
         num_generations=args.num_generations,
-        max_completion_length=1024,
+        max_completion_length=2048,
         max_prompt_length=512,
         temperature=0.9,
         # HF generate (no vLLM, no veRL — just TRL)
