@@ -66,7 +66,7 @@ def load_benchmarks(names, max_problems=30):
     return all_problems
 
 
-def evaluate(model, tokenizer, problems, num_samples=1, max_tokens=1024):
+def evaluate(model, tokenizer, problems, num_samples=1, max_tokens=4096):
     results = []
     for idx, prob in enumerate(problems):
         messages = [{"role": "user", "content": prob["question"]}]
@@ -144,6 +144,7 @@ def main():
     parser.add_argument("--max_problems", type=int, default=30)
     parser.add_argument("--num_samples", type=int, default=1)
     parser.add_argument("--output_dir", default="results")
+    parser.add_argument("--model_name", default=None, help="Override model name for output file")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -170,9 +171,12 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
     model.cuda().eval()
 
-    model_name = args.model_path.split("/")[-1]
-    if args.is_lora:
-        model_name = f"grpo-{model_name}"
+    if args.model_name:
+        model_name = args.model_name
+    else:
+        model_name = args.model_path.split("/")[-1]
+        if args.is_lora:
+            model_name = f"grpo-{model_name}"
 
     # Load benchmarks
     print(f"\nLoading benchmarks: {args.benchmarks}")
