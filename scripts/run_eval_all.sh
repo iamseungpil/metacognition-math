@@ -32,4 +32,22 @@ CUDA_VISIBLE_DEVICES=0 python src/eval/eval_hf.py \
     --benchmarks $BENCHMARKS --max_problems $MAX \
     --output_dir results 2>&1 | tee results/eval_e5.log
 
+echo "=== Eval: V2 SFT ==="
+CUDA_VISIBLE_DEVICES=0 python src/eval/eval_hf.py \
+    --model_path checkpoints/qwen3_metacot_v2_sft \
+    --benchmarks $BENCHMARKS --max_problems $MAX \
+    --output_dir results 2>&1 | tee results/eval_v2_sft.log
+
+echo "=== Eval: GRPO E7 (stepwise probe) ==="
+# Use /final if it exists, otherwise fall back to checkpoint-200
+E7_PATH="checkpoints/grpo_v2_E7/final"
+if [ ! -d "$E7_PATH" ]; then
+    E7_PATH="checkpoints/grpo_v2_E7/checkpoint-200"
+fi
+echo "  Using E7 path: $E7_PATH"
+CUDA_VISIBLE_DEVICES=0 python src/eval/eval_hf.py \
+    --model_path $E7_PATH \
+    --benchmarks $BENCHMARKS --max_problems $MAX \
+    --output_dir results 2>&1 | tee results/eval_e7.log
+
 echo "=== ALL EVAL DONE ==="
