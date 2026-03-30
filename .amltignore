@@ -1,0 +1,9 @@
+gnosis_repo/
+checkpoints/
+data/
+results/
+*.log
+*.parquet
+__pycache__/
+.git/
+wandb/
