@@ -8,44 +8,41 @@ cd /scratch/metacognition
 export PYTHONPATH=/scratch/metacognition
 
 BENCHMARKS="gsm8k math500 aime2024"
-
-# GSM8K has 1319 test problems, MATH-500 has 500, AIME2024 has 30
-# We use max_problems=500 for GSM8K and MATH, 30 for AIME (all available)
 MAX=500
 
 mkdir -p results
 
-echo "=== Large-scale eval: 3 models x ~1030 problems ==="
+echo "=== Large-scale eval: 4 models x ~1030 problems ==="
 
+# GPU 0: Base SFT (no meta tokens — accuracy baseline)
 CUDA_VISIBLE_DEVICES=0 nohup python -u src/eval/eval_hf.py \
     --model_path checkpoints/qwen3_base_sft \
     --model_name 1030_base_sft \
     --benchmarks $BENCHMARKS --max_problems $MAX \
     --output_dir results > results/eval_1030_base.log 2>&1 &
 
+# GPU 1: V2 Meta SFT (meta tokens, no GRPO)
 CUDA_VISIBLE_DEVICES=1 nohup python -u src/eval/eval_hf.py \
     --model_path checkpoints/qwen3_metacot_v2_sft \
     --model_name 1030_v2_sft \
     --benchmarks $BENCHMARKS --max_problems $MAX \
     --output_dir results > results/eval_1030_v2sft.log 2>&1 &
 
-# E3 GRPO checkpoint — prefer /final, fallback to latest checkpoint
-E3_PATH="checkpoints/grpo_v2_E3/final"
-if [ ! -d "$E3_PATH" ]; then
-    E3_PATH=$(ls -d checkpoints/grpo_v2_E3/checkpoint-* 2>/dev/null | sort -t- -k2 -n | tail -1)
-fi
-if [ -z "$E3_PATH" ] || [ ! -d "$E3_PATH" ]; then
-    echo "ERROR: E3 checkpoint not found at checkpoints/grpo_v2_E3/"
-    exit 1
-fi
-echo "Using E3 checkpoint: $E3_PATH"
+# GPU 2: E3 checkpoint-100 (peak correctness phase)
 CUDA_VISIBLE_DEVICES=2 nohup python -u src/eval/eval_hf.py \
-    --model_path $E3_PATH \
-    --model_name 1030_e3 \
+    --model_path checkpoints/grpo_v2_E3/checkpoint-100 \
+    --model_name 1030_e3_ckpt100 \
     --benchmarks $BENCHMARKS --max_problems $MAX \
-    --output_dir results > results/eval_1030_e3.log 2>&1 &
+    --output_dir results > results/eval_1030_e3_ckpt100.log 2>&1 &
 
-echo "3 parallel evals started. Monitor with:"
+# GPU 3: E3 checkpoint-200 (more training, declining correctness)
+CUDA_VISIBLE_DEVICES=3 nohup python -u src/eval/eval_hf.py \
+    --model_path checkpoints/grpo_v2_E3/checkpoint-200 \
+    --model_name 1030_e3_ckpt200 \
+    --benchmarks $BENCHMARKS --max_problems $MAX \
+    --output_dir results > results/eval_1030_e3_ckpt200.log 2>&1 &
+
+echo "4 parallel evals started. Monitor with:"
 echo "  tail -f results/eval_1030_*.log"
 wait
 echo "=== ALL EVAL DONE ==="
