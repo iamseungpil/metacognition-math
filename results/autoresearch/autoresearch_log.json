@@ -1,0 +1,54 @@
+{
+  "start_time": "2026-03-30T19:44:10.996904",
+  "end_time": "2026-03-30T19:44:10.996963",
+  "target_metric": "Meta-CoT accuracy >= Base SFT accuracy",
+  "base_accuracy": 0.767,
+  "success": false,
+  "winning_hypothesis": null,
+  "results": [
+    {
+      "hypothesis_id": "H1",
+      "hypothesis_name": "Fix Truncation (max_tokens=4096)",
+      "status": "skipped (dry-run)",
+      "meta_accuracy": null,
+      "base_accuracy": null,
+      "delta": null,
+      "error_message": null,
+      "start_time": null,
+      "end_time": null,
+      "duration_seconds": null,
+      "eval_file": null,
+      "log_file": null
+    },
+    {
+      "hypothesis_id": "H3",
+      "hypothesis_name": "Verification-Only Meta",
+      "status": "skipped (dry-run)",
+      "meta_accuracy": null,
+      "base_accuracy": null,
+      "delta": null,
+      "error_message": null,
+      "start_time": null,
+      "end_time": null,
+      "duration_seconds": null,
+      "eval_file": null,
+      "log_file": null
+    },
+    {
+      "hypothesis_id": "H5",
+      "hypothesis_name": "Extended GRPO Training (1000 steps)",
+      "status": "skipped (dry-run)",
+      "meta_accuracy": null,
+      "base_accuracy": null,
+      "delta": null,
+      "error_message": null,
+      "start_time": null,
+      "end_time": null,
+      "duration_seconds": null,
+      "eval_file": null,
+      "log_file": null
+    }
+  ],
+  "total_iterations": 3,
+  "total_duration_seconds": 0.0
+}
