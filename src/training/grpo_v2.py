@@ -126,6 +126,33 @@ def load_gsm8k(max_n=500):
     return Dataset.from_list(records)
 
 
+def load_mixed(gsm_n=500, math_n=500):
+    """Load GSM8K + MATH-500 for diverse difficulty GRPO training."""
+    from datasets import load_dataset as hf_load
+    records = []
+    # GSM8K (easy-medium)
+    ds = hf_load("openai/gsm8k", "main", split="train")
+    for row in ds:
+        if len(records) >= gsm_n:
+            break
+        ans = row["answer"].split("####")[-1].strip() if "####" in row["answer"] else row["answer"]
+        records.append({"prompt": [{"role": "user", "content": row["question"]}], "ground_truth": ans})
+    gsm_count = len(records)
+    # MATH (medium-hard)
+    try:
+        ds = hf_load("HuggingFaceH4/MATH-500", split="test")
+        for row in ds:
+            if len(records) - gsm_count >= math_n:
+                break
+            records.append({"prompt": [{"role": "user", "content": row["problem"]}], "ground_truth": row["solution"]})
+    except Exception as e:
+        print(f"MATH-500 load failed: {e}, using GSM8K only")
+    print(f"Mixed dataset: {gsm_count} GSM8K + {len(records)-gsm_count} MATH = {len(records)} total")
+    import random
+    random.shuffle(records)
+    return Dataset.from_list(records)
+
+
 # ─── Sample Saving Callback ───
 
 class SampleSaver:
@@ -160,7 +187,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["E1", "E2", "E3", "E4", "E5", "E6", "E7"], default="E1")
     parser.add_argument("--model_path", default="checkpoints/qwen3_meta_sft")
-    parser.add_argument("--data", choices=["gsm8k", "filtered"], default="filtered")
+    parser.add_argument("--data", choices=["gsm8k", "filtered", "mixed"], default="mixed")
     parser.add_argument("--data_path", default="verl_train_filtered.parquet")
     parser.add_argument("--output_dir", default=None)
     parser.add_argument("--max_steps", type=int, default=200)
@@ -214,6 +241,8 @@ def main():
     # ─── Data ───
     if args.data == "gsm8k":
         dataset = load_gsm8k()
+    elif args.data == "mixed":
+        dataset = load_mixed()
     else:
         dataset = load_filtered(args.data_path)
 
