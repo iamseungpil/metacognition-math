@@ -29,14 +29,20 @@ CUDA_VISIBLE_DEVICES=1 nohup python -u src/eval/eval_hf.py \
     --benchmarks $BENCHMARKS --max_problems $MAX \
     --output_dir results > results/eval_1030_v2sft.log 2>&1 &
 
-# E3v2 path — use /final if exists, else checkpoint-200
-E3_PATH="checkpoints/grpo_v2_E3v2/final"
-[ ! -d "$E3_PATH" ] && E3_PATH="checkpoints/grpo_v2_E3v2/checkpoint-200"
+# E3 path — grpo_v2.py --mode E3 creates checkpoints/grpo_v2_E3/
+# Prefer /final if exists, else fall back to checkpoint-200
+E3_PATH="checkpoints/grpo_v2_E3/final"
+[ ! -d "$E3_PATH" ] && E3_PATH="checkpoints/grpo_v2_E3/checkpoint-200"
+if [ ! -d "$E3_PATH" ]; then
+    echo "ERROR: E3 checkpoint not found at checkpoints/grpo_v2_E3/{final,checkpoint-200}"
+    echo "  Run: bash scripts/run_grpo_v2.sh E3 200"
+    exit 1
+fi
 CUDA_VISIBLE_DEVICES=2 nohup python -u src/eval/eval_hf.py \
     --model_path $E3_PATH \
-    --model_name 1030_e3v2 \
+    --model_name 1030_e3 \
     --benchmarks $BENCHMARKS --max_problems $MAX \
-    --output_dir results > results/eval_1030_e3v2.log 2>&1 &
+    --output_dir results > results/eval_1030_e3.log 2>&1 &
 
 CUDA_VISIBLE_DEVICES=3 nohup python -u src/eval/eval_hf.py \
     --model_path checkpoints/grpo_v2_E7/checkpoint-200 \
