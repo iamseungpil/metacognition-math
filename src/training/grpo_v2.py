@@ -33,7 +33,7 @@ from src.training.rewards import (
     correctness_reward, format_reward, meta_quality_reward,
     calibration_reward, uncertainty_meta_reward,
     stepwise_trajectory_reward, probe_calibration_reward,
-    stepwise_probe_reward,
+    stepwise_probe_reward, length_penalty_reward, correct_meta_reward,
 )
 
 
@@ -185,7 +185,7 @@ class SampleSaver:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["E1", "E2", "E3", "E4", "E5", "E6", "E7"], default="E1")
+    parser.add_argument("--mode", choices=["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"], default="E1")
     parser.add_argument("--model_path", default="checkpoints/qwen3_meta_sft")
     parser.add_argument("--data", choices=["gsm8k", "filtered", "mixed"], default="mixed")
     parser.add_argument("--data_path", default="verl_train_filtered.parquet")
@@ -212,9 +212,15 @@ def main():
                [1.0, 0.5, 0.5, 1.5]),  # probe gets highest weight
         "E7": ([correctness_reward, format_reward, meta_quality_reward, stepwise_probe_reward],
                [1.0, 0.5, 0.5, 1.5]),  # stepwise probe gets highest weight
+        # E8: correctness-dominant + length penalty (fixes E3 reward hacking)
+        # No meta_quality (saturates at 0.4, no gradient after step 85)
+        # correctness 3.0 = dominant signal, length_penalty prevents verbosity
+        "E8": ([correctness_reward, format_reward, correct_meta_reward,
+                calibration_reward, length_penalty_reward],
+               [3.0, 0.2, 0.5, 0.5, 1.0]),
     }
     reward_funcs, reward_weights = reward_configs[args.mode]
-    use_gdpo = args.mode in ("E3", "E4", "E5", "E6", "E7")  # GDPO when 3+ rewards
+    use_gdpo = args.mode in ("E3", "E4", "E5", "E6", "E7", "E8")  # GDPO when 3+ rewards
 
     if use_gdpo:
         _apply_gdpo_patch()
@@ -316,7 +322,10 @@ def main():
                 log_path = os.path.join(self.output_dir, "responses", f"step_{step:04d}.json")
                 with open(log_path, "w") as f:
                     json.dump({"step": step, "logs": {k: str(v) for k, v in logs.items()}}, f, indent=2)
-                print(f"  [Step {step}] reward={logs.get('reward', '?')}, loss={logs.get('loss', '?')}")
+                reward = logs.get('reward', '?')
+                corr = logs.get('rewards/correctness_reward/mean', '?')
+                length = logs.get('completions/mean_length', '?')
+                print(f"  [Step {step}] reward={reward}, corr={corr}, len={length}, loss={logs.get('loss', '?')}")
 
     trainer.add_callback(ResponseLogger(args.output_dir))
 

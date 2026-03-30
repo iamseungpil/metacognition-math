@@ -532,3 +532,66 @@ def probe_calibration_reward(completions, ground_truth=None,
         rewards.append(r)
 
     return rewards
+
+
+# ─── R7: Length Penalty ───
+
+def length_penalty_reward(completions, **kwargs):
+    """Penalize verbose responses to prevent reward hacking via length.
+
+    No penalty below 500 tokens. Linear penalty above 500.
+    -0.001 per token over 500 (max penalty -1.5 at 2000 tokens).
+
+    This prevents GRPO from gaming meta_quality/format rewards
+    by generating long, low-quality responses.
+    """
+    rewards = []
+    for c in completions:
+        text = _get_text(c)
+        n_tokens = len(text.split())  # word-level approximation
+        if n_tokens <= 500:
+            rewards.append(0.0)
+        else:
+            penalty = -0.001 * (n_tokens - 500)
+            rewards.append(max(penalty, -1.5))
+    return rewards
+
+
+# ─── R8: Correctness-Conditional Meta ───
+
+def correct_meta_reward(completions, ground_truth=None, **kwargs):
+    """Only reward meta quality when the answer is correct.
+
+    This prevents the model from generating verbose meta blocks
+    on wrong answers just to collect meta_quality reward.
+
+    Correct + good meta → +0.5
+    Correct + no meta → 0.0
+    Wrong + any meta → -0.3 (penalty for wasting tokens on wrong answer)
+    Wrong + no meta → 0.0
+    """
+    rewards = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        gt = ground_truth[i] if ground_truth is not None else ""
+        is_correct = _check_correctness(text, gt)
+        blocks = _parse_meta_blocks(text)
+
+        if is_correct:
+            if blocks:
+                # Reward proportional to meta quality
+                q = 0.0
+                for b in blocks[:3]:
+                    if b["confidence"] is not None:
+                        q += 0.1
+                    if b["length"] >= 10:
+                        q += 0.05
+                rewards.append(min(q, 0.5))
+            else:
+                rewards.append(0.0)
+        else:
+            if blocks:
+                rewards.append(-0.3)  # Penalize meta on wrong answers
+            else:
+                rewards.append(0.0)
+    return rewards
