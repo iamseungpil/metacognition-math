@@ -144,7 +144,7 @@ def load_mixed(gsm_n=500, math_n=500):
         for row in ds:
             if len(records) - gsm_count >= math_n:
                 break
-            records.append({"prompt": [{"role": "user", "content": row["problem"]}], "ground_truth": row["solution"]})
+            records.append({"prompt": [{"role": "user", "content": row["problem"]}], "ground_truth": row["answer"]})
     except Exception as e:
         print(f"MATH-500 load failed: {e}, using GSM8K only")
     print(f"Mixed dataset: {gsm_count} GSM8K + {len(records)-gsm_count} MATH = {len(records)} total")
@@ -231,11 +231,13 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    # CRITICAL: Use add_tokens() NOT add_special_tokens() so that <|meta|> tokens
+    # survive TRL's skip_special_tokens=True decoding in reward computation.
+    # With add_special_tokens(), TRL strips them before reward functions see them.
     from src.metacot.prompt import META_START, META_END
-    existing = set(tokenizer.additional_special_tokens or [])
-    to_add = [t for t in [META_START, META_END] if t not in existing]
+    to_add = [t for t in [META_START, META_END] if t not in tokenizer.get_vocab()]
     if to_add:
-        tokenizer.add_special_tokens({"additional_special_tokens": list(existing) + to_add})
+        tokenizer.add_tokens(to_add)
 
     model = AutoModelForCausalLM.from_pretrained(
         args.model_path, torch_dtype=torch.bfloat16,

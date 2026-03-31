@@ -67,12 +67,12 @@ def run_sft(config_path: str):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Add <|meta|> special tokens for metacognitive blocks
+    # Add <|meta|> as regular tokens (NOT special tokens) so they survive
+    # skip_special_tokens=True during GRPO reward computation.
     from src.metacot.prompt import META_START, META_END
-    num_added = tokenizer.add_special_tokens({
-        "additional_special_tokens": [META_START, META_END]
-    })
-    print(f"Added {num_added} special tokens: {META_START}, {META_END}")
+    to_add = [t for t in [META_START, META_END] if t not in tokenizer.get_vocab()]
+    num_added = tokenizer.add_tokens(to_add)
+    print(f"Added {num_added} tokens: {META_START}, {META_END}")
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name,

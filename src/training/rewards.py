@@ -83,6 +83,15 @@ def _parse_meta_blocks(text):
         conf = _parse_confidence(block_text)
         blocks.append({"text": block_text, "confidence": conf, "length": len(block_text.split())})
 
+    # Fallback: try [META] / [/META] text markers (when special tokens are stripped)
+    if not blocks:
+        parts2 = re.split(r'\[META\]', text, flags=re.IGNORECASE)
+        for part in parts2[1:]:
+            end_idx = re.search(r'\[/META\]', part, re.IGNORECASE)
+            block_text = part[:end_idx.start()] if end_idx else part[:200]
+            conf = _parse_confidence(block_text)
+            blocks.append({"text": block_text, "confidence": conf, "length": len(block_text.split())})
+
     # Fallback: detect meta-like patterns in stripped text
     if not blocks:
         conf_matches = re.findall(
