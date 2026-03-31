@@ -78,10 +78,8 @@ def push_model(
     if not has_model_files:
         print(f"  WARNING: No model weight files found in {model_dir}")
         print(f"           Expected *.safetensors, *.bin, or adapter_config.json")
-        response = input("  Continue anyway? [y/N]: ").strip().lower()
-        if response != "y":
-            print("  Skipping.")
-            return
+        print("  Skipping (no interactive prompt in pipeline mode).")
+        return
 
     # Upload path in repo: models/<model_name>/
     path_in_repo = f"models/{model_name}"
