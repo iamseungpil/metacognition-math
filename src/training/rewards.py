@@ -329,11 +329,10 @@ def stepwise_trajectory_reward(completions, ground_truth=None, **kwargs):
         if len(confs) > 1:
             r += 0.2 * (increases / (len(confs) - 1))  # fraction of increasing steps
 
-        # 3. Final confidence accuracy (Brier + Doubt)
+        # 3. Final confidence accuracy (Doubt only — consistent binary target)
         final_conf = confs[-1]
-        r += -(final_conf - group_accuracy) ** 2  # Brier
         if is_correct:
-            r += 0.5 * math.log(max(final_conf, 0.01))  # Doubt
+            r += 0.5 * math.log(max(final_conf, 0.01))  # reward high conf on correct
         else:
             r += 0.5 * math.log(max(1.0 - final_conf, 0.01))
 
@@ -483,14 +482,24 @@ def stepwise_probe_reward(completions, ground_truth=None, **kwargs):
                 score += 0.5 * math.log(1.0 - conf_clamped)
             post_score = score
 
-        # Weighted combination: 0.2 pre + 0.3 mid + 0.5 post
-        r = 0.0
+        # Weighted combination, normalized to sum to 1.0
+        components = []
+        weights = []
         if pre_scores:
-            r += 0.2 * (sum(pre_scores) / len(pre_scores))
+            components.append(sum(pre_scores) / len(pre_scores))
+            weights.append(0.2)
         if mid_scores:
-            r += 0.3 * (sum(mid_scores) / len(mid_scores))
+            components.append(sum(mid_scores) / len(mid_scores))
+            weights.append(0.3)
         if post_score is not None:
-            r += 0.5 * post_score
+            components.append(post_score)
+            weights.append(0.5)
+
+        if weights:
+            w_sum = sum(weights)
+            r = sum(c * w / w_sum for c, w in zip(components, weights))
+        else:
+            r = 0.0
 
         # Clamp to avoid extreme negatives destabilizing training
         rewards.append(max(r, -3.0))

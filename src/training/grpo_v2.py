@@ -231,20 +231,24 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # CRITICAL: Use add_tokens() NOT add_special_tokens() so that <|meta|> tokens
-    # survive TRL's skip_special_tokens=True decoding in reward computation.
-    # With add_special_tokens(), TRL strips them before reward functions see them.
+    # CRITICAL FIX: Ensure <|meta|> tokens are NOT marked as special tokens.
+    # TRL's skip_special_tokens=True strips special tokens before reward functions.
+    # If SFT checkpoint saved them as special tokens, we must demote them to regular.
     from src.metacot.prompt import META_START, META_END
-    to_add = [t for t in [META_START, META_END] if t not in tokenizer.get_vocab()]
-    if to_add:
-        tokenizer.add_tokens(to_add)
+    for token in [META_START, META_END]:
+        if token in tokenizer.get_vocab():
+            # Remove from special tokens list if present
+            if token in (tokenizer.additional_special_tokens or []):
+                new_special = [t for t in tokenizer.additional_special_tokens if t != token]
+                tokenizer.additional_special_tokens = new_special
+        else:
+            tokenizer.add_tokens([token])
 
     model = AutoModelForCausalLM.from_pretrained(
         args.model_path, torch_dtype=torch.bfloat16,
         attn_implementation="sdpa", trust_remote_code=True, use_cache=False,
     )
-    if to_add:
-        model.resize_token_embeddings(len(tokenizer))
+    model.resize_token_embeddings(len(tokenizer))
 
     # ─── Data ───
     if args.data == "gsm8k":
