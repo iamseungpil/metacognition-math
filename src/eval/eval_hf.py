@@ -7,9 +7,11 @@ Usage:
   python src/eval/eval_hf.py --model_path checkpoints/grpo_clean_meta_filtered/checkpoint-200 --is_lora --base_model checkpoints/qwen3_meta_sft
 """
 import argparse
+import datetime as dt
 import json
 import os
 import re
+import socket
 
 import torch
 import pandas as pd
@@ -80,7 +82,10 @@ def evaluate(model, tokenizer, problems, num_samples=1, max_tokens=4096):
                     do_sample=True, temperature=0.7, top_p=0.95,
                     pad_token_id=tokenizer.pad_token_id,
                 )
-            gen = tokenizer.decode(output[0][inputs["input_ids"].shape[1]:], skip_special_tokens=False)
+            prompt_len_tokens = int(inputs["input_ids"].shape[1])
+            completion_ids = output[0][prompt_len_tokens:]
+            completion_len_tokens = int(completion_ids.shape[0])
+            gen = tokenizer.decode(completion_ids, skip_special_tokens=False)
 
             is_correct = check_correctness(gen, prob["gold_answer"])
             parsed = parse_meta_blocks(gen)
@@ -90,11 +95,18 @@ def evaluate(model, tokenizer, problems, num_samples=1, max_tokens=4096):
             results.append({
                 "benchmark": prob["benchmark"],
                 "question": prob["question"][:80],
+                "full_question": prob["question"],
                 "is_correct": is_correct,
                 "num_meta_blocks": parsed["num_blocks"],
+                "meta_confidences": confs,
                 "avg_confidence": avg_conf,
                 "answer_extracted": extract_answer(gen),
                 "gold_answer": prob["gold_answer"][:50],
+                "full_gold_answer": prob["gold_answer"],
+                "prompt_length_chars": len(text),
+                "prompt_length_tokens": prompt_len_tokens,
+                "completion_length_chars": len(gen),
+                "completion_length_tokens": completion_len_tokens,
                 "completion": gen,  # full completion for qualitative analysis
             })
 
@@ -133,6 +145,51 @@ def print_results(model_name, results):
     print(f"  {'-'*42}")
     print(f"  {'OVERALL':<12} {acc*100:5.1f}%")
     return df
+
+
+def build_run_metadata(args, model_name, problems, tokenizer):
+    return {
+        "model": model_name,
+        "model_path": args.model_path,
+        "base_model": args.base_model,
+        "is_lora": args.is_lora,
+        "benchmarks": args.benchmarks,
+        "max_problems_per_benchmark": args.max_problems,
+        "num_samples": args.num_samples,
+        "total_problems": len(problems),
+        "hostname": socket.gethostname(),
+        "utc_timestamp": dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "tokenizer_name_or_path": getattr(tokenizer, "name_or_path", None),
+    }
+
+
+def save_results_bundle(output_dir, model_name, run_metadata, results):
+    json_path = os.path.join(output_dir, f"eval_{model_name}.json")
+    metadata_path = os.path.join(output_dir, f"eval_{model_name}.metadata.json")
+    parquet_path = os.path.join(output_dir, f"eval_{model_name}.parquet")
+
+    payload = {
+        "model": model_name,
+        "run_metadata": run_metadata,
+        "results": results,
+    }
+    with open(json_path, "w") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+
+    with open(metadata_path, "w") as f:
+        json.dump(run_metadata, f, indent=2, ensure_ascii=False)
+
+    parquet_saved = False
+    try:
+        pd.DataFrame(results).to_parquet(parquet_path, index=False)
+        parquet_saved = True
+    except Exception as e:
+        print(f"Warning: failed to save parquet ({type(e).__name__}: {e})")
+
+    print(f"\nSaved JSON to {json_path}")
+    print(f"Saved metadata to {metadata_path}")
+    if parquet_saved:
+        print(f"Saved parquet to {parquet_path}")
 
 
 def main():
@@ -186,12 +243,10 @@ def main():
     # Evaluate
     results = evaluate(model, tokenizer, problems, args.num_samples)
     df = print_results(model_name, results)
+    run_metadata = build_run_metadata(args, model_name, problems, tokenizer)
 
     # Save
-    save_path = os.path.join(args.output_dir, f"eval_{model_name}.json")
-    with open(save_path, "w") as f:
-        json.dump({"model": model_name, "results": results}, f, indent=2, ensure_ascii=False)
-    print(f"\nSaved to {save_path}")
+    save_results_bundle(args.output_dir, model_name, run_metadata, results)
 
 
 if __name__ == "__main__":

@@ -34,6 +34,9 @@ from src.training.rewards import (
     calibration_reward, uncertainty_meta_reward,
     stepwise_trajectory_reward, probe_calibration_reward,
     stepwise_probe_reward, length_penalty_reward, correct_meta_reward,
+    self_correction_reward, verification_reward, overconfidence_penalty_reward,
+    confidence_revision_reward, effective_verification_reward,
+    effective_redirection_reward,
 )
 
 
@@ -153,6 +156,61 @@ def load_mixed(gsm_n=500, math_n=500):
     return Dataset.from_list(records)
 
 
+def _extract_math_answer(row):
+    """Prefer a clean final answer rather than a full worked solution."""
+    answer = row.get("answer")
+    if answer:
+        return str(answer)
+
+    solution = str(row.get("solution", ""))
+    boxed = re.findall(r'\\boxed\{((?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\}', solution)
+    if boxed:
+        return boxed[-1].strip()
+    return solution
+
+
+def load_mixed_train(gsm_n=500, math_n=500):
+    """Load train-only math data for RL to avoid benchmark test leakage."""
+    from datasets import load_dataset as hf_load
+
+    records = []
+    ds = hf_load("openai/gsm8k", "main", split="train")
+    for row in ds:
+        if len(records) >= gsm_n:
+            break
+        ans = row["answer"].split("####")[-1].strip() if "####" in row["answer"] else row["answer"]
+        records.append({"prompt": [{"role": "user", "content": row["question"]}], "ground_truth": ans})
+    gsm_count = len(records)
+
+    math_rows = []
+    math_configs = [
+        "algebra",
+        "counting_and_probability",
+        "geometry",
+        "intermediate_algebra",
+        "number_theory",
+        "prealgebra",
+        "precalculus",
+    ]
+    for cfg in math_configs:
+        ds = hf_load("EleutherAI/hendrycks_math", cfg, split="train")
+        for row in ds:
+            gt = _extract_math_answer(row)
+            if not gt:
+                continue
+            math_rows.append({"prompt": [{"role": "user", "content": row["problem"]}], "ground_truth": gt})
+
+    import random
+    random.shuffle(math_rows)
+    records.extend(math_rows[:math_n])
+    print(
+        f"Mixed train dataset: {gsm_count} GSM8K train + "
+        f"{len(records)-gsm_count} hendrycks_math train = {len(records)} total"
+    )
+    random.shuffle(records)
+    return Dataset.from_list(records)
+
+
 # ─── Sample Saving Callback ───
 
 class SampleSaver:
@@ -185,9 +243,9 @@ class SampleSaver:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"], default="E1")
+    parser.add_argument("--mode", choices=["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9"], default="E1")
     parser.add_argument("--model_path", default="checkpoints/qwen3_meta_sft")
-    parser.add_argument("--data", choices=["gsm8k", "filtered", "mixed"], default="mixed")
+    parser.add_argument("--data", choices=["gsm8k", "filtered", "mixed", "mixed_train"], default="mixed")
     parser.add_argument("--data_path", default="verl_train_filtered.parquet")
     parser.add_argument("--output_dir", default=None)
     parser.add_argument("--max_steps", type=int, default=200)
@@ -216,11 +274,20 @@ def main():
         # No meta_quality (saturates at 0.4, no gradient after step 85)
         # correctness 3.0 = dominant signal, length_penalty prevents verbosity
         "E8": ([correctness_reward, format_reward, correct_meta_reward,
-                calibration_reward, length_penalty_reward],
-               [3.0, 0.2, 0.5, 0.5, 1.0]),
+                calibration_reward, verification_reward,
+                self_correction_reward, overconfidence_penalty_reward,
+                length_penalty_reward],
+               [3.0, 0.2, 0.4, 0.4, 0.7, 0.7, 1.0, 1.0]),
+        # E9: behavior-first reward mix
+        # Focus on real verification, real redirection, and justified confidence revision.
+        "E9": ([correctness_reward, format_reward, correct_meta_reward,
+                effective_verification_reward, effective_redirection_reward,
+                confidence_revision_reward, overconfidence_penalty_reward,
+                length_penalty_reward],
+               [3.0, 0.2, 0.3, 0.8, 1.0, 0.6, 1.0, 1.0]),
     }
     reward_funcs, reward_weights = reward_configs[args.mode]
-    use_gdpo = args.mode in ("E3", "E4", "E5", "E6", "E7", "E8")  # GDPO when 3+ rewards
+    use_gdpo = args.mode in ("E3", "E4", "E5", "E6", "E7", "E8", "E9")  # GDPO when 3+ rewards
 
     if use_gdpo:
         _apply_gdpo_patch()
@@ -253,6 +320,8 @@ def main():
     # ─── Data ───
     if args.data == "gsm8k":
         dataset = load_gsm8k()
+    elif args.data == "mixed_train":
+        dataset = load_mixed_train()
     elif args.data == "mixed":
         dataset = load_mixed()
     else:

@@ -10,7 +10,18 @@ Meta-CoT must outperform Base SFT on math accuracy.
 Calibration is secondary value — accuracy is the primary metric.
 The autoresearch loop continues until Meta-CoT >= Base SFT on overall accuracy.
 
-## Current Results (baseline)
+## Intent Alignment
+
+This plan is not only about adding meta text. The target behavior is:
+
+1. **Redirect when stuck**: if the model notices uncertainty or a likely mistake, it should change strategy and recover.
+2. **Verify when confident**: if the model is leaning toward a high-confidence answer, it should run at least one concrete verification step before finalizing.
+
+Only after these two behaviors are learned reliably should meta traces be reused for curriculum learning.
+
+## Current Results
+
+### Legacy small-eval results (30-problem setting, mostly for historical context)
 
 | Model | GSM8K | MATH-500 | AIME2024 | Overall | ECE (MATH) | Meta Blocks |
 |-------|-------|----------|----------|---------|------------|-------------|
@@ -21,8 +32,16 @@ The autoresearch loop continues until Meta-CoT >= Base SFT on overall accuracy.
 | GRPO E5 (stepwise trajectory) | 86.7% | 63.3% | 3.3% | 51.1% | 0.350 | 4.8 |
 | GRPO E6 (probe calibration) | *in progress* | | | | | |
 
-**Gap**: Meta SFT trails Base SFT by 1.2%p overall (54.4% vs 55.6%).
-**Root cause**: Meta tokens consume ~56% of completion space; 31% of completions truncated at 1024 tokens.
+### Verified large-eval results (1,030 problems, canonical comparison setting)
+
+| Model | GSM8K | MATH-500 | AIME2024 | Overall | Status |
+|-------|-------|----------|----------|---------|--------|
+| Meta SFT (V2) | 90.0% | 59.0% | 13.3% | 72.72% | verified |
+| Base SFT | pending | pending | pending | pending | must re-evaluate at 1,030 scale |
+| Meta SFT (V3) | pending | pending | pending | pending | queued for 1,030 eval |
+
+**Important**: the old 30-problem gap is no longer the decision metric.
+The real comparison for autoresearch decisions is the 1,030-problem eval with full completion logging.
 
 ## Autoresearch Loop
 
@@ -77,6 +96,10 @@ This alone should recover most of the 31% truncation-induced accuracy loss.
 - Selective abstention curve (accuracy vs coverage at conf thresholds)
 - Confidence distribution histogram
 - Full completion text saved for qualitative analysis
+- Redirect-after-uncertainty rate
+- Self-correction success rate
+- High-confidence-without-verification error rate
+- Per-run metadata + raw response artifacts saved for later aggregate analysis / HF upload
 
 ## Phase C: Autoresearch Improvement Loop
 
@@ -92,11 +115,13 @@ Iterate through H1-H6 until Meta-CoT >= Base SFT.
 - For easy problems: skip meta blocks entirely (or use single-line meta)
 - For medium/hard: full meta-CoT with verification
 - Implementation: conditional prompt template or difficulty classifier head
+- Success condition: keep easy-problem overhead low while increasing redirect behavior on medium/hard failures
 
 ### C3: Verification-only meta (H3)
 - Remove pre-solve planning meta blocks
 - Keep only post-answer verification meta: "Is my answer correct? Let me check..."
 - Reduces meta token overhead from ~250 to ~80 tokens
+- Must not erase the separate "stuck -> redirect" behavior; verification-only is acceptable only if redirect metrics do not regress on hard problems
 
 ### C4: Teacher upgrade (H4)
 - Regenerate 4,996 chains using gpt-5.4 (full model, not mini)
@@ -111,10 +136,19 @@ Iterate through H1-H6 until Meta-CoT >= Base SFT.
 ### C6: Verification reward (H6)
 - Add reward component: +bonus when meta block identifies an error AND the final answer is correct
 - Encourages productive (not decorative) meta-cognition
+- Also penalize wrong high-confidence answers that skip verification
+
+### C7: Redirect reward / data shaping
+- Increase examples where the model explicitly notices a bad line of attack and switches methods
+- Track whether "uncertainty -> redirection -> correct answer" happens more often after the change
+- If SFT data is too generic, regenerate hard examples with method-switch supervision rather than only generic confidence statements
 
 ## Phase D: Curriculum Learning (after Phase C succeeds)
 
 Only proceed after Meta-CoT >= Base SFT is achieved.
+
+Additional gate:
+- Redirect and verification metrics must both be stable enough that the model's meta traces are trustworthy as weakness labels
 
 1. **Meta-guided weakness diagnosis**: Use meta blocks to identify problem types where the model fails
 2. **RAG retrieval**: FAISS + sentence-transformers to find similar problems from NuminaMath/GSM8K
@@ -129,8 +163,10 @@ Only proceed after Meta-CoT >= Base SFT is achieved.
 | M1: Parity | Meta-CoT overall accuracy >= Base SFT (55.6%) | **PRIMARY** |
 | M2: MATH win | Meta-CoT MATH-500 >= Base SFT (70.0%) | HIGH |
 | M3: Calibration | Meta-CoT ECE < 0.30 on MATH-500 | MEDIUM |
-| M4: Abstention | Meta-CoT conf>=0.7 subset accuracy > Base SFT overall | MEDIUM |
-| M5: AIME | Meta-CoT AIME accuracy > 10% | LOW |
+| M4: Redirect | On uncertain problems, redirect-after-uncertainty and self-correction success both improve over V2 SFT | HIGH |
+| M5: Verification | High-confidence wrong-without-verification rate decreases materially | HIGH |
+| M6: Abstention | Meta-CoT conf>=0.7 subset accuracy > Base SFT overall | MEDIUM |
+| M7: AIME | Meta-CoT AIME accuracy > 10% | LOW |
 
 ## Known Risks
 

@@ -1,0 +1,54 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{fontspec}
+\usepackage{hyperref}
+\setmainfont{Latin Modern Roman}
+\title{Meta-CoT Study Update}
+\author{Seungpil Lee}
+\date{2026-04-01}
+
+\begin{document}
+\maketitle
+
+\section*{Executive Summary}
+The current evidence shows that Meta-CoT can match or slightly exceed the base SFT model on the 1,030-problem setting, but the intended metacognitive behaviors are still only partially learned. The strongest finished result so far is E5 at 72.04\%, which is close to V2 SFT at 72.72\% and above the 71.7\% base reference. Qualitative inspection still indicates that verification is often decorative and that true strategy redirection remains weak.
+
+\section*{Artifact Audit}
+\begin{longtable}{p{0.28\linewidth} p{0.18\linewidth} p{0.44\linewidth}}
+\toprule
+Category & Status & Notes \\
+\midrule
+Session logs & Present & Session log and monitor logs are saved under \texttt{results/}. \\
+Plans and notes & Present & Experiment plans and autoresearch notes are preserved. \\
+Generated training data & Present & Behavior pilot parquet files are saved locally under \texttt{data/}. \\
+Eval raw JSON & Present for completed runs & E5, old E7, current E7, and V2 rich all have JSON outputs. \\
+Eval metadata and parquet & Partial & E5 and old E7 are complete; newer runs are not yet uniform. \\
+HF upload evidence & Present & E8 upload log includes an explicit completion marker. \\
+\bottomrule
+\end{longtable}
+
+\section*{Latest Results}
+\begin{tabular}{lr}
+\toprule
+Model & Overall Accuracy \\
+\midrule
+Base SFT & 71.7\% \\
+V2 SFT & 72.72\% \\
+V3 SFT & 72.0\% \\
+E5 & 72.04\% \\
+Old E7 & 69.9\% \\
+Current E7 & 70.68\% \\
+V2 rich eval & 71.36\% \\
+\bottomrule
+\end{tabular}
+
+\section*{Behavior-First Pilot}
+The pilot generated 770 valid chains from a requested 1,800, but the accepted set was strongly imbalanced. Redirect examples dominated with 552 accepted rows, verify contributed 216 rows, and straight-solve examples collapsed to only 2 rows. This confirms that the behavior-first framing is useful, but also shows that the current generator and validator are not yet suitable for a balanced main training run.
+
+\section*{Conclusion}
+The project now has stronger artifact preservation, large-scale evaluation, and a clearer behavioral target. The next step is not to change the overall direction, but to repair scenario balance in generation, make evaluation bundles uniform, and fix the remote training launcher before the next full autoresearch round.
+
+\end{document}

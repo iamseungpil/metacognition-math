@@ -62,6 +62,81 @@ def _extract_answer_fallback(text):
     return nums[-1] if nums else ""
 
 
+def _last_confidence(text):
+    """Return the last stated confidence in the completion, if any."""
+    blocks = _parse_meta_blocks(text)
+    confs = [b["confidence"] for b in blocks if b["confidence"] is not None]
+    return confs[-1] if confs else None
+
+
+def _has_verification_signal(text):
+    """Detect explicit verification/checking language."""
+    return bool(re.search(
+        r'\b(verify|verified|verification|double-check|check again|re-check|sanity check)\b',
+        text,
+        re.IGNORECASE,
+    ))
+
+
+def _has_uncertainty_signal(text):
+    """Detect uncertainty/stuck language before a correction attempt."""
+    return bool(re.search(
+        r'\b(wait|hmm|not sure|uncertain|stuck|hold on|let me think|I should check)\b',
+        text,
+        re.IGNORECASE,
+    ))
+
+
+def _has_redirection_signal(text):
+    """Detect a change of strategy rather than decorative meta text."""
+    return bool(re.search(
+        r'\b(instead|another way|different way|alternative|let me try|reframe|case split|fix|mistake|forgot)\b',
+        text,
+        re.IGNORECASE,
+    ))
+
+
+def _has_effective_verification_signal(text):
+    """Detect verification that re-checks the answer, not just decorative wording."""
+    return bool(re.search(
+        r'\b(substitute|plug(?:ging)? back|back-?substitut|recomput|recalculat|independent check|check by|sanity check|verify by|test the result)\b',
+        text,
+        re.IGNORECASE,
+    ))
+
+
+def _has_conflict_trigger(text):
+    """Detect explicit evidence that the current path may be wrong."""
+    return bool(re.search(
+        r'\b(contradiction|doesn\'t satisfy|does not satisfy|fails|mismatch|not consistent|too large|too small|cannot be|can\'t be|impossible|unit mismatch)\b',
+        text,
+        re.IGNORECASE,
+    ))
+
+
+def _has_strategy_switch_signal(text):
+    """Detect a real switch in solving method."""
+    return bool(re.search(
+        r'\b(switch(?:ing)? to|different method|alternative approach|instead use|reframe|case split|solve via|let me use|another method)\b',
+        text,
+        re.IGNORECASE,
+    ))
+
+
+def _has_confidence_drop(text, margin=0.08):
+    """Return True if later confidence drops meaningfully from an earlier one."""
+    blocks = _parse_meta_blocks(text)
+    confs = [b["confidence"] for b in blocks if b["confidence"] is not None]
+    if len(confs) < 2:
+        return False
+    best_seen = confs[0]
+    for conf in confs[1:]:
+        if conf <= best_seen - margin:
+            return True
+        best_seen = max(best_seen, conf)
+    return False
+
+
 def _get_text(completion):
     """Extract text from TRL completion format."""
     if isinstance(completion, list):
@@ -612,4 +687,138 @@ def correct_meta_reward(completions, ground_truth=None, **kwargs):
                 rewards.append(-0.3)  # Penalize meta on wrong answers
             else:
                 rewards.append(0.0)
+    return rewards
+
+
+def self_correction_reward(completions, ground_truth=None, **kwargs):
+    """Reward uncertainty followed by a genuine change in approach.
+
+    This targets the intended metacognitive behavior:
+    when the model realizes it may be wrong, it should redirect and recover.
+    """
+    rewards = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        gt = ground_truth[i] if ground_truth is not None else ""
+        is_correct = _check_correctness(text, gt)
+
+        has_uncertainty = _has_uncertainty_signal(text)
+        has_redirection = _has_redirection_signal(text)
+
+        if has_uncertainty and has_redirection:
+            rewards.append(0.8 if is_correct else 0.2)
+        elif has_uncertainty:
+            rewards.append(-0.2)
+        else:
+            rewards.append(0.0)
+    return rewards
+
+
+def verification_reward(completions, ground_truth=None, **kwargs):
+    """Reward final verification, especially for high-confidence answers."""
+    rewards = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        gt = ground_truth[i] if ground_truth is not None else ""
+        is_correct = _check_correctness(text, gt)
+        conf = _last_confidence(text)
+        has_verify = _has_verification_signal(text)
+
+        if conf is None:
+            rewards.append(0.0)
+            continue
+
+        if conf >= 0.75 and has_verify:
+            rewards.append(0.5 if is_correct else 0.05)
+        elif conf >= 0.75 and not has_verify:
+            rewards.append(-0.1 if is_correct else -0.6)
+        else:
+            rewards.append(0.1 if has_verify and is_correct else 0.0)
+    return rewards
+
+
+def overconfidence_penalty_reward(completions, ground_truth=None, **kwargs):
+    """Strongly penalize wrong answers delivered with high confidence."""
+    rewards = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        gt = ground_truth[i] if ground_truth is not None else ""
+        is_correct = _check_correctness(text, gt)
+        conf = _last_confidence(text)
+
+        if conf is None or is_correct:
+            rewards.append(0.0)
+            continue
+
+        if conf >= 0.95:
+            rewards.append(-1.0)
+        elif conf >= 0.85:
+            rewards.append(-0.6)
+        elif conf >= 0.7:
+            rewards.append(-0.25)
+        else:
+            rewards.append(0.0)
+    return rewards
+
+
+def confidence_revision_reward(completions, ground_truth=None, **kwargs):
+    """Reward lowering confidence when evidence suggests the current path is weak."""
+    rewards = []
+    for c in completions:
+        text = _get_text(c)
+        has_conflict = _has_conflict_trigger(text) or _has_uncertainty_signal(text)
+        has_drop = _has_confidence_drop(text)
+
+        if has_conflict and has_drop:
+            rewards.append(0.5)
+        elif has_conflict and not has_drop:
+            rewards.append(-0.35)
+        elif has_drop and not has_conflict:
+            rewards.append(-0.1)
+        else:
+            rewards.append(0.0)
+    return rewards
+
+
+def effective_verification_reward(completions, ground_truth=None, **kwargs):
+    """Reward verification that uses an explicit checking mechanism."""
+    rewards = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        gt = ground_truth[i] if ground_truth is not None else ""
+        is_correct = _check_correctness(text, gt)
+        conf = _last_confidence(text)
+        has_effective_verify = _has_effective_verification_signal(text)
+
+        if has_effective_verify:
+            rewards.append(0.8 if is_correct else 0.1)
+        elif conf is not None and conf >= 0.8:
+            rewards.append(-0.2 if is_correct else -0.8)
+        else:
+            rewards.append(0.0)
+    return rewards
+
+
+def effective_redirection_reward(completions, ground_truth=None, **kwargs):
+    """Reward genuine redirection after detecting a conflict or being stuck."""
+    rewards = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        gt = ground_truth[i] if ground_truth is not None else ""
+        is_correct = _check_correctness(text, gt)
+
+        has_conflict = _has_conflict_trigger(text) or _has_uncertainty_signal(text)
+        has_switch = _has_strategy_switch_signal(text) or _has_redirection_signal(text)
+        has_drop = _has_confidence_drop(text)
+
+        if has_conflict and has_switch and has_drop:
+            rewards.append(1.0 if is_correct else 0.2)
+        elif has_conflict and has_switch:
+            rewards.append(0.5 if is_correct else 0.0)
+        elif has_conflict and not has_switch:
+            rewards.append(-0.4)
+        elif has_switch and not has_conflict:
+            rewards.append(-0.1)
+        else:
+            rewards.append(0.0)
     return rewards
