@@ -6,6 +6,6 @@ run_name: behavior-redirect-sft
 num_train_epochs: 2
 per_device_train_batch_size: 2
 gradient_accumulation_steps: 4
-learning_rate: 2e-5
+learning_rate: 0.00002
 max_length: 4096
 save_steps: 250
