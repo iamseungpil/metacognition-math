@@ -210,6 +210,25 @@ The next dataset should be built with a pilot -> critic -> improve -> main-run l
 
 No 10k-scale main run should begin before this pilot passes.
 
+### Phase B.5. Node allocation and execution gating
+
+The execution policy should remain strict so that the main project and the separate analysis
+project do not silently interfere with each other.
+
+1. `metacognition_e8` is reserved for `control_v5_all_sft` and later main-project RL follow-up.
+2. `metacognition_eval` is reserved for `control_v5_verify_sft` and later main-project eval work.
+3. `metacognition_train_b` is reserved for `control_v5_redirect_sft` and later main-project
+   training work.
+4. `metacognition_run_c` is reserved for the separate
+   `metacognition-behavior-uncertainty` project.
+
+There is also an execution gate:
+
+1. The reserved AMLT jobs may stay idle as holder jobs.
+2. Actual SFT launch should not happen until `data/control_v5_10k.parquet` exists and passes QC.
+3. If the generation process dies before writing the parquet, the correct action is to relaunch or
+   repair generation, not to repurpose the reserved nodes.
+
 ### Phase C. SFT comparison
 
 The starting point should be a strong existing SFT checkpoint such as `qwen3_base_sft`, not the raw base model.
