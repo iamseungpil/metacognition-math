@@ -36,7 +36,8 @@ from src.training.rewards import (
     stepwise_probe_reward, length_penalty_reward, correct_meta_reward,
     self_correction_reward, verification_reward, overconfidence_penalty_reward,
     confidence_revision_reward, effective_verification_reward,
-    effective_redirection_reward,
+    effective_redirection_reward, diagnosis_reward, decomposition_reward,
+    anomaly_notice_reward, repeated_intervention_reward, overconfidence_verify_reward,
 )
 
 
@@ -243,7 +244,7 @@ class SampleSaver:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9"], default="E1")
+    parser.add_argument("--mode", choices=["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "E10"], default="E1")
     parser.add_argument("--model_path", default="checkpoints/qwen3_meta_sft")
     parser.add_argument("--data", choices=["gsm8k", "filtered", "mixed", "mixed_train"], default="mixed")
     parser.add_argument("--data_path", default="verl_train_filtered.parquet")
@@ -285,9 +286,18 @@ def main():
                 confidence_revision_reward, overconfidence_penalty_reward,
                 length_penalty_reward],
                [3.0, 0.2, 0.3, 0.8, 1.0, 0.6, 1.0, 1.0]),
+        # E10: E8 + behavior/control rewards.
+        # Keeps the calibration axis and adds behavior rewards so ablations stay interpretable.
+        "E10": ([correctness_reward, format_reward, correct_meta_reward,
+                 calibration_reward,
+                 effective_verification_reward, effective_redirection_reward,
+                 confidence_revision_reward, diagnosis_reward, decomposition_reward,
+                 anomaly_notice_reward, repeated_intervention_reward, overconfidence_verify_reward,
+                 overconfidence_penalty_reward, length_penalty_reward],
+                [3.0, 0.2, 0.3, 0.4, 0.8, 1.0, 0.6, 0.6, 0.6, 0.4, 0.5, 1.0, 1.0]),
     }
     reward_funcs, reward_weights = reward_configs[args.mode]
-    use_gdpo = args.mode in ("E3", "E4", "E5", "E6", "E7", "E8", "E9")  # GDPO when 3+ rewards
+    use_gdpo = args.mode in ("E3", "E4", "E5", "E6", "E7", "E8", "E9", "E10")  # GDPO when 3+ rewards
 
     if use_gdpo:
         _apply_gdpo_patch()

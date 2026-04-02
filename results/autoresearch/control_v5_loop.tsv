@@ -1,0 +1,6 @@
+iteration	change	verify	decision	note
+1	align_v5_prompt_validator_rag_plan	py_compile+doc_keyword_checks	keep	separated overconfidence from redirect trigger; updated plan docs for calibration-conditioned verify and study_need-aware RAG
+2	add_rejection_logging_and_prompt_clarification	py_compile+smoke_counts(4/7)	keep	rejections exposed missing overconfidence/effective_verify/strategy-switch coverage
+3	broaden_signal_detectors_and_meta_purity	py_compile+smoke_counts(7/7)+qc_pure_meta_1.0	keep	smoke now covers all target buckets with pure meta and study_need-aware redirect
+4	launch_control_v5_main_generation	main_session_started_candidates=14304	keep	10k-target generation launched in session 17114
+5	clean_rag_query_and_study_need_parsing	rig_analysis_smoke_pass	keep	RAG query now separates diagnosis from confidence/study_need lines and recognizes switch-method signals

@@ -1,0 +1,17 @@
+{
+  "model": "1030_v3_sft",
+  "model_path": "/scratch/v3_eval_hf_models/models/qwen3_metacot_v3_sft",
+  "base_model": null,
+  "is_lora": false,
+  "benchmarks": [
+    "gsm8k",
+    "math500",
+    "aime2024"
+  ],
+  "max_problems_per_benchmark": 500,
+  "num_samples": 1,
+  "total_problems": 1030,
+  "hostname": "node-0",
+  "utc_timestamp": "2026-04-01T00:41:07Z",
+  "tokenizer_name_or_path": "/scratch/v3_eval_hf_models/models/qwen3_metacot_v3_sft"
+}

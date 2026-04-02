@@ -105,10 +105,23 @@ def _has_effective_verification_signal(text):
     ))
 
 
+def _has_anomaly_notice_signal(text):
+    """Detect an explicit notice that the current route feels unreliable."""
+    return bool(re.search(
+        r'\b(something feels off|this feels off|that seems off|this seems off|'
+        r'I should not trust this|I do not trust this|I don\'t trust this|'
+        r'anomaly|inconsistent|not consistent|contradiction|'
+        r'doesn\'t satisfy|does not satisfy|fails|mismatch)\b',
+        text,
+        re.IGNORECASE,
+    ))
+
+
 def _has_conflict_trigger(text):
     """Detect explicit evidence that the current path may be wrong."""
-    return bool(re.search(
-        r'\b(contradiction|doesn\'t satisfy|does not satisfy|fails|mismatch|not consistent|too large|too small|cannot be|can\'t be|impossible|unit mismatch)\b',
+    return _has_anomaly_notice_signal(text) or bool(re.search(
+        r'\b(too large|too small|cannot be|can\'t be|impossible|unit mismatch|unsupported|'
+        r'I may be forcing|I am forcing|I committed too early|I overcommitted)\b',
         text,
         re.IGNORECASE,
     ))
@@ -117,16 +130,84 @@ def _has_conflict_trigger(text):
 def _has_strategy_switch_signal(text):
     """Detect a real switch in solving method."""
     return bool(re.search(
-        r'\b(switch(?:ing)? to|different method|alternative approach|instead use|reframe|case split|solve via|let me use|another method)\b',
+        r'\b(switch(?:ing)? to|different method|alternative approach|instead use|instead I\'ll|instead I will|'
+        r'reframe|case split|solve via|let me use|another method|better to use|'
+        r'use a parity|use an invariant|use a direct check|step back and)\b',
         text,
         re.IGNORECASE,
     ))
 
 
+def _has_failure_diagnosis(text):
+    """Detect explicit explanation of why the current route is failing."""
+    return bool(
+        re.search(
+            r'(the issue is|the problem is|the current route fails because|this approach fails because|'
+            r'this route is weak because|I may be forcing|I am forcing|I committed too early|'
+            r'I overcommitted|I am missing|I\'m missing|this only checks|this does not control|'
+            r'this does not explain|the real task is|not needed here|unnecessary|'
+            r'would be unnecessary|would be weak|too indirect|too complicated|'
+            r'solve the wrong problem|not the game structure|can hide a mismatch|'
+            r'does not match the structure)',
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _has_missing_skill_or_blocker(text):
+    """Detect an explicit blocker statement."""
+    return bool(
+        re.search(
+            r'(weakness tag:|blocker:|I am over-committing|I am missing|I\'m missing|'
+            r'missing piece|missing ingredient|not controlling the key constraint)',
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _has_decomposition_plan(text):
+    """Detect a concrete decomposition or subgoal plan."""
+    return bool(re.search(
+        r'(break this into|split the task into|subgoal|reduced condition|'
+        r'identify the invariant|handle the cases|I should check|I should first|'
+        r'\n\s*1\.\s+\S+)',
+        text,
+        re.IGNORECASE,
+    ))
+
+
+def _has_next_strategy(text):
+    """Detect an explicit next-strategy declaration."""
+    return bool(
+        re.search(
+            r'(switch_method|switch to|different method|alternative approach|case split|'
+            r'reframe|instead I\'ll|instead I will|better to use|use a parity|'
+            r'use an invariant|use a direct check)',
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
 def _has_confidence_drop(text, margin=0.08):
     """Return True if later confidence drops meaningfully from an earlier one."""
-    blocks = _parse_meta_blocks(text)
-    confs = [b["confidence"] for b in blocks if b["confidence"] is not None]
+    confs = []
+    explicit = re.findall(
+        r'confidence[:\s]+(\d+\.\d+|\d+)',
+        text,
+        re.IGNORECASE,
+    )
+    for conf in explicit:
+        value = float(conf)
+        if value > 1:
+            value /= 100
+        confs.append(value)
+
+    if len(confs) < 2:
+        blocks = _parse_meta_blocks(text)
+        confs = [b["confidence"] for b in blocks if b["confidence"] is not None]
     if len(confs) < 2:
         return False
     best_seen = confs[0]
@@ -135,6 +216,21 @@ def _has_confidence_drop(text, margin=0.08):
             return True
         best_seen = max(best_seen, conf)
     return False
+
+
+def _has_low_confidence(text, threshold=0.55):
+    """Return True if any stated confidence is already low enough to justify redirect."""
+    confs = re.findall(r'confidence[:\s]+(\d+\.\d+|\d+)', text, re.IGNORECASE)
+    vals = []
+    for conf in confs:
+        value = float(conf)
+        if value > 1:
+            value /= 100
+        vals.append(value)
+    if not vals:
+        blocks = _parse_meta_blocks(text)
+        vals = [b["confidence"] for b in blocks if b["confidence"] is not None]
+    return any(v <= threshold for v in vals)
 
 
 def _get_text(completion):
@@ -767,7 +863,7 @@ def confidence_revision_reward(completions, ground_truth=None, **kwargs):
     for c in completions:
         text = _get_text(c)
         has_conflict = _has_conflict_trigger(text) or _has_uncertainty_signal(text)
-        has_drop = _has_confidence_drop(text)
+        has_drop = _has_confidence_drop(text) or _has_low_confidence(text)
 
         if has_conflict and has_drop:
             rewards.append(0.5)
@@ -809,7 +905,7 @@ def effective_redirection_reward(completions, ground_truth=None, **kwargs):
 
         has_conflict = _has_conflict_trigger(text) or _has_uncertainty_signal(text)
         has_switch = _has_strategy_switch_signal(text) or _has_redirection_signal(text)
-        has_drop = _has_confidence_drop(text)
+        has_drop = _has_confidence_drop(text) or _has_low_confidence(text)
 
         if has_conflict and has_switch and has_drop:
             rewards.append(1.0 if is_correct else 0.2)
@@ -821,4 +917,103 @@ def effective_redirection_reward(completions, ground_truth=None, **kwargs):
             rewards.append(-0.1)
         else:
             rewards.append(0.0)
+    return rewards
+
+
+def diagnosis_reward(completions, ground_truth=None, **kwargs):
+    """Reward natural-language diagnosis after uncertainty or conflict."""
+    rewards = []
+    for c in completions:
+        text = _get_text(c)
+        has_conflict = _has_conflict_trigger(text) or _has_uncertainty_signal(text)
+        has_diag = _has_failure_diagnosis(text)
+        has_blocker = _has_missing_skill_or_blocker(text)
+
+        if has_conflict and has_diag and has_blocker:
+            rewards.append(0.7)
+        elif has_conflict and has_diag:
+            rewards.append(0.35)
+        elif has_conflict and not has_diag:
+            rewards.append(-0.3)
+        elif has_diag and not has_conflict:
+            rewards.append(-0.05)
+        else:
+            rewards.append(0.0)
+    return rewards
+
+
+def decomposition_reward(completions, ground_truth=None, **kwargs):
+    """Reward decomposition plans that accompany a real redirect."""
+    rewards = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        gt = ground_truth[i] if ground_truth is not None else ""
+        is_correct = _check_correctness(text, gt)
+
+        has_conflict = _has_conflict_trigger(text) or _has_uncertainty_signal(text)
+        has_plan = _has_decomposition_plan(text)
+        has_strategy = _has_next_strategy(text)
+        has_drop = _has_confidence_drop(text) or _has_low_confidence(text)
+
+        if has_conflict and has_plan and has_strategy and has_drop:
+            rewards.append(0.8 if is_correct else 0.15)
+        elif has_conflict and has_plan and has_strategy:
+            rewards.append(0.35 if is_correct else 0.0)
+        elif has_conflict and not has_plan:
+            rewards.append(-0.25)
+        else:
+            rewards.append(0.0)
+    return rewards
+
+
+def anomaly_notice_reward(completions, ground_truth=None, **kwargs):
+    """Reward noticing that the current route feels unreliable before redirect."""
+    rewards = []
+    for c in completions:
+        text = _get_text(c)
+        has_notice = _has_anomaly_notice_signal(text)
+        has_drop = _has_confidence_drop(text)
+        if has_notice and has_drop:
+            rewards.append(0.45)
+        elif has_notice:
+            rewards.append(0.15)
+        else:
+            rewards.append(0.0)
+    return rewards
+
+
+def repeated_intervention_reward(completions, ground_truth=None, **kwargs):
+    """Reward multiple interventions only when they accompany real control signals."""
+    rewards = []
+    for c in completions:
+        text = _get_text(c)
+        meta_count = text.count("<|meta|>")
+        has_control = (
+            _has_effective_verification_signal(text)
+            or (_has_conflict_trigger(text) and _has_strategy_switch_signal(text))
+        )
+        if meta_count >= 2 and has_control:
+            rewards.append(0.35)
+        elif meta_count >= 2 and not has_control:
+            rewards.append(-0.1)
+        else:
+            rewards.append(0.0)
+    return rewards
+
+
+def overconfidence_verify_reward(completions, ground_truth=None, **kwargs):
+    """Reward verification specifically when confidence is high."""
+    rewards = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        gt = ground_truth[i] if ground_truth is not None else ""
+        is_correct = _check_correctness(text, gt)
+        conf = _last_confidence(text)
+        has_verify = _has_effective_verification_signal(text)
+        if conf is None or conf < 0.8:
+            rewards.append(0.0)
+        elif has_verify:
+            rewards.append(0.45 if is_correct else 0.05)
+        else:
+            rewards.append(-0.35 if not is_correct else -0.1)
     return rewards

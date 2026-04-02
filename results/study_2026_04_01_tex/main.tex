@@ -5,50 +5,86 @@
 \usepackage{array}
 \usepackage{fontspec}
 \usepackage{hyperref}
-\setmainfont{Latin Modern Roman}
-\title{Meta-CoT Study Update}
+\usepackage{enumitem}
+\usepackage{setspace}
+\setmainfont{Noto Sans CJK KR}
+\setlength{\parskip}{0.45em}
+\setlength{\parindent}{0pt}
+\tolerance=1000
+\emergencystretch=3em
+\hfuzz=2pt
+\title{Meta-CoT 실험 중간 보고서}
 \author{Seungpil Lee}
 \date{2026-04-01}
 
 \begin{document}
 \maketitle
+\onehalfspacing
 
-\section*{Executive Summary}
-The current evidence shows that Meta-CoT can match or slightly exceed the base SFT model on the 1,030-problem setting, but the intended metacognitive behaviors are still only partially learned. The strongest finished result so far is E5 at 72.04\%, which is close to V2 SFT at 72.72\% and above the 71.7\% base reference. Qualitative inspection still indicates that verification is often decorative and that true strategy redirection remains weak.
+\section*{요약}
+현재까지의 증거는 Meta-CoT가 메타 텍스트를 생성하는 능력 자체는 확보했지만, 우리가 원한 메타인지 제어 정책 전체를 아직 안정적으로 학습한 것은 아니라는 점을 보여준다. 특히 hard problem에서 wrong-answer confidence를 낮추는 방향의 보상은 일부 효과가 있었지만, 그 자체만으로 AIME 정확도가 안정적으로 좋아지지는 않았다. 따라서 현재의 핵심 과제는 메타 표현을 더 늘리는 것이 아니라, confidence가 실제 행동 전환으로 이어지도록 만드는 것이다.
 
-\section*{Artifact Audit}
-\begin{longtable}{p{0.28\linewidth} p{0.18\linewidth} p{0.44\linewidth}}
-\toprule
-Category & Status & Notes \\
-\midrule
-Session logs & Present & Session log and monitor logs are saved under \texttt{results/}. \\
-Plans and notes & Present & Experiment plans and autoresearch notes are preserved. \\
-Generated training data & Present & Behavior pilot parquet files are saved locally under \texttt{data/}. \\
-Eval raw JSON & Present for completed runs & E5, old E7, current E7, and V2 rich all have JSON outputs. \\
-Eval metadata and parquet & Partial & E5 and old E7 are complete; newer runs are not yet uniform. \\
-HF upload evidence & Present & E8 upload log includes an explicit completion marker. \\
-\bottomrule
-\end{longtable}
+현재 계획의 중심 의도는 두 가지다. 첫째, 막힘이나 모순, anomaly를 감지했을 때 confidence를 낮추고 실제로 다른 풀이 방법으로 redirect해야 한다. 둘째, 높은 confidence를 가질 때에도 final answer 전에 독립적 verify를 수행해야 한다. 지금의 실험 구성은 이 두 의도를 기준으로 V2/V3, E-series, behavior-first SFT, 차기 E10 비교로 분해되어 있으며, 이 구조는 연구 의도와 대체로 잘 정렬되어 있다.
 
-\section*{Latest Results}
+\section*{핵심 의도}
+이 프로젝트의 목적은 더 많은 meta text를 생성하는 것이 아니다. 목적은 confidence를 내부 제어 신호로 사용하여 reasoning trajectory를 바꾸는 것이다. 따라서 성공 기준은 ``메타를 말했다''가 아니라 ``적절한 조건에서 행동이 바뀌었다''가 되어야 한다.
+
+우리가 원하는 첫 번째 행동은 failure-management다. contradiction, failed substitution, unsupported assumption, unit mismatch, 또는 confidence drop이 나타나면 현재 경로를 밀어붙이지 않고 왜 안 풀리는지 짧게 진단한 뒤 다른 방법으로 redirect해야 한다. 두 번째 행동은 overconfidence-management다. 모델이 자신 있어 보일수록 final answer 전에 independent verification을 수행해야 한다.
+
+\section*{정량 결과}
+\begin{center}
 \begin{tabular}{lr}
 \toprule
-Model & Overall Accuracy \\
+모델 & 1,030 문제 정확도 \\
 \midrule
-Base SFT & 71.7\% \\
+Base SFT & 71.70\% \\
 V2 SFT & 72.72\% \\
-V3 SFT & 72.0\% \\
+V3 SFT & 72.00\% \\
 E5 & 72.04\% \\
-Old E7 & 69.9\% \\
-Current E7 & 70.68\% \\
-V2 rich eval & 71.36\% \\
+E7 prev & 69.90\% \\
+E7 current & 70.68\% \\
+E8 & 67.20\% \\
+V2 rich & 71.36\% \\
 \bottomrule
 \end{tabular}
+\end{center}
 
-\section*{Behavior-First Pilot}
-The pilot generated 770 valid chains from a requested 1,800, but the accepted set was strongly imbalanced. Redirect examples dominated with 552 accepted rows, verify contributed 216 rows, and straight-solve examples collapsed to only 2 rows. This confirms that the behavior-first framing is useful, but also shows that the current generator and validator are not yet suitable for a balanced main training run.
+이 표는 메타 구조가 수학 성능과 반드시 충돌하지는 않는다는 점을 보여준다. 다만 이것만으로는 메타 제어가 학습됐다고 말할 수 없다. 일부 모델은 base 수준을 유지하거나 약간 넘지만, 더 많은 meta intervention이 항상 더 나은 제어를 뜻하지는 않는다.
 
-\section*{Conclusion}
-The project now has stronger artifact preservation, large-scale evaluation, and a clearer behavioral target. The next step is not to change the overall direction, but to repair scenario balance in generation, make evaluation bundles uniform, and fix the remote training launcher before the next full autoresearch round.
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+모델 & AIME & 오답 평균 confidence & 오답 평균 meta block 수 \\
+\midrule
+Base SFT & 3/30 & N/A & 0.00 \\
+V2 SFT & 4/30 & 0.631 & 2.58 \\
+V3 SFT & 2/30 & 0.287 & 2.32 \\
+E5 & 2/30 & 0.321 & 5.36 \\
+E7 prev & 3/30 & 0.315 & 5.15 \\
+E7 current & 1/30 & 0.263 & 4.34 \\
+E8 & 2/30 & 0.238 & 5.04 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+이 표는 calibration 축의 부분적 성공과 한계를 동시에 보여준다. RL 계열 모델은 hard wrong answer에서 V2보다 훨씬 덜 과신하는 경향을 보인다. 그러나 낮아진 confidence와 늘어난 meta block이 아직 진짜 diagnosis-driven control로 이어졌다고 보기는 어렵다.
+
+\section*{정성 해석}
+이전 정성 분석에서 관찰된 핵심 패턴은 다음과 같다. V2는 중간 정도의 confidence를 유지한 채 비교적 관습적인 풀이를 지속하는 경우가 많다. 반면 E7과 E8은 더 자주 스스로를 끊고 confidence를 낮춘다. 이 자체는 실제 행동 변화의 초기 신호로 볼 수 있다.
+
+문제는 그 다음이다. 현재의 개입은 종종 local correction이나 self-talk 수준에 머문다. 즉, ``조심하자'' 또는 ``다른 방법을 보자''라고 말하지만, 왜 현재 경로가 실패했는지 명시적으로 진단하지 않거나, 필요한 subgoal을 다시 세우지 않거나, 실제로 다른 풀이 전략으로 이동하지 않는 경우가 많다. 따라서 현재 결론은 ``아이디어가 틀렸다''가 아니라 ``calibration과 interruption은 일부 학습됐지만, diagnosis와 redirect는 아직 약하다''가 더 정확하다.
+
+\section*{현재 실험 구성의 정렬성}
+현재 실험 구성은 각 단계의 역할이 분리되어 있다는 점에서 연구 의도와 잘 맞는다. V2와 V3는 explicit meta 표현과 confidence 표기가 가능한지 확인하는 표현 단계다. E3와 E8은 confidence가 실제 오류 위험과 더 잘 정렬되는지 보는 calibration 단계다. Behavior-first SFT는 verify와 redirect를 직접 행동으로 가르치는 제어 단계다. 차기 E10은 calibration 축을 버리지 않고 behavior reward를 위에 쌓아, 어떤 보상 축이 실제 행동 변화를 만드는지 분해해 볼 수 있는 단계가 되어야 한다.
+
+이 정렬성은 중요하다. 지금 curriculum이나 retrieval을 먼저 붙이면, 이후 향상이 self-diagnosis에서 온 것인지 외부 보조에서 온 것인지 분리하기 어렵다. 따라서 현재처럼 control policy를 먼저 안정화하고 그 다음 curriculum/RAG로 넘어가는 순서가 맞다.
+
+\section*{파일럿 데이터의 의미}
+Behavior-first pilot은 방향 자체는 옳다는 점을 보여줬다. 이제 프로젝트는 ``straight'', ``verify'', ``redirect''라는 구체적 행동 단위로 supervision을 설계할 수 있다. 그러나 현재 pilot은 1,800개 요청 중 770개만 유효했고, 그중 552개가 redirect, 216개가 verify, 2개만 straight였다. 이 상태로는 calibrated controller가 아니라 over-intervention model을 만들 위험이 크다.
+
+따라서 다음 단계는 단순한 스케일업이 아니다. 우선 natural meta intervention 형식을 유지하면서도 straight, verify, redirect가 모두 살아남는 control-v4 pilot을 다시 만들어야 한다. 그 후에 base\_sft에서 출발하는 behavior\_verify\_sft\_v2, behavior\_redirect\_sft\_v2, behavior\_all\_sft\_v2를 비교하고, 마지막으로 E3, E8, E10의 RL 비교로 넘어가야 한다.
+
+\section*{현재 결론}
+현재 계획 문서에 들어 있는 중심 의도는 올바르다. low confidence에서의 redirect와 high confidence에서의 verify를 분리해 정의한 점, confidence를 scalar가 아니라 control signal로 해석한 점, curriculum을 그 이후 단계로 게이트한 점이 모두 같은 방향을 가리킨다. 지금 필요한 것은 방향 전환이 아니라 구현 정교화다. 데이터는 더 자연스럽고 균형 있게 만들어야 하고, reward는 calibration 축과 behavior 축을 분해해서 비교해야 하며, 분석은 meta text가 아니라 행동 변화를 중심으로 설계해야 한다.
 
 \end{document}

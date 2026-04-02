@@ -6,7 +6,7 @@ sys.path.insert(0, ".")
 from src.training.rewards import (
     correctness_reward, meta_quality_reward,
     calibration_reward, uncertainty_meta_reward,
-    stepwise_probe_reward,
+    stepwise_probe_reward, diagnosis_reward, decomposition_reward,
     _check_correctness, _parse_meta_blocks,
 )
 
@@ -185,6 +185,24 @@ Q: Final check? Confidence: 0.85
 r_low_start = stepwise_probe_reward([start_low], ground_truth=["4"])
 r_high_start = stepwise_probe_reward([start_high], ground_truth=["4"])
 check("TC13: starting low beats starting high", r_low_start[0] > r_high_start[0], True)
+
+print("\n=== TC14-TC15: diagnosis/decomposition rewards ===")
+diagnostic_redirect = """<|meta|>
+confidence: 0.78
+The algebra looks plausible, but something feels off.
+<|/meta|>
+Trying the first route...
+<|meta|>
+confidence: 0.34
+Something feels off. The transformed equation is working, but the original constraint is not.
+I may be forcing symbolic manipulation too early and missing the real invariant.
+I should step back, identify the invariant, then handle the remaining cases separately and switch to a parity-based case split.
+<|/meta|>
+\\boxed{4}"""
+r_diag = diagnosis_reward([diagnostic_redirect])
+r_decomp = decomposition_reward([diagnostic_redirect], ground_truth=["4"])
+check("TC14: diagnosis reward positive on natural redirect", r_diag[0] > 0.3, True)
+check("TC15: decomposition reward positive on natural redirect", r_decomp[0] > 0.3, True)
 
 
 print(f"\n=== SUMMARY: {passed} passed, {failed} failed ===")

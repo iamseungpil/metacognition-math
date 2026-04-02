@@ -20,6 +20,12 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import PeftModel
 
 from src.metacot.prompt import parse_meta_blocks
+from src.curriculum.control_rag import (
+    TfidfExampleRetriever,
+    build_model_inputs,
+    load_example_bank,
+    run_redirect_rag_pass,
+)
 
 
 from src.training.rewards import _check_correctness, _extract_answer_fallback
@@ -68,12 +74,17 @@ def load_benchmarks(names, max_problems=30):
     return all_problems
 
 
-def evaluate(model, tokenizer, problems, num_samples=1, max_tokens=4096):
+def evaluate(model, tokenizer, problems, num_samples=1, max_tokens=4096, retriever=None, rag_top_k=1):
     results = []
     for idx, prob in enumerate(problems):
         messages = [{"role": "user", "content": prob["question"]}]
-        text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=2048).to(model.device)
+        text, inputs = build_model_inputs(
+            tokenizer,
+            messages,
+            device=model.device,
+            add_generation_prompt=True,
+            max_prompt_tokens=2048,
+        )
 
         for _ in range(num_samples):
             with torch.no_grad():
@@ -86,6 +97,21 @@ def evaluate(model, tokenizer, problems, num_samples=1, max_tokens=4096):
             completion_ids = output[0][prompt_len_tokens:]
             completion_len_tokens = int(completion_ids.shape[0])
             gen = tokenizer.decode(completion_ids, skip_special_tokens=False)
+            first_completion = gen
+            rag_run = None
+            if retriever is not None:
+                rag_run = run_redirect_rag_pass(
+                    model,
+                    tokenizer,
+                    prob["question"],
+                    first_completion,
+                    retriever,
+                    top_k=rag_top_k,
+                    max_new_tokens=max_tokens,
+                )
+                if rag_run["rag_used"]:
+                    gen = rag_run["rag_completion"]
+                    completion_len_tokens = len(tokenizer(gen, return_tensors="pt")["input_ids"][0])
 
             is_correct = check_correctness(gen, prob["gold_answer"])
             parsed = parse_meta_blocks(gen)
@@ -107,6 +133,11 @@ def evaluate(model, tokenizer, problems, num_samples=1, max_tokens=4096):
                 "prompt_length_tokens": prompt_len_tokens,
                 "completion_length_chars": len(gen),
                 "completion_length_tokens": completion_len_tokens,
+                "rag_used": bool(rag_run and rag_run["rag_used"]),
+                "retrieved_questions": [item["question"] for item in (rag_run["retrieved"] if rag_run else [])],
+                "retrieval_scores": [item["score"] for item in (rag_run["retrieved"] if rag_run else [])],
+                "rag_diagnosis": rag_run["analysis"]["diagnosis_text"] if rag_run else "",
+                "first_completion": first_completion,
                 "completion": gen,  # full completion for qualitative analysis
             })
 
@@ -202,16 +233,21 @@ def main():
     parser.add_argument("--num_samples", type=int, default=1)
     parser.add_argument("--output_dir", default="results")
     parser.add_argument("--model_name", default=None, help="Override model name for output file")
+    parser.add_argument("--rag_example_bank", nargs="*", default=None,
+                        help="Optional parquet/json/jsonl paths for redirect-time retrieval")
+    parser.add_argument("--rag_top_k", type=int, default=1)
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
+    use_cuda = torch.cuda.is_available()
+    load_dtype = torch.bfloat16 if use_cuda else torch.float32
 
     # Load model
     if args.is_lora:
         base_path = args.base_model or "checkpoints/qwen3_meta_sft"
         print(f"Loading base: {base_path}")
         model = AutoModelForCausalLM.from_pretrained(
-            base_path, torch_dtype=torch.bfloat16, trust_remote_code=True,
+            base_path, torch_dtype=load_dtype, trust_remote_code=True,
         )
         print(f"Loading LoRA: {args.model_path}")
         model = PeftModel.from_pretrained(model, args.model_path)
@@ -220,13 +256,13 @@ def main():
     else:
         print(f"Loading: {args.model_path}")
         model = AutoModelForCausalLM.from_pretrained(
-            args.model_path, torch_dtype=torch.bfloat16, trust_remote_code=True,
+            args.model_path, torch_dtype=load_dtype, trust_remote_code=True,
         )
         tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    model.cuda().eval()
+    model = model.to("cuda" if use_cuda else "cpu").eval()
 
     if args.model_name:
         model_name = args.model_name
@@ -240,8 +276,17 @@ def main():
     problems = load_benchmarks(args.benchmarks, args.max_problems)
     print(f"Total: {len(problems)} problems\n")
 
+    retriever = None
+    if args.rag_example_bank:
+        bank_records = load_example_bank(args.rag_example_bank)
+        if bank_records:
+            retriever = TfidfExampleRetriever(bank_records)
+            print(f"Loaded retrieval bank with {len(bank_records)} solved examples")
+        else:
+            print("Warning: retrieval bank paths were provided but no examples were loaded")
+
     # Evaluate
-    results = evaluate(model, tokenizer, problems, args.num_samples)
+    results = evaluate(model, tokenizer, problems, args.num_samples, retriever=retriever, rag_top_k=args.rag_top_k)
     df = print_results(model_name, results)
     run_metadata = build_run_metadata(args, model_name, problems, tokenizer)
 
