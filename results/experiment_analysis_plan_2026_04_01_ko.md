@@ -1,350 +1,439 @@
-# Meta-CoT 실험 계획 및 분석 계획 (2026-04-01)
+# Meta-CoT 실험 계획 및 분석 계약서 (2026-04-01)
 
-## 1. 이 문서의 목적
+## 1. 큰 질문
 
-이 문서는 두 가지를 분리해 정리한다.
+이 프로젝트의 큰 질문은 하나다.
 
-1. `실험 계획`: 앞으로 무엇을 학습시키고 어떤 순서로 비교할 것인가
-2. `분석 계획`: 그 결과가 실제로 의도한 메타인지 제어를 학습했는지 어떻게 판단할 것인가
+`OOD test-time setting에서 학습된 metacognitive control이 스타일이 아니라 실제 행동 변화를 통해 문제 해결을 개선할 수 있는가`
 
-이 문서에서 가장 중요한 것은 "무엇을 잘하고 싶은가"를 정확하게 적는 일이다. 현재 프로젝트의 목적은 단순히 meta text를 늘리는 것도 아니고, calibration 점수 하나를 예쁘게 만드는 것도 아니다. 목적은 `confidence를 내부 제어 변수로 쓰는 OOD test-time control policy`를 학습하는 것이다.
+이 질문을 세 개의 연구 질문으로 나눈다.
 
-## 2. 중심 의도
+1. `RQ1: Meta-CoT`
+   - 모델이 ordinary CoT와 분리된 metacognitive control state를 학습하고, 그것이 test-time adaptation의 기반이 될 수 있는가
+2. `RQ2: Meta-RL`
+   - 그 metacognitive state를 verifiable reward로 바꿔 control policy로 학습시킬 수 있는가
+3. `RQ3: Curriculum`
+   - 같은 metacognitive state를 diagnosis, retrieval, adaptation의 trigger로 확장할 수 있는가
 
-현재 계획의 중심 의도는 다음 두 가지다.
+## 2. 프로젝트 의도
 
-### 2.1 막힐 때의 메타 제어
+### 2.1 의도 A: Meta-CoT는 self-talk가 아니라 controller여야 한다
 
-모델이 문제를 풀다가 다음과 같은 신호를 만나면 현재 경로를 밀어붙이지 않아야 한다.
+우리가 원하는 것은 답을 길게 쓰게 하는 것이 아니다.
 
-- 계산 또는 대입 결과가 앞선 가정과 충돌함
-- 논리적으로 설명되지 않는 점프가 생김
-- 자신감이 눈에 띄게 하락함
-- "뭔가 이상하다"는 anomaly를 감지함
+1. `confidence`는 말버릇이 아니라 제어 변수여야 한다
+2. `something feels off`나 의미 있는 confidence drop은 redirect로 닫혀야 한다
+3. `confidence는 높은데 근거가 얇다`는 상태는 verify로 닫혀야 한다
+4. `diagnosis`는 왜 현재 경로가 약한지 설명해야 한다
+5. `study_need`는 무엇이 부족한지 parseable하게 드러내야 한다
+6. meta block은 ordinary derivation과 엄격히 분리되어야 한다
 
-이때 기대하는 행동은 단순한 자기반성 문장이 아니다. 기대하는 행동은
+즉 meta block에는 다음만 들어가야 한다.
 
-`trigger / anomaly -> confidence 하향 -> 왜 안 풀리는지 짧게 진단 -> 다른 풀이 방법으로 redirect`
+1. local confidence
+2. anomaly / conflict notice
+3. failure diagnosis
+4. next control action
+5. optional `study_need`
 
-이다.
+ordinary algebra 전개나 전체 CoT는 meta 안에 들어오면 안 된다.
 
-### 2.2 자신 있을 때의 메타 제어
+### 2.2 의도 B: Meta-RL은 이 행동들을 verifiable하게 만들어야 한다
 
-중요한 점은 `쉬운 문제라서 verify`가 아니라는 것이다. 모델이 현재 답이 충분히 맞을 것 같다고 느끼더라도, 그 confidence가 실제 근거보다 앞서 나가고 있거나, 너무 빨리 commit하고 있거나, 하나의 약한 경로만 보고 과감히 확신하고 있다면 그때 independent verification이 필요하다. 반대로 confidence가 충분히 안정적이고 calibration도 잘 맞는 상태라면 메타를 줄이는 것이 맞다. 따라서 두 번째 중심 의도는
+RL의 목적은 reward를 한 번에 다 섞는 것이 아니다.
 
-`sufficient-confidence + overcommit / calibration-gap signal -> final answer 전 독립적 verify`
+1. 먼저 calibration을 맞춘다
+2. 그 다음 intervention 주변의 confidence revision을 맞춘다
+3. 그 다음 verify / redirect / diagnosis를 분해해서 본다
+4. 마지막에만 full controller를 합친다
 
-이다.
+이 분해는 최종 점수만이 아니라 어떤 reward가 어떤 행동을 만드는지 보기 위한 것이다.
 
-이 두 축이 현재 계획의 핵심이며, 앞으로의 모든 SFT, RL, eval, curriculum은 이 두 축을 얼마나 잘 구현하느냐를 기준으로 정렬되어야 한다.
+### 2.3 의도 C: Curriculum은 diagnosis에서 시작해야 한다
 
-## 3. 무엇을 목표로 하지 않는가
+Curriculum과 RAG는 uncertainty만으로 켜지면 안 된다.
 
-현재 단계에서 일부러 피해야 할 오해도 분명히 적어둔다.
+1. 왜 못 푸는지 진단해야 한다
+2. 무엇을 더 배워야 하는지 `study_need`로 드러나야 한다
+3. 그때만 retrieval이나 one-example adaptation이 정당화된다
 
-1. `meta block` 개수가 많아지는 것 자체는 목표가 아니다.
-2. wrong-answer confidence가 내려가는 것만으로 성공이라 말할 수 없다.
-3. "다른 방법을 써보자"라는 문구가 들어가는 것만으로 redirect가 학습됐다고 볼 수 없다.
-4. retrieval이나 curriculum을 붙여서 점수를 올렸다고 해도, 그 전에 self-diagnosis가 없으면 본래 의도와는 다르다.
+장기 목표는 다음 loop다.
 
-즉, 현재 계획은 benchmark hacking보다 `조건부 행동 제어`를 더 중요하게 둔다.
+`diagnose -> expose study_need -> retrieve/adapt -> retry`
 
-## 4. 용어 정의
+## 3. 의도 / 가설 / 검증 방법
 
-이 문서에서 `trigger`, `verify`, `redirect`는 같은 수준의 태그가 아니다.
+### 3.1 RQ1: Meta-CoT
 
-| 용어 | 역할 | 설명 |
-|---|---|---|
-| `trigger` | 상황 신호 | contradiction, failed substitution, unsupported assumption, unit mismatch, confidence drop 같은 이상 신호 |
-| `verify` | 안정화 행동 | 현재 답이 맞을 것 같더라도 최종 답 전에 독립 근거로 다시 확인하는 행동 |
-| `redirect` | 전환 행동 | trigger 이후 confidence를 낮추고 실제로 다른 풀이 전략으로 바꾸는 행동 |
-| `diagnosis` | 원인 해석 | 왜 현재 경로가 막혔는지 짧게 설명하는 행위 |
-| `decomposition` | 실패 원인 분해 | 문제 풀이 계획이 아니라 왜 현재 접근이 안 풀리는지, 무엇이 빠졌는지, 어떤 하위 능력이 필요한지를 분해하는 행위 |
+`의도`
 
-중요한 점은 다음과 같다.
+1. 순수 metacognitive control state를 학습시킨다
+2. meta와 derivation을 분리한다
+3. 그 state가 hard / OOD setting에서 실제 test-time adaptation을 가능하게 하는지 본다
 
-1. `trigger`는 목표 행동이 아니라 `redirect`를 촉발하는 신호다.
-2. `verify`와 `redirect`가 진짜 목표 행동이다.
-3. `diagnosis`와 `decomposition`은 redirect를 질적으로 좋게 만드는 내부 구성 요소다.
-4. `meta`는 CoT와 엄격히 분리되어야 하며, 계산식이나 실제 풀이 step은 들어가면 안 된다.
+`가설`
 
-## 5. 현재 결과가 말해주는 것
+1. `H1a`
+   - meta-supervised SFT는 ordinary CoT와 분리된 parseable한 control state를 형성할 수 있다
+2. `H1b`
+   - 학습된 meta trace는 decorative CoT가 아니라 이후 verify / redirect / diagnosis 같은 test-time adaptation 행동을 실제로 유도하는 controller state를 나타낸다
+3. `H1c`
+   - diagnosis와 `study_need`는 이후 curriculum이나 retrieval trigger로 사용할 수 있을 만큼 안정적으로 parseable해질 수 있다
+4. `H1d`
+   - 같은 base reasoning 능력을 크게 깨지 않으면서도, hard slice에서는 retry / adaptation gain을 만들어 낼 수 있다
 
-현재까지의 핵심 해석은 다음과 같다.
+`검증 방법`
 
-1. meta 형식 자체는 이미 학습 가능하다.
-2. calibration reward는 hard wrong answer에서 overconfidence를 낮추는 데 일부 효과가 있다.
-3. 그러나 confidence 하향만으로는 AIME 같은 어려운 OOD 문제의 정답률이 안정적으로 오르지 않는다.
-4. verification은 비교적 쉽게 학습되지만, redirect는 여전히 약하다.
-5. 현재의 강한 메타 응답 중 상당수는 diagnosis-driven control이 아니라 local self-talk 또는 local patch에 가깝다.
-
-이 해석 때문에 현재 계획은 `format 중심 -> calibration 중심 -> behavior 중심`으로 이동했다. 이 방향 전환은 임시방편이 아니라, 지금까지 얻은 증거와 잘 맞는 수정이다.
-
-## 6. 왜 현재 실험 구성 계획이 의도와 align 되는가
-
-현재 실험군은 역할이 분리되어 있다는 점에서 의도와 잘 맞는다.
-
-### 6.1 V2 / V3
-
-이 단계는 `표현 가능성`을 확인하는 단계다.
-
-- explicit meta block
-- confidence 표현
-- 메타 텍스트와 수학 성능의 공존 가능성
-
-여기서는 "meta를 말할 수 있는가"를 본다.
-
-### 6.2 E3 / E8 축
-
-이 단계는 `confidence calibration과 self-monitoring`을 실험하는 단계다.
-
-- wrong high-confidence를 줄일 수 있는가
-- meta intervention이 어려운 문제에서 더 자주 발생하는가
-- confidence 값이 실제 오류 가능성과 어느 정도 맞아지는가
-
-여기서는 "confidence를 보고할 수 있는가"가 아니라 "confidence가 오류 위험과 더 정렬되는가"를 본다.
-
-### 6.3 Behavior SFT 축
-
-이 단계는 `행동 자체`를 가르치는 단계다.
-
-- `behavior_verify_sft`: high-confidence verify를 분리해서 학습
-- `behavior_redirect_sft`: stuck/anomaly 이후 redirect를 분리해서 학습
-- `behavior_all_sft`: straight / verify / redirect를 함께 넣어 conditional policy를 형성
-
-이 단계에서 처음으로 "confidence가 바뀌면 행동도 바뀌는가"를 직접 실험한다.
-
-### 6.4 차기 E10 축
-
-차기 RL은 기존 calibration reward를 버리는 것이 아니라, calibration 축 위에 behavior reward를 추가하는 방식이어야 한다.
-
-즉, 연구적으로는 다음 비교가 필요하다.
-
-1. `E3`: calibration baseline
-2. `E8`: stronger calibration / confidence shaping
-3. `E10`: `E8 + behavior rewards`
-
-이렇게 해야 "confidence reward가 듣는지"와 "behavior reward가 추가로 필요한지"를 분리해서 볼 수 있다.
-
-## 7. 다음 데이터 설계 원칙
-
-다음 데이터는 `control-v5`로 재설계한다. 핵심은 `meta purity + confidence-conditioned control + RAG/curriculum 연결 가능성`을 동시에 만족시키는 것이다.
-
-### 7.1 유지할 것
-
-1. `<meta>` 류의 명시적 meta 구간은 유지한다.
-2. 각 meta block 안에는 추출 가능한 confidence 형식이 들어가야 한다.
-3. 어려운 문제에서는 meta intervention이 여러 번 나올 수 있어야 한다.
-
-### 7.2 바꿀 것
-
-1. rigid field인 `trigger:`, `confidence_before:`, `confidence_after:` 같은 스키마는 제거한다.
-2. meta 하나를 여러 개의 기계적 stage로 분해하지 않는다.
-3. 대신 meta block 하나는 자연어 개입 하나를 나타내야 한다.
-4. meta 안에는 실제 계산, 치환, case split, 검산 CoT, 풀이 계획을 넣지 않는다.
-
-### 7.3 반드시 들어가야 할 의미
-
-1. confidence self-monitoring
-2. anomaly 또는 calibration-gap 감지
-3. 왜 안 풀리는지에 대한 짧은 diagnosis
-4. 필요한 경우 `study_need:`를 통한 missing skill / perspective 명시
-5. 필요한 경우 failure decomposition
-6. control-level next action만 짧게 선언
-
-추가로 `verify`와 `redirect`는 분리해 설계한다.
-
-1. `verify`: 현재 답이 맞을 것 같지만 과신/조기 commit 신호가 있을 때만 발동한다.
-2. `redirect`: confidence drop, anomaly, stuck 신호가 있을 때만 발동한다.
-3. `straight`: confidence가 충분히 잘 맞고 과신 신호가 없을 때는 meta를 거의 쓰지 않는다.
-
-핵심은 `자연스러운 meta intervention`, `reward에서 추출 가능한 formatting`, 그리고 `후속 retrieval에 바로 쓸 수 있는 failure/study signal`을 동시에 만족시키는 것이다.
-
-## 8. 다음 reward 계획
-
-다음 RL reward는 하나로 뭉개면 안 된다. 효과를 분해해 봐야 한다.
-
-### 8.1 유지할 축
-
-1. `calibration_reward`
-2. `confidence_revision_reward`
-3. `overconfidence_penalty_reward`
-4. `effective_verification_reward`
-5. `effective_redirection_reward`
-
-여기서 `calibration_reward`는 삭제 대상이 아니라 핵심 축이다. 특히 E8에서 효과가 있었던 confidence shaping을 유지한 상태에서 behavior reward를 추가해야 `confidence 교정만으로 되는지`, `행동 reward가 추가로 필요한지`를 분해해 볼 수 있다.
-
-### 8.2 자연어 기반으로 바꿀 축
-
-다음 reward는 rigid field 존재 여부가 아니라 자연어 의미를 보고 계산해야 한다.
-
-1. `diagnosis_reward`
-2. `decomposition_reward`
-
-### 8.3 추가 비교 축
-
-1. `anomaly_notice_reward`
-2. `repeated_intervention_reward`
-3. `overconfidence_verify_reward`
-
-권장 RL 비교축은 다음과 같다.
-
-1. `E3`: calibration baseline
-2. `E5`: calibration + confidence revision 계열
-3. `E8`: stronger calibration / overconfidence shaping
-4. `E10`: `E8 + behavior rewards`
-
-연구적으로 중요한 것은 reward가 많아지는 것이 아니라, 어떤 축이 실제 행동 변화를 만들었는지를 분리해 확인하는 것이다.
-
-## 9. 실험 계획
-
-### Phase A. 현재 비교 세트 정리
-
-먼저 현재까지 만들어진 모델들의 eval과 artifact를 정리한다.
-
-1. Base SFT
-2. V2 SFT
-3. V3 SFT
-4. E3, E5, E7 prev, E7 current, E8
-5. behavior_all_sft, behavior_redirect_sft, behavior_verify_sft
-
-이 단계의 목적은 다음 RL 설계를 위해 출발점을 확정하는 것이다.
-
-### Phase B. control-v5 데이터 재생성
-
-다음 데이터는 pilot -> critic -> 개선 -> main run 순서로 만든다.
-
-1. `straight`, `verify`, `redirect`가 모두 남는지 smoke QC
-2. difficulty별 샘플 정성 점검
-3. meta가 CoT와 엄격히 분리되어 있는지 점검
-4. `verify`가 난이도 기반이 아니라 과신 신호 기반으로만 발동하는지 점검
-5. `redirect`에서 diagnosis와 failure decomposition이 실제로 "왜 못 푸는지"를 말하는지 점검
-6. `study_need:`가 짧고 parseable하며 RAG에 쓸 수 있는지 점검
-7. hard trajectory에서는 필요할 때만 2회 이상 개입하는지 점검
-
-pilot이 통과되기 전에는 10k main run으로 가지 않는다.
-
-### Phase C. SFT 비교
-
-기본 출발점은 raw base가 아니라 `qwen3_base_sft` 같은 강한 기존 SFT checkpoint다.
-
-권장 비교:
-
-1. `base_sft -> control_v5_all_sft`
-2. `base_sft -> control_v5_verify_specialist`
-3. `base_sft -> control_v5_redirect_specialist`
-
-여기서 보는 것은
-
-1. 정확도 유지
-2. verify effectiveness
-3. redirect effectiveness
-4. confidence-conditioned behavior change
-
-이다.
-
-### Phase D. RL 비교
-
-SFT 비교 후 가장 좋은 기반 하나 또는 둘을 골라 RL로 간다.
-
-권장 ablation:
+1. meta parse rate
+2. confidence extraction rate
+3. meta purity
+   - meta 안에 diagnosis / control state / next action이 들어가는가
+   - meta 안에 ordinary derivation이 섞이지 않는가
+4. adaptation precursor coverage
+   - hard problem에서 verify / redirect / diagnosis를 정당화하는 meta signal이 실제로 나타나는가
+5. adaptation lift
+   - hard slice에서 `first_completion -> intervention/retry completion`의 정확도 delta
+   - redirect / verify가 있는 sample과 없는 sample의 retry gain 비교
+6. difficulty-sliced qualitative analysis
+   - AIME / hard math failure에서 meta가 어떤 방식으로 행동을 바꾸는가
+7. accuracy retention
+
+### 3.2 RQ2: Meta-RL
+
+`의도`
+
+1. confidence calibration을 개선한다
+2. intervention-local confidence revision을 학습시킨다
+3. verify / redirect / diagnosis 효과를 분리해서 본다
+4. 마지막에 이 효과들이 합쳐져 controller가 되는지 본다
+
+`가설`
+
+1. `H2a`
+   - `E3`는 explicit behavior reward 없이도 calibration을 개선한다
+2. `H2b`
+   - `E5`는 conflict나 anomaly 주변에서 confidence revision을 개선한다
+3. `H2c`
+   - `E8`은 `E5`보다 hard wrong case의 과신을 더 잘 낮춘다
+4. `H2d`
+   - `E9 / E9b / E9c`는 verify / redirect / diagnosis 효과를 분해해 보여준다
+5. `H2e`
+   - `E10`은 개별 reward만 있을 때보다 더 강한 full controller를 만든다
+6. `H2f`
+   - `E6 / E7`은 probe가 single trajectory correctness가 아니라 `p(correct | prefix)`를 맞출 때만 의미가 있다
+
+`검증 방법`
+
+1. benchmark accuracy
+2. ECE / Brier / wrong-answer mean confidence / wrong high-confidence rate
+3. conflict-conditioned confidence drop
+4. high-confidence 상황에서의 verify precision
+5. redirect-conditioned strategy switch와 recovery
+6. diagnosis consistency와 usefulness
+7. hard problem에서 repeated intervention quality
+8. reward 평균뿐 아니라 qualitative response 분석
+
+### 3.3 RQ3: Curriculum
+
+`의도`
+
+1. diagnosis를 action으로 연결한다
+2. `study_need`를 parseable retrieval trigger로 만든다
+3. failure analysis를 no-training RAG 혹은 one-example adaptation과 연결한다
+
+`가설`
+
+1. `H3a`
+   - decorative low confidence만으로 retrieval이 켜지면 안 된다
+2. `H3b`
+   - diagnosis와 `study_need`가 있을 때 retrieval precision이 높아진다
+3. `H3c`
+   - diagnosis가 의미 있을 때만 retrieved example이나 one-example adaptation이 retry accuracy를 높인다
+
+`검증 방법`
+
+1. retrieval trigger precision
+2. diagnosis / `study_need` coverage
+3. retry prompt artifact logging
+4. retry accuracy delta
+5. 재현 가능한 저장 산출물
+
+## 4. 실험 매트릭스
+
+| 실험 | 의도 | 가설 | 검증 방법 |
+|---|---|---|---|
+| `V2 / V3 / V5 SFT` | parseable meta representation 확보 | H1a, H1b, H1c | parseability, purity, confidence extraction, accuracy retention |
+| `control_v5_verify_sft` | verify controller 단독 학습 | verify를 redirect 없이도 학습 가능 | high-confidence verify precision |
+| `control_v5_redirect_sft` | redirect controller 단독 학습 | redirect를 verify 없이도 학습 가능 | redirect recovery, strategy switch |
+| `control_v5_all_sft` | unified controller SFT | verify / redirect / diagnosis 공존 | unified behavior with limited accuracy loss |
+| `E3` | pure calibration | H2a | ECE, Brier, wrong high-confidence rate |
+| `E5` | calibration + confidence revision | H2b | conflict-conditioned confidence drop, no-drop wrong-commit |
+| `E6` | probe calibration | H2f | `|confidence - p_hat_probe|`, probe-aligned ECE |
+| `E7` | probe + blockwise stepwise | H2f | block-level probe gap, intervention-local calibration |
+| `E8` | anti-overconfidence shaping 강화 | H2c | hard-slice calibration, wrong-high-confidence suppression |
+| `E9` | verify-only decomposition | H2d | verify precision, verify-conditioned error |
+| `E9b` | redirect-only decomposition | H2d | redirect recovery, real switch fraction |
+| `E9c` | diagnosis-only decomposition | H2d | diagnosis consistency, `study_need` usefulness |
+| `E10` | full combined controller | H2e | verify + redirect + diagnosis closure |
+| `Curriculum / RAG` | weakness-conditioned retrieval/adaptation | H3a, H3b, H3c | trigger precision, retry gain, `study_need` quality |
+
+## 4.1 현재 probe-free RL 완료 범위
+
+현재 probe 없이 해석 가능한 RL 축은 아래 실험들이다.
+
+1. `E3`
+   - calibration only
+2. `E5`
+   - calibration + confidence revision
+3. `E8`
+   - `E5` + anti-overconfidence shaping
+4. `E9`
+   - `E8` + verify only
+5. `E9b`
+   - `E8` + redirect only
+6. `E9c`
+   - `E8` + diagnosis / decomposition only
+7. `E10`
+   - full controller
+
+즉 현재 probe gate가 없어도 비교 가능한 RL 분해 축은 이미 준비되어 있고,
+`E6/E7`만 prefix-probe gate 이후에 추가된다.
+
+## 5. Reward 분해 계약
+
+reward family는 아래처럼 고정한다.
+
+1. `E3`
+   - pure calibration baseline
+2. `E5`
+   - `E3 + confidence_revision`
+3. `E6`
+   - `E3 + probe_calibration`
+4. `E7`
+   - `E6 + stepwise_probe`
+5. `E8`
+   - `E5 + overconfidence shaping`
+6. `E9`
+   - `E8 + verify only`
+7. `E9b`
+   - `E8 + redirect only`
+8. `E9c`
+   - `E8 + diagnosis / decomposition only`
+9. `E10`
+   - full combined controller
+
+이 분해는 다음 질문들에 답하기 위해 필요하다.
+
+1. calibration만으로 무엇이 바뀌는가
+2. revision이 추가되면 무엇이 바뀌는가
+3. 어떤 behavior reward가 어떤 행동을 바꾸는가
+4. full controller가 decomposition 대비 추가 이득을 주는가
+
+## 6. Probe 계약
+
+probe는 style classifier가 되면 안 된다.
+
+1. 의도된 target은 `p(correct | prefix)`다
+   - 여기서 prefix는 completion 조각 alone이 아니라 reward-time과 동일한 `prompt + completion-prefix` 객체여야 한다
+2. single rollout의 final correctness는 prefix-local uncertainty supervision으로 충분하지 않다
+3. `E6/E7`은 prefix마다 multiple continuation에서 얻은 target이 준비됐을 때만 진행한다
+4. 그 전까지는 probe-free RL만 진행하고 probe-dependent RL은 멈춘다
+
+probe의 최소 검증은 다음과 같다.
+
+1. held-out Brier
+2. held-out ECE
+3. stated confidence와 `p_hat_probe`의 상관
+4. held-out target이 binary할 때만 AUROC를 참고한다
+5. temperature scaling 이후 probe 자체 calibration
+6. `problem_id` 기준 group split
+
+## 7. Curriculum 계약
+
+curriculum retrieval은 아래 조건을 모두 만족할 때만 유효하다.
+
+1. low confidence alone으로 retrieval이 켜지지 않는다
+2. diagnosis 또는 `study_need`가 존재한다
+3. retrieved example이 실제 retry prompt에 들어간다
+4. retry artifact가 전부 저장된다
+
+즉 curriculum의 목표는 `uncertain하면 일단 retrieve`가 아니다.
+`왜 현재 경로가 부족한지 알 때만 retrieve`다.
+
+## 7.1 Curriculum 벤치 선택 계약
+
+curriculum / RAG의 1차 주 무대는 `AIME`나 일반 `open math`의 hard slice가 맞다.
+
+이유는 다음과 같다.
+
+1. 이 구간에서만 redirect / diagnosis / study_need가 실제로 필요해진다
+2. easy slice에서는 retrieval이 token cost만 늘리고 행동 차이를 왜곡할 수 있다
+3. 장기적으로는 `AIME -> broader open math` 순으로 확장하는 것이 맞다
+
+따라서 1차 검증은 다음 순서로 둔다.
+
+1. `AIME / hard benchmark`에서 trigger precision과 retry gain 검증
+2. 이후 `broader open math`에서 generalization 확인
+
+## 8. 행동 분석 및 저장 계약
+
+행동 분석은 정량만으로 끝나면 안 된다.
+
+반드시 아래 두 층위를 함께 본다.
+
+### 8.1 정량 분석
+
+1. accuracy
+2. confidence coverage
+3. bucketed ECE / Brier
+4. wrong-answer mean confidence
+5. wrong high-confidence rate
+6. verify / redirect / diagnosis / `study_need` rate
+7. benchmark별 집계
+
+### 8.2 정성 분석
+
+1. `AIME` hard wrong case에서의 overconfidence suppression
+2. anomaly 이후 실제 redirect가 일어나는지
+3. diagnosis가 단순 장식이 아니라 실패 원인 설명인지
+4. difficulty에 따라 meta behavior가 어떻게 달라지는지
+5. retrieved example 이후 retry answer가 어떻게 변하는지
+
+### 8.3 저장 산출물
+
+eval은 나중에 전수 분석이 가능하도록 아래를 저장해야 한다.
+
+1. `full_question`
+2. `completion`
+3. `first_completion`
+4. `avg_confidence`
+5. `meta_confidences`
+6. `rag_used`
+7. `retrieved_questions`
+8. `retrieval_scores`
+9. `rag_diagnosis`
+10. metadata json + parquet bundle
+
+즉 summary만 저장하는 것이 아니라, 응답 단위 raw artifact를 반드시 남긴다.
+
+## 9. 실행 게이트
+
+새로운 대규모 실험 launch는 아래 게이트를 만족할 때만 진행한다.
+
+### Gate 1. 코드 안정성
+
+필수 조건:
+
+1. tokenizer compatibility가 local과 remote `transformers`에서 모두 안전하다
+2. reward config가 문서의 decomposition과 일치한다
+3. curriculum smoke가 통과한다
+4. launch script와 core module이 compile된다
+
+### Gate 2. Probe-free RL
+
+Gate 1이 통과하면 허용된다.
+
+실행 대상:
 
 1. `E3`
 2. `E5`
 3. `E8`
-4. `E10 = E8 + behavior rewards`
+4. `E9`
+5. `E9b`
+6. `E9c`
+7. `E10`
 
-필요하면 `verify-specialist`와 `redirect-specialist`를 따로 유지하되, 메인 결론은 하나의 unified controller가 가능한지로 가져간다.
+### Gate 3. Probe-dependent RL
 
-### Phase E. Curriculum / RAG 진입
+아래 조건을 모두 만족할 때만 허용된다.
 
-Curriculum / RAG는 아래가 충족될 때만 진행한다.
+1. prefix-conditioned target이 존재한다
+2. probe smoke가 통과한다
+3. held-out probe metric이 기준 이상이다
+4. reward pipeline에서 probe output을 실제로 load할 수 있다
 
-1. anomaly 뒤 confidence drop이 실제로 나타남
-2. confidence drop 뒤 redirect가 실제로 나타남
-3. high confidence일 때 verify가 실제로 나타남
-4. 위 행동들이 1,030 문제 기준과 hard slice 기준에서 반복적으로 관찰됨
+실행 대상:
 
-그 다음에야 "못 푼 문제를 보고, 약점을 진단하고, `study_need`를 추출하고, 관련 예시나 retrieval을 붙여서 test-time에 회복하는 loop"가 연구적으로 의미를 가진다.
+1. `E6`
+2. `E7`
 
-## 10. 분석 계획
+### Gate 4. Curriculum
 
-### A. calibration 분석
+held-out 분석에서 diagnosis와 `study_need` 품질이 충분할 때만 허용된다.
 
-필수 지표:
+실행 대상:
 
-1. benchmark별 ECE
-2. wrong high-confidence 비율
-3. correct low-confidence 비율
-4. wrong-answer average confidence
+1. redirect-triggered in-context retrieval
+2. one-example adaptation
+3. 이후 필요하면 self-distill 혹은 RLVR-style follow-up
 
-### B. 중간 confidence revision 분석
+## 9. 3노드 계획
 
-필수 지표:
+메인 프로젝트는 정확히 3개 training node를 쓰고, 나머지 1개 node는 다른 작업을 위해 비워 둔다.
 
-1. contradiction-conditioned confidence drop
-2. confidence drop 이후 redirect rate
-3. confidence drop 이후 correctness recovery rate
-4. no-drop wrong-commit rate
+1. `metacognition_eval`
+   - 역할: probe-free calibration lane
+   - 순서:
+     `E3 -> E5 -> E9`
+2. `metacognition_train_b`
+   - 역할: probe-free behavior lane
+   - 순서:
+     `E8 -> E9b -> E9c`
+3. `metacognition_e8`
+   - 역할: gated lane
+   - 순서:
+     `probe target generation -> probe smoke -> E6 -> E7`
+   - probe gate가 충족되지 않으면 fallback:
+     `E10`
 
-이 축은 "confidence가 실제로 행동을 제어하는가"를 가장 직접적으로 본다.
+핵심 원칙은 다음이다.
 
-### C. verify 분석
+`모든 RL run은 같은 unified SFT 초기화에서 시작한다`
 
-필수 지표:
+운영 흐름을 더 구체적으로 적으면 다음과 같다.
 
-1. verify fraction
-2. independent-check fraction
-3. high-confidence with verify error rate
-4. high-confidence without verify error rate
-5. answer-change-after-verify rate
+1. 먼저 `probe-free RL`을 두 노드에서 병렬로 진행한다
+2. 수정된 probe는 한 노드에서 학습하고 검증한다
+3. probe gate가 통과할 때만 `E6/E7`을 진행한다
+4. 완료된 체크포인트는 즉시 Hugging Face에 올린다
+5. `base_sft`, control-v5 SFT, 완료된 RL 체크포인트를 모두 평가한다
+6. 정량 + 정성 분석이 끝난 뒤에만 behavior analysis나 curriculum으로 넘어간다
+7. eval 전에 local checkpoint가 없으면 Hugging Face에서 자동 materialize한 뒤 평가한다
 
-### D. redirect 분석
+## 10. Smoke / Critic / 개선 루프
 
-필수 지표:
+모든 코드 경로는 같은 루프를 통과해야 한다.
 
-1. redirect fraction
-2. strategy-switch fraction
-3. redirect-conditioned recovery accuracy
-4. redirect-without-real-switch fraction
+1. smoke 또는 unit check 하나 실행
+2. mismatch 하나를 찾는다
+3. mismatch 하나만 고친다
+4. 관련 smoke를 다시 돌린다
+5. smoke나 guard가 좋아진 경우에만 변경을 유지한다
 
-여기서는 문구가 아니라 실제 풀이 방법이 바뀌었는지를 본다.
+최소 필수 체크:
 
-### E. diagnosis / decomposition 분석
+1. `tests/test_rewards.py`
+2. `tests/test_gdpo.py`
+3. `tests/test_tokenizer_utils.py`
+4. `tests/test_probe_pipeline.py`
+5. `tests/test_control_rag.py`
+6. `scripts/smoke_control_rag.py --skip-model`
+7. core launch / probe script에 대한 `python -m py_compile`
 
-필수 정성 분석:
+## 11. 현재 판단
 
-1. 왜 현재 경로가 안 되는지 명시했는가
-2. 필요한 subgoal을 제대로 재설정했는가
-3. 이후 행동이 그 진단과 일관되는가
+방향 자체는 여전히 align돼 있다.
 
-이 축은 이후 curriculum과 RAG 연결 가능성을 판단하는 기준이 된다.
+1. `Meta-CoT`
+   - parseable한 controller state를 학습한다
+2. `Meta-RL`
+   - 그 state를 verifiable behavior reward로 바꾼다
+3. `Curriculum`
+   - diagnosis와 `study_need`가 충분히 안정화된 뒤에만 확장한다
 
-### F. difficulty-conditioned compute allocation
+따라서 올바른 순서는 여전히 다음과 같다.
 
-필수 지표:
+`representation -> calibration/revision -> decomposed behavior control -> full controller -> curriculum`
 
-1. 난이도별 completion length
-2. 난이도별 meta block 수
-3. easy 문제에서 불필요한 과개입 비율
-4. hard 문제에서 추가 verify / redirect 비율
-
-## 11. 현재 결론
-
-현재 계획에 들어있는 중심 의도는 올바르다.
-
-1. confidence를 자기 보고 숫자가 아니라 제어 신호로 다루려는 점
-2. low confidence에서 redirect를, high confidence에서 verify를 요구하는 점
-3. curriculum을 그 다음 단계로 미루고, 먼저 self-diagnosis와 control을 안정화하려는 점
-
-이 세 가지는 서로 잘 맞는다.
-
-또한 현재 실험 구성 계획도 대체로 align 되어 있다.
-
-1. V2/V3는 표현 가능성을 확인한다.
-2. E3/E8은 calibration 축을 확인한다.
-3. behavior SFT는 행동 정책을 직접 가르친다.
-4. 차기 E10은 calibration과 behavior를 합친다.
-5. curriculum / RAG는 그 이후 단계로 게이트한다.
-
-따라서 지금 필요한 것은 방향 수정이 아니라, 이 방향을 더 정확히 구현하는 일이다. 데이터는 더 자연스럽고 균형 있게 만들어야 하고, reward는 더 분해해서 비교해야 하며, 분석은 "meta를 말했다"가 아니라 "행동이 바뀌었다"를 기준으로 해야 한다.
+지금 중요한 것은 또 다른 개념 전환이 아니다.
+데이터, 코드, reward, launch 조건을 이 계약서와 정확히 맞추는 것이다.

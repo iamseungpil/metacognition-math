@@ -1,350 +1,357 @@
-# Meta-CoT Experiment and Analysis Plan (2026-04-01)
+# Meta-CoT Experiment and Analysis Contract (2026-04-01)
 
-## 1. Purpose of This Document
+## 1. Main Question
 
-This document separates two questions that were getting mixed together.
+The project asks one main question.
 
-1. `Experiment plan`: what should be trained and compared next
-2. `Analysis plan`: how to decide whether the resulting behavior actually matches the intended metacognitive control policy
+`Can metacognitive control learned at test time improve OOD problem solving by changing behavior, not just style?`
 
-The main research target is not "more meta text" and not "a nicer calibration number." The target is an `OOD test-time control policy` in which confidence functions as an internal control variable that changes the reasoning trajectory.
+We answer it through three research questions.
 
-## 2. Central Intent
+1. `RQ1: Meta-CoT`
+   - Can the model emit parseable metacognitive state that is cleanly separated from ordinary CoT?
+2. `RQ2: Meta-RL`
+   - Can that metacognitive state be turned into verifiable reward signals and learned as a control policy?
+3. `RQ3: Curriculum`
+   - Can the same metacognitive state trigger diagnosis, retrieval, and adaptation for open-ended recovery?
 
-The current plan is organized around two intended control behaviors.
+## 2. Project Intent
 
-### 2.1 Low-confidence failure management
+### 2.1 Intent A: Meta-CoT must be a controller, not decorative self-talk
 
-When the model notices contradiction, anomaly, or a meaningful drop in confidence, it should not simply continue the same route while narrating caution. The intended behavior is:
+We do not want longer answers or generic reflection.
 
-`trigger / anomaly -> confidence drop -> brief diagnosis of why the route is weak -> redirect to another method`
+1. `confidence` must be a control variable that changes with risk.
+2. `something feels off` or meaningful confidence drop must trigger redirect behavior.
+3. `confidence remains high but support is weak` must trigger verify behavior.
+4. `diagnosis` must explain why the current route is weak.
+5. `study_need` must expose what skill, perspective, or object of study is missing.
+6. meta blocks must stay strictly separate from ordinary derivation.
 
-### 2.2 High-confidence overconfidence management
+Meta blocks therefore carry only:
 
-The key point is that verification should not be triggered just because a problem is easy. Verification should appear when the model feels sufficiently confident to commit but internal evidence suggests a calibration gap, premature commitment, or confidence that is running ahead of support. If confidence is stable and well-calibrated, meta should be reduced. The intended behavior is:
+1. local confidence
+2. anomaly / conflict notice
+3. failure diagnosis
+4. next control action
+5. optional `study_need`
 
-`sufficient-confidence + overcommit / calibration-gap signal -> verify before final answer`
+Meta blocks should not contain ordinary algebraic derivation or full CoT.
 
-These two behaviors are the core target. Curriculum and retrieval should be treated as later-stage extensions that become meaningful only after these conditional control policies are stable.
+### 2.2 Intent B: Meta-RL must make those behaviors verifiable
 
-## 3. What the Project Is Not Trying to Optimize
+The RL stage is not “optimize everything at once”.
 
-The current phase should explicitly avoid four false success criteria.
+1. first improve calibration
+2. then improve confidence revision around intervention points
+3. then test isolated behavior rewards one by one
+4. only then run the combined controller
 
-1. A larger number of meta blocks is not success by itself.
-2. Lower wrong-answer confidence is not sufficient by itself.
-3. Saying "let me try another way" is not enough unless the method actually changes.
-4. Retrieval- or curriculum-assisted gains are not evidence of metacognitive control unless the model first demonstrates self-diagnosis.
+The decomposition exists to answer causal questions, not only to get a better final number.
 
-The plan therefore prioritizes `conditional behavior control` over benchmark hacking.
+### 2.3 Intent C: Curriculum must start from diagnosis
 
-## 4. Terms
+Curriculum and RAG are only meaningful if the model can say:
 
-| Term | Role | Meaning |
-|---|---|---|
-| `trigger` | situation signal | contradiction, failed substitution, unsupported assumption, unit mismatch, or confidence drop |
-| `verify` | stabilizing action | independently check an answer or route before final commitment |
-| `redirect` | control action | lower confidence after a trigger and actually switch to another strategy |
-| `diagnosis` | cause interpretation | briefly explain why the current route is failing |
-| `decomposition` | failure decomposition | break down why the current route is not working, what is missing, or what sub-skill is absent |
+1. why the current attempt is failing
+2. what missing knowledge or perspective is needed next
+3. whether retrieval or one-example adaptation is actually justified
 
-Two clarifications matter.
+The long-term target is:
 
-1. `trigger` is not a terminal target behavior. It is the condition that should activate `redirect`.
-2. `verify` and `redirect` are the true target behaviors, while `diagnosis` and `decomposition` are internal structures that make redirect useful rather than decorative.
-3. `meta` must remain strictly separate from CoT, calculations, and concrete solve steps.
+`diagnose -> expose study_need -> retrieve/adapt -> retry`
 
-## 5. What the Current Evidence Already Shows
+## 3. Intent / Hypothesis / Verification
 
-The current evidence supports five claims.
+### 3.1 RQ1: Meta-CoT
 
-1. Explicit meta format can be learned.
-2. Calibration-style rewards can reduce overconfidence on hard wrong answers.
-3. Lower confidence alone does not reliably improve AIME accuracy.
-4. Verification is easier to learn than redirect.
-5. Many current hard-problem interventions still look like local self-correction rather than diagnosis-driven control.
+`Intent`
 
-This is why the overall direction changed from format-centric optimization to behavior-centric control. That change is not arbitrary. It is the correct consequence of the evidence collected so far.
+1. teach pure metacognitive control state
+2. keep meta separate from derivation
+3. test whether the learned state actually enables test-time adaptation on hard and OOD problems
 
-## 6. Why the Current Experiment Family Is Aligned with the Intent
+`Hypotheses`
 
-The current experiment family is aligned because each branch now has a distinct role instead of collapsing all hypotheses into one run.
+1. `H1a`
+   - `V2/V3/V5 SFT` can teach parseable confidence and meta tags without collapsing math ability.
+2. `H1b`
+   - the learned meta traces will express controller state rather than decorative chain-of-thought, and will causally precede verify / redirect / diagnosis actions.
+3. `H1c`
+   - diagnosis and `study_need` can be made parseable enough for later curriculum use.
+4. `H1d`
+   - the same meta state can improve retry-time adaptation on hard slices without large regression on base accuracy.
 
-### 6.1 V2 and V3
+`Verification`
 
-These runs test representational feasibility.
-
-- Can the model emit explicit meta structure?
-- Can confidence be expressed?
-- Can meta text coexist with the base math capability?
-
-This stage answers whether meta traces are representable at all.
-
-### 6.2 E3 and E8
-
-These runs test the calibration axis.
-
-- Can wrong high-confidence behavior be reduced?
-- Do meta interventions become more common on hard examples?
-- Does reported confidence become better aligned with actual error risk?
-
-This stage answers whether confidence becomes more meaningful, not whether the final control policy is complete.
-
-### 6.3 Behavior SFT branches
-
-These runs test the target actions directly.
-
-- `behavior_verify_sft`: teach high-confidence verification
-- `behavior_redirect_sft`: teach redirect after anomaly or confidence drop
-- `behavior_all_sft`: teach a conditional policy over straight solve, verify, and redirect
-
-This is the first stage that directly asks whether confidence changes lead to different actions.
-
-### 6.4 Future E10
-
-The next RL comparison should not discard the calibration axis. It should add behavior rewards on top of it.
-
-The clean comparison is:
-
-1. `E3`: calibration baseline
-2. `E8`: stronger calibration / confidence shaping
-3. `E10`: `E8 + behavior rewards`
-
-This decomposition is necessary if the project wants a defensible scientific claim about what each reward family is doing.
-
-## 7. Data Design Principles for the Next Control-v5 Round
-
-The next data generation round should be rebuilt as `control-v5`, with three simultaneous requirements: `meta purity`, `confidence-conditioned control`, and `usable failure/study signals for later RAG or curriculum`.
-
-### 7.1 What to keep
-
-1. Explicit meta regions should remain visible.
-2. Each meta intervention should contain extractable confidence formatting.
-3. Hard problems should be allowed to contain multiple meta interventions over time.
-
-### 7.2 What to change
-
-1. Rigid fields such as `trigger:` or `confidence_before:` and `confidence_after:` should be removed.
-2. A single meta event should not be split into mechanical staged subfields.
-3. Each meta block should be one natural intervention written in natural language.
-4. Meta should not contain calculations, substitutions, case splits, verification CoT, or concrete solve plans.
-
-### 7.3 What each useful intervention should contain
-
-1. confidence self-monitoring
-2. anomaly notice or calibration-gap notice
-3. brief diagnosis of why the current route is weak
-4. `study_need:` when a missing skill or perspective should be made explicit
-5. failure decomposition when needed
-6. only the control-level next action, not the actual solve steps
-
-The policy split should also be explicit:
-
-1. `verify`: trigger only when there is an overconfidence or premature-commit signal
-2. `redirect`: trigger only when there is confidence drop, anomaly, or stuckness
-3. `straight`: use little or no meta when confidence appears well calibrated
-
-The goal is to preserve naturalness, reward extractability, and immediate downstream usefulness for retrieval.
-
-## 8. Reward Plan
-
-The next RL setup should decompose reward families rather than merging everything blindly.
-
-### 8.1 Reward axes to preserve
-
-1. `calibration_reward`
-2. `confidence_revision_reward`
-3. `overconfidence_penalty_reward`
-4. `effective_verification_reward`
-5. `effective_redirection_reward`
-
-`calibration_reward` is not something to remove. It remains the backbone of the control setup. In particular, the project should preserve the E8-style confidence shaping and then ask whether behavior rewards add distinct value on top of that.
-
-### 8.2 Reward axes to reinterpret in natural language terms
-
-The following should be computed from natural-language evidence rather than rigid field presence.
-
-1. `diagnosis_reward`
-2. `decomposition_reward`
-
-### 8.3 Additional candidate axes
-
-1. `anomaly_notice_reward`
-2. `repeated_intervention_reward`
-3. `overconfidence_verify_reward`
-
-The recommended RL ablation should therefore be:
-
-1. `E3`: calibration baseline
-2. `E5`: calibration + confidence revision family
-3. `E8`: stronger calibration / overconfidence shaping
-4. `E10`: `E8 + behavior rewards`
-
-The important scientific point is not reward count. It is whether each reward axis produces a distinct behavioral change.
-
-## 9. Experiment Plan
-
-### Phase A. Consolidate the current comparison set
-
-First, complete and normalize the evaluation inventory for:
-
-1. Base SFT
-2. V2 SFT
-3. V3 SFT
-4. E3, E5, E7 prev, E7 current, E8
-5. behavior_all_sft, behavior_redirect_sft, behavior_verify_sft
-
-This phase fixes the starting point for the next RL decision.
-
-### Phase B. Regenerate control-v5 data
-
-The next dataset should be built with a pilot -> critic -> improve -> main-run loop.
-
-1. Smoke QC must show that `straight`, `verify`, and `redirect` all survive.
-2. Samples must be checked qualitatively across difficulty bands.
-3. Meta must remain strictly separated from CoT.
-4. `verify` must be triggered by overconfidence signals rather than by difficulty.
-5. `redirect` must explain why the model is failing, not just announce a new method.
-6. `study_need:` must be short, parseable, and useful for retrieval.
-7. Hard trajectories may contain repeated interventions, but only when a second anomaly or renewed overconfidence signal appears.
-
-No 10k-scale main run should begin before this pilot passes.
-
-### Phase B.5. Node allocation and execution gating
-
-The execution policy should remain strict so that the main project and the separate analysis
-project do not silently interfere with each other.
-
-1. `metacognition_e8` is reserved for `control_v5_all_sft` and later main-project RL follow-up.
-2. `metacognition_eval` is reserved for `control_v5_verify_sft` and later main-project eval work.
-3. `metacognition_train_b` is reserved for `control_v5_redirect_sft` and later main-project
-   training work.
-4. `metacognition_run_c` is reserved for the separate
-   `metacognition-behavior-uncertainty` project.
-
-There is also an execution gate:
-
-1. The reserved AMLT jobs may stay idle as holder jobs.
-2. Actual SFT launch should not happen until `data/control_v5_10k.parquet` exists and passes QC.
-3. If the generation process dies before writing the parquet, the correct action is to relaunch or
-   repair generation, not to repurpose the reserved nodes.
-
-### Phase C. SFT comparison
-
-The starting point should be a strong existing SFT checkpoint such as `qwen3_base_sft`, not the raw base model.
-
-Recommended comparison set:
-
-1. `base_sft -> control_v5_all_sft`
-2. `base_sft -> control_v5_verify_specialist`
-3. `base_sft -> control_v5_redirect_specialist`
-
-The primary decision criteria are:
-
-1. accuracy retention
-2. verification effectiveness
-3. redirect effectiveness
-4. confidence-conditioned behavior change
-
-### Phase D. RL comparison
-
-After the SFT comparison, select one or two strong bases and compare:
+1. meta parse rate
+2. confidence extraction rate
+3. meta purity
+   - meta text contains diagnosis / control state / next action
+   - meta text does not contain ordinary derivation
+4. adaptation precursor coverage on hard problems
+5. adaptation lift
+   - `first_completion -> retry/intervention completion` delta on hard slices
+   - contrast between samples with versus without verify / redirect signals
+6. accuracy retention
+7. qualitative samples on hard problems, especially AIME-like failures
+
+### 3.2 RQ2: Meta-RL
+
+`Intent`
+
+1. learn better confidence calibration
+2. learn intervention-local confidence revision
+3. separate verify / redirect / diagnosis effects
+4. test whether those effects combine into a real controller
+
+`Hypotheses`
+
+1. `H2a`
+   - `E3` improves calibration even before explicit behavior rewards.
+2. `H2b`
+   - `E5` improves confidence revision around conflict or anomaly.
+3. `H2c`
+   - `E8` suppresses hard-slice overconfidence better than `E5`.
+4. `H2d`
+   - `E9 / E9b / E9c` isolate verify / redirect / diagnosis effects in interpretable ways.
+5. `H2e`
+   - `E10` combines those behavior rewards into a stronger controller than any single isolated policy.
+6. `H2f`
+   - `E6 / E7` are only meaningful if the probe estimates `p(correct | prefix)` rather than single-trajectory final correctness.
+
+`Verification`
+
+1. benchmark accuracy
+2. ECE / Brier / wrong-answer mean confidence / wrong high-confidence rate
+3. conflict-conditioned confidence drop
+4. verify precision under high confidence
+5. redirect-conditioned strategy-switch and recovery
+6. diagnosis consistency and usefulness
+7. repeated intervention quality on hard problems
+8. qualitative response analysis, not only reward averages
+
+### 3.3 RQ3: Curriculum
+
+`Intent`
+
+1. make diagnosis actionable
+2. expose `study_need` as a parseable retrieval trigger
+3. connect failure analysis to no-training RAG or one-example adaptation
+
+`Hypotheses`
+
+1. `H3a`
+   - decorative low confidence alone should not trigger retrieval.
+2. `H3b`
+   - diagnosis plus `study_need` should trigger retrieval much more precisely.
+3. `H3c`
+   - retrieved examples or one-example adaptation should improve retry accuracy only when diagnosis is meaningful.
+
+`Verification`
+
+1. retrieval trigger precision
+2. diagnosis / `study_need` coverage
+3. retry prompt artifact logging
+4. retry accuracy delta
+5. reproducible saved outputs for later audit
+
+## 4. Experiment Matrix
+
+| Experiment | Intent | Hypothesis | Verification |
+|---|---|---|---|
+| `V2 / V3 / V5 SFT` | establish parseable meta representation | H1a, H1b, H1c | parseability, purity, confidence extraction, accuracy retention |
+| `control_v5_verify_sft` | isolated verify controller | verify can be taught without redirect | high-confidence verify precision |
+| `control_v5_redirect_sft` | isolated redirect controller | redirect can be taught without verify | redirect recovery and strategy switch |
+| `control_v5_all_sft` | unified controller SFT | verify, redirect, diagnosis can coexist | unified behavior with limited accuracy loss |
+| `E3` | pure calibration | H2a | ECE, Brier, wrong high-confidence rate |
+| `E5` | calibration + confidence revision | H2b | conflict-conditioned confidence drop, no-drop wrong-commit |
+| `E6` | probe calibration | H2f | `|confidence - p_hat_probe|`, probe-aligned ECE |
+| `E7` | probe + blockwise stepwise | H2f | block-level probe gap, intervention-local calibration |
+| `E8` | stronger anti-overconfidence shaping | H2c | hard-slice calibration, wrong-high-confidence suppression |
+| `E9` | verify-only decomposition | H2d | verify precision, verify-conditioned error |
+| `E9b` | redirect-only decomposition | H2d | redirect recovery, real switch fraction |
+| `E9c` | diagnosis-only decomposition | H2d | diagnosis consistency, `study_need` usefulness |
+| `E10` | full combined controller | H2e | verify + redirect + diagnosis closure |
+| `Curriculum / RAG` | weakness-conditioned retrieval/adaptation | H3a, H3b, H3c | trigger precision, retry gain, study_need quality |
+
+## 5. Reward Decomposition Contract
+
+The reward family is fixed as follows.
+
+1. `E3`
+   - pure calibration baseline
+2. `E5`
+   - `E3 + confidence_revision`
+3. `E6`
+   - `E3 + probe_calibration`
+4. `E7`
+   - `E6 + stepwise_probe`
+5. `E8`
+   - `E5 + overconfidence shaping`
+6. `E9`
+   - `E8 + verify only`
+7. `E9b`
+   - `E8 + redirect only`
+8. `E9c`
+   - `E8 + diagnosis / decomposition only`
+9. `E10`
+   - full combined controller
+
+This decomposition is necessary to answer separate questions.
+
+1. what changes from calibration alone
+2. what changes when revision is added
+3. what behavior reward changes which behavior
+4. whether the combined controller adds anything beyond the decomposed pieces
+
+## 6. Probe Contract
+
+The probe is not allowed to be a style classifier.
+
+1. the intended object is `p(correct | prefix)`
+2. a single rollout's final correctness is not sufficient supervision for prefix-local uncertainty
+3. `E6/E7` are gated on prefix-conditioned targets collected from multiple continuations per prefix
+4. until that condition is met, probe-free RL continues but probe-dependent RL does not
+
+The minimum probe checks are:
+
+1. held-out Brier
+2. held-out ECE
+3. correlation between stated confidence and `p_hat_probe`
+4. AUROC only when held-out targets are binary enough to make AUROC meaningful
+5. calibration of the probe itself after temperature scaling
+6. group split by `problem_id` to avoid leakage
+
+## 7. Curriculum Contract
+
+Curriculum retrieval is valid only if all of the following hold.
+
+1. low confidence alone does not trigger retrieval
+2. diagnosis or `study_need` is present
+3. retrieved examples are actually inserted into the retry prompt
+4. retry artifacts are saved for full later analysis
+
+The curriculum objective is not “retrieve whenever uncertain”.
+It is “retrieve when the model knows why the current route is insufficient”.
+
+## 8. Execution Gates
+
+No new broad experiment launches until these gates are satisfied.
+
+### Gate 1. Code stability
+
+Required:
+
+1. tokenizer compatibility is runtime-safe across local and remote `transformers`
+2. reward configs match the documented decomposition
+3. curriculum smoke passes
+4. launch scripts and core modules compile
+
+### Gate 2. Probe-free RL
+
+Allowed when Gate 1 passes.
+
+Runs:
 
 1. `E3`
 2. `E5`
 3. `E8`
-4. `E10 = E8 + behavior rewards`
+4. `E9`
+5. `E9b`
+6. `E9c`
+7. `E10`
 
-If needed, specialist branches for verify and redirect can remain for analysis, but the main scientific goal should still be a unified controller.
+### Gate 3. Probe-dependent RL
 
-### Phase E. Curriculum / RAG gate
+Allowed only when all of the following pass.
 
-Curriculum or retrieval should start only if all of the following are true:
+1. prefix-conditioned targets exist
+2. probe smoke passes
+3. held-out probe metrics are acceptable
+4. probe outputs can be loaded by the reward pipeline
 
-1. contradiction-conditioned confidence drop is real
-2. confidence drop leads to actual redirect
-3. high confidence leads to actual verify
-4. these behaviors remain visible on the full 1,030-problem setting and hard slices
+Runs:
 
-Only after that gate does a loop like "diagnose weakness -> extract `study_need` -> retrieve helpful context or examples -> retry at test time" become a valid extension of the same research program.
+1. `E6`
+2. `E7`
 
-## 10. Analysis Plan
+### Gate 4. Curriculum
 
-### A. Calibration analysis
+Allowed only after diagnosis and `study_need` quality are good enough on held-out analysis.
 
-Required metrics:
+Runs:
 
-1. benchmark-level ECE
-2. wrong high-confidence rate
-3. correct low-confidence rate
-4. wrong-answer average confidence
+1. redirect-triggered in-context retrieval
+2. one-example adaptation
+3. later self-distill or RLVR-style follow-up if retry artifacts justify it
 
-### B. Mid-trajectory confidence revision
+## 9. Three-Node Plan
 
-Required metrics:
+The project uses exactly three training nodes and keeps one other node free for unrelated work.
 
-1. contradiction-conditioned confidence drop
-2. confidence-drop -> redirect rate
-3. confidence-drop -> correctness recovery rate
-4. no-drop wrong-commit rate
+1. `metacognition_eval`
+   - role: probe-free calibration lane
+   - order:
+     `E3 -> E5 -> E9`
+2. `metacognition_train_b`
+   - role: probe-free behavior lane
+   - order:
+     `E8 -> E9b -> E9c`
+3. `metacognition_e8`
+   - role: gated lane
+   - order:
+     `probe target generation -> probe smoke -> E6 -> E7`
+   - fallback if probe gate is not satisfied:
+     `E10`
 
-This is the most direct test of whether confidence is functioning as a control variable.
+The core rule is:
 
-### C. Verification analysis
+`all RL runs start from the same unified SFT initialization`
 
-Required metrics:
+Operationally, the intended flow is:
 
-1. verify fraction
-2. independent-check fraction
-3. high-confidence-with-verify error rate
-4. high-confidence-without-verify error rate
-5. answer-change-after-verify rate
+1. run `probe-free RL` on two nodes first
+2. train and validate the modified probe on one node
+3. run `E6/E7` only if the probe gate passes
+4. push each completed checkpoint to Hugging Face
+5. evaluate `base_sft`, control-v5 SFT variants, and completed RL checkpoints
+6. run both quantitative and qualitative analysis before moving to behavior analysis or curriculum
 
-### D. Redirect analysis
+## 10. Smoke / Critic / Improve Loop
 
-Required metrics:
+Every code path must pass the same loop.
 
-1. redirect fraction
-2. strategy-switch fraction
-3. redirect-conditioned recovery accuracy
-4. redirect-without-real-switch fraction
+1. run one smoke or unit check
+2. identify one concrete mismatch
+3. fix one mismatch
+4. rerun the relevant smoke
+5. keep the change only if the smoke or guard improves
 
-This analysis must distinguish real strategy replacement from cosmetic rephrasing.
+Minimum required checks:
 
-### E. Diagnosis and decomposition analysis
+1. `tests/test_rewards.py`
+2. `tests/test_gdpo.py`
+3. `tests/test_tokenizer_utils.py`
+4. `tests/test_probe_pipeline.py`
+5. `tests/test_control_rag.py`
+6. `scripts/smoke_control_rag.py --skip-model`
+7. `python -m py_compile` for core launch and probe scripts
 
-Required qualitative questions:
+## 11. Current Judgment
 
-1. Does the model name why the current route is failing?
-2. Does it define a useful subgoal or subproblem?
-3. Is the next action consistent with that diagnosis?
+The direction remains aligned.
 
-This axis matters because later curriculum and retrieval are supposed to build on these weakness labels.
+1. `Meta-CoT`
+   - teaches parseable controller state
+2. `Meta-RL`
+   - turns that state into verifiable behavior rewards
+3. `Curriculum`
+   - extends only after diagnosis and `study_need` are reliable enough
 
-### F. Difficulty-conditioned compute allocation
+The correct order is still:
 
-Required metrics:
+`representation -> calibration/revision -> decomposed behavior control -> full controller -> curriculum`
 
-1. completion length by difficulty
-2. meta-block count by difficulty
-3. over-intervention rate on easy problems
-4. verify or redirect rate on hard problems
-
-## 11. Current Conclusion
-
-The central intent inside the current plan is correct.
-
-1. Confidence should be treated as a control signal, not just a reported scalar.
-2. Low confidence should trigger diagnosis and redirect.
-3. High confidence should trigger verification.
-4. Curriculum should come only after these control behaviors stabilize.
-
-The current experiment family is also broadly aligned with that intent.
-
-1. V2 and V3 test representational feasibility.
-2. E3 and E8 test the calibration axis.
-3. Behavior SFT branches teach the target actions directly.
-4. The future E10 stage is the correct place to combine calibration and behavior rewards.
-5. Curriculum and retrieval are correctly gated behind the control-policy tests.
-
-What remains is not a change of direction but a tighter implementation of the same direction: more natural and balanced data, cleaner reward decomposition, and analysis that asks whether behavior changed rather than whether meta text merely appeared.
+What matters now is not another conceptual pivot.
+What matters is keeping the data, code, rewards, and launch conditions aligned to this contract.
