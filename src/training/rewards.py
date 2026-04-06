@@ -11,6 +11,7 @@ R4: uncertainty_meta_reward — (1-conf) weighted meta quality, summation
 Reference: Open-R1 (https://github.com/huggingface/open-r1)
 """
 import math
+from pathlib import Path
 import re
 
 # Math verification via sympy (same as Open-R1)
@@ -51,14 +52,19 @@ def _check_correctness(pred_text, gold):
 
 def _extract_answer_fallback(text):
     """Fallback answer extraction (string-based)."""
+    # Normalize currency: \$70,000 or $70,000 → 70000
+    # Only remove $ when followed by digits (currency), not LaTeX $x^2$
+    text_norm = re.sub(r'\\?\$\s*(?=\d)', '', text)  # remove \$ or $ before digits only
+    text_norm = re.sub(r'(?<=\d),(?=\d{3})', '', text_norm)  # remove commas in numbers: 70,000 → 70000
+
     pattern = r'\\boxed\{((?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\}'
-    matches = re.findall(pattern, text)
+    matches = re.findall(pattern, text_norm)
     if matches:
         return matches[-1].strip()
-    m = re.search(r'####\s*(.+?)(?:\n|$)', text)
+    m = re.search(r'####\s*(.+?)(?:\n|$)', text_norm)
     if m:
         return m.group(1).strip()
-    nums = re.findall(r'(-?\d+(?:\.\d+)?)', text)
+    nums = re.findall(r'(-?\d+(?:\.\d+)?)', text_norm)
     return nums[-1] if nums else ""
 
 
@@ -67,6 +73,25 @@ def _last_confidence(text):
     blocks = _parse_meta_blocks(text)
     confs = [b["confidence"] for b in blocks if b["confidence"] is not None]
     return confs[-1] if confs else None
+
+
+def _meta_block_texts(text):
+    """Return raw meta-block texts only."""
+    return [block["text"] for block in _parse_meta_blocks(text)]
+
+
+def _meta_joined_text(text):
+    """Join meta blocks into one string for meta-only pattern checks."""
+    return "\n".join(_meta_block_texts(text))
+
+
+def _text_after_last_meta(text):
+    """Return the non-meta tail, where verification and redirected solving should appear."""
+    end_token = "<|/meta|>"
+    idx = text.rfind(end_token)
+    if idx == -1:
+        return text
+    return text[idx + len(end_token):]
 
 
 def _has_verification_signal(text):
@@ -138,6 +163,19 @@ def _has_strategy_switch_signal(text):
     ))
 
 
+def _has_overconfidence_signal(text):
+    """Detect explicit notice that confidence is running ahead of support."""
+    return bool(re.search(
+        r'\b(overconfiden|overcommit|committing too quickly|too quickly|too certain|too sure|'
+        r'confidence is outrunning the support|support is thinner than the confidence|'
+        r'about to commit without an independent check|answer came too quickly|'
+        r'might be committing too quickly|risk of overcommitting|single route|'
+        r'single familiar route|recognition alone|over-trusting|committing without checking)\b',
+        text,
+        re.IGNORECASE,
+    ))
+
+
 def _has_failure_diagnosis(text):
     """Detect explicit explanation of why the current route is failing."""
     return bool(
@@ -168,11 +206,14 @@ def _has_missing_skill_or_blocker(text):
 
 
 def _has_decomposition_plan(text):
-    """Detect a concrete decomposition or subgoal plan."""
+    """Detect decomposition of failure or a missing requirement, not solve-time CoT."""
     return bool(re.search(
-        r'(break this into|split the task into|subgoal|reduced condition|'
-        r'identify the invariant|handle the cases|I should check|I should first|'
-        r'\n\s*1\.\s+\S+)',
+        r'(missing skill|missing perspective|missing structure|missing ingredient|'
+        r'the bottleneck is|the blocker is|the failure is|'
+        r'this is not a calculation problem|this is not an algebra problem|'
+        r'need a structural view|need a constraint-based view|need an invariant|'
+        r'missing the real invariant|missing the invariant|'
+        r'need a different object of study|subgoal is to recover the missing constraint)',
         text,
         re.IGNORECASE,
     ))
@@ -184,7 +225,9 @@ def _has_next_strategy(text):
         re.search(
             r'(switch_method|switch to|different method|alternative approach|case split|'
             r'reframe|instead I\'ll|instead I will|better to use|use a parity|'
-            r'use an invariant|use a direct check)',
+            r'use an invariant|use a direct check|constraint-based analysis|'
+            r'parity-based case split|switch to a parity|'
+            r'study before retrying|redirect to)',
             text,
             re.IGNORECASE,
         )
@@ -245,23 +288,45 @@ def _parse_meta_blocks(text):
 
     Returns list of dicts: [{text, confidence, length}, ...]
     """
+    return [
+        {
+            "text": block["text"],
+            "confidence": block["confidence"],
+            "length": block["length"],
+        }
+        for block in _parse_meta_blocks_with_spans(text)
+    ]
+
+
+def _parse_meta_blocks_with_spans(text):
+    """Parse meta blocks and retain end offsets for prefix-based probe scoring."""
     blocks = []
-    # Try special token boundaries first
-    parts = re.split(r'<\|meta\|>', text)
-    for i, part in enumerate(parts[1:], 1):
-        end_idx = part.find('<|/meta|>')
-        block_text = part[:end_idx] if end_idx != -1 else part[:200]
+
+    token_pattern = re.compile(r'<\|meta\|>(.*?)<\|/meta\|>', re.IGNORECASE | re.DOTALL)
+    for match in token_pattern.finditer(text):
+        block_text = match.group(1).strip()
         conf = _parse_confidence(block_text)
-        blocks.append({"text": block_text, "confidence": conf, "length": len(block_text.split())})
+        blocks.append({
+            "text": block_text,
+            "confidence": conf,
+            "length": len(block_text.split()),
+            "start": match.start(),
+            "end": match.end(),
+        })
 
     # Fallback: try [META] / [/META] text markers (when special tokens are stripped)
     if not blocks:
-        parts2 = re.split(r'\[META\]', text, flags=re.IGNORECASE)
-        for part in parts2[1:]:
-            end_idx = re.search(r'\[/META\]', part, re.IGNORECASE)
-            block_text = part[:end_idx.start()] if end_idx else part[:200]
+        text_pattern = re.compile(r'\[META\](.*?)\[/META\]', re.IGNORECASE | re.DOTALL)
+        for match in text_pattern.finditer(text):
+            block_text = match.group(1).strip()
             conf = _parse_confidence(block_text)
-            blocks.append({"text": block_text, "confidence": conf, "length": len(block_text.split())})
+            blocks.append({
+                "text": block_text,
+                "confidence": conf,
+                "length": len(block_text.split()),
+                "start": match.start(),
+                "end": match.end(),
+            })
 
     # Fallback: detect meta-like patterns in stripped text
     if not blocks:
@@ -274,9 +339,261 @@ def _parse_meta_blocks(text):
             if v > 1:
                 v /= 100
             v = max(0.0, min(1.0, v))
-            blocks.append({"text": "", "confidence": v, "length": 0})
+            blocks.append({"text": "", "confidence": v, "length": 0, "start": 0, "end": len(text)})
 
     return blocks
+
+
+def _meta_block_prefixes(text):
+    """Return prefixes ending at each meta block for per-block probe scoring."""
+    prefixes = []
+    for block in _parse_meta_blocks_with_spans(text):
+        end = block.get("end")
+        if end is None:
+            continue
+        prefixes.append(text[:end])
+    return prefixes
+
+
+def _render_prompt_text(prompt, tokenizer=None):
+    if prompt is None:
+        return ""
+    if isinstance(prompt, str):
+        return prompt
+    if tokenizer is not None and hasattr(tokenizer, "apply_chat_template"):
+        try:
+            return tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True)
+        except Exception:
+            pass
+    if isinstance(prompt, list):
+        rendered = []
+        for message in prompt:
+            if isinstance(message, dict):
+                role = str(message.get("role", "user")).strip().capitalize()
+                content = str(message.get("content", "")).strip()
+                rendered.append(f"{role}: {content}")
+        if rendered:
+            rendered.append("Assistant:")
+            return "\n\n".join(rendered)
+    return str(prompt)
+
+
+def _prefix_payloads_for_probe(text, *, prompt=None, tokenizer=None):
+    completion_prefixes = _meta_block_prefixes(text)
+    if not completion_prefixes:
+        return []
+    prompt_text = _render_prompt_text(prompt, tokenizer=tokenizer).rstrip("\n")
+    if not prompt_text:
+        return completion_prefixes
+    return [prompt_text + prefix for prefix in completion_prefixes]
+
+
+def _safe_model_device(model):
+    if hasattr(model, "device"):
+        return model.device
+    try:
+        return next(model.parameters()).device
+    except Exception:
+        return "cpu"
+
+
+def _load_probe_head(hidden_dim, device, probe_path):
+    """Load a SimpleCorrectnessProbe checkpoint if available."""
+    try:
+        import torch
+        from src.probes.simple_probe import SimpleCorrectnessProbe
+    except Exception:
+        return None
+
+    if probe_path is None:
+        return None
+    probe_path = Path(probe_path)
+    if not probe_path.exists():
+        return None
+
+    probe = SimpleCorrectnessProbe(hidden_dim=hidden_dim)
+    state = torch.load(probe_path, map_location="cpu", weights_only=False)
+    temperature = None
+    if isinstance(state, dict) and "state_dict" in state:
+        temperature = state.get("temperature")
+        state = state["state_dict"]
+    probe.load_state_dict(state)
+    if temperature is not None:
+        try:
+            probe.temperature.fill_(float(temperature))
+        except Exception:
+            pass
+    probe.to(device)
+    probe.eval()
+    return probe
+
+
+def _predict_probe_probabilities(
+    prefix_texts,
+    *,
+    model=None,
+    tokenizer=None,
+    probe_head=None,
+    probe_path=None,
+    probe_predictor=None,
+    max_length=2048,
+):
+    """Predict correctness probabilities for a batch of text prefixes."""
+    if not prefix_texts:
+        return []
+    if probe_predictor is not None:
+        return [float(x) for x in probe_predictor(prefix_texts)]
+    if model is None or tokenizer is None:
+        return [None] * len(prefix_texts)
+
+    try:
+        import torch
+    except Exception:
+        return [None] * len(prefix_texts)
+
+    device = _safe_model_device(model)
+    local_probe = probe_head
+    if local_probe is None:
+        hidden_dim = getattr(getattr(model, "config", None), "hidden_size", None)
+        if hidden_dim is None:
+            return [None] * len(prefix_texts)
+        local_probe = _load_probe_head(hidden_dim, device, probe_path)
+    if local_probe is None:
+        return [None] * len(prefix_texts)
+    # W1 fix: ensure probe is on same device as model (multi-GPU DDP)
+    local_probe = local_probe.to(device)
+
+    orig_padding_side = getattr(tokenizer, "padding_side", "right")
+    tokenizer.padding_side = "right"
+    try:
+        encoded = tokenizer(
+            prefix_texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+        )
+    finally:
+        tokenizer.padding_side = orig_padding_side
+    encoded = {k: v.to(device) for k, v in encoded.items()}
+
+    was_training = getattr(model, "training", False)
+    try:
+        model.eval()
+        with torch.no_grad():
+            outputs = model(
+                **encoded,
+                output_hidden_states=True,
+                use_cache=False,
+            )
+            hidden_states = outputs.hidden_states[-1].float()
+            probs = local_probe(hidden_states, encoded.get("attention_mask"))
+            return probs.detach().cpu().tolist()
+    except Exception as e:
+        import warnings
+        warnings.warn(
+            f"_predict_probe_probabilities failed: {type(e).__name__}: {e}. "
+            f"Returning [None]*{len(prefix_texts)} — probe reward will be 0.",
+            stacklevel=2,
+        )
+        return [None] * len(prefix_texts)
+    finally:
+        if was_training:
+            model.train()
+
+
+def _score_stepwise_blocks(
+    text,
+    *,
+    is_correct,
+    probe_scores=None,
+):
+    """Score each meta block individually and aggregate.
+
+    The intended object of learning is each meta intervention, not just the
+    final confidence. Each block gets local credit for:
+      - expressing confidence aligned with local belief / uncertainty
+      - revising confidence downward after anomaly/conflict
+      - avoiding unjustified early overconfidence
+      - ending with final confidence aligned to correctness
+    """
+    blocks = _parse_meta_blocks(text)
+    conf_blocks = [b for b in blocks if b["confidence"] is not None]
+    if not conf_blocks:
+        return 0.0
+
+    scores = []
+    prev_conf = None
+    error_correction_re = re.compile(
+        r'\b(wait|wrong|fix|actually|mistake|no,|let me re|hold on|incorrect|error)\b',
+        re.IGNORECASE,
+    )
+    for idx, block in enumerate(conf_blocks):
+        conf = block["confidence"]
+        block_text = block["text"]
+        local_probe = None
+        if probe_scores is not None and idx < len(probe_scores):
+            local_probe = probe_scores[idx]
+
+        is_last = idx == len(conf_blocks) - 1
+        has_conflict = _has_conflict_trigger(block_text) or _has_uncertainty_signal(block_text)
+        has_diag = _has_failure_diagnosis(block_text) or _has_decomposition_plan(block_text)
+        has_overconf = _has_overconfidence_signal(block_text)
+        has_verify = _has_verification_signal(block_text)
+        has_error_correction = bool(error_correction_re.search(block_text))
+
+        score = 0.0
+
+        if local_probe is not None:
+            score += -(conf - local_probe) ** 2
+        elif is_last:
+            target = 1.0 if is_correct else 0.0
+            score += -(conf - target) ** 2
+        elif has_conflict:
+            # When the model says something is wrong, local confidence should drop.
+            target = 0.35 if has_diag else 0.45
+            score += -(conf - target) ** 2
+        elif prev_conf is None:
+            # Early meta should not start with unjustified certainty.
+            if conf < 0.55:
+                score += 0.25
+            elif conf > 0.9:
+                score -= 0.3
+        else:
+            # Neutral intermediate block: moderate confidence is safer.
+            score += -(conf - 0.6) ** 2
+
+        if has_conflict:
+            if prev_conf is not None and conf <= prev_conf - 0.08:
+                score += 0.35
+            elif prev_conf is not None and conf >= prev_conf and has_error_correction:
+                score += 0.15
+            elif prev_conf is not None and conf >= prev_conf:
+                score -= 0.25
+            if has_diag:
+                score += 0.15
+
+        if has_error_correction:
+            score += 0.2
+
+        if has_overconf or has_verify:
+            # Verify-oriented meta should appear when confidence is high enough to commit.
+            if conf >= 0.75:
+                score += 0.15
+            else:
+                score -= 0.05
+
+        if is_last:
+            conf_clamped = max(0.01, min(0.99, conf))
+            if is_correct:
+                score += 0.5 * math.log(conf_clamped)
+            else:
+                score += 0.5 * math.log(1.0 - conf_clamped)
+
+        scores.append(score)
+        prev_conf = conf
+
+    return max(sum(scores) / len(scores), -3.0)
 
 
 def _parse_confidence(text):
@@ -454,271 +771,118 @@ def uncertainty_meta_reward(completions, ground_truth=None, **kwargs):
 # ─── R5: Stepwise Confidence Trajectory ───
 
 def stepwise_trajectory_reward(completions, ground_truth=None, **kwargs):
-    """Reward confidence trajectory: start low, end accurate.
+    """Reward stepwise meta control at the block level.
 
-    Ideal: pre-meta conf ~0.3 → mid-meta conf ~0.6 → post-meta conf matches accuracy
-
-    Components:
-    1. Pre-meta should be uncertain (conf < 0.7 → bonus)
-    2. Confidence should generally increase (monotonic bonus)
-    3. Final confidence should match group accuracy (Brier)
-    4. If wrong, final conf should be low (Rewarding Doubt)
+    This is no longer just a global monotonicity heuristic. The intended object
+    is each meta intervention:
+      - early blocks should avoid unjustified overconfidence
+      - anomaly/diagnosis blocks should revise confidence downward
+      - final blocks should calibrate confidence to outcome
     """
-    # Compute group accuracy
-    correct_flags = []
-    for i, c in enumerate(completions):
-        text = _get_text(c)
-        gt = ground_truth[i] if ground_truth is not None else ""
-        correct_flags.append(1.0 if _check_correctness(text, gt) else 0.0)
-    group_accuracy = sum(correct_flags) / max(len(correct_flags), 1)
-
     rewards = []
     for i, c in enumerate(completions):
         text = _get_text(c)
-        blocks = _parse_meta_blocks(text)
-        is_correct = bool(correct_flags[i])
-
-        if not blocks or all(b["confidence"] is None for b in blocks):
-            rewards.append(0.0)
-            continue
-
-        confs = [b["confidence"] for b in blocks if b["confidence"] is not None]
-        if not confs:
-            rewards.append(0.0)
-            continue
-
-        r = 0.0
-
-        # 1. Pre-meta uncertainty bonus: first conf should be low
-        if confs[0] < 0.5:
-            r += 0.3  # "starts uncertain = good"
-        elif confs[0] > 0.9:
-            r -= 0.3  # "starts overconfident = bad"
-
-        # 2. Monotonic increase bonus
-        increases = sum(1 for j in range(1, len(confs)) if confs[j] >= confs[j-1])
-        if len(confs) > 1:
-            r += 0.2 * (increases / (len(confs) - 1))  # fraction of increasing steps
-
-        # 3. Final confidence accuracy (Doubt only — consistent binary target)
-        final_conf = confs[-1]
-        if is_correct:
-            r += 0.5 * math.log(max(final_conf, 0.01))  # reward high conf on correct
-        else:
-            r += 0.5 * math.log(max(1.0 - final_conf, 0.01))
-
-        rewards.append(max(r, -3.0))
+        gt = ground_truth[i] if ground_truth is not None else ""
+        is_correct = _check_correctness(text, gt)
+        rewards.append(_score_stepwise_blocks(text, is_correct=is_correct))
     return rewards
 
 
 # ─── R6: Probe Calibration Reward ───
-
-# Global probe state (loaded once, reused)
-_probe_model = None
-_probe_head = None
-_probe_tokenizer = None
-
-
-def _load_probe(model_path="checkpoints/qwen3_meta_sft",
-                probe_path="checkpoints/simple_probe_qwen3/best_probe.pt"):
-    """Load probe model and head once (lazy init)."""
-    global _probe_model, _probe_head, _probe_tokenizer
-    if _probe_model is not None:
-        return
-
-    import torch
-    from transformers import AutoTokenizer, AutoModelForCausalLM
-
-    print("Loading probe model (frozen)...")
-    _probe_tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-    _probe_model = AutoModelForCausalLM.from_pretrained(
-        model_path, torch_dtype=torch.bfloat16, trust_remote_code=True,
-    )
-    _probe_model.eval()
-    # Don't put on GPU yet — will use training model's device
-
-    print("Loading probe head...")
-    _probe_head = torch.load(probe_path, map_location="cpu")
-    _probe_head.eval()
-    print(f"Probe loaded: model={model_path}, head={probe_path}")
-
-
 def stepwise_probe_reward(completions, ground_truth=None, **kwargs):
-    """Stepwise credit assignment: independent reward per meta block position.
+    """Probe-based stepwise reward with per-meta-block credit assignment.
 
-    Each completion's meta blocks are classified by position (pre/mid/post)
-    and scored independently based on confidence accuracy at that stage.
-
-    Scoring:
-      Pre-meta (first block):
-        base = -(conf - group_accuracy)^2
-        +0.3 if conf < 0.5 (starts uncertain = good)
-        -0.3 if conf > 0.9 (starts overconfident = bad)
-
-      Mid-meta (middle blocks):
-        +0.5 if error-correction pattern detected ("wait", "wrong", "actually", "fix")
-        -0.2 if conf > 0.95 (overconfident mid-stream)
-
-      Post-meta (last block before \\boxed{}):
-        Brier: -(conf - correct)^2 where correct in {0,1}
-        Log (Rewarding Doubt):
-          correct: +0.5 * log(conf)
-          wrong:   +0.5 * log(1-conf)
-
-    Final: R = 0.2 * mean(pre) + 0.3 * mean(mid) + 0.5 * post
-    Returns: list[float], one per completion (TRL GRPOTrainer compatible).
+    For each meta block, score stated confidence against probe-estimated local
+    correctness probability from the prefix ending at that block. When a probe
+    is unavailable, fall back to heuristic block-wise targets so the reward
+    function remains smoke-testable.
     """
-    # Error-correction keywords regex (compiled once)
-    _error_correction_re = re.compile(
-        r'\b(wait|wrong|fix|actually|mistake|no,|let me re|hold on|incorrect|error)\b',
-        re.IGNORECASE,
-    )
+    model = kwargs.get("model")
+    tokenizer = kwargs.get("tokenizer")
+    probe_head = kwargs.get("probe_head")
+    probe_path = kwargs.get("probe_path")
+    probe_predictor = kwargs.get("probe_predictor")
+    max_length = kwargs.get("max_length", 2048)
+    prompts = kwargs.get("prompts")
 
-    # First pass: compute group accuracy for pre-meta target
-    correct_flags = []
-    for i, c in enumerate(completions):
-        text = _get_text(c)
-        gt = ground_truth[i] if ground_truth is not None else ""
-        correct_flags.append(1.0 if _check_correctness(text, gt) else 0.0)
-    raw_accuracy = sum(correct_flags) / max(len(correct_flags), 1)
-    # With small batches, group_accuracy is degenerate (0 or 1).
-    # Smooth toward 0.5 prior to give meaningful pre-meta calibration signal.
-    # At batch>=4 (GRPO standard), smoothing effect is small.
-    _PRIOR = 0.5
-    _PRIOR_WEIGHT = 2  # equivalent to 2 pseudo-observations
-    n = len(correct_flags)
-    group_accuracy = (raw_accuracy * n + _PRIOR * _PRIOR_WEIGHT) / (n + _PRIOR_WEIGHT)
-
-    # Second pass: stepwise scoring
     rewards = []
     for i, c in enumerate(completions):
         text = _get_text(c)
-        blocks = _parse_meta_blocks(text)
-        is_correct = bool(correct_flags[i])
-
-        # Filter to blocks with confidence values
-        conf_blocks = [b for b in blocks if b["confidence"] is not None]
-        if not conf_blocks:
-            rewards.append(0.0)
-            continue
-
-        pre_scores = []
-        mid_scores = []
-        post_score = None
-
-        n_blocks = len(conf_blocks)
-        for idx, block in enumerate(conf_blocks):
-            conf = block["confidence"]
-            block_text = block["text"]
-
-            if idx == 0 and n_blocks >= 2:
-                # --- Pre-meta (first block, only when >=2 blocks) ---
-                score = -(conf - group_accuracy) ** 2
-                if conf < 0.5:
-                    score += 0.3
-                elif conf > 0.9:
-                    score -= 0.3
-                pre_scores.append(score)
-
-            elif idx == n_blocks - 1:
-                # --- Post-meta (last block) ---
-                target = 1.0 if is_correct else 0.0
-                score = -(conf - target) ** 2  # Brier
-                # Rewarding Doubt log scoring
-                conf_clamped = max(0.01, min(0.99, conf))
-                if is_correct:
-                    score += 0.5 * math.log(conf_clamped)
-                else:
-                    score += 0.5 * math.log(1.0 - conf_clamped)
-                post_score = score
-
-            else:
-                # --- Mid-meta (middle blocks) ---
-                score = 0.0
-                if _error_correction_re.search(block_text):
-                    score += 0.5
-                if conf > 0.95:
-                    score -= 0.2
-                mid_scores.append(score)
-
-        # Handle edge case: single block => treat it as post
-        if n_blocks == 1:
-            conf = conf_blocks[0]["confidence"]
-            target = 1.0 if is_correct else 0.0
-            score = -(conf - target) ** 2
-            conf_clamped = max(0.01, min(0.99, conf))
-            if is_correct:
-                score += 0.5 * math.log(conf_clamped)
-            else:
-                score += 0.5 * math.log(1.0 - conf_clamped)
-            post_score = score
-
-        # Weighted combination, normalized to sum to 1.0
-        components = []
-        weights = []
-        if pre_scores:
-            components.append(sum(pre_scores) / len(pre_scores))
-            weights.append(0.2)
-        if mid_scores:
-            components.append(sum(mid_scores) / len(mid_scores))
-            weights.append(0.3)
-        if post_score is not None:
-            components.append(post_score)
-            weights.append(0.5)
-
-        if weights:
-            w_sum = sum(weights)
-            r = sum(c * w / w_sum for c, w in zip(components, weights))
-        else:
-            r = 0.0
-
-        # Clamp to avoid extreme negatives destabilizing training
-        rewards.append(max(r, -3.0))
-
+        gt = ground_truth[i] if ground_truth is not None else ""
+        is_correct = _check_correctness(text, gt)
+        prompt = prompts[i] if prompts is not None and i < len(prompts) else None
+        all_prefixes = _prefix_payloads_for_probe(text, prompt=prompt, tokenizer=tokenizer)
+        # W5 fix: only send conf-block prefixes to probe (avoid wasted inference)
+        all_blocks = _parse_meta_blocks(text)
+        conf_indices = [j for j, b in enumerate(all_blocks) if b["confidence"] is not None]
+        aligned_prefixes = [all_prefixes[j] for j in conf_indices if j < len(all_prefixes)]
+        probe_scores = _predict_probe_probabilities(
+            aligned_prefixes,
+            model=model,
+            tokenizer=tokenizer,
+            probe_head=probe_head,
+            probe_path=probe_path,
+            probe_predictor=probe_predictor,
+            max_length=max_length,
+        ) if aligned_prefixes else []
+        rewards.append(_score_stepwise_blocks(text, is_correct=is_correct, probe_scores=probe_scores))
     return rewards
 
 
 def probe_calibration_reward(completions, ground_truth=None,
                               model=None, tokenizer=None, **kwargs):
-    """Calibration reward using hidden state probe.
+    """Calibration reward using a hidden-state probe on meta-block prefixes.
 
-    Uses the TRAINING model's hidden states (no separate model needed).
-    Requires model and tokenizer to be passed via closure.
+    The reward aligns each stated confidence with the probe's local correctness
+    estimate p_hat for the prefix ending at that meta block:
 
-    R = -(stated_confidence - probe_p_hat)²
-    Forces model's stated confidence to match its internal belief.
+        R = mean_k [ -(conf_k - p_hat_k)^2 ]
+
+    This is the verifiable bridge between verbal confidence and internal belief.
     """
-    import torch
+    probe_head = kwargs.get("probe_head")
+    probe_path = kwargs.get("probe_path")
+    probe_predictor = kwargs.get("probe_predictor")
+    max_length = kwargs.get("max_length", 2048)
+    prompts = kwargs.get("prompts")
 
     rewards = []
     for i, c in enumerate(completions):
         text = _get_text(c)
-        blocks = _parse_meta_blocks(text)
+        all_blocks = _parse_meta_blocks(text)
+        prompt = prompts[i] if prompts is not None and i < len(prompts) else None
+        all_prefixes = _prefix_payloads_for_probe(text, prompt=prompt, tokenizer=tokenizer)
 
-        # Get stated confidence
-        confs = [b["confidence"] for b in blocks if b["confidence"] is not None]
-        if not confs:
+        # Align: keep only (block, prefix) pairs where block has confidence
+        conf_aligned = [
+            (b, all_prefixes[idx])
+            for idx, b in enumerate(all_blocks)
+            if b["confidence"] is not None and idx < len(all_prefixes)
+        ]
+
+        if not conf_aligned:
             rewards.append(0.0)
             continue
-        stated_conf = confs[-1]  # last meta block confidence
 
-        # TODO: When model/tokenizer are available via closure,
-        # compute probe p_hat from hidden states:
-        #   inputs = tokenizer(text, return_tensors="pt").to(model.device)
-        #   with torch.no_grad():
-        #       outputs = model(**inputs, output_hidden_states=True)
-        #       hidden = outputs.hidden_states[-1][:, -1, :].float()
-        #       p_hat = probe_head(hidden).sigmoid().item()
-        #   r = -(stated_conf - p_hat) ** 2
-
-        # For now: use group accuracy as proxy for p_hat
-        gt = ground_truth[i] if ground_truth is not None else ""
-        is_correct = _check_correctness(text, gt)
-        p_hat = 1.0 if is_correct else 0.0
-
-        # Brier score against binary outcome (like Rewarding Doubt)
-        r = -(stated_conf - p_hat) ** 2
-        rewards.append(r)
+        aligned_blocks, aligned_prefixes = zip(*conf_aligned)
+        probe_scores = _predict_probe_probabilities(
+            list(aligned_prefixes),
+            model=model,
+            tokenizer=tokenizer,
+            probe_head=probe_head,
+            probe_path=probe_path,
+            probe_predictor=probe_predictor,
+            max_length=max_length,
+        )
+        paired = [
+            -(block["confidence"] - p_hat) ** 2
+            for block, p_hat in zip(aligned_blocks, probe_scores)
+            if p_hat is not None
+        ]
+        if not paired:
+            rewards.append(0.0)
+            continue
+        rewards.append(max(sum(paired) / len(paired), -3.0))
 
     return rewards
 
@@ -815,21 +979,24 @@ def verification_reward(completions, ground_truth=None, **kwargs):
     rewards = []
     for i, c in enumerate(completions):
         text = _get_text(c)
+        meta_text = _meta_joined_text(text)
+        solve_tail = _text_after_last_meta(text)
         gt = ground_truth[i] if ground_truth is not None else ""
         is_correct = _check_correctness(text, gt)
         conf = _last_confidence(text)
-        has_verify = _has_verification_signal(text)
+        has_verify_intent = _has_verification_signal(meta_text)
+        has_verify = _has_effective_verification_signal(solve_tail)
 
         if conf is None:
             rewards.append(0.0)
             continue
 
-        if conf >= 0.75 and has_verify:
+        if conf >= 0.75 and has_verify_intent and has_verify:
             rewards.append(0.5 if is_correct else 0.05)
-        elif conf >= 0.75 and not has_verify:
+        elif conf >= 0.75 and has_verify_intent and not has_verify:
             rewards.append(-0.1 if is_correct else -0.6)
         else:
-            rewards.append(0.1 if has_verify and is_correct else 0.0)
+            rewards.append(0.1 if has_verify_intent and has_verify and is_correct else 0.0)
     return rewards
 
 
@@ -862,7 +1029,8 @@ def confidence_revision_reward(completions, ground_truth=None, **kwargs):
     rewards = []
     for c in completions:
         text = _get_text(c)
-        has_conflict = _has_conflict_trigger(text) or _has_uncertainty_signal(text)
+        meta_text = _meta_joined_text(text)
+        has_conflict = _has_conflict_trigger(meta_text) or _has_uncertainty_signal(meta_text)
         has_drop = _has_confidence_drop(text) or _has_low_confidence(text)
 
         if has_conflict and has_drop:
@@ -881,14 +1049,17 @@ def effective_verification_reward(completions, ground_truth=None, **kwargs):
     rewards = []
     for i, c in enumerate(completions):
         text = _get_text(c)
+        meta_text = _meta_joined_text(text)
+        solve_tail = _text_after_last_meta(text)
         gt = ground_truth[i] if ground_truth is not None else ""
         is_correct = _check_correctness(text, gt)
         conf = _last_confidence(text)
-        has_effective_verify = _has_effective_verification_signal(text)
+        has_verify_intent = _has_verification_signal(meta_text) or _has_overconfidence_signal(meta_text)
+        has_effective_verify = _has_effective_verification_signal(solve_tail)
 
-        if has_effective_verify:
+        if has_verify_intent and has_effective_verify:
             rewards.append(0.8 if is_correct else 0.1)
-        elif conf is not None and conf >= 0.8:
+        elif has_verify_intent and conf is not None and conf >= 0.8:
             rewards.append(-0.2 if is_correct else -0.8)
         else:
             rewards.append(0.0)
@@ -900,14 +1071,17 @@ def effective_redirection_reward(completions, ground_truth=None, **kwargs):
     rewards = []
     for i, c in enumerate(completions):
         text = _get_text(c)
+        meta_text = _meta_joined_text(text)
         gt = ground_truth[i] if ground_truth is not None else ""
         is_correct = _check_correctness(text, gt)
 
-        has_conflict = _has_conflict_trigger(text) or _has_uncertainty_signal(text)
-        has_switch = _has_strategy_switch_signal(text) or _has_redirection_signal(text)
+        has_conflict = _has_conflict_trigger(meta_text) or _has_uncertainty_signal(meta_text)
+        has_switch = _has_next_strategy(meta_text)
         has_drop = _has_confidence_drop(text) or _has_low_confidence(text)
+        solve_tail = _text_after_last_meta(text)
+        has_tail_recovery = bool(solve_tail.strip())
 
-        if has_conflict and has_switch and has_drop:
+        if has_conflict and has_switch and has_drop and has_tail_recovery:
             rewards.append(1.0 if is_correct else 0.2)
         elif has_conflict and has_switch:
             rewards.append(0.5 if is_correct else 0.0)
@@ -925,9 +1099,10 @@ def diagnosis_reward(completions, ground_truth=None, **kwargs):
     rewards = []
     for c in completions:
         text = _get_text(c)
-        has_conflict = _has_conflict_trigger(text) or _has_uncertainty_signal(text)
-        has_diag = _has_failure_diagnosis(text)
-        has_blocker = _has_missing_skill_or_blocker(text)
+        meta_text = _meta_joined_text(text)
+        has_conflict = _has_conflict_trigger(meta_text) or _has_uncertainty_signal(meta_text)
+        has_diag = _has_failure_diagnosis(meta_text)
+        has_blocker = _has_missing_skill_or_blocker(meta_text) or _has_decomposition_plan(meta_text)
 
         if has_conflict and has_diag and has_blocker:
             rewards.append(0.7)
@@ -947,12 +1122,13 @@ def decomposition_reward(completions, ground_truth=None, **kwargs):
     rewards = []
     for i, c in enumerate(completions):
         text = _get_text(c)
+        meta_text = _meta_joined_text(text)
         gt = ground_truth[i] if ground_truth is not None else ""
         is_correct = _check_correctness(text, gt)
 
-        has_conflict = _has_conflict_trigger(text) or _has_uncertainty_signal(text)
-        has_plan = _has_decomposition_plan(text)
-        has_strategy = _has_next_strategy(text)
+        has_conflict = _has_conflict_trigger(meta_text) or _has_uncertainty_signal(meta_text)
+        has_plan = _has_decomposition_plan(meta_text)
+        has_strategy = _has_next_strategy(meta_text)
         has_drop = _has_confidence_drop(text) or _has_low_confidence(text)
 
         if has_conflict and has_plan and has_strategy and has_drop:
@@ -971,7 +1147,8 @@ def anomaly_notice_reward(completions, ground_truth=None, **kwargs):
     rewards = []
     for c in completions:
         text = _get_text(c)
-        has_notice = _has_anomaly_notice_signal(text)
+        meta_text = _meta_joined_text(text)
+        has_notice = _has_anomaly_notice_signal(meta_text)
         has_drop = _has_confidence_drop(text)
         if has_notice and has_drop:
             rewards.append(0.45)
@@ -987,10 +1164,11 @@ def repeated_intervention_reward(completions, ground_truth=None, **kwargs):
     rewards = []
     for c in completions:
         text = _get_text(c)
-        meta_count = text.count("<|meta|>")
+        meta_count = len(_parse_meta_blocks(text))
+        meta_text = _meta_joined_text(text)
         has_control = (
-            _has_effective_verification_signal(text)
-            or (_has_conflict_trigger(text) and _has_strategy_switch_signal(text))
+            (_has_verification_signal(meta_text) and _has_effective_verification_signal(_text_after_last_meta(text)))
+            or ((_has_conflict_trigger(meta_text) or _has_uncertainty_signal(meta_text)) and _has_next_strategy(meta_text))
         )
         if meta_count >= 2 and has_control:
             rewards.append(0.35)
@@ -1006,14 +1184,336 @@ def overconfidence_verify_reward(completions, ground_truth=None, **kwargs):
     rewards = []
     for i, c in enumerate(completions):
         text = _get_text(c)
+        meta_text = _meta_joined_text(text)
         gt = ground_truth[i] if ground_truth is not None else ""
         is_correct = _check_correctness(text, gt)
         conf = _last_confidence(text)
-        has_verify = _has_effective_verification_signal(text)
+        has_verify = _has_effective_verification_signal(_text_after_last_meta(text))
+        has_overconfidence = _has_overconfidence_signal(meta_text) or _has_verification_signal(meta_text)
         if conf is None or conf < 0.8:
             rewards.append(0.0)
-        elif has_verify:
+        elif has_overconfidence and has_verify:
             rewards.append(0.45 if is_correct else 0.05)
         else:
             rewards.append(-0.35 if not is_correct else -0.1)
+    return rewards
+
+
+# ─── V2 Reward Functions (2026-04-04) ────────────────────────────────────────
+# Fix 1: same-route repetition penalty
+# Fix 2: route-switch evidence reward
+# Fix 3: confidence omission floor
+
+
+def _text_before_last_meta(text):
+    """Return text up to (not including) the last <|meta|> block."""
+    tag = "<|meta|>"
+    idx = text.rfind(tag)
+    if idx == -1:
+        return text
+    return text[:idx]
+
+
+_REPETITION_RE = re.compile(
+    r'\b(repeat(?:ing)?|same (calculation|approach|route|steps|method|way|chain)|'
+    r'again compute|re-?compute the same|re-?check the same|'
+    r'verify again the same|confirm by repeating)\b',
+    re.IGNORECASE,
+)
+
+_INDEPENDENT_METHOD_RE = re.compile(
+    r'\b(different method|alternative approach|working backwards|'
+    r'from the opposite end|direct check|boundary case|edge case|'
+    r'special case|numerical check|dimensional analysis|'
+    r'let me approach this differently|solve it another way|'
+    r'independent(?:ly)? (?:verify|check|confirm|compute)|'
+    r'cross-?check|plug .{0,20} into the original)\b',
+    re.IGNORECASE,
+)
+
+
+def same_route_repetition_penalty(completions, ground_truth=None, **kwargs):
+    """Penalize verification that repeats the same calculation instead of
+    using an independent checking method.
+
+    Heuristic: if the solve tail after the last meta block contains explicit
+    repetition language OR lacks independent-method language while the meta
+    block announced a verify intent, apply a penalty.
+
+    Rewards:
+      -0.5  verify intent + repetition detected in tail
+      -0.3  verify intent + short tail (<20 words, likely no real check)
+       0.0  no verify intent, or verify intent + independent method signal
+    """
+    rewards = []
+    for c in completions:
+        text = _get_text(c)
+        meta_text = _meta_joined_text(text)
+        solve_tail = _text_after_last_meta(text)
+
+        has_verify_intent = (
+            _has_verification_signal(meta_text)
+            or _has_overconfidence_signal(meta_text)
+        )
+        if not has_verify_intent:
+            rewards.append(0.0)
+            continue
+
+        is_repetition = bool(_REPETITION_RE.search(solve_tail))
+        has_independent = bool(_INDEPENDENT_METHOD_RE.search(solve_tail))
+        tail_words = len(solve_tail.split())
+
+        if is_repetition and not has_independent:
+            rewards.append(-0.5)
+        elif tail_words < 20 and not has_independent:
+            rewards.append(-0.3)
+        else:
+            rewards.append(0.0)
+    return rewards
+
+
+def route_switch_evidence_reward(completions, ground_truth=None, **kwargs):
+    """Reward evidence that a redirect actually changed the solving method.
+
+    Checks whether the solve tail after a redirect announcement uses
+    structurally different keywords from the prefix before the meta block.
+
+    Rewards:
+      +0.9 / +0.25  methods differ + coherent tail (correct / wrong)
+      +0.5 / +0.1   partial evidence of switch
+      -0.3           switch announced but no structural difference in tail
+       0.0           no redirect intent
+    """
+    rewards = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        meta_text = _meta_joined_text(text)
+        solve_tail = _text_after_last_meta(text)
+        gt = ground_truth[i] if ground_truth is not None else ""
+        is_correct = _check_correctness(text, gt)
+
+        has_conflict = (
+            _has_conflict_trigger(meta_text) or _has_uncertainty_signal(meta_text)
+        )
+        has_switch = _has_next_strategy(meta_text)
+        has_drop = _has_confidence_drop(text) or _has_low_confidence(text)
+
+        if not (has_conflict and has_switch and has_drop):
+            rewards.append(0.0)
+            continue
+
+        prefix = _text_before_last_meta(text)
+        methods_differ = _methods_structurally_differ(prefix, solve_tail)
+        tail_coherent = (
+            len(solve_tail.split()) >= 15
+            and bool(re.search(r'\\boxed\{|####|\bans', solve_tail, re.IGNORECASE))
+        )
+
+        if methods_differ and tail_coherent:
+            rewards.append(0.9 if is_correct else 0.25)
+        elif methods_differ or tail_coherent:
+            rewards.append(0.5 if is_correct else 0.1)
+        else:
+            rewards.append(-0.3)
+    return rewards
+
+
+def _methods_structurally_differ(prefix_text, tail_text):
+    """Heuristic: do prefix and tail use substantively different approaches?
+
+    Checks for method-pair switches (e.g., algebra→invariant) and
+    explicit switch declarations in the tail.
+    """
+    p = prefix_text.lower()
+    t = tail_text.lower()
+
+    method_pairs = [
+        ("algebra", "invariant"), ("direct", "case split"),
+        ("expand", "contract"), ("forward", "backward"),
+        ("coordinate", "vector"), ("parity", "modular"),
+        ("inclusion-exclusion", "recurrence"), ("brute", "structural"),
+        ("substitut", "parity"), ("counting", "generating function"),
+    ]
+    for old_m, new_m in method_pairs:
+        if (old_m in p and new_m in t) or (new_m in p and old_m in t):
+            return True
+
+    if re.search(
+        r'\b(different method|alternative|instead of the previous|'
+        r'another approach|let me try a different)\b',
+        t, re.IGNORECASE,
+    ):
+        return True
+
+    return False
+
+
+def confidence_omission_floor(completions, ground_truth=None, **kwargs):
+    """Penalize completions that emit no meta blocks at all.
+
+    Without this floor, a model can escape calibration pressure by simply
+    not emitting any <|meta|> blocks, receiving 0.0 from calibration_reward
+    instead of being penalized for poor calibration.
+
+    Rewards:
+      -0.5  no meta blocks emitted (penalty for omission)
+       0.0  at least one meta block present (passes the floor)
+    """
+    rewards = []
+    for c in completions:
+        text = _get_text(c)
+        blocks = _parse_meta_blocks(text)
+        if not blocks:
+            rewards.append(-0.5)
+        else:
+            rewards.append(0.0)
+    return rewards
+
+
+# ─── V6.1 Rewards (2026-04-05): structural switch + Brier calibration + verify outcome ───
+
+
+def structural_switch_reward(completions, ground_truth=None, **kwargs):
+    """R2: Reward structural method switching that leads to correct answers.
+
+    Binary: meta 전후 method family가 구조적으로 다르고 정답이면 +1.0.
+    """
+    rewards = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        gt = ground_truth[i] if ground_truth is not None else ""
+
+        meta_start = text.find("<|meta|>")
+        meta_end = text.rfind("<|/meta|>")
+
+        if meta_start < 0 or meta_end < 0:
+            rewards.append(0.0)
+            continue
+
+        pre = text[:meta_start]
+        post = text[meta_end + len("<|/meta|>"):]
+
+        if len(pre) < 30 or len(post) < 30:
+            rewards.append(0.0)
+            continue
+
+        is_correct = _check_correctness(text, gt)
+        methods_differ = _methods_structurally_differ(pre, post)
+
+        if methods_differ and is_correct:
+            rewards.append(1.0)
+        else:
+            rewards.append(0.0)
+
+    return rewards
+
+
+def brier_calibration_reward(completions, ground_truth=None, **kwargs):
+    """R3 (legacy): Simple Brier score. Kept for backward compat."""
+    rewards = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        gt = ground_truth[i] if ground_truth is not None else ""
+        conf = _last_confidence(text)
+        if conf is None:
+            rewards.append(0.0)
+            continue
+        is_correct = 1.0 if _check_correctness(text, gt) else 0.0
+        rewards.append(1.0 - (conf - is_correct) ** 2)
+    return rewards
+
+
+def confidence_trajectory_reward(completions, ground_truth=None, **kwargs):
+    """R3v2: Continuous confidence trajectory reward.
+
+    Scores 3 axes:
+      1. Calibration: last conf vs actual correctness (Brier)
+      2. Gradual change: penalizes abrupt jumps (subgoal trap avoidance)
+      3. Direction: correct→rise, wrong→drop is healthy metacognition
+
+    Single confidence: discounted Brier (0.2x) to encourage multi-meta.
+    Empty confidence: small penalty (-0.05).
+    """
+    rewards = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        gt = ground_truth[i] if ground_truth is not None else ""
+        is_correct = _check_correctness(text, gt)
+        correct_float = 1.0 if is_correct else 0.0
+
+        # Extract all confidences from meta blocks
+        blocks = _parse_meta_blocks(text)
+        confs = [b["confidence"] for b in blocks if b["confidence"] is not None]
+
+        # Empty: small penalty
+        if not confs:
+            rewards.append(-0.05)
+            continue
+
+        # Single: discounted Brier (cap at 0.2 to discourage single-conf)
+        if len(confs) == 1:
+            brier = 1.0 - (confs[0] - correct_float) ** 2
+            rewards.append(min(brier * 0.2, 0.2))
+            continue
+
+        # Multiple confidences: 3-axis continuous scoring
+        first, last = confs[0], confs[-1]
+
+        # Axis 1: Calibration (Brier on last confidence)
+        cal_score = 1.0 - (last - correct_float) ** 2
+
+        # Axis 2: Gradual change (penalize abrupt jumps)
+        steps = [confs[j + 1] - confs[j] for j in range(len(confs) - 1)]
+        max_jump = max(abs(s) for s in steps)
+        gradual_score = max(0.0, 1.0 - max_jump * 2)
+
+        # Axis 3: Direction (correct→rise, wrong→drop, floor at 0)
+        direction = last - first
+        if is_correct:
+            dir_score = max(0.0, min(direction * 2, 1.0))
+        else:
+            dir_score = max(0.0, min(-direction * 2, 1.0))
+
+        score = cal_score * 0.4 + gradual_score * 0.3 + dir_score * 0.3
+        rewards.append(score)
+
+    return rewards
+
+
+def verify_outcome_reward(completions, ground_truth=None, **kwargs):
+    """R4: Reward independent verification that leads to correct answers.
+
+    검산 패턴이 있고 정답이면 +0.2, 오답이면 -0.1.
+    """
+    _verify_re = re.compile(
+        r"\b(substitut\w*\s+back|plug\w*\s+(back|in)|"
+        r"reverse|inverse|check\w*\s+by|boundary|special\s+case|"
+        r"sanity\s+check|verify\w*\s+by)\b",
+        re.IGNORECASE,
+    )
+    rewards = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        gt = ground_truth[i] if ground_truth is not None else ""
+
+        meta_end = text.rfind("<|/meta|>")
+        verify_region = text[meta_end:] if meta_end >= 0 else text[-500:]
+
+        if not _verify_re.search(verify_region):
+            rewards.append(0.0)
+            continue
+
+        is_correct = _check_correctness(text, gt)
+        rewards.append(0.2 if is_correct else -0.1)
+
+    return rewards
+
+
+def efficiency_bonus_reward(completions, **kwargs):
+    """R_len: Reward efficient solutions (shorter = bonus)."""
+    rewards = []
+    for c in completions:
+        text = _get_text(c)
+        ratio = min(len(text) / 8000, 1.0)
+        rewards.append(max(0.0, (1.0 - ratio) * 0.1))
     return rewards

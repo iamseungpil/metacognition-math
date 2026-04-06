@@ -1,0 +1,39 @@
+**Findings**
+1. The repo is currently executing against a branch that your own latest evidence already rejected. `E11` produced `64.1%` accuracy but only `0.1%` structural switch, and the log explicitly marks this as `SCENARIO_C_CONFIRMED` with “base_sft restart needed for switching” in [results.tsv](/home/v-seungplee/metacognition/results/autoresearch_e6e7_loop/results.tsv):94. But the active Slot B launcher still starts `E13` from `checkpoints/control_v5_E9c/final` in [launch_slotB_rl_e9c.sh](/home/v-seungplee/metacognition/scripts/launch_slotB_rl_e9c.sh):12-25. That makes the current RL run misaligned with both the E11 result and the scenario-C branch in [plan_12gpu_experiments_2026_04_05.md](/home/v-seungplee/metacognition/results/plan_12gpu_experiments_2026_04_05.md):29-36.
+
+2. `plan_metacot_v6.3_final` is no longer a valid “active plan” document as written. It says `E12/E13` should proceed only if `E11` reaches `change >= 5% AND acc >= 60%` in [plan_metacot_v6.3_final_2026_04_05.md](/home/v-seungplee/metacognition/results/plan_metacot_v6.3_final_2026_04_05.md):106-114, but the recorded E11 result failed that gate in [results.tsv](/home/v-seungplee/metacognition/results/autoresearch_e6e7_loop/results.tsv):94. Keeping v6.3 as the headline plan while running post-failure work is the main source of ambiguity.
+
+3. The current V6.1 RL implementation is structurally weak for behavior creation from a low-switch base. `E13` only uses `correctness + structural_switch + brier + verify + efficiency` in [grpo_v2.py](/home/v-seungplee/metacognition/src/training/grpo_v2.py):512-518. `structural_switch_reward` only pays when a switched answer is already correct, and `brier_calibration_reward` pays `0.0` when no confidence is present in [rewards.py](/home/v-seungplee/metacognition/src/training/rewards.py):1376-1429. That matches the live Slot B failure signal: `correctness_reward=0.0`, `switch=0`, and “E9c meta too low ... reward not triggering” in [results.tsv](/home/v-seungplee/metacognition/results/autoresearch_e6e7_loop/results.tsv):96-98.
+
+4. Your operational scripts still encode stale evidence bookkeeping. There is a correct E11-based launcher in [launch_slotB_rl.sh](/home/v-seungplee/metacognition/scripts/launch_slotB_rl.sh):10-23, but there is also the stale E9c-based launcher above, and the train-node eval script still evaluates the old v5 set including `control_v5_E9c` and `control_v5_E10` in [run_eval_1030_trainb_node.sh](/home/v-seungplee/metacognition/scripts/run_eval_1030_trainb_node.sh):14-55. That is enough to keep producing “official” numbers for experiments that should now be side evidence only.
+
+Approach 2 is the soundest, but with one tightening: declare **scenario C** as the active plan, not “v6.3 E12/E13 with some caveats.” The strategic reason is simple: E11 already answered the causal question that mattered. E9-based seeding can improve accuracy and multi-meta, but it did not unlock structural switching. That means E9-line work is now useful for characterization, not for mainline proof of controllable switching.
+
+For evidence classification, I would count these as **mainline**:
+- The RQ contract in [experiment_analysis_plan_2026_04_01.md](/home/v-seungplee/metacognition/results/experiment_analysis_plan_2026_04_01.md).
+- `base_sft` as the performance anchor.
+- `E9` as the “best rigid meta baseline.”
+- `E11` as the gate-setting pilot that selected scenario C.
+- Slot A clean-data generation and the next base-start SFT experiment (`E17`-style).
+
+I would count these as **exploratory / side evidence**:
+- `E6/E7` probe line.
+- All v5 v2 repair experiments (`E9v2/E9bv2/E10v2`).
+- The current Slot B `E13` run from `control_v5_E9c/final`.
+- The current Slot C `E9 + 164 seed x 5 epochs` run. It is worth finishing and evaluating, but because it still inherits the E9 action space, it should not be treated as the mainline path for switching unless it unexpectedly breaks the switch threshold.
+
+The minimal plan document should be one file with five sections:
+- `Decision`: active branch, date, and why the branch was chosen.
+- `Mainline`: experiment ID, base checkpoint, data source, hypothesis, go/no-go metric.
+- `Sidecars`: allowed exploratory runs and how they may be cited.
+- `Implementation contract`: exact launcher, config, reward mode, output dir for each active experiment.
+- `Evidence ledger`: which completed runs count toward RQ claims vs diagnostics only.
+
+Before launching anything else, the immediate changes should be:
+- Retire or hard-fail [launch_slotB_rl_e9c.sh](/home/v-seungplee/metacognition/scripts/launch_slotB_rl_e9c.sh). It should not remain runnable as a plausible default.
+- Stop treating [plan_metacot_v6.3_final_2026_04_05.md](/home/v-seungplee/metacognition/results/plan_metacot_v6.3_final_2026_04_05.md) as the active plan; replace it with a single scenario-C active-plan doc.
+- Update eval launchers so the active eval set matches the active branch, not the old v5 checkpoint family; [run_eval_1030_trainb_node.sh](/home/v-seungplee/metacognition/scripts/run_eval_1030_trainb_node.sh) is stale.
+- If you keep one RL sidecar alive, use the E11-based launcher in [launch_slotB_rl.sh](/home/v-seungplee/metacognition/scripts/launch_slotB_rl.sh):10-23, not the E9c-based one.
+- Add a preflight check in launchers that prints and validates `plan_id`, `base_checkpoint`, `mode`, and `output_dir` before training starts. Right now the operational risk is not missing reward code; it is launching the wrong branch cleanly.
+
+I did not modify files. If you want, I can next turn this into a concrete repo patch: one canonical active-plan markdown, one archived/stopped launcher set, and one cleaned experiment manifest so future runs cannot drift again.

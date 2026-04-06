@@ -259,7 +259,10 @@ def main():
     args = parser.parse_args()
 
     results_dir = Path(args.results_dir)
-    files = sorted(results_dir.glob("eval_*.json"))
+    files = [
+        path for path in sorted(results_dir.glob("eval_*.json"))
+        if not path.name.endswith(".metadata.json")
+    ]
     if not files:
         raise FileNotFoundError(f"no eval_*.json in {results_dir}")
 

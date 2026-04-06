@@ -1,20 +1,29 @@
-"""Meta-CoT GRPO v2: Full FT + GDPO + modular rewards.
+"""Meta-CoT GRPO v2: full FT + GDPO + decomposed control rewards.
 
 Key design:
   - Full fine-tuning (NO LoRA)
   - GDPO monkey-patch: per-reward normalization before summing
-  - 4 experiments via --mode: E1, E2, E3, E4
-  - Response samples saved every 50 steps
-  - Token entropy logged to wandb
+  - Reward ablations via --mode: E1-E10, including E9/E9b/E9c decompositions
+  - Calibration and confidence-revision rewards remain active before full control rewards
+  - Probe-aligned local-calibration experiments are isolated in E6/E7
+  - Explicit control behaviors are decomposed into verify-only / redirect-only /
+    diagnosis-only runs before the full controller E10
+  - Response samples and reward logs are saved for later qualitative analysis
 
 Usage:
   accelerate launch --num_processes 4 --multi_gpu \
-    src/training/grpo_v2.py --mode E3 --max_steps 200
+    src/training/grpo_v2.py --mode E10 --max_steps 200 \
+    --model_path checkpoints/qwen3_metacot_control_v5_all_sft --data mixed_train
 """
 import argparse
+from functools import partial
+import importlib.util
+import importlib.machinery
 import json
 import os
 import re
+import sys
+import types
 
 import numpy as np
 import pandas as pd
@@ -24,6 +33,164 @@ import torch
 import torch.distributed.fsdp as _fsdp_mod
 if not hasattr(_fsdp_mod, "FSDPModule"):
     _fsdp_mod.FSDPModule = type("FSDPModule", (), {})
+
+
+def _ensure_vllm_stub():
+    """Provide a minimal vLLM stub for TRL import when vLLM is unavailable.
+
+    Newer TRL versions import `trl.extras.vllm_client` at module import time even
+    when `use_vllm=False`. Our runtime does not install vLLM, so we create the
+    exact modules imported by TRL to keep the non-vLLM path usable.
+    """
+    if "vllm" in sys.modules:
+        return
+
+    vllm_mod = types.ModuleType("vllm")
+    distributed_mod = types.ModuleType("vllm.distributed")
+    device_comms_mod = types.ModuleType("vllm.distributed.device_communicators")
+    pynccl_mod = types.ModuleType("vllm.distributed.device_communicators.pynccl")
+    utils_mod = types.ModuleType("vllm.distributed.utils")
+    sampling_params_mod = types.ModuleType("vllm.sampling_params")
+    vllm_ascend_mod = types.ModuleType("vllm_ascend")
+    vllm_ascend_distributed_mod = types.ModuleType("vllm_ascend.distributed")
+    vllm_ascend_device_mod = types.ModuleType("vllm_ascend.distributed.device_communicators")
+    vllm_ascend_pyhccl_mod = types.ModuleType("vllm_ascend.distributed.device_communicators.pyhccl")
+
+    def _package_spec(name: str):
+        spec = importlib.util.spec_from_loader(name, loader=None, is_package=True)
+        if spec is not None and spec.submodule_search_locations is None:
+            spec.submodule_search_locations = []
+        return spec
+
+    def _module_spec(name: str):
+        return importlib.machinery.ModuleSpec(name, loader=None)
+
+    vllm_mod.__spec__ = _package_spec("vllm")
+    vllm_mod.__path__ = []
+    vllm_mod.__package__ = "vllm"
+    distributed_mod.__spec__ = _package_spec("vllm.distributed")
+    distributed_mod.__path__ = []
+    distributed_mod.__package__ = "vllm.distributed"
+    device_comms_mod.__spec__ = _package_spec("vllm.distributed.device_communicators")
+    device_comms_mod.__path__ = []
+    device_comms_mod.__package__ = "vllm.distributed.device_communicators"
+    pynccl_mod.__spec__ = _module_spec("vllm.distributed.device_communicators.pynccl")
+    pynccl_mod.__package__ = "vllm.distributed.device_communicators"
+    utils_mod.__spec__ = _module_spec("vllm.distributed.utils")
+    utils_mod.__package__ = "vllm.distributed"
+    sampling_params_mod.__spec__ = _module_spec("vllm.sampling_params")
+    sampling_params_mod.__package__ = "vllm"
+    vllm_ascend_mod.__spec__ = _package_spec("vllm_ascend")
+    vllm_ascend_mod.__path__ = []
+    vllm_ascend_mod.__package__ = "vllm_ascend"
+    vllm_ascend_distributed_mod.__spec__ = _package_spec("vllm_ascend.distributed")
+    vllm_ascend_distributed_mod.__path__ = []
+    vllm_ascend_distributed_mod.__package__ = "vllm_ascend.distributed"
+    vllm_ascend_device_mod.__spec__ = _package_spec("vllm_ascend.distributed.device_communicators")
+    vllm_ascend_device_mod.__path__ = []
+    vllm_ascend_device_mod.__package__ = "vllm_ascend.distributed.device_communicators"
+    vllm_ascend_pyhccl_mod.__spec__ = _module_spec("vllm_ascend.distributed.device_communicators.pyhccl")
+    vllm_ascend_pyhccl_mod.__package__ = "vllm_ascend.distributed.device_communicators"
+
+    class _DummyPyNcclCommunicator:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("vLLM communicator is unavailable in this runtime")
+
+    class _DummyStatelessProcessGroup:
+        @classmethod
+        def create(cls, *args, **kwargs):
+            raise RuntimeError("vLLM process group is unavailable in this runtime")
+
+    class _DummyLLM:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("vLLM is unavailable in this runtime")
+
+    class _DummySamplingParams:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("vLLM is unavailable in this runtime")
+
+    class _DummyGuidedDecodingParams:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("vLLM guided decoding is unavailable in this runtime")
+
+    pynccl_mod.PyNcclCommunicator = _DummyPyNcclCommunicator
+    utils_mod.StatelessProcessGroup = _DummyStatelessProcessGroup
+    vllm_ascend_pyhccl_mod.PyHcclCommunicator = _DummyPyNcclCommunicator
+    vllm_mod.LLM = _DummyLLM
+    vllm_mod.SamplingParams = _DummySamplingParams
+    vllm_mod.sampling_params = sampling_params_mod
+    sampling_params_mod.GuidedDecodingParams = _DummyGuidedDecodingParams
+    sampling_params_mod.SamplingParams = _DummySamplingParams
+
+    sys.modules["vllm"] = vllm_mod
+    sys.modules["vllm.distributed"] = distributed_mod
+    sys.modules["vllm.distributed.device_communicators"] = device_comms_mod
+    sys.modules["vllm.distributed.device_communicators.pynccl"] = pynccl_mod
+    sys.modules["vllm.distributed.utils"] = utils_mod
+    sys.modules["vllm.sampling_params"] = sampling_params_mod
+    sys.modules["vllm_ascend"] = vllm_ascend_mod
+    sys.modules["vllm_ascend.distributed"] = vllm_ascend_distributed_mod
+    sys.modules["vllm_ascend.distributed.device_communicators"] = vllm_ascend_device_mod
+    sys.modules["vllm_ascend.distributed.device_communicators.pyhccl"] = vllm_ascend_pyhccl_mod
+
+
+_ensure_vllm_stub()
+
+
+def _ensure_mergekit_stub():
+    """Provide a minimal mergekit stub for TRL import when mergekit is unavailable."""
+    if "mergekit" in sys.modules:
+        return
+
+    mergekit_mod = types.ModuleType("mergekit")
+    config_mod = types.ModuleType("mergekit.config")
+    merge_mod = types.ModuleType("mergekit.merge")
+
+    mergekit_mod.__spec__ = importlib.machinery.ModuleSpec("mergekit", loader=None)
+    config_mod.__spec__ = importlib.machinery.ModuleSpec("mergekit.config", loader=None)
+    merge_mod.__spec__ = importlib.machinery.ModuleSpec("mergekit.merge", loader=None)
+
+    class _DummyMergeConfiguration:
+        @classmethod
+        def model_validate(cls, *args, **kwargs):
+            raise RuntimeError("mergekit is unavailable in this runtime")
+
+    class _DummyMergeOptions:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("mergekit is unavailable in this runtime")
+
+    def _dummy_run_merge(*args, **kwargs):
+        raise RuntimeError("mergekit is unavailable in this runtime")
+
+    config_mod.MergeConfiguration = _DummyMergeConfiguration
+    merge_mod.MergeOptions = _DummyMergeOptions
+    merge_mod.run_merge = _dummy_run_merge
+
+    sys.modules["mergekit"] = mergekit_mod
+    sys.modules["mergekit.config"] = config_mod
+    sys.modules["mergekit.merge"] = merge_mod
+
+
+_ensure_mergekit_stub()
+
+
+def _ensure_llm_blender_stub():
+    """Provide a minimal llm_blender stub for TRL import when unavailable."""
+    if "llm_blender" in sys.modules:
+        return
+
+    blender_mod = types.ModuleType("llm_blender")
+    blender_mod.__spec__ = importlib.machinery.ModuleSpec("llm_blender", loader=None)
+
+    class _DummyBlender:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("llm_blender is unavailable in this runtime")
+
+    blender_mod.Blender = _DummyBlender
+    sys.modules["llm_blender"] = blender_mod
+
+
+_ensure_llm_blender_stub()
 
 from datasets import Dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -38,7 +205,13 @@ from src.training.rewards import (
     confidence_revision_reward, effective_verification_reward,
     effective_redirection_reward, diagnosis_reward, decomposition_reward,
     anomaly_notice_reward, repeated_intervention_reward, overconfidence_verify_reward,
+    # V2 rewards (2026-04-04): address verify-repetition, redirect-execution, coverage-escape
+    same_route_repetition_penalty, route_switch_evidence_reward, confidence_omission_floor,
+    # V6.1 rewards (2026-04-05): structural switch + Brier calibration + verify outcome
+    structural_switch_reward, brier_calibration_reward, verify_outcome_reward, efficiency_bonus_reward,
+    confidence_trajectory_reward,
 )
+from src.training.tokenizer_utils import ensure_meta_tokens_not_special
 
 
 # ─── GDPO Monkey-Patch ───
@@ -85,12 +258,9 @@ def _apply_gdpo_patch():
             pre_bn = (combined * weights).nansum(dim=1)
             advantages = (pre_bn - pre_bn.mean()) / (pre_bn.std() + 1e-4)
 
-            # Replace advantages in result
-            process_slice = slice(
-                self.accelerator.process_index * (len(advantages) // self.accelerator.num_processes),
-                (self.accelerator.process_index + 1) * (len(advantages) // self.accelerator.num_processes),
-            )
-            result["advantages"] = advantages[process_slice]
+            # _last_rewards_per_func is LOCAL (per-process) from _calculate_rewards,
+            # so advantages computed from it is already local-sized. No slicing needed.
+            result["advantages"] = advantages
 
         return result
 
@@ -244,13 +414,18 @@ class SampleSaver:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "E10"], default="E1")
+    parser.add_argument("--mode", choices=["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "E9b", "E9c", "E10", "E9v2", "E9bv2", "E10v2", "E12", "E13"], default="E1")
     parser.add_argument("--model_path", default="checkpoints/qwen3_meta_sft")
     parser.add_argument("--data", choices=["gsm8k", "filtered", "mixed", "mixed_train"], default="mixed")
     parser.add_argument("--data_path", default="verl_train_filtered.parquet")
     parser.add_argument("--output_dir", default=None)
     parser.add_argument("--max_steps", type=int, default=200)
     parser.add_argument("--num_generations", type=int, default=4)
+    parser.add_argument("--max_completion_length", type=int, default=2048)
+    parser.add_argument("--max_prompt_length", type=int, default=512)
+    parser.add_argument("--per_device_train_batch_size", type=int, default=1)
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
+    parser.add_argument("--probe_path", default=os.environ.get("METACOG_PROBE_PATH", "checkpoints/simple_probe_qwen3/best_probe.pt"))
     args = parser.parse_args()
 
     if args.output_dir is None:
@@ -258,51 +433,91 @@ def main():
 
     os.environ["WANDB_PROJECT"] = "metacot-math"
 
-    # ─── Select rewards by mode ───
+    # Reward functions that need model/tokenizer context are wired after model load.
     reward_configs = {
         "E1": ([correctness_reward, format_reward], [1.0, 0.5]),
         "E2": ([correctness_reward, format_reward, meta_quality_reward], [1.0, 0.5, 1.0]),
         "E3": ([correctness_reward, format_reward, meta_quality_reward, calibration_reward], [1.0, 0.5, 1.0, 0.5]),
         "E4": ([correctness_reward, format_reward, meta_quality_reward, calibration_reward, uncertainty_meta_reward],
                [1.0, 0.5, 1.0, 0.5, 0.5]),
-        "E5": ([correctness_reward, format_reward, meta_quality_reward, stepwise_trajectory_reward],
-               [1.0, 0.5, 0.5, 1.0]),  # stepwise gets highest weight
-        "E6": ([correctness_reward, format_reward, meta_quality_reward, probe_calibration_reward],
-               [1.0, 0.5, 0.5, 1.5]),  # probe gets highest weight
-        "E7": ([correctness_reward, format_reward, meta_quality_reward, stepwise_probe_reward],
-               [1.0, 0.5, 0.5, 1.5]),  # stepwise probe gets highest weight
-        # E8: correctness-dominant + length penalty (fixes E3 reward hacking)
-        # No meta_quality (saturates at 0.4, no gradient after step 85)
-        # correctness 3.0 = dominant signal, length_penalty prevents verbosity
+        # E5: E3 + confidence revision only.
+        # Tests whether the model can lower confidence appropriately around
+        # anomaly/conflict signals before explicit behavior rewards are added.
+        "E5": ([correctness_reward, format_reward, meta_quality_reward,
+                calibration_reward, confidence_revision_reward],
+               [1.0, 0.3, 0.4, 0.5, 0.9]),
+        # E6: E3 + probe calibration only.
+        "E6": ([correctness_reward, format_reward, meta_quality_reward,
+                calibration_reward, probe_calibration_reward],
+               [1.0, 0.3, 0.4, 0.5, 1.1]),
+        # E7: E6 + blockwise stepwise scoring.
+        "E7": ([correctness_reward, format_reward, meta_quality_reward,
+                calibration_reward, probe_calibration_reward, stepwise_probe_reward],
+               [1.0, 0.3, 0.4, 0.5, 0.9, 1.1]),
+        # E8: stronger calibration / overconfidence shaping.
+        # E5 + stronger anti-overconfidence shaping, still no explicit behavior rewards.
         "E8": ([correctness_reward, format_reward, correct_meta_reward,
-                calibration_reward, verification_reward,
-                self_correction_reward, overconfidence_penalty_reward,
+                calibration_reward, confidence_revision_reward, overconfidence_penalty_reward,
                 length_penalty_reward],
-               [3.0, 0.2, 0.4, 0.4, 0.7, 0.7, 1.0, 1.0]),
-        # E9: behavior-first reward mix
-        # Focus on real verification, real redirection, and justified confidence revision.
+               [3.0, 0.2, 0.4, 0.5, 0.8, 1.0, 1.0]),
+        # E9: verify-only behavior reward on top of E8.
         "E9": ([correctness_reward, format_reward, correct_meta_reward,
-                effective_verification_reward, effective_redirection_reward,
-                confidence_revision_reward, overconfidence_penalty_reward,
-                length_penalty_reward],
-               [3.0, 0.2, 0.3, 0.8, 1.0, 0.6, 1.0, 1.0]),
-        # E10: E8 + behavior/control rewards.
-        # Keeps the calibration axis and adds behavior rewards so ablations stay interpretable.
+                calibration_reward, confidence_revision_reward, overconfidence_penalty_reward,
+                length_penalty_reward, effective_verification_reward, overconfidence_verify_reward],
+               [3.0, 0.2, 0.3, 0.4, 0.6, 1.0, 1.0, 0.9, 0.9]),
+        # E9b: redirect-only behavior reward on top of E8.
+        "E9b": ([correctness_reward, format_reward, correct_meta_reward,
+                calibration_reward, confidence_revision_reward, overconfidence_penalty_reward,
+                length_penalty_reward, effective_redirection_reward],
+               [3.0, 0.2, 0.3, 0.4, 0.6, 1.0, 1.0, 1.0]),
+        # E9c: diagnosis/decomposition-only behavior reward on top of E8.
+        "E9c": ([correctness_reward, format_reward, correct_meta_reward,
+                calibration_reward, confidence_revision_reward, overconfidence_penalty_reward,
+                length_penalty_reward, diagnosis_reward, decomposition_reward],
+               [3.0, 0.2, 0.3, 0.4, 0.6, 1.0, 1.0, 0.8, 0.8]),
+        # E10: full combined controller.
+        # Adds verify, redirect, diagnosis, anomaly, and repeated intervention on top of E8.
         "E10": ([correctness_reward, format_reward, correct_meta_reward,
-                 calibration_reward,
+                 calibration_reward, confidence_revision_reward, overconfidence_penalty_reward, length_penalty_reward,
                  effective_verification_reward, effective_redirection_reward,
-                 confidence_revision_reward, diagnosis_reward, decomposition_reward,
-                 anomaly_notice_reward, repeated_intervention_reward, overconfidence_verify_reward,
-                 overconfidence_penalty_reward, length_penalty_reward],
-                [3.0, 0.2, 0.3, 0.4, 0.8, 1.0, 0.6, 0.6, 0.6, 0.4, 0.5, 1.0, 1.0]),
+                 diagnosis_reward, decomposition_reward,
+                 anomaly_notice_reward, repeated_intervention_reward, overconfidence_verify_reward],
+                [3.0, 0.2, 0.3, 0.4, 0.6, 1.0, 1.0, 0.8, 1.0, 0.6, 0.6, 0.4, 0.5, 1.0]),
+        # ── V2 experiments (2026-04-04): address verify-repetition, redirect-execution, coverage-escape ──
+        # E9v2: E9 + same-route repetition penalty + coverage floor.
+        # Intent: verify must use independent method, not repeat same calculation.
+        "E9v2": ([correctness_reward, format_reward, correct_meta_reward,
+                  calibration_reward, confidence_revision_reward, overconfidence_penalty_reward,
+                  length_penalty_reward, effective_verification_reward, overconfidence_verify_reward,
+                  same_route_repetition_penalty, confidence_omission_floor],
+                 [3.0, 0.2, 0.3, 0.4, 0.6, 1.0, 1.0, 0.9, 0.9, 0.5, 0.5]),
+        # E9bv2: E9b + route-switch evidence + coverage floor.
+        # Intent: redirect must show structural method difference in solve tail.
+        "E9bv2": ([correctness_reward, format_reward, correct_meta_reward,
+                   calibration_reward, confidence_revision_reward, overconfidence_penalty_reward,
+                   length_penalty_reward, effective_redirection_reward,
+                   route_switch_evidence_reward, confidence_omission_floor],
+                  [3.0, 0.2, 0.3, 0.4, 0.6, 1.0, 1.0, 1.0, 0.6, 0.5]),
+        # E10v2: full controller + all V2 fixes.
+        # Intent: combined verify quality + redirect execution + mandatory meta emission.
+        "E10v2": ([correctness_reward, format_reward, correct_meta_reward,
+                   calibration_reward, confidence_revision_reward, overconfidence_penalty_reward,
+                   length_penalty_reward,
+                   effective_verification_reward, effective_redirection_reward,
+                   diagnosis_reward, decomposition_reward,
+                   anomaly_notice_reward, repeated_intervention_reward, overconfidence_verify_reward,
+                   same_route_repetition_penalty, route_switch_evidence_reward, confidence_omission_floor],
+                  [3.0, 0.2, 0.3, 0.4, 0.6, 1.0, 1.0,
+                   0.8, 1.0, 0.6, 0.6, 0.4, 0.5, 1.0,
+                   0.5, 0.6, 0.5]),
+        # V6.1 E12: correctness + structural switch (2 rewards only)
+        "E12": ([correctness_reward, structural_switch_reward],
+                [1.0, 0.3]),
+        # V6.2 E13: correctness + switch + confidence trajectory + verify
+        "E13": ([correctness_reward, structural_switch_reward,
+                 confidence_trajectory_reward, verify_outcome_reward],
+                [1.0, 0.3, 0.3, 0.2]),
     }
-    reward_funcs, reward_weights = reward_configs[args.mode]
-    use_gdpo = args.mode in ("E3", "E4", "E5", "E6", "E7", "E8", "E9", "E10")  # GDPO when 3+ rewards
-
-    if use_gdpo:
-        _apply_gdpo_patch()
-        print("GDPO patch applied (per-reward normalization)")
-
     # ─── Model (Full FT, NO LoRA) ───
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
     if tokenizer.pad_token is None:
@@ -312,20 +527,47 @@ def main():
     # TRL's skip_special_tokens=True strips special tokens before reward functions.
     # If SFT checkpoint saved them as special tokens, we must demote them to regular.
     from src.metacot.prompt import META_START, META_END
-    for token in [META_START, META_END]:
-        if token in tokenizer.get_vocab():
-            # Remove from special tokens list if present
-            if token in (tokenizer.additional_special_tokens or []):
-                new_special = [t for t in tokenizer.additional_special_tokens if t != token]
-                tokenizer.additional_special_tokens = new_special
-        else:
-            tokenizer.add_tokens([token])
+    ensure_meta_tokens_not_special(tokenizer, [META_START, META_END])
 
     model = AutoModelForCausalLM.from_pretrained(
         args.model_path, torch_dtype=torch.bfloat16,
         attn_implementation="sdpa", trust_remote_code=True, use_cache=False,
     )
     model.resize_token_embeddings(len(tokenizer))
+
+    reward_funcs, reward_weights = reward_configs[args.mode]
+    if args.mode in ("E6", "E7"):
+        from src.training.rewards import _load_probe_head
+        _probe_hidden_dim = model.config.hidden_size
+        _probe_device = next(model.parameters()).device
+        _probe_head = _load_probe_head(_probe_hidden_dim, _probe_device, args.probe_path)
+        if _probe_head is None:
+            raise RuntimeError(
+                f"E6/E7 requires a valid probe checkpoint at {args.probe_path} "
+                f"(hidden_dim={_probe_hidden_dim})"
+            )
+        print(f"Probe loaded: hidden_dim={_probe_hidden_dim}, device={_probe_device}")
+
+        contextual_reward_funcs = []
+        for fn in reward_funcs:
+            if fn in (probe_calibration_reward, stepwise_probe_reward):
+                wrapped = partial(
+                    fn,
+                    model=model,
+                    tokenizer=tokenizer,
+                    probe_head=_probe_head,
+                )
+                wrapped.__name__ = fn.__name__
+                contextual_reward_funcs.append(wrapped)
+            else:
+                contextual_reward_funcs.append(fn)
+        reward_funcs = contextual_reward_funcs
+
+    use_gdpo = args.mode in ("E3", "E4", "E5", "E6", "E7", "E8", "E9", "E9b", "E9c", "E10", "E9v2", "E9bv2", "E10v2", "E12", "E13")  # GDPO when 2+ rewards
+
+    if use_gdpo:
+        _apply_gdpo_patch()
+        print("GDPO patch applied (per-reward normalization)")
 
     # ─── Data ───
     if args.data == "gsm8k":
@@ -344,20 +586,22 @@ def main():
     print(f"GDPO: {use_gdpo}")
     print(f"Full FT (no LoRA)")
     print(f"Dataset: {len(dataset)} problems")
+    if args.mode in ("E6", "E7"):
+        print(f"Probe path: {args.probe_path} (pre-loaded)")
 
     # Config based on Open-R1 patterns, adapted for 4xA100 80GB
     training_args = GRPOConfig(
         output_dir=args.output_dir,
         max_steps=args.max_steps,
         num_generations=args.num_generations,
-        max_completion_length=2048,
-        max_prompt_length=512,
+        max_completion_length=args.max_completion_length,
+        max_prompt_length=args.max_prompt_length,
         temperature=0.9,
         # HF generate (no vLLM, no veRL — just TRL)
         use_vllm=False,
         # Batch: 4 GPU × 1 batch × 4 accum = 16, 16/4 gen = 4 unique prompts
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=4,
+        per_device_train_batch_size=args.per_device_train_batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=5e-6,
         lr_scheduler_type="cosine",
         warmup_ratio=0.1,

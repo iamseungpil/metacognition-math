@@ -1,4 +1,4 @@
-# Node Allocation Policy (2026-04-02)
+# Node Allocation Policy (2026-04-06)
 
 This file defines a strict separation between the main `metacognition` experiment track and the
 separate `metacognition-behavior-uncertainty` analysis track.
@@ -11,20 +11,27 @@ node unless the plan is explicitly revised.
 ## Reserved Roles
 
 1. `metacognition_e8`
-   - Role: main experiment node A
-   - First assignment: `qwen3_base_sft -> control_v5_all_sft`
-   - Later assignment: primary RL continuation candidate after SFT comparison
+   - Role: reserved mainline execution node
+   - Historical assignment:
+     `probe rollout -> probe retrain -> probe smoke -> E6 -> E7`
+   - Current assignment:
+     reserved for the next mainline launch after the `SlotC` gate is resolved
+   - Do not use for exploratory launches while `SlotC` remains unresolved.
 
 2. `metacognition_eval`
-   - Role: main experiment node B
-   - First assignment: `qwen3_base_sft -> control_v5_verify_sft`
-   - Later assignment: evaluation or specialist follow-up, still within the main `metacognition`
-     project only
+   - Role: active mainline node
+   - Historical assignment:
+     `qwen3_base_sft -> control_v5_verify_sft -> E3 -> E5 -> E9`
+   - Current assignment:
+     `SlotC` eval and mainline analysis.
 
 3. `metacognition_train_b`
-   - Role: main experiment node C
-   - First assignment: `qwen3_base_sft -> control_v5_redirect_sft`
-   - Later assignment: main-project follow-up training only
+   - Role: exploratory sidecar node
+   - Historical assignment:
+     `qwen3_base_sft -> control_v5_redirect_sft -> E8 -> E9b -> E9c`
+   - Current assignment:
+     `SlotB` exploratory RL.
+   - Results from this node must be marked as side evidence unless the launcher base matches the active plan.
 
 4. `metacognition_run_c`
    - Role: analysis-only node
@@ -33,12 +40,23 @@ node unless the plan is explicitly revised.
 
 ## Scheduling Rule
 
-The main three-node training sequence stays:
+The active plan is defined by:
 
-1. wait for `data/control_v5_10k.parquet`
-2. run 3 SFT branches in parallel on the three main-project nodes
-3. compare outputs on `gsm8k`, `math500`, `aime2024`
-4. continue RL comparisons in the main project
+1. `results/plan_metacot_v6.4_active_2026_04_06.md`
+2. the long-lived RQ contract in `results/experiment_analysis_plan_2026_04_01.md`
+
+Until the `SlotC` gate resolves, the scheduling rule is:
+
+1. finish `SlotC` eval and analyze:
+   - accuracy
+   - switch rate
+   - verify effectiveness
+2. treat `SlotB` as exploratory side evidence, not mainline proof
+3. keep `metacognition_e8` free for the next mainline launch
+4. if `SlotC` passes the gate:
+   - launch mainline RL from the approved checkpoint
+5. if `SlotC` fails the gate:
+   - launch clean-data restart from `base_sft`
 
 The analysis node remains separate and should not be consumed by SFT or RL unless the user
 explicitly changes the policy.

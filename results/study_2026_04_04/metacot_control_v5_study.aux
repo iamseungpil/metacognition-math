@@ -1,0 +1,56 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Executive Summary}{3}{section.1}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Key model comparison (n=90 pilot, 30 per benchmark)}}{3}{table.caption.2}\protected@file@percent }
+\providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
+\newlabel{tab:exec-summary}{{1}{3}{Key model comparison (n=90 pilot, 30 per benchmark)}{table.caption.2}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {2}Background and Intent}{3}{section.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Definition: Meta-CoT}{3}{subsection.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}Research Questions}{3}{subsection.2.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.3}Experimental Context}{3}{subsection.2.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Experiment Design}{3}{section.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Reward Decomposition Contract}{3}{subsection.3.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{E3: Full Meta + Correctness + Calibration.}{4}{section*.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{E5: Correctness-Only RL.}{4}{section*.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{E8: Overconfidence Penalty + Correctness.}{4}{section*.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{E9: Verify Reward + Correctness.}{4}{section*.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{E10: Full Controller (Verify + Redirect + Diagnosis).}{4}{section*.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}SFT Ablations}{4}{subsection.3.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4}Quantitative Results}{4}{section.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Control-V5 Pilot (n=90)}{4}{subsection.4.1}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Full pilot results (30 problems per benchmark)}}{4}{table.caption.9}\protected@file@percent }
+\newlabel{tab:pilot-full}{{2}{4}{Full pilot results (30 problems per benchmark)}{table.caption.9}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Accuracy--Calibration trade-off. Models with ECE defined (Conf\_Cov $>$ 0) plotted. Dashed line = base\_sft accuracy.}}{5}{figure.caption.10}\protected@file@percent }
+\newlabel{fig:acc-ece}{{1}{5}{Accuracy--Calibration trade-off. Models with ECE defined (Conf\_Cov $>$ 0) plotted. Dashed line = base\_sft accuracy}{figure.caption.10}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Per-Benchmark Analysis}{5}{subsection.4.2}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces AIME-2024 metacognitive behavior rates across selected models.}}{6}{figure.caption.11}\protected@file@percent }
+\newlabel{fig:aime-behavior}{{2}{6}{AIME-2024 metacognitive behavior rates across selected models}{figure.caption.11}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Large-Scale Reference (1,030 problems)}{6}{subsection.4.3}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Previous-round 1,030-problem evaluation}}{6}{table.caption.12}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Multi-panel summary: (A) per-benchmark accuracy, (B) overall ranking, (C) ECE, (D) confidence coverage.}}{7}{figure.caption.13}\protected@file@percent }
+\newlabel{fig:multipanel}{{3}{7}{Multi-panel summary: (A) per-benchmark accuracy, (B) overall ranking, (C) ECE, (D) confidence coverage}{figure.caption.13}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {5}Qualitative Failure Analysis}{7}{section.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Overconfident Verify Failed}{7}{subsection.5.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Diagnosis Without Recovery}{7}{subsection.5.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Single Intervention Only}{8}{subsection.5.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Reward Escape via Confidence Omission}{8}{subsection.5.4}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces Confidence coverage vs.\ wrong high-confidence rate. Red zone indicates reward escape (coverage $<$ 15\%).}}{8}{figure.caption.14}\protected@file@percent }
+\newlabel{fig:coverage-wronghi}{{4}{8}{Confidence coverage vs.\ wrong high-confidence rate. Red zone indicates reward escape (coverage $<$ 15\%)}{figure.caption.14}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces Failure mode distribution across RL experiments (n=90 pilot).}}{9}{figure.caption.15}\protected@file@percent }
+\newlabel{fig:failure-modes}{{5}{9}{Failure mode distribution across RL experiments (n=90 pilot)}{figure.caption.15}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {6}Hypothesis Evaluation}{9}{section.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.1}RQ1: Parseable Controller State for OOD Adaptation}{9}{subsection.6.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.2}RQ2: Learnability via Reward Decomposition}{9}{subsection.6.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.3}RQ3: Curriculum Extensibility}{9}{subsection.6.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7}Proposed Improvements}{9}{section.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.1}Fix 1: Same-Route Repetition Penalty (Verify Quality)}{9}{subsection.7.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.2}Fix 2: Route-Switch Evidence Reward (Redirect Execution)}{10}{subsection.7.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.3}Fix 3: Confidence Omission Floor (Prevent Reward Escape)}{10}{subsection.7.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {8}Next Experiments}{10}{section.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.1}E9v2: Verify with Repetition Penalty}{10}{subsection.8.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.2}E9bv2: Redirect with Route-Switch Evidence}{10}{subsection.8.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.3}E10v2: Full Controller with All Fixes}{10}{subsection.8.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.4}Full-Scale Evaluation Plan}{10}{subsection.8.4}\protected@file@percent }
+\gdef \@abspage@last{10}

@@ -1,0 +1,14 @@
+# V6.3 E11: Minimal SFT seed on E9 base
+# 164 switch/verify seed + 1476 existing = 1640 mix (10% seed)
+model_name_or_path: checkpoints/control_v5_E9/final
+dataset_path: data/v6_sft_mix/e11_sft_data.parquet
+output_dir: checkpoints/control_v6_E11
+run_name: v6-e11-sft-seed
+wandb_project: metacot-math
+
+num_train_epochs: 2
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 4
+learning_rate: 1.0e-6
+max_length: 2048
+save_strategy: epoch

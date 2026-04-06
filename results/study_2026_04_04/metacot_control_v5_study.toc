@@ -1,0 +1,35 @@
+\contentsline {section}{\numberline {1}Executive Summary}{3}{section.1}%
+\contentsline {section}{\numberline {2}Background and Intent}{3}{section.2}%
+\contentsline {subsection}{\numberline {2.1}Definition: Meta-CoT}{3}{subsection.2.1}%
+\contentsline {subsection}{\numberline {2.2}Research Questions}{3}{subsection.2.2}%
+\contentsline {subsection}{\numberline {2.3}Experimental Context}{3}{subsection.2.3}%
+\contentsline {section}{\numberline {3}Experiment Design}{3}{section.3}%
+\contentsline {subsection}{\numberline {3.1}Reward Decomposition Contract}{3}{subsection.3.1}%
+\contentsline {paragraph}{E3: Full Meta + Correctness + Calibration.}{4}{section*.3}%
+\contentsline {paragraph}{E5: Correctness-Only RL.}{4}{section*.4}%
+\contentsline {paragraph}{E8: Overconfidence Penalty + Correctness.}{4}{section*.5}%
+\contentsline {paragraph}{E9: Verify Reward + Correctness.}{4}{section*.6}%
+\contentsline {paragraph}{E10: Full Controller (Verify + Redirect + Diagnosis).}{4}{section*.7}%
+\contentsline {subsection}{\numberline {3.2}SFT Ablations}{4}{subsection.3.2}%
+\contentsline {section}{\numberline {4}Quantitative Results}{4}{section.4}%
+\contentsline {subsection}{\numberline {4.1}Control-V5 Pilot (n=90)}{4}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}Per-Benchmark Analysis}{5}{subsection.4.2}%
+\contentsline {subsection}{\numberline {4.3}Large-Scale Reference (1,030 problems)}{6}{subsection.4.3}%
+\contentsline {section}{\numberline {5}Qualitative Failure Analysis}{7}{section.5}%
+\contentsline {subsection}{\numberline {5.1}Overconfident Verify Failed}{7}{subsection.5.1}%
+\contentsline {subsection}{\numberline {5.2}Diagnosis Without Recovery}{7}{subsection.5.2}%
+\contentsline {subsection}{\numberline {5.3}Single Intervention Only}{8}{subsection.5.3}%
+\contentsline {subsection}{\numberline {5.4}Reward Escape via Confidence Omission}{8}{subsection.5.4}%
+\contentsline {section}{\numberline {6}Hypothesis Evaluation}{9}{section.6}%
+\contentsline {subsection}{\numberline {6.1}RQ1: Parseable Controller State for OOD Adaptation}{9}{subsection.6.1}%
+\contentsline {subsection}{\numberline {6.2}RQ2: Learnability via Reward Decomposition}{9}{subsection.6.2}%
+\contentsline {subsection}{\numberline {6.3}RQ3: Curriculum Extensibility}{9}{subsection.6.3}%
+\contentsline {section}{\numberline {7}Proposed Improvements}{9}{section.7}%
+\contentsline {subsection}{\numberline {7.1}Fix 1: Same-Route Repetition Penalty (Verify Quality)}{9}{subsection.7.1}%
+\contentsline {subsection}{\numberline {7.2}Fix 2: Route-Switch Evidence Reward (Redirect Execution)}{10}{subsection.7.2}%
+\contentsline {subsection}{\numberline {7.3}Fix 3: Confidence Omission Floor (Prevent Reward Escape)}{10}{subsection.7.3}%
+\contentsline {section}{\numberline {8}Next Experiments}{10}{section.8}%
+\contentsline {subsection}{\numberline {8.1}E9v2: Verify with Repetition Penalty}{10}{subsection.8.1}%
+\contentsline {subsection}{\numberline {8.2}E9bv2: Redirect with Route-Switch Evidence}{10}{subsection.8.2}%
+\contentsline {subsection}{\numberline {8.3}E10v2: Full Controller with All Fixes}{10}{subsection.8.3}%
+\contentsline {subsection}{\numberline {8.4}Full-Scale Evaluation Plan}{10}{subsection.8.4}%

@@ -1,0 +1,13 @@
+# V6 Slot C: E9 + 164 seed × 5 epochs (epoch scaling experiment)
+model_name_or_path: checkpoints/control_v5_E9/final
+dataset_path: data/v6_sft_mix/e11_sft_data.parquet
+output_dir: checkpoints/control_v6_SlotC_5ep
+run_name: v6-slotC-5ep
+wandb_project: metacot-math
+
+num_train_epochs: 5
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 4
+learning_rate: 1.0e-6
+max_length: 2048
+save_strategy: epoch

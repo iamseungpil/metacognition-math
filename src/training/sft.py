@@ -1,4 +1,5 @@
 """Meta-CoT SFT training using Gnosis-compatible TRL."""
+import inspect
 import json
 import os
 from pathlib import Path
@@ -8,6 +9,22 @@ import torch
 import yaml
 from datasets import Dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
+
+
+def _normalize_token_ids(encoded) -> list[int]:
+    """Convert tokenizer outputs into a plain list[int] for Arrow compatibility."""
+    if hasattr(encoded, "input_ids"):
+        encoded = encoded.input_ids
+    elif isinstance(encoded, dict) and "input_ids" in encoded:
+        encoded = encoded["input_ids"]
+
+    if isinstance(encoded, torch.Tensor):
+        encoded = encoded.tolist()
+
+    if encoded and isinstance(encoded[0], (list, tuple)):
+        encoded = encoded[0]
+
+    return [int(x) for x in encoded]
 
 
 def prepare_sft_dataset(data_path: str, tokenizer, max_length: int = 4096) -> Dataset:
@@ -20,15 +37,15 @@ def prepare_sft_dataset(data_path: str, tokenizer, max_length: int = 4096) -> Da
         # Tokenize prompt (all messages except the last assistant) to find boundary
         # Messages can be [user, assistant] or [system, user, assistant]
         prompt_messages = messages[:-1]  # everything except assistant response
-        prompt_ids = tokenizer.apply_chat_template(
+        prompt_ids = _normalize_token_ids(tokenizer.apply_chat_template(
             prompt_messages, tokenize=True, add_generation_prompt=True
-        )
+        ))
         prompt_len = len(prompt_ids)
 
         # Tokenize full conversation (system + user + assistant)
-        full_ids = tokenizer.apply_chat_template(
+        full_ids = _normalize_token_ids(tokenizer.apply_chat_template(
             messages, tokenize=True, add_generation_prompt=False
-        )
+        ))
 
         max_len = max_length
         if len(full_ids) > max_len:
@@ -114,14 +131,20 @@ def run_sft(config_path: str):
         tokenizer=tokenizer, padding=True, return_tensors="pt"
     )
 
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
-        data_collator=data_collator,
-        tokenizer=tokenizer,
-    )
+    trainer_kwargs = {
+        "model": model,
+        "args": training_args,
+        "train_dataset": train_dataset,
+        "eval_dataset": eval_dataset,
+        "data_collator": data_collator,
+    }
+    trainer_signature = inspect.signature(Trainer.__init__)
+    if "processing_class" in trainer_signature.parameters:
+        trainer_kwargs["processing_class"] = tokenizer
+    else:
+        trainer_kwargs["tokenizer"] = tokenizer
+
+    trainer = Trainer(**trainer_kwargs)
 
     trainer.train()
     trainer.save_model(output_dir)

@@ -65,6 +65,34 @@ prompt = build_incontext_user_prompt("Solve x + 7 = 12.", analysis, hits)
 check("prompt should include retrieved example", example.question in prompt)
 check("prompt should include original problem", "Solve x + 7 = 12." in prompt)
 
+decorative_completion = """<|meta|>
+confidence: 0.49
+I am thinking carefully and will keep going.
+<|/meta|>
+Continuing the same route...
+"""
+decorative_analysis = analyze_completion_for_rag(decorative_completion)
+check("decorative low confidence alone should not trigger retrieval", decorative_analysis["should_retrieve"] is False)
+
+study_need_completion = """<|meta|>
+confidence: 0.43
+The current route is weak because I am missing the invariant that controls parity.
+study_need: parity invariant for case-based reasoning
+I should switch to a parity-based argument.
+<|/meta|>
+"""
+study_analysis = analyze_completion_for_rag(study_need_completion)
+study_query = build_retrieval_query("Find the parity pattern.", study_analysis)
+check("study_need completion should trigger retrieval", study_analysis["should_retrieve"])
+check("retrieval query should include study_need", "parity invariant for case-based reasoning" in study_query)
+
 print(f"\n=== SUMMARY: {passed} passed, {failed} failed ===")
-if failed:
-    sys.exit(1)
+
+
+def test_pytest_bridge():
+    assert failed == 0
+
+
+if __name__ == "__main__":
+    if failed:
+        sys.exit(1)

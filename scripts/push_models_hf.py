@@ -28,15 +28,20 @@ from typing import List
 # Constants
 # ---------------------------------------------------------------------------
 HF_REPO_ID = "iamseungpil/metacot"
+HF_REPO_TYPE = "dataset"
 HF_TOKEN = os.environ.get("HF_TOKEN", "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")
 
 # Files to skip when uploading (training artifacts, not needed for inference)
 IGNORE_PATTERNS = [
     "optimizer.pt",
+    "optimizer*",
     "scheduler.pt",
+    "scheduler*",
     "trainer_state.json",
     "training_args.bin",
     "*.safetensors.index.json.tmp",
+    "checkpoint-*",
+    "checkpoint-*/*",
     "samples/*",
     "responses/*",
     "runs/*",
@@ -52,6 +57,7 @@ def push_model(
     model_path: str,
     model_name: str,
     repo_id: str = HF_REPO_ID,
+    repo_type: str = HF_REPO_TYPE,
     token: str = HF_TOKEN,
 ) -> None:
     """Upload a model checkpoint directory to HuggingFace Hub.
@@ -60,6 +66,7 @@ def push_model(
         model_path: Local path to the model directory.
         model_name: Name for the model subdirectory in the repo.
         repo_id: HuggingFace repository ID (default: iamseungpil/metacot).
+        repo_type: HuggingFace repository type (default: dataset).
         token: HuggingFace API token.
     """
     from huggingface_hub import HfApi
@@ -89,20 +96,18 @@ def push_model(
 
     api = HfApi(token=token)
 
-    # Ensure the repo exists (create if needed, type=model for model files)
     try:
-        api.repo_info(repo_id=repo_id, repo_type="model")
+        api.repo_info(repo_id=repo_id, repo_type=repo_type)
     except Exception:
-        # Repo might be a dataset type; try dataset
-        try:
-            api.repo_info(repo_id=repo_id, repo_type="dataset")
-        except Exception:
-            print(f"  Creating new repo: {repo_id}")
-            api.create_repo(repo_id=repo_id, repo_type="model", exist_ok=True)
+        print(f"  Creating new repo: {repo_id} ({repo_type})")
+        api.create_repo(repo_id=repo_id, repo_type=repo_type, exist_ok=True)
+
+    print(f"  Repo type: {repo_type}")
 
     # Upload the folder
     commit_info = api.upload_folder(
         repo_id=repo_id,
+        repo_type=repo_type,
         folder_path=str(model_dir),
         path_in_repo=path_in_repo,
         commit_message=f"Upload model: {model_name}",
@@ -160,6 +165,12 @@ def main():
         help=f"HuggingFace repo ID (default: {HF_REPO_ID})",
     )
     parser.add_argument(
+        "--repo_type",
+        default=HF_REPO_TYPE,
+        choices=["model", "dataset", "space"],
+        help=f"HuggingFace repo type (default: {HF_REPO_TYPE})",
+    )
+    parser.add_argument(
         "--dry_run",
         action="store_true",
         help="List files that would be uploaded without uploading",
@@ -183,6 +194,7 @@ def main():
                 model_path=model_path,
                 model_name=model_name,
                 repo_id=args.repo_id,
+                repo_type=args.repo_type,
             )
 
     print(f"\n{'='*60}")

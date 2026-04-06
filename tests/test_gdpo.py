@@ -1,4 +1,5 @@
 """Test GDPO advantage computation (TC10-TC11)."""
+import ast
 import math
 import sys
 
@@ -20,6 +21,35 @@ with open("src/training/grpo_v2.py") as f:
 trainer_call = code.split("trainer = GRPOTrainer(", 1)[1].split(")\n\n", 1)[0]
 check("TC10: no peft_config in GRPOTrainer call", "peft_config=" not in trainer_call)
 check("TC10b: E10 keeps calibration reward", '"E10": ([correctness_reward, format_reward, correct_meta_reward,\n                 calibration_reward,' in code)
+check("TC10c: E5 keeps calibration reward", '"E5": ([correctness_reward, format_reward, meta_quality_reward,\n                calibration_reward, confidence_revision_reward],' in code)
+check("TC10d: E8 keeps calibration reward but no explicit behavior rewards", '"E8": ([correctness_reward, format_reward, correct_meta_reward,\n                calibration_reward, confidence_revision_reward,' in code and "effective_verification_reward" not in code.split('"E8":', 1)[1].split('"E9":', 1)[0])
+
+
+def extract_reward_config_lengths(source: str):
+    module = ast.parse(source)
+    for node in ast.walk(module):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "reward_configs":
+                    out = {}
+                    for key_node, value_node in zip(node.value.keys, node.value.values):
+                        if not isinstance(key_node, ast.Constant):
+                            continue
+                        if not isinstance(value_node, ast.Tuple) or len(value_node.elts) != 2:
+                            continue
+                        rewards_node, weights_node = value_node.elts
+                        reward_len = len(rewards_node.elts) if isinstance(rewards_node, ast.List) else None
+                        weight_len = len(weights_node.elts) if isinstance(weights_node, ast.List) else None
+                        out[key_node.value] = (reward_len, weight_len)
+                    return out
+    raise RuntimeError("reward_configs not found")
+
+
+lengths = extract_reward_config_lengths(code)
+check("TC10e: E10 reward/weight lengths match", lengths["E10"][0] == lengths["E10"][1])
+check("TC10f: E5 reward/weight lengths match", lengths["E5"][0] == lengths["E5"][1])
+check("TC10g: E9b reward/weight lengths match", lengths["E9b"][0] == lengths["E9b"][1])
+check("TC10h: E9c reward/weight lengths match", lengths["E9c"][0] == lengths["E9c"][1])
 
 print("\n=== TC11: GDPO per-reward normalization ===")
 num_gen = 2
@@ -90,5 +120,12 @@ print(f"  Prompt2 advantage diff: GRPO={prompt2_grpo_diff:.4f}, GDPO={prompt2_gd
 check("TC11b: GDPO preserves calib signal for prompt2", prompt2_gdpo_diff > 0.01)
 
 print(f"\n=== SUMMARY: {passed} passed, {failed} failed ===")
-if failed > 0:
-    sys.exit(1)
+
+
+def test_pytest_bridge():
+    assert failed == 0
+
+
+if __name__ == "__main__":
+    if failed > 0:
+        sys.exit(1)

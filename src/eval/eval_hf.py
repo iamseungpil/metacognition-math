@@ -67,6 +67,9 @@ def load_benchmarks(names, max_problems=30):
             q = str(row.get(q_col, ""))
             a = str(row.get(a_col, ""))
             if q:
+                # For GSM8K, extract just the final answer after ####
+                if name == "gsm8k" and "####" in a:
+                    a = a.split("####")[-1].strip()
                 all_problems.append({"question": q, "gold_answer": a, "benchmark": name})
                 count += 1
         print(f"  {name}: {count} problems")
@@ -228,7 +231,7 @@ def main():
     parser.add_argument("--model_path", required=True)
     parser.add_argument("--base_model", default=None, help="Base model for LoRA")
     parser.add_argument("--is_lora", action="store_true")
-    parser.add_argument("--benchmarks", nargs="+", default=["gsm8k", "math_test"])
+    parser.add_argument("--benchmarks", nargs="+", default=["gsm8k", "math500"])
     parser.add_argument("--max_problems", type=int, default=30)
     parser.add_argument("--num_samples", type=int, default=1)
     parser.add_argument("--output_dir", default="results")

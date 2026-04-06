@@ -1,0 +1,150 @@
+# Re-route candidates for signal_model=all_sft
+# confidence_threshold=0.4
+# 144 candidates, 45 oracle-recoverable
+
+ idx bench       conf  weak recov by_models
+----------------------------------------------------------------------
+   7 gsm8k       0.31     Y     N -
+ 107 gsm8k       0.88     Y     Y E9b,E9c,base_sft,redirect_sft
+ 157 gsm8k       0.31     Y     Y E10,E8,E9b,base_sft,redirect_sft,verify_sft
+ 184 gsm8k       0.34     Y     N -
+ 186 gsm8k       0.84     Y     Y E10,E8,E9b,base_sft
+ 199 gsm8k       0.34     Y     Y E8,E9b,E9c,base_sft,redirect_sft,verify_sft
+ 239 gsm8k       0.28     Y     Y E10,E8,E9b,E9c,base_sft,redirect_sft,verify_sft
+ 501 math500     0.31     Y     N -
+ 509 math500     0.34     Y     N -
+ 510 math500     0.34     Y     Y E10,E9b,E9c,base_sft,verify_sft
+ 511 math500     0.31     Y     N -
+ 519 math500     0.34     Y     Y base_sft,verify_sft
+ 520 math500     0.34     Y     N -
+ 521 math500     0.34     Y     N -
+ 522 math500     0.34     Y     Y E8,base_sft
+ 524 math500     0.86     Y     Y E10,E8,E9c,redirect_sft,verify_sft
+ 525 math500     0.34     Y     N -
+ 526 math500     0.86     Y     Y redirect_sft,verify_sft
+ 543 math500     0.34     Y     N -
+ 550 math500     0.88     Y     Y E8,E9c,base_sft
+ 551 math500     0.34     Y     N -
+ 560 math500     0.34     Y     N -
+ 562 math500     0.34     Y     N -
+ 563 math500     0.31     Y     N -
+ 564 math500     0.31     Y     N -
+ 571 math500     0.34     Y     N -
+ 574 math500     0.34     Y     N -
+ 575 math500     0.34     Y     N -
+ 578 math500     0.88     Y     N -
+ 582 math500     0.34     Y     N -
+ 584 math500     0.34     Y     Y E8,E9b,base_sft
+ 588 math500     0.88     Y     N -
+ 596 math500     0.31     Y     N -
+ 601 math500     0.84     Y     N -
+ 603 math500     0.34     Y     N -
+ 609 math500     0.34     Y     Y E10
+ 610 math500     0.84     Y     N -
+ 619 math500     0.34     Y     Y E8,base_sft
+ 622 math500     0.34     Y     Y base_sft,redirect_sft,verify_sft
+ 624 math500     0.34     Y     N -
+ 626 math500     0.34     Y     N -
+ 629 math500     0.34     Y     N -
+ 638 math500     0.34     Y     N -
+ 639 math500     0.31     Y     Y E10,E8,E9b,base_sft,redirect_sft,verify_sft
+ 645 math500     0.31     Y     N -
+ 652 math500     0.34     Y     N -
+ 653 math500     0.34     Y     N -
+ 654 math500     0.34     Y     N -
+ 656 math500     0.34     Y     Y E10,base_sft
+ 662 math500     0.34     Y     N -
+ 666 math500     0.31     Y     N -
+ 668 math500     0.34     Y     Y E10
+ 670 math500     0.34     Y     N -
+ 684 math500     0.31     Y     N -
+ 688 math500     0.28     Y     Y E9b,verify_sft
+ 689 math500     0.34     Y     N -
+ 694 math500     0.34     Y     N -
+ 697 math500     0.34     Y     Y E8,E9b,E9c,base_sft
+ 704 math500     0.34     Y     Y E10,E9c,redirect_sft,verify_sft
+ 713 math500     0.34     Y     Y base_sft
+ 717 math500     0.31     Y     N -
+ 723 math500     0.34     Y     Y E9c,base_sft
+ 724 math500     0.34     Y     N -
+ 725 math500     0.34     Y     Y base_sft
+ 726 math500     0.34     Y     Y E10,E8,E9b,E9c,base_sft,redirect_sft,verify_sft
+ 728 math500     0.33     Y     N -
+ 732 math500     0.34     Y     Y redirect_sft
+ 734 math500     0.34     Y     Y E9b,base_sft,verify_sft
+ 736 math500     0.34     Y     Y E9b,E9c
+ 747 math500     0.34     Y     N -
+ 748 math500     0.34     Y     N -
+ 774 math500     0.31     Y     N -
+ 779 math500     0.34     Y     N -
+ 785 math500     0.86     Y     N -
+ 786 math500     0.31     Y     N -
+ 790 math500     0.31     Y     Y E10,E8,E9b,E9c,base_sft,redirect_sft
+ 792 math500     0.31     Y     Y E10,verify_sft
+ 794 math500     0.84     Y     Y E10,E9b,base_sft,redirect_sft,verify_sft
+ 795 math500     0.31     Y     Y E8
+ 802 math500     0.34     Y     Y E10,E8,E9b,base_sft
+ 803 math500     0.34     Y     N -
+ 804 math500     0.34     Y     Y E9b,E9c,base_sft
+ 808 math500     0.34     Y     N -
+ 809 math500     0.34     Y     N -
+ 812 math500     0.88     Y     N -
+ 820 math500     0.31     Y     N -
+ 824 math500     0.34     Y     N -
+ 827 math500     0.31     Y     N -
+ 839 math500     0.34     Y     N -
+ 840 math500     0.34     Y     N -
+ 852 math500     0.86     Y     N -
+ 855 math500     0.71     Y     N -
+ 861 math500     0.33     Y     N -
+ 866 math500     0.34     Y     Y E8,E9b,E9c,redirect_sft,verify_sft
+ 871 math500     0.34     Y     N -
+ 880 math500     0.34     Y     N -
+ 889 math500     0.34     Y     N -
+ 892 math500     0.31     Y     N -
+ 896 math500     0.34     Y     Y E9b,E9c,base_sft,redirect_sft
+ 901 math500     0.34     Y     Y redirect_sft
+ 908 math500     0.34     Y     N -
+ 909 math500     0.34     Y     N -
+ 912 math500     0.34     Y     Y E9b,verify_sft
+ 916 math500     0.34     Y     N -
+ 918 math500     0.34     Y     N -
+ 919 math500     0.34     Y     N -
+ 921 math500     0.34     Y     Y base_sft
+ 922 math500     0.34     Y     N -
+ 923 math500     0.34     Y     Y E10
+ 931 math500     0.34     Y     N -
+ 956 math500     0.33     Y     N -
+ 966 math500     0.84     Y     N -
+ 967 math500     0.34     Y     N -
+ 970 math500     0.34     Y     N -
+ 973 math500     0.31     Y     Y base_sft
+ 975 math500     0.07     Y     N -
+ 978 math500     0.31     Y     N -
+ 981 math500     0.31     Y     Y E9c,verify_sft
+ 983 math500     0.84     Y     N -
+ 994 math500     0.33     Y     N -
+ 996 math500     0.34     Y     N -
+ 998 math500     0.34     Y     Y E9c,base_sft
+1000 aime2024    0.34     Y     N -
+1001 aime2024    0.31     Y     N -
+1003 aime2024    0.31     Y     N -
+1004 aime2024    0.34     Y     N -
+1005 aime2024    0.33     Y     N -
+1007 aime2024    0.34     Y     Y E8,base_sft,redirect_sft
+1010 aime2024    0.34     Y     N -
+1013 aime2024    0.31     Y     N -
+1014 aime2024    0.31     Y     N -
+1015 aime2024    0.34     Y     N -
+1016 aime2024    0.34     Y     N -
+1017 aime2024    0.34     Y     N -
+1018 aime2024    0.31     Y     N -
+1019 aime2024    0.34     Y     N -
+1020 aime2024    0.86     Y     N -
+1022 aime2024    0.88     Y     Y E9c
+1023 aime2024    0.31     Y     N -
+1025 aime2024    0.34     Y     N -
+1026 aime2024    0.34     Y     N -
+1027 aime2024    0.34     Y     N -
+1028 aime2024    0.34     Y     N -
+1029 aime2024    0.34     Y     N -
