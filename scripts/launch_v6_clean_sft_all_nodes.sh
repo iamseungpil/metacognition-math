@@ -1,11 +1,11 @@
 #!/bin/bash
-# Launch V6 clean 10K SFT on all 3 nodes after data merge
+# Launch V6 clean 10K SFT on 2 nodes after data merge
 # Plan: Case B mainline (clean-data restart from base_sft)
 #
-# Node allocation:
+# Node allocation (2 nodes only, E8 freed):
 #   EVAL    → E19  (3ep, lr=2e-6, mainline)
 #   TRAIN_B → E19b (5ep, lr=1e-6, ablation)
-#   E8      → E19c (3ep, lr=5e-6, ablation)
+#   E8      → FREE (E19c deferred, run on EVAL after E19 completes)
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -64,20 +64,17 @@ echo "Uploading to nodes..."
 declare -A NODE_URLS=(
     ["EVAL"]="$URL_EVAL"
     ["TRAIN_B"]="$URL_TRAIN_B"
-    ["E8"]="$URL_E8"
 )
 declare -A NODE_CONFIGS=(
     ["EVAL"]="configs/sft_v6_clean_10k.yaml"
     ["TRAIN_B"]="configs/sft_v6_clean_10k_5ep.yaml"
-    ["E8"]="configs/sft_v6_clean_10k_highlr.yaml"
 )
 declare -A NODE_LABELS=(
     ["EVAL"]="E19-mainline"
     ["TRAIN_B"]="E19b-5ep-ablation"
-    ["E8"]="E19c-highlr-ablation"
 )
 
-for node in EVAL TRAIN_B E8; do
+for node in EVAL TRAIN_B; do
     url="${NODE_URLS[$node]}"
     config="${NODE_CONFIGS[$node]}"
     label="${NODE_LABELS[$node]}"
@@ -101,7 +98,7 @@ done
 echo ""
 echo "Launching SFT training..."
 
-for node in EVAL TRAIN_B E8; do
+for node in EVAL TRAIN_B; do
     url="${NODE_URLS[$node]}"
     config="${NODE_CONFIGS[$node]}"
     label="${NODE_LABELS[$node]}"
@@ -133,13 +130,12 @@ done
 
 echo ""
 echo "═══════════════════════════════════════════"
-echo "  ALL 3 NODES LAUNCHED"
+echo "  2 NODES LAUNCHED (E8 freed)"
 echo "  EVAL:    E19  (3ep, lr=2e-6, mainline)"
 echo "  TRAIN_B: E19b (5ep, lr=1e-6, ablation)"
-echo "  E8:      E19c (3ep, lr=5e-6, ablation)"
+echo "  E8:      FREE (E19c deferred)"
 echo "═══════════════════════════════════════════"
 echo ""
 echo "Monitor logs:"
 echo "  ssh EVAL 'tail -f /scratch/E19-mainline_sft.log'"
 echo "  ssh TRAIN_B 'tail -f /scratch/E19b-5ep-ablation_sft.log'"
-echo "  ssh E8 'tail -f /scratch/E19c-highlr-ablation_sft.log'"

@@ -210,7 +210,7 @@ No table, report, or launcher may silently mix these classes.
 
 Key finding: E9-line SFT can improve calibration and multi-meta, but cannot create structural switching. Clean-data restart is now the mainline.
 
-### 5.1 Current Node Roles (Case B Execution)
+### 5.1 Current Node Roles (Case B Execution — 2 nodes)
 
 1. `metacognition_eval`
    - mainline node
@@ -219,8 +219,8 @@ Key finding: E9-line SFT can improve calibration and multi-meta, but cannot crea
    - mainline ablation node
    - runtime: `E19b` SFT (base_sft + V6 clean 10K, 5ep, lr=1e-6)
 3. `metacognition_e8`
-   - mainline ablation node
-   - runtime: `E19c` SFT (base_sft + V6 clean 10K, 3ep, lr=5e-6)
+   - **FREED** — available for other use
+   - `E19c` (high-LR ablation) deferred; run on EVAL after E19 completes
 
 ### 5.2 Active Runtime Contract
 
@@ -228,7 +228,7 @@ Key finding: E9-line SFT can improve calibration and multi-meta, but cannot crea
 |---|---|---|---|---|---|
 | `metacognition_eval` | mainline SFT | `sft.py --config sft_v6_clean_10k.yaml` | `qwen3_base_sft` | 3ep, lr=2e-6 | `mainline` |
 | `metacognition_train_b` | epoch ablation | `sft.py --config sft_v6_clean_10k_5ep.yaml` | `qwen3_base_sft` | 5ep, lr=1e-6 | `mainline_ablation` |
-| `metacognition_e8` | LR ablation | `sft.py --config sft_v6_clean_10k_highlr.yaml` | `qwen3_base_sft` | 3ep, lr=5e-6 | `mainline_ablation` |
+| `metacognition_e8` | **freed** | none | — | — | — |
 
 ### 5.2.1 Data Pipeline
 
