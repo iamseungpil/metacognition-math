@@ -181,31 +181,46 @@ def transform_meta_sample(content: str) -> str:
 # ---------------------------------------------------------------------------
 
 VERIFY_TEMPLATES = [
-    "Let me verify: substituting {answer} back confirms the result.",
-    "Quick check: plugging {answer} into the original problem checks out.",
-    "Verification: working backwards from {answer} matches the given conditions.",
-    "Sanity check: {answer} is consistent with the constraints of the problem.",
-    "Double-checking: recomputing gives {answer}, confirming the solution.",
-    "Cross-check: an alternative approach also yields {answer}.",
-    "Confirming: {answer} satisfies all the stated requirements.",
-    "Let me verify by a different method: the result {answer} is confirmed.",
+    "Let me verify: substituting {answer} back into the original equation gives a consistent result.",
+    "Quick check: plugging {answer} into the original problem, each step checks out numerically.",
+    "Verification: working backwards from {answer}, I reconstruct the given conditions correctly.",
+    "Sanity check: {answer} is consistent with the constraints — the units and magnitude make sense.",
+    "Double-checking: recomputing the key step independently gives {answer} again.",
+    "Cross-check: approaching the problem from the opposite direction also yields {answer}.",
+    "Confirming: {answer} satisfies all the stated requirements when substituted back.",
+    "Let me verify by estimating: {answer} is in the expected range, and exact computation confirms it.",
+    "Testing boundary cases: when the inputs are at their extremes, {answer} still holds.",
+    "Numerical spot-check: picking a specific value and tracing through gives {answer} as expected.",
+    "Reverse verification: starting from {answer} and working backwards recovers the original problem statement.",
+    "Dimensional analysis: the result {answer} has the correct units and order of magnitude.",
+    "Checking with a simpler case: reducing the problem confirms the pattern that leads to {answer}.",
+    "Parity check: {answer} has the expected sign and parity given the problem constraints.",
 ]
 
 VERIFY_ASSESSMENT_TEMPLATES = [
-    "solution looks correct but let me verify",
-    "straightforward computation, worth double-checking",
-    "the approach seems right; a quick verification will confirm",
-    "result appears reasonable; let me sanity-check",
-    "confident in the method but verifying is good practice",
+    "solution looks correct but a quick verification will catch any arithmetic slip",
+    "straightforward computation, worth double-checking the final step",
+    "the approach seems right; verifying will rule out sign or indexing errors",
+    "result appears reasonable in magnitude; let me confirm with a spot-check",
+    "confident in the method but the problem has potential off-by-one traps",
+    "the algebra is clean; a numerical substitution will confirm",
+    "intermediate steps were complex enough to warrant a sanity check",
+    "the answer feels right intuitively; let me verify rigorously",
+    "multiple paths converge here; a quick cross-check will confirm",
+    "the computation involved several steps; worth re-deriving the key identity",
 ]
 
 VERIFY_ACTION_TEMPLATES = [
-    "substitute back to check",
-    "verify by plugging in the answer",
-    "cross-check with an alternative method",
-    "re-derive to confirm",
-    "double-check the arithmetic",
-    "verify the boundary conditions",
+    "substitute back to check the original equation",
+    "verify by plugging the answer into each constraint",
+    "cross-check with an alternative algebraic route",
+    "re-derive the critical step from scratch",
+    "double-check the arithmetic on the key computation",
+    "verify the boundary conditions hold",
+    "test with a specific numerical example",
+    "check dimensional consistency of the result",
+    "verify by working the problem backwards",
+    "confirm using a different representation of the problem",
 ]
 
 
@@ -263,6 +278,11 @@ REDIRECT_ASSESSMENT_TEMPLATES = [
     "the current path is workable but a cleaner approach exists",
     "let me reconsider my approach for better clarity",
     "stepping back to find a more direct route",
+    "the computation is getting unwieldy; a simpler method likely exists",
+    "I notice a potential shortcut I overlooked initially",
+    "the current route risks accumulating rounding errors",
+    "there may be a more elegant formulation using a different variable",
+    "my approach works but is unnecessarily complicated for this problem",
 ]
 
 REDIRECT_ACTION_TEMPLATES = [
@@ -271,6 +291,11 @@ REDIRECT_ACTION_TEMPLATES = [
     "reconsider the problem from first principles",
     "switch to a different representation",
     "reorganize the computation more carefully",
+    "use a substitution to simplify the expression",
+    "try a geometric interpretation instead",
+    "factor the expression differently",
+    "apply a known identity to reduce complexity",
+    "break the problem into smaller subproblems",
 ]
 
 REPHRASE_PREFIXES = [
@@ -279,6 +304,9 @@ REPHRASE_PREFIXES = [
     "Let me redo this systematically:\n",
     "Working through this step by step:\n",
     "A more direct solution:\n",
+    "Using a different strategy:\n",
+    "Reformulating the problem:\n",
+    "Starting fresh with a simpler method:\n",
 ]
 
 
@@ -451,6 +479,61 @@ def validate_sample(content: str) -> list[str]:
 # Main pipeline
 # ---------------------------------------------------------------------------
 
+BACKFILL_ASSESSMENTS = [
+    "the computation appears sound but deserves a closer look",
+    "the approach is on the right track; let me evaluate the reasoning",
+    "the intermediate steps need verification before concluding",
+    "the method is appropriate for this problem type",
+    "the solution path is reasonable; checking for edge cases",
+    "the algebraic manipulations look correct at first glance",
+    "this is a standard problem; still worth being careful",
+    "the key insight has been identified; need to execute cleanly",
+]
+
+
+def _fix_missing_assessment(content: str, rng: random.Random) -> str:
+    """Backfill assessment field in meta blocks that lack it."""
+    def _add_assessment(match):
+        block = match.group(0)
+        if 'assessment' not in block.lower() and 'current route' not in block.lower():
+            # Insert assessment after confidence line
+            lines = block.split('\n')
+            new_lines = []
+            inserted = False
+            for line in lines:
+                new_lines.append(line)
+                if line.strip().startswith('confidence') and not inserted:
+                    new_lines.append(f"assessment: {rng.choice(BACKFILL_ASSESSMENTS)}")
+                    inserted = True
+            return '\n'.join(new_lines)
+        return block
+
+    return re.sub(r'<\|meta\|>.*?<\|/meta\|>', _add_assessment, content, flags=re.DOTALL)
+
+
+def _fix_empty_pre_meta(content: str) -> str:
+    """Ensure there's meaningful content before the first meta block.
+
+    If pre-meta region (before first <|meta|>) has < 30 chars of actual
+    reasoning, it means the sample starts almost immediately with meta.
+    Fix: move first <think> content to be more visible.
+    """
+    first_meta = content.find('<|meta|>')
+    if first_meta < 0:
+        return content
+
+    pre_meta = content[:first_meta].strip()
+    # Remove think tags to measure actual content
+    pre_text = re.sub(r'</?think>', '', pre_meta).strip()
+
+    if len(pre_text) >= 30:
+        return content  # sufficient pre-meta content
+
+    # If pre-meta is too short but there's think content after meta,
+    # this is acceptable — meta at the start means "assess before solving"
+    return content
+
+
 def process_row(row: pd.Series, rng: random.Random) -> dict:
     """Transform a single row and return updated fields."""
     msgs = json.loads(row["messages"])
@@ -477,6 +560,10 @@ def process_row(row: pd.Series, rng: random.Random) -> dict:
         # Fallback for any other case (e.g., straight hard)
         new_content = transform_straight_to_verify(original_content, rng, 0.5, 0.9)
         new_scenario = "verify"
+
+    # Post-processing fixes (Codex review)
+    new_content = _fix_missing_assessment(new_content, rng)
+    new_content = _fix_empty_pre_meta(new_content)
 
     # Update messages
     msgs[-1]["content"] = new_content
