@@ -1,0 +1,18 @@
+{
+  "model": "sshleifer/tiny-gpt2",
+  "question": "Solve x + 7 = 12.",
+  "rag_run": {
+    "rag_used": true,
+    "retrieved": [
+      {
+        "question": "Solve x + 4 = 9.",
+        "score": 0.16116459280507606
+      }
+    ],
+    "rag_prompt": "You are retrying a math problem after a metacognitive redirect signal.\nUse the retrieved solved example as a hint about strategy, not as something to copy blindly.\nIf the previous route was weak, switch methods and solve the original problem correctly.\nUse <|meta|> blocks only if they genuinely change your behavior, and end with a final \\boxed{answer}.\n\nWhy the previous route looked weak:\nSomething feels off. I may be forcing the wrong transformation and should switch back to isolating the variable directly.\n\nMissing skill or perspective to recover:\nNone stated.\n\n[Retrieved Example 1] (score=0.161, topic=linear equation, difficulty=easy)\nProblem:\nSolve x + 4 = 9.\n\nSolved approach:\nSubtract 4 from both sides to isolate x, so x = 5. \\boxed{5}\nFinal answer: 5\n\nOriginal problem:\nSolve x + 7 = 12.\n"
+  },
+  "model_smoke": {
+    "attempted": false,
+    "skipped_reason": "skip_model_flag"
+  }
+}
