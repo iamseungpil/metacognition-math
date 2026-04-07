@@ -279,8 +279,34 @@ After E19 SFT completes, run `analyze_e11_pilot.py` 5-dimension analysis:
 
 If E19 passes the gate:
 1. Promote best E19 variant to RL base
-2. Launch E13 mode (V6.2 reward: correctness + switch + confidence_trajectory + verify)
-3. Compare switch-only RL vs full RL
+2. Launch E13 RL (V6.2 reward) with `max_steps=1000` (~2 epochs)
+3. Use all 3 nodes for RL ablations (see 7.1)
+
+### 7.1 SFT → RL Sequential Execution Plan
+
+Informed by behavior-uncertainty findings (PPO 15 epochs / 5859 steps on 100K data).
+Our data (~8K math) at effective batch 16 → **500 steps/epoch**.
+Previous RL attempts used only 200 steps (0.4 epochs) — insufficient to learn behavioral rewards.
+
+**Phase 1: SFT (current)**
+
+| Node | Experiment | Config |
+|---|---|---|
+| EVAL | E19 mainline | 3ep, lr=2e-6 |
+| TRAIN_B | E19b ablation | 5ep, lr=1e-6 |
+| E8 | E19c ablation | 3ep, lr=5e-6 |
+
+**Phase 2: Eval gate** — best E19 variant must pass `approach_change >= 5%` + `accuracy >= 67.1%`
+
+**Phase 3: RL (after gate pass)**
+
+| Node | Experiment | RL mode | Steps | Description |
+|---|---|---|---|---|
+| EVAL | E20 mainline | E13 (full V6.2) | 1000 | correctness + switch + conf_trajectory + verify |
+| TRAIN_B | E20b ablation | E12 (switch-only) | 1000 | correctness + switch only |
+| E8 | E20c ablation | E13 long | 1500 | full V6.2, 3 epochs for saturation check |
+
+All RL runs use the **same best E19 SFT checkpoint** as base.
 
 ## 8. Stop Rule
 
@@ -289,3 +315,4 @@ Do not launch RL experiments until:
 1. E19 SFT eval metrics confirm `approach_change >= 5%`
 2. E19 accuracy >= base_sft (67.1%)
 3. The launcher explicitly names the E19 checkpoint as base
+4. RL `max_steps >= 700` (minimum ~1.5 epochs)

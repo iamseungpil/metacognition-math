@@ -12,7 +12,7 @@ Key design:
 
 Usage:
   accelerate launch --num_processes 4 --multi_gpu \
-    src/training/grpo_v2.py --mode E10 --max_steps 200 \
+    src/training/grpo_v2.py --mode E10 --max_steps 1000 \
     --model_path checkpoints/qwen3_metacot_control_v5_all_sft --data mixed_train
 """
 import argparse
@@ -419,7 +419,7 @@ def main():
     parser.add_argument("--data", choices=["gsm8k", "filtered", "mixed", "mixed_train"], default="mixed")
     parser.add_argument("--data_path", default="verl_train_filtered.parquet")
     parser.add_argument("--output_dir", default=None)
-    parser.add_argument("--max_steps", type=int, default=200)
+    parser.add_argument("--max_steps", type=int, default=1000)
     parser.add_argument("--num_generations", type=int, default=4)
     parser.add_argument("--max_completion_length", type=int, default=2048)
     parser.add_argument("--max_prompt_length", type=int, default=512)
