@@ -134,12 +134,15 @@ If the base checkpoint already contains switch behavior, RL can selectively rein
 
 `Mainline gate`
 
-RL is mainline only if the chosen base checkpoint satisfies both:
+RL is mainline only if the chosen base checkpoint satisfies all:
 
 1. `approach_change >= 5%`
-2. `accuracy >= 60%`
+2. `accuracy >= 67.1%` (base_sft level)
+3. `meta_emission_rate >= 50%`
 
 If the gate fails, RL on that base is side evidence only.
+
+RL success requires measurable improvement: `switch_success_rate` increase by >= 3pp AND accuracy not decreasing by more than 1pp.
 
 ### 3.3 Mainline RQ3
 
@@ -273,14 +276,19 @@ After E19 SFT completes, run `analyze_e11_pilot.py` 5-dimension analysis:
 | Metric | Target | Action if fail |
 |---|---|---|
 | accuracy | >= 67.1% (base_sft) | investigate loss curves, check data quality |
-| approach_change | >= 5% | data still insufficient — need more stitching examples |
-| verify_effectiveness | > 0% | check verify scenario quality |
+| approach_change | >= 5% | → Case B-fail path (see 7.2) |
+| meta_parse_rate | >= 90% | meta blocks not parseable — check data format |
+| meta_emission_rate | >= 50% | meta too sparse for RL reward signal |
+| verify_effectiveness | >= 2% | check verify scenario quality (> noise level) |
 | ECE | < 0.15 | check confidence distribution |
+
+`approach_change` is measured by `analyze_e11_pilot.py` using the same `_methods_structurally_differ` heuristic as the RL reward. **Acknowledged shared bias** — manual spot-check of 50 samples required before RL launch to validate heuristic precision >= 80%.
 
 If E19 passes the gate:
 1. Promote best E19 variant to RL base
-2. Launch E13 RL (V6.2 reward) with `max_steps=1000` (~2 epochs)
-3. Use all 3 nodes for RL ablations (see 7.1)
+2. Validate `_methods_structurally_differ` on 50 E19 outputs (precision >= 80%)
+3. Launch E13 RL (V6.2 reward) with `max_steps=1000` (~2 epochs) on TRL GDPO
+4. Use all 3 nodes for RL ablations (see 7.1)
 
 ### 7.1 SFT → RL Sequential Execution Plan
 
@@ -296,17 +304,47 @@ Previous RL attempts used only 200 steps (0.4 epochs) — insufficient to learn 
 | TRAIN_B | E19b ablation | 5ep, lr=1e-6 |
 | E8 | E19c ablation | 3ep, lr=5e-6 |
 
-**Phase 2: Eval gate** — best E19 variant must pass `approach_change >= 5%` + `accuracy >= 67.1%`
+**Phase 2: Eval gate** — best E19 variant must pass `approach_change >= 5%` + `accuracy >= 67.1%` + `meta_emission_rate >= 50%`
 
-**Phase 3: RL (after gate pass)**
+**Phase 3: RL (after gate pass, on TRL GDPO — NOT veRL)**
 
-| Node | Experiment | RL mode | Steps | Description |
-|---|---|---|---|---|
-| EVAL | E20 mainline | E13 (full V6.2) | 1000 | correctness + switch + conf_trajectory + verify |
-| TRAIN_B | E20b ablation | E12 (switch-only) | 1000 | correctness + switch only |
-| E8 | E20c ablation | E13 long | 1500 | full V6.2, 3 epochs for saturation check |
+Per Codex review: run first RL on existing TRL framework to get clean baseline. veRL migration for follow-up runs only after TRL results are understood.
 
-All RL runs use the **same best E19 SFT checkpoint** as base.
+| Node | Experiment | RL mode | Steps | KL | Description |
+|---|---|---|---|---|---|
+| EVAL | E20 mainline | E13 (full V6.2) | 1000 | 0.001 | correctness + switch(partial) + conf_trajectory + verify(strengthened) |
+| TRAIN_B | E20b ablation | E12 (switch-only) | 1000 | 0.001 | correctness + switch only — isolate switch signal |
+| E8 | E20c ablation | E13 long | 2500 | 0.001 | full V6.2, 5 epochs for saturation check |
+
+All RL runs use the **same best E19 SFT checkpoint** as base and frozen ref model.
+
+**V6.2 Reward changes (per Codex review):**
+- `structural_switch_reward`: partial credit 0.3 for switching attempt even if wrong → enables learning on hard problems
+- `verify_outcome_reward`: requires numerical content, wrong penalty increased -0.1→-0.2, phrase-only capped at 0.05
+- KL coefficient 0.001 specified (matching behavior-uncertainty PPO)
+
+**RL Monitoring (per-reward contribution tracking):**
+- Log per-reward mean at steps 200, 500, 1000
+- If confidence_trajectory accounts for >80% of non-correctness reward → model is hacking calibration text
+- If output length grows >30% without accuracy gain → reward hacking
+
+### 7.2 E19 Gate Failure Plan
+
+If ALL three E19 variants fail `approach_change >= 5%`:
+
+1. **Inspect V6 data quality** — manually check 50 redirect samples for actual method switches (not just meta text)
+2. **If data lacks structural switches** → augment with explicit before/after solution pairs where method family genuinely changes. Consider process-supervision data.
+3. **If data has switches but model doesn't learn** → increase data mix ratio (more redirect, fewer straight), or train longer (7-10 epochs)
+4. **If approach_change is 1-4%** (partial signal) → proceed to RL as exploratory, but do not claim mainline evidence
+
+### 7.3 veRL Migration Plan (Phase 4, after E20)
+
+veRL migration happens AFTER E20 TRL results are known. Migration checklist:
+1. Verify veRL reproduces E20 reward curves on 100-step pilot
+2. Adapt reward functions to veRL RewardManager API
+3. Validate Qwen3 chat template + `<|meta|>` token handling
+4. Confirm E19 SFT checkpoint loads correctly
+5. Only then: run E21+ on veRL for faster iteration
 
 ## 8. Stop Rule
 
@@ -314,5 +352,8 @@ Do not launch RL experiments until:
 
 1. E19 SFT eval metrics confirm `approach_change >= 5%`
 2. E19 accuracy >= base_sft (67.1%)
-3. The launcher explicitly names the E19 checkpoint as base
-4. RL `max_steps >= 700` (minimum ~1.5 epochs)
+3. E19 meta_emission_rate >= 50%
+4. `_methods_structurally_differ` validated on 50 samples (precision >= 80%)
+5. The launcher explicitly names the E19 checkpoint as base
+6. RL `max_steps >= 700` (minimum ~1.5 epochs)
+7. KL coefficient explicitly specified in config

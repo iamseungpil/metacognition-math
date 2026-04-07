@@ -1374,9 +1374,13 @@ def confidence_omission_floor(completions, ground_truth=None, **kwargs):
 
 
 def structural_switch_reward(completions, ground_truth=None, **kwargs):
-    """R2: Reward structural method switching that leads to correct answers.
+    """R2: Reward structural method switching with partial credit.
 
-    Binary: meta 전후 method family가 구조적으로 다르고 정답이면 +1.0.
+    Decomposed (per Codex review):
+      - Switch attempt alone: +0.3 (regardless of correctness)
+      - Switch + correct answer: +1.0 (full bonus)
+    This lets the model learn switching behavior even on hard problems
+    where it cannot yet execute the new method correctly.
     """
     rewards = []
     for i, c in enumerate(completions):
@@ -1397,13 +1401,17 @@ def structural_switch_reward(completions, ground_truth=None, **kwargs):
             rewards.append(0.0)
             continue
 
-        is_correct = _check_correctness(text, gt)
         methods_differ = _methods_structurally_differ(pre, post)
 
-        if methods_differ and is_correct:
+        if not methods_differ:
+            rewards.append(0.0)
+            continue
+
+        is_correct = _check_correctness(text, gt)
+        if is_correct:
             rewards.append(1.0)
         else:
-            rewards.append(0.0)
+            rewards.append(0.3)  # partial credit for switching attempt
 
     return rewards
 
@@ -1483,7 +1491,11 @@ def confidence_trajectory_reward(completions, ground_truth=None, **kwargs):
 def verify_outcome_reward(completions, ground_truth=None, **kwargs):
     """R4: Reward independent verification that leads to correct answers.
 
-    검산 패턴이 있고 정답이면 +0.2, 오답이면 -0.1.
+    Strengthened per Codex review:
+      - Require numerical content in verification (not just phrase)
+      - Correct + verified: +0.3
+      - Wrong + verified: -0.2 (increased penalty to discourage spurious verification)
+      - Phrase-only (no numbers): +0.05 (minimal, discourage text-only hack)
     """
     _verify_re = re.compile(
         r"\b(substitut\w*\s+back|plug\w*\s+(back|in)|"
@@ -1491,6 +1503,7 @@ def verify_outcome_reward(completions, ground_truth=None, **kwargs):
         r"sanity\s+check|verify\w*\s+by)\b",
         re.IGNORECASE,
     )
+    _has_numbers_re = re.compile(r"\d+\.?\d*\s*[=<>≤≥]|\bx\s*=\s*\d")
     rewards = []
     for i, c in enumerate(completions):
         text = _get_text(c)
@@ -1503,8 +1516,15 @@ def verify_outcome_reward(completions, ground_truth=None, **kwargs):
             rewards.append(0.0)
             continue
 
+        has_numerical = bool(_has_numbers_re.search(verify_region))
         is_correct = _check_correctness(text, gt)
-        rewards.append(0.2 if is_correct else -0.1)
+
+        if not has_numerical:
+            rewards.append(0.05)  # phrase-only: minimal credit
+        elif is_correct:
+            rewards.append(0.3)
+        else:
+            rewards.append(-0.2)
 
     return rewards
 
