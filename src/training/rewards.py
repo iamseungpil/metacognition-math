@@ -1503,7 +1503,7 @@ def verify_outcome_reward(completions, ground_truth=None, **kwargs):
         r"sanity\s+check|verify\w*\s+by)\b",
         re.IGNORECASE,
     )
-    _has_numbers_re = re.compile(r"\d+\.?\d*\s*[=<>≤≥]|\bx\s*=\s*\d")
+    _has_numbers_re = re.compile(r"-?\d[\d,]*\.?\d*\s*[=<>≤≥≠!]|[a-zA-Z]\s*=\s*-?\d")
     rewards = []
     for i, c in enumerate(completions):
         text = _get_text(c)

@@ -342,8 +342,16 @@ def main_task(config):
     tokenizer = hf_tokenizer(local_path)
     from src.metacot.prompt import META_START, META_END
     from src.training.tokenizer_utils import ensure_meta_tokens_not_special
+    original_vocab_size = len(tokenizer)
     ensure_meta_tokens_not_special(tokenizer, [META_START, META_END])
-    print(f"[verl_gdpo] Tokenizer vocab size: {len(tokenizer)}")
+    if len(tokenizer) != original_vocab_size:
+        raise RuntimeError(
+            f"Tokenizer vocab expanded from {original_vocab_size} to {len(tokenizer)}. "
+            f"Meta tokens not found in checkpoint vocab. Use a checkpoint that already "
+            f"has <|meta|> and <|/meta|> tokens (e.g., from SFT), or implement "
+            f"embedding resize for veRL FSDP workers."
+        )
+    print(f"[verl_gdpo] Tokenizer vocab size: {len(tokenizer)} (unchanged)")
 
     # Resolve reward configuration from mode
     mode = config.get('mode', 'E13')

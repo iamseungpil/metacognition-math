@@ -24,7 +24,7 @@ def compute_gdpo_outcome_advantage(
     per_reward_token_level_rewards: List[torch.Tensor],
     reward_weights: List[float],
     eos_mask: torch.Tensor,
-    index: torch.Tensor,
+    index,  # numpy array of group UIDs or torch.Tensor
     epsilon: float = 1e-6,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Compute GDPO advantages from per-reward token-level reward tensors.
@@ -59,8 +59,7 @@ def compute_gdpo_outcome_advantage(
     # (rewards are placed at EOS position, sum over response_length to get scalar)
     per_reward_scores = []
     for r_tensor in per_reward_token_level_rewards:
-        non_zero_mask = (r_tensor != 0)
-        scores = (r_tensor * non_zero_mask).sum(dim=-1)  # (bs,)
+        scores = r_tensor.sum(dim=-1)  # (bs,) — sum over response tokens
         per_reward_scores.append(scores)
 
     # Build group index mapping
@@ -91,7 +90,13 @@ def compute_gdpo_outcome_advantage(
         pre_bn = (stacked * weights.unsqueeze(0)).sum(dim=1)  # (bs,)
 
         # Batch normalization (across all samples in the batch)
-        advantages_scalar = (pre_bn - pre_bn.mean()) / (pre_bn.std() + epsilon)
+        pre_bn_std = pre_bn.std()
+        if pre_bn_std < epsilon:
+            # All advantages are identical (homogeneous batch) — skip batch norm
+            # to preserve any non-zero signal from per-group normalization.
+            advantages_scalar = pre_bn
+        else:
+            advantages_scalar = (pre_bn - pre_bn.mean()) / (pre_bn_std + epsilon)
 
         # Broadcast to response token positions (same as GRPO: scalar -> all tokens via eos_mask)
         advantages = advantages_scalar.unsqueeze(-1).expand(-1, response_length) * eos_mask
