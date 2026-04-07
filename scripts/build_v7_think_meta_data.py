@@ -511,6 +511,32 @@ def _fix_missing_assessment(content: str, rng: random.Random) -> str:
     return re.sub(r'<\|meta\|>.*?<\|/meta\|>', _add_assessment, content, flags=re.DOTALL)
 
 
+def _diversify_redirect_confidence(content: str, rng: random.Random,
+                                    difficulty: str) -> str:
+    """Replace fixed ~0.34 confidence in redirect meta blocks with diverse values.
+
+    E19 analysis showed 80-84% of confidence values stuck at 0.34.
+    Diversify based on difficulty: hard=0.15-0.35, medium=0.25-0.50.
+    """
+    def _replace_conf(match):
+        block = match.group(0)
+        # Find and replace confidence line
+        conf_match = re.search(r'confidence[:\s]+([0-9.]+)', block)
+        if conf_match:
+            old_val = conf_match.group(1)
+            if difficulty == 'hard':
+                new_val = round(rng.uniform(0.15, 0.35), 2)
+            elif difficulty == 'medium':
+                new_val = round(rng.uniform(0.25, 0.50), 2)
+            else:
+                new_val = round(rng.uniform(0.30, 0.55), 2)
+            block = block.replace(f'confidence: {old_val}', f'confidence: {new_val}', 1)
+            block = block.replace(f'confidence:{old_val}', f'confidence: {new_val}', 1)
+        return block
+
+    return re.sub(r'<\|meta\|>.*?<\|/meta\|>', _replace_conf, content, flags=re.DOTALL)
+
+
 def _fix_empty_pre_meta(content: str) -> str:
     """Ensure there's meaningful content before the first meta block.
 
@@ -564,6 +590,9 @@ def process_row(row: pd.Series, rng: random.Random) -> dict:
     # Post-processing fixes (Codex review)
     new_content = _fix_missing_assessment(new_content, rng)
     new_content = _fix_empty_pre_meta(new_content)
+    # Fix confidence 0.34 collapse in redirect data (E19 analysis finding)
+    if scenario == "redirect":
+        new_content = _diversify_redirect_confidence(new_content, rng, difficulty)
 
     # Update messages
     msgs[-1]["content"] = new_content
