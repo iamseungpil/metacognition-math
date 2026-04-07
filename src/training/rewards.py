@@ -1328,11 +1328,17 @@ def _methods_structurally_differ(prefix_text, tail_text):
     t = tail_text.lower()
 
     method_pairs = [
-        ("algebra", "invariant"), ("direct", "case split"),
+        ("algebra", "invariant"), ("direct", "case split"), ("direct", "case analysis"),
         ("expand", "contract"), ("forward", "backward"),
         ("coordinate", "vector"), ("parity", "modular"),
         ("inclusion-exclusion", "recurrence"), ("brute", "structural"),
         ("substitut", "parity"), ("counting", "generating function"),
+        ("direct", "recursion"), ("algebra", "geometric"),
+        ("analytic", "numeric"), ("exact", "approximat"),
+        ("induction", "direct"), ("constructive", "contradiction"),
+        ("greedy", "dynamic programming"), ("brute force", "dynamic programming"),
+        ("brute force", "clever"),
+        ("trial", "systematic"), ("guess", "deriv"),
     ]
     for old_m, new_m in method_pairs:
         if (old_m in p and new_m in t) or (new_m in p and old_m in t):
