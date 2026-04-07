@@ -414,7 +414,7 @@ class SampleSaver:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "E9b", "E9c", "E10", "E9v2", "E9bv2", "E10v2", "E12", "E13"], default="E1")
+    parser.add_argument("--mode", choices=["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "E9b", "E9c", "E10", "E9v2", "E9bv2", "E10v2", "E12", "E13", "E14"], default="E1")
     parser.add_argument("--model_path", default="checkpoints/qwen3_meta_sft")
     parser.add_argument("--data", choices=["gsm8k", "filtered", "mixed", "mixed_train"], default="mixed")
     parser.add_argument("--data_path", default="verl_train_filtered.parquet")
@@ -517,6 +517,13 @@ def main():
         "E13": ([correctness_reward, structural_switch_reward,
                  confidence_trajectory_reward, verify_outcome_reward],
                 [1.0, 0.3, 0.3, 0.2]),
+        # V6.3 E14: Enhanced E9/E13 — verify-first + meta floor + dampened calibration
+        # Grounded in: E9 (verify=best signal), E5/E6/E8 (calibration suppresses meta),
+        # E9v2 (confidence_omission_floor prevents meta collapse)
+        "E14": ([correctness_reward, structural_switch_reward,
+                 verify_outcome_reward, confidence_trajectory_reward,
+                 confidence_omission_floor],
+                [1.0, 0.3, 0.3, 0.15, 0.5]),
     }
     # ─── Model (Full FT, NO LoRA) ───
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
@@ -563,7 +570,7 @@ def main():
                 contextual_reward_funcs.append(fn)
         reward_funcs = contextual_reward_funcs
 
-    use_gdpo = args.mode in ("E3", "E4", "E5", "E6", "E7", "E8", "E9", "E9b", "E9c", "E10", "E9v2", "E9bv2", "E10v2", "E12", "E13")  # GDPO when 2+ rewards
+    use_gdpo = args.mode in ("E3", "E4", "E5", "E6", "E7", "E8", "E9", "E9b", "E9c", "E10", "E9v2", "E9bv2", "E10v2", "E12", "E13", "E14")  # GDPO when 2+ rewards
 
     if use_gdpo:
         _apply_gdpo_patch()
