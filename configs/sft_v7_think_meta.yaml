@@ -1,0 +1,16 @@
+# V7 Think-Meta SFT: 100% meta + 100% think coverage
+# Intent: Fix E19's behavioral mimicry by aligning data with Qwen3's <think> paradigm
+# Hypothesis: <think>+<|meta|> structure will increase meta emission from 16% to >70%
+# Evidence class: mainline
+model_name_or_path: checkpoints/qwen3_base_sft
+dataset_path: data/v7_think_meta_merged.parquet
+output_dir: checkpoints/v7_think_meta_E19v2
+run_name: v7-think-meta-E19v2
+wandb_project: metacot-math
+
+num_train_epochs: 3
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 4
+learning_rate: 2.0e-6
+max_length: 4096
+save_strategy: epoch
