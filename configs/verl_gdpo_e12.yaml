@@ -1,0 +1,169 @@
+# veRL GDPO config for E12: 2 rewards only (correctness + structural switch)
+# Usage: python src/training/verl_gdpo.py --config-name verl_gdpo_e12
+#
+# E12 is the simpler baseline: only correctness and structural switch.
+# Useful for isolating the effect of method switching without confidence/verify noise.
+
+# ── Meta-CoT GDPO settings ──
+mode: E12
+num_examine: 0
+
+# ── Data ──
+data:
+  tokenizer: null
+  train_files: data/verl_train.parquet
+  val_files: data/verl_val.parquet
+  prompt_key: prompt
+  max_prompt_length: 512
+  max_response_length: 2048
+  train_batch_size: 128
+  val_batch_size: 64
+  return_raw_input_ids: False
+  return_raw_chat: False
+
+# ── Actor / Rollout / Reference ──
+actor_rollout_ref:
+  hybrid_engine: True
+  model:
+    path: checkpoints/v6_clean_10k_E19
+    external_lib: null
+    override_config: {}
+    enable_gradient_checkpointing: True
+    use_remove_padding: False
+  actor:
+    strategy: fsdp
+    ppo_mini_batch_size: 32
+    ppo_micro_batch_size: 8
+    use_dynamic_bsz: False
+    ppo_max_token_len_per_gpu: 16384
+    grad_clip: 1.0
+    clip_ratio: 0.2
+    entropy_coeff: 0.001
+    use_kl_loss: True
+    kl_loss_coef: 0.04
+    kl_loss_type: low_var_kl
+    ppo_epochs: 1
+    shuffle: False
+    ulysses_sequence_parallel_size: 1
+    optim:
+      lr: 5e-6
+      lr_warmup_steps_ratio: 0.1
+      min_lr_ratio: 0.1
+      warmup_style: cosine
+      total_training_steps: -1
+    fsdp_config:
+      wrap_policy:
+        min_num_params: 0
+      param_offload: False
+      grad_offload: False
+      optimizer_offload: False
+      fsdp_size: -1
+  ref:
+    fsdp_config:
+      param_offload: False
+      wrap_policy:
+        min_num_params: 0
+      fsdp_size: -1
+    log_prob_micro_batch_size: 32
+    log_prob_use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
+    log_prob_max_token_len_per_gpu: ${actor_rollout_ref.actor.ppo_max_token_len_per_gpu}
+    ulysses_sequence_parallel_size: ${actor_rollout_ref.actor.ulysses_sequence_parallel_size}
+  rollout:
+    name: vllm
+    temperature: 0.9
+    top_k: -1
+    top_p: 1
+    prompt_length: ${data.max_prompt_length}
+    response_length: ${data.max_response_length}
+    dtype: bfloat16
+    gpu_memory_utilization: 0.5
+    ignore_eos: False
+    enforce_eager: True
+    free_cache_engine: True
+    load_format: dummy_dtensor
+    tensor_model_parallel_size: 2
+    max_num_batched_tokens: 8192
+    max_num_seqs: 256
+    log_prob_micro_batch_size: 32
+    log_prob_use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
+    log_prob_max_token_len_per_gpu: ${actor_rollout_ref.actor.ppo_max_token_len_per_gpu}
+    do_sample: True
+    n: 4
+
+# ── Critic (unused for GDPO) ──
+critic:
+  strategy: fsdp
+  optim:
+    lr: 1e-5
+    lr_warmup_steps_ratio: 0.0
+    min_lr_ratio: null
+    warmup_style: constant
+    total_training_steps: -1
+  model:
+    path: ${actor_rollout_ref.model.path}
+    tokenizer_path: ${actor_rollout_ref.model.path}
+    override_config: {}
+    external_lib: ${actor_rollout_ref.model.external_lib}
+    enable_gradient_checkpointing: False
+    use_remove_padding: False
+    fsdp_config:
+      param_offload: False
+      grad_offload: False
+      optimizer_offload: False
+      wrap_policy:
+        min_num_params: 0
+      fsdp_size: -1
+  ppo_mini_batch_size: ${actor_rollout_ref.actor.ppo_mini_batch_size}
+  ppo_micro_batch_size: 8
+  forward_micro_batch_size: ${critic.ppo_micro_batch_size}
+  use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
+  ppo_max_token_len_per_gpu: 32768
+  forward_max_token_len_per_gpu: ${critic.ppo_max_token_len_per_gpu}
+  ulysses_sequence_parallel_size: 1
+  ppo_epochs: ${actor_rollout_ref.actor.ppo_epochs}
+  shuffle: ${actor_rollout_ref.actor.shuffle}
+  grad_clip: 1.0
+  cliprange_value: 0.5
+
+# ── Reward Model (disabled) ──
+reward_model:
+  enable: False
+  strategy: fsdp
+  model:
+    input_tokenizer: ${actor_rollout_ref.model.path}
+    path: ${actor_rollout_ref.model.path}
+    external_lib: ${actor_rollout_ref.model.external_lib}
+    use_remove_padding: False
+    fsdp_config:
+      min_num_params: 0
+      param_offload: False
+  micro_batch_size: 8
+  max_length: null
+  ulysses_sequence_parallel_size: 1
+  use_dynamic_bsz: ${critic.use_dynamic_bsz}
+  forward_max_token_len_per_gpu: ${critic.forward_max_token_len_per_gpu}
+
+# ── Algorithm ──
+algorithm:
+  gamma: 1.0
+  lam: 1.0
+  adv_estimator: gdpo
+  kl_penalty: kl
+  kl_ctrl:
+    type: fixed
+    kl_coef: 0.04
+
+# ── Trainer ──
+trainer:
+  total_epochs: 15
+  total_training_steps: null
+  project_name: metacot-math
+  experiment_name: verl_gdpo_e12
+  logger: ['console', 'wandb']
+  nnodes: 1
+  n_gpus_per_node: 4
+  save_freq: 100
+  test_freq: 50
+  critic_warmup: 0
+  default_hdfs_dir: null
+  default_local_dir: checkpoints/verl_gdpo_e12
