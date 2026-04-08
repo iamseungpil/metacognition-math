@@ -36,8 +36,11 @@ from verl.trainer.ppo import core_algos
 from src.training.rewards import (
     correctness_reward,
     structural_switch_reward,
+    structural_switch_reward_v2,
     confidence_trajectory_reward,
     verify_outcome_reward,
+    verify_outcome_v2,
+    confidence_omission_floor,
 )
 from src.training.verl_gdpo_algos import compute_gdpo_outcome_advantage
 
@@ -56,7 +59,19 @@ REWARD_CONFIGS = {
                   confidence_trajectory_reward, verify_outcome_reward],
         "weights": [1.0, 0.3, 0.3, 0.2],
     },
-    # E20+: future experiments can be added here without touching any other file
+    "E14": {
+        "funcs": [correctness_reward, structural_switch_reward,
+                  verify_outcome_reward, confidence_trajectory_reward,
+                  confidence_omission_floor],
+        "weights": [1.0, 0.3, 0.3, 0.15, 0.5],
+    },
+    "E21": {
+        "funcs": [correctness_reward, structural_switch_reward_v2,
+                  verify_outcome_v2, confidence_trajectory_reward,
+                  confidence_omission_floor],
+        "weights": [1.0, 0.15, 0.3, 0.15, 0.5],
+    },
+    # Future experiments can be added here without touching any other file
 }
 
 
@@ -208,7 +223,10 @@ class MetaCotRewardManager:
         for func_idx, r_tensor in enumerate(per_reward_tensors):
             combined += r_tensor * weights[func_idx]
 
-        return combined
+        # Return dict matching simpleRL-reason's expected format
+        # correctness_tensor: per-sample correctness (from first reward func)
+        correctness_tensor = per_reward_tensors[0].sum(dim=-1)  # (bs,)
+        return {"reward_tensor": combined, "correctness_tensor": correctness_tensor}
 
 
 # ---------------------------------------------------------------------------
