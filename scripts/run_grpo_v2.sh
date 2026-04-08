@@ -8,7 +8,7 @@ cd /scratch/metacognition
 export PYTHONPATH=/scratch/metacognition
 export WANDB_API_KEY=$(cat ~/.wandb_key 2>/dev/null || echo "2f4e627868f1f9dad10bcb1a14fbf96817e6baa9")
 
-MODE=${1:-E3}
+MODE=${MODE:-${1:-E3}}
 STEPS=${2:-1000}
 MODEL_PATH="${MODEL_PATH:-checkpoints/qwen3_metacot_control_v5_all_sft}"
 DATA="${DATA:-mixed_train}"
