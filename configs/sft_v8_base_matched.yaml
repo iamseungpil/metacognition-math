@@ -1,9 +1,9 @@
 # Base SFT matched: same 6329 problems as V8 but NO meta blocks
 # Intent: Fair baseline for meta-RL comparison
 model_name_or_path: checkpoints/qwen3_base_sft
-dataset_path: data/v8_base_matched.parquet
-output_dir: checkpoints/v8_base_matched_sft
-run_name: v8-base-matched-sft
+dataset_path: data/v8_base_matched_clean.parquet
+output_dir: checkpoints/v8_base_matched_clean_sft
+run_name: v8-base-matched-clean-sft
 wandb_project: metacot-math
 
 num_train_epochs: 3
