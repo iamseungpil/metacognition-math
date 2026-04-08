@@ -1,0 +1,15 @@
+2026-03-31 12:55 UTC: META TOKEN VISIBILITY TEST
+=================================================
+Node: tops-caiman
+Model: checkpoints/qwen3_metacot_v2_sft (V2 Meta SFT)
+
+Results:
+  META in vocab: True
+  Is special: False (NOT in additional_special_tokens)
+  skip_special_tokens=False: Has <|meta|> = True
+  skip_special_tokens=True:  Has <|meta|> = True  ← CRITICAL
+
+VERDICT: META_VISIBLE=True
+  → Reward functions CAN see meta tokens
+  → The add_tokens() fix is working correctly
+  → GRPO E3/E5/E7/E8 will receive proper meta quality signals

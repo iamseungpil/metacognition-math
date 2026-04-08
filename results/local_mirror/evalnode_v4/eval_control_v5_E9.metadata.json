@@ -1,0 +1,17 @@
+{
+  "model": "control_v5_E9",
+  "model_path": "/scratch/metacognition/checkpoints/control_v5_E9/final",
+  "base_model": null,
+  "is_lora": false,
+  "benchmarks": [
+    "gsm8k",
+    "math500",
+    "aime2024"
+  ],
+  "max_problems_per_benchmark": 30,
+  "num_samples": 1,
+  "total_problems": 90,
+  "hostname": "node-0",
+  "utc_timestamp": "2026-04-03T23:18:33Z",
+  "tokenizer_name_or_path": "/scratch/metacognition/checkpoints/control_v5_E9/final"
+}

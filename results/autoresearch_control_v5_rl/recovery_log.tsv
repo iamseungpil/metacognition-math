@@ -1,0 +1,20 @@
+2026-04-03T06:36:17Z	iter2	patch_eval_train_wait_loop	keep
+2026-04-03T07:33:39Z	iter3	probe_hidden_dim_dynamic_patch	pending_verify
+2026-04-03T07:35:12Z	iter4	retrain_cli_default_fix	keep
+2026-04-03T07:38:04Z	iter5	remote_probe_smoke_passed_hidden4096	keep
+2026-04-03T07:44:19Z	iter6	stub_vllm_for_trl_import	pending_verify
+2026-04-03T07:45:48Z	iter7	stub_vllm_add_spec	pending_verify
+2026-04-03T07:46:54Z	iter8	stub_vllm_ascend	pending_verify
+2026-04-03T07:48:49Z	iter9	stub_mergekit	pending_verify
+2026-04-03T07:50:18Z	iter10	stub_llm_blender	pending_verify
+2026-04-03T07:51:24Z	iter11	stub_vllm_symbols	pending_verify
+2026-04-03T07:52:50Z	iter12	check_runtime_env_version_pin	keep
+2026-04-03T07:54:54Z	iter13	found_transformers_version_drift_5.5.0	keep
+2026-04-03T08:06:23Z	iter14	patch_hf_repo_type_and_grpo_memory_knobs_pending_verify
+2026-04-03T08:12:35Z	iter15	eval_4gpu_smoke_running_without_oom_pending_finish
+2026-04-03T08:13:35Z	iter14	keep_eval_smoke_passed_4gpu_safe_knobs
+2026-04-03T08:21:36Z	iter16	keep_probe_retrain_passed_auroc_0.8371_and_eval_lane_relaunched
+2026-04-03T08:24:21Z	iter17	keep_train_b_hf_download_recovered_and_filter_future_hf_uploads
+2026-04-03T09:20:00Z	iter18	keep_vllm_sampling_params_stub_remote_import_smoke_passed_on_e8_train_b
+2026-04-03T09:40:00Z	iter19	keep_probe_retrain_pipeline_shifted_to_group_split_and_meta_prefix_cache
+2026-04-03T09:50:00Z	iter20	found_qwen2tokenizer_additional_special_tokens_runtime_bug_pending_relaunch

@@ -1,0 +1,92 @@
+[launch] E10v2 on E8
+           _  _  _ _______        _______  _____  _______ _______
+           |  |  | |______ |      |       |     | |  |  | |______
+           |__|__| |______ |_____ |_____  |_____| |  |  | |______
+
+
+                               _______  _____
+                                  |    |     |
+                                  |    |_____|
+
+
+ _______ _____ __   _  ______ _     _        _______  ______ _____ _______ __   __
+ |______   |   | \  | |  ____ |     | |      |_____| |_____/   |      |      \_/
+ ______| __|__ |  \_| |_____| |_____| |_____ |     | |    \_ __|__    |       |
+
+Singularity is a globally distributed, multi-tenant (across both, data and control planes)
+service that provides robust, cost-effective and competitive AI infrastructure
+(compute, networking and storage) for AI training and inferencing.
+To learn more, visit: https://aka.ms/singularity
+
+                           Built with ❤️  by Azure
+                      
+
+Local changes in the container, such as (but not limited to) software installations, 
+local data, and custom configurations (e.g., custom environment variables), will not be 
+saved if container terminates. These changes may be lost during container restarts, 
+failovers, or upgrades.
+
+Singularity is hiring, come join us! For open positions, visit http://www.JoinSingularity.com.
+
+********************************* SINGULARITY HINT OF THE DAY **********************************
+Cross-node SSH instructions:
+In a distributed job, one might be interested to connect from one node to another (e.g., 
+from node-0 to node-1). You can SSH to another job node using the node's rank. For example, 
+to SSH into node-1, use:
+ssh node-1
+************************************************************************************************
+
+You are currently in /scratch/azureml/cr/j/2996518f87514abfb279730e833e5c4f/exe/wd
+Job Executions run from here, your code snapshot and logs are here as well 🏡
+
+Switching to aiscuser...
+           _  _  _ _______        _______  _____  _______ _______
+           |  |  | |______ |      |       |     | |  |  | |______
+           |__|__| |______ |_____ |_____  |_____| |  |  | |______
+
+
+                               _______  _____
+                                  |    |     |
+                                  |    |_____|
+
+
+ _______ _____ __   _  ______ _     _        _______  ______ _____ _______ __   __
+ |______   |   | \  | |  ____ |     | |      |_____| |_____/   |      |      \_/
+ ______| __|__ |  \_| |_____| |_____| |_____ |     | |    \_ __|__    |       |
+
+Singularity is a globally distributed, multi-tenant (across both, data and control planes)
+service that provides robust, cost-effective and competitive AI infrastructure
+(compute, networking and storage) for AI training and inferencing.
+To learn more, visit: https://aka.ms/singularity
+
+                           Built with ❤️  by Azure
+                      
+
+Local changes in the container, such as (but not limited to) software installations, 
+local data, and custom configurations (e.g., custom environment variables), will not be 
+saved if container terminates. These changes may be lost during container restarts, 
+failovers, or upgrades.
+
+Singularity is hiring, come join us! For open positions, visit http://www.JoinSingularity.com.
+
+********************************* SINGULARITY HINT OF THE DAY **********************************
+Cross-node SSH instructions:
+In a distributed job, one might be interested to connect from one node to another (e.g., 
+from node-0 to node-1). You can SSH to another job node using the node's rank. For example, 
+to SSH into node-1, use:
+ssh node-1
+************************************************************************************************
+
+You are currently in /scratch/azureml/cr/j/2996518f87514abfb279730e833e5c4f/exe/wd
+Job Executions run from here, your code snapshot and logs are here as well 🏡
+
+
+You are currently in /scratch/azureml/cr/j/2996518f87514abfb279730e833e5c4f/exe/wd
+Job Executions run from here, your code snapshot and logs are here as well 🏡
+
+You are using Common Runtime 🎉
+
+You are currently in $AZUREML_CR_EXECUTION_WORKING_DIR_PATH=/scratch/azureml/cr/j/2996518f87514abfb279730e833e5c4f/exe/wd
+
+Job Executions will run from here, your code Snapshot is here as well 🏡
+You can stream logs to the Run in portal by writing them to the \$AZUREML_CR_EXECUTION_WORKING_DIR_PATH/user_logs folder.

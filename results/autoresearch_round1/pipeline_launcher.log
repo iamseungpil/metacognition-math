@@ -1,0 +1,444 @@
+[2026-04-01 10:05:44] waiting for TRAPI generation pid=1448365
+[2026-04-01 11:19:45] building behavior SFT variants
+behavior_all_sft.parquet: 770 rows
+behavior_verify_sft.parquet: 218 rows
+behavior_redirect_sft.parquet: 554 rows
+[2026-04-01 11:19:45] copying code and data to tops-caiman
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+[2026-04-01 11:20:36] copying code and data to metacognition_e8
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+[2026-04-01 11:21:27] launching combined behavior SFT on tops-caiman
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+           _  _  _ _______        _______  _____  _______ _______
+           |  |  | |______ |      |       |     | |  |  | |______
+           |__|__| |______ |_____ |_____  |_____| |  |  | |______
+
+
+                               _______  _____
+                                  |    |     |
+                                  |    |_____|
+
+
+ _______ _____ __   _  ______ _     _        _______  ______ _____ _______ __   __
+ |______   |   | \  | |  ____ |     | |      |_____| |_____/   |      |      \_/
+ ______| __|__ |  \_| |_____| |_____| |_____ |     | |    \_ __|__    |       |
+
+Singularity is a globally distributed, multi-tenant (across both, data and control planes)
+service that provides robust, cost-effective and competitive AI infrastructure
+(compute, networking and storage) for AI training and inferencing.
+To learn more, visit: https://aka.ms/singularity
+
+                           Built with ❤️  by Azure
+                      
+
+Local changes in the container, such as (but not limited to) software installations, 
+local data, and custom configurations (e.g., custom environment variables), will not be 
+saved if container terminates. These changes may be lost during container restarts, 
+failovers, or upgrades.
+
+Singularity is hiring, come join us! For open positions, visit http://www.JoinSingularity.com.
+
+********************************* SINGULARITY HINT OF THE DAY **********************************
+Cross-node SSH instructions:
+In a distributed job, one might be interested to connect from one node to another (e.g., 
+from node-0 to node-1). You can SSH to another job node using the node's rank. For example, 
+to SSH into node-1, use:
+ssh node-1
+************************************************************************************************
+/etc/profile.d/singularity_base_profile.sh: line 186: SINGULARITY_CHECKPOINT_RESTORE_STRATEGY_TYPE: command not found
+/etc/profile.d/singularity_base_profile.sh: line 422: declare: `Microsoft.Azure.AISC.Diagnostics}': not a valid identifier
+
+You are currently in /scratch/azureml/cr/j/bdabe827861643b999961ff45fe00be7/exe/wd
+Job Executions run from here, your code snapshot and logs are here as well 🏡
+
+Switching to aiscuser...
+/etc/profile.d/singularity_base_profile.sh: line 186: SINGULARITY_CHECKPOINT_RESTORE_STRATEGY_TYPE: command not found
+/etc/profile.d/singularity_base_profile.sh: line 422: declare: `Microsoft.Azure.AISC.Diagnostics}': not a valid identifier
+           _  _  _ _______        _______  _____  _______ _______
+           |  |  | |______ |      |       |     | |  |  | |______
+           |__|__| |______ |_____ |_____  |_____| |  |  | |______
+
+
+                               _______  _____
+                                  |    |     |
+                                  |    |_____|
+
+
+ _______ _____ __   _  ______ _     _        _______  ______ _____ _______ __   __
+ |______   |   | \  | |  ____ |     | |      |_____| |_____/   |      |      \_/
+ ______| __|__ |  \_| |_____| |_____| |_____ |     | |    \_ __|__    |       |
+
+Singularity is a globally distributed, multi-tenant (across both, data and control planes)
+service that provides robust, cost-effective and competitive AI infrastructure
+(compute, networking and storage) for AI training and inferencing.
+To learn more, visit: https://aka.ms/singularity
+
+                           Built with ❤️  by Azure
+                      
+
+Local changes in the container, such as (but not limited to) software installations, 
+local data, and custom configurations (e.g., custom environment variables), will not be 
+saved if container terminates. These changes may be lost during container restarts, 
+failovers, or upgrades.
+
+Singularity is hiring, come join us! For open positions, visit http://www.JoinSingularity.com.
+
+********************************* SINGULARITY HINT OF THE DAY **********************************
+Cross-node SSH instructions:
+In a distributed job, one might be interested to connect from one node to another (e.g., 
+from node-0 to node-1). You can SSH to another job node using the node's rank. For example, 
+to SSH into node-1, use:
+ssh node-1
+************************************************************************************************
+
+You are currently in /scratch/azureml/cr/j/bdabe827861643b999961ff45fe00be7/exe/wd
+Job Executions run from here, your code snapshot and logs are here as well 🏡
+
+
+You are currently in /scratch/azureml/cr/j/bdabe827861643b999961ff45fe00be7/exe/wd
+Job Executions run from here, your code snapshot and logs are here as well 🏡
+
+You are using Common Runtime 🎉
+
+You are currently in $AZUREML_CR_EXECUTION_WORKING_DIR_PATH=/scratch/azureml/cr/j/bdabe827861643b999961ff45fe00be7/exe/wd
+
+Job Executions will run from here, your code Snapshot is here as well 🏡
+You can stream logs to the Run in portal by writing them to the \$AZUREML_CR_EXECUTION_WORKING_DIR_PATH/user_logs folder.
+[2026-04-01 11:21:29] launching redirect-focused behavior SFT on metacognition_e8
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+           _  _  _ _______        _______  _____  _______ _______
+           |  |  | |______ |      |       |     | |  |  | |______
+           |__|__| |______ |_____ |_____  |_____| |  |  | |______
+
+
+                               _______  _____
+                                  |    |     |
+                                  |    |_____|
+
+
+ _______ _____ __   _  ______ _     _        _______  ______ _____ _______ __   __
+ |______   |   | \  | |  ____ |     | |      |_____| |_____/   |      |      \_/
+ ______| __|__ |  \_| |_____| |_____| |_____ |     | |    \_ __|__    |       |
+
+Singularity is a globally distributed, multi-tenant (across both, data and control planes)
+service that provides robust, cost-effective and competitive AI infrastructure
+(compute, networking and storage) for AI training and inferencing.
+To learn more, visit: https://aka.ms/singularity
+
+                           Built with ❤️  by Azure
+                      
+
+Local changes in the container, such as (but not limited to) software installations, 
+local data, and custom configurations (e.g., custom environment variables), will not be 
+saved if container terminates. These changes may be lost during container restarts, 
+failovers, or upgrades.
+
+Singularity is hiring, come join us! For open positions, visit http://www.JoinSingularity.com.
+
+********************************* SINGULARITY HINT OF THE DAY **********************************
+Cross-node SSH instructions:
+In a distributed job, one might be interested to connect from one node to another (e.g., 
+from node-0 to node-1). You can SSH to another job node using the node's rank. For example, 
+to SSH into node-1, use:
+ssh node-1
+************************************************************************************************
+/etc/profile.d/singularity_base_profile.sh: line 180: declare: `Microsoft.Azure.AISC.Diagnostics}': not a valid identifier
+/etc/profile.d/singularity_base_profile.sh: line 208: SINGULARITY_CHECKPOINT_RESTORE_STRATEGY_TYPE: command not found
+
+You are currently in /scratch/azureml/cr/j/5da70c27268a4a96997851b43c8c4225/exe/wd
+Job Executions run from here, your code snapshot and logs are here as well 🏡
+
+Switching to aiscuser...
+/etc/profile.d/singularity_base_profile.sh: line 180: declare: `Microsoft.Azure.AISC.Diagnostics}': not a valid identifier
+/etc/profile.d/singularity_base_profile.sh: line 208: SINGULARITY_CHECKPOINT_RESTORE_STRATEGY_TYPE: command not found
+           _  _  _ _______        _______  _____  _______ _______
+           |  |  | |______ |      |       |     | |  |  | |______
+           |__|__| |______ |_____ |_____  |_____| |  |  | |______
+
+
+                               _______  _____
+                                  |    |     |
+                                  |    |_____|
+
+
+ _______ _____ __   _  ______ _     _        _______  ______ _____ _______ __   __
+ |______   |   | \  | |  ____ |     | |      |_____| |_____/   |      |      \_/
+ ______| __|__ |  \_| |_____| |_____| |_____ |     | |    \_ __|__    |       |
+
+Singularity is a globally distributed, multi-tenant (across both, data and control planes)
+service that provides robust, cost-effective and competitive AI infrastructure
+(compute, networking and storage) for AI training and inferencing.
+To learn more, visit: https://aka.ms/singularity
+
+                           Built with ❤️  by Azure
+                      
+
+Local changes in the container, such as (but not limited to) software installations, 
+local data, and custom configurations (e.g., custom environment variables), will not be 
+saved if container terminates. These changes may be lost during container restarts, 
+failovers, or upgrades.
+
+Singularity is hiring, come join us! For open positions, visit http://www.JoinSingularity.com.
+
+********************************* SINGULARITY HINT OF THE DAY **********************************
+Cross-node SSH instructions:
+In a distributed job, one might be interested to connect from one node to another (e.g., 
+from node-0 to node-1). You can SSH to another job node using the node's rank. For example, 
+to SSH into node-1, use:
+ssh node-1
+************************************************************************************************
+
+You are currently in /scratch/azureml/cr/j/5da70c27268a4a96997851b43c8c4225/exe/wd
+Job Executions run from here, your code snapshot and logs are here as well 🏡
+
+
+You are currently in /scratch/azureml/cr/j/5da70c27268a4a96997851b43c8c4225/exe/wd
+Job Executions run from here, your code snapshot and logs are here as well 🏡
+
+You are using Common Runtime 🎉
+
+You are currently in $AZUREML_CR_EXECUTION_WORKING_DIR_PATH=/scratch/azureml/cr/j/5da70c27268a4a96997851b43c8c4225/exe/wd
+
+Job Executions will run from here, your code Snapshot is here as well 🏡
+You can stream logs to the Run in portal by writing them to the \$AZUREML_CR_EXECUTION_WORKING_DIR_PATH/user_logs folder.
+[2026-04-01 11:21:32] waiting for combined behavior SFT to finish before E9 GDPO
+[2026-04-01 11:21:32] round1 pipeline launched
+Detected non-Windows, using standard AsyncIO event loop
+/home/v-seungplee/.azure/cliextensions/ml/azext_mlv2/manual/custom/_ssh_connector.py:73: DeprecationWarning: websockets.client.connect is deprecated
+  async with websockets.client.connect(
+Warning: Permanently added 'placeholder' (ED25519) to the list of known hosts.
+           _  _  _ _______        _______  _____  _______ _______
+           |  |  | |______ |      |       |     | |  |  | |______
+           |__|__| |______ |_____ |_____  |_____| |  |  | |______
+
+
+                               _______  _____
+                                  |    |     |
+                                  |    |_____|
+
+
+ _______ _____ __   _  ______ _     _        _______  ______ _____ _______ __   __
+ |______   |   | \  | |  ____ |     | |      |_____| |_____/   |      |      \_/
+ ______| __|__ |  \_| |_____| |_____| |_____ |     | |    \_ __|__    |       |
+
+Singularity is a globally distributed, multi-tenant (across both, data and control planes)
+service that provides robust, cost-effective and competitive AI infrastructure
+(compute, networking and storage) for AI training and inferencing.
+To learn more, visit: https://aka.ms/singularity
+
+                           Built with ❤️  by Azure
+                      
+
+Local changes in the container, such as (but not limited to) software installations, 
+local data, and custom configurations (e.g., custom environment variables), will not be 
+saved if container terminates. These changes may be lost during container restarts, 
+failovers, or upgrades.
+
+Singularity is hiring, come join us! For open positions, visit http://www.JoinSingularity.com.
+
+********************************* SINGULARITY HINT OF THE DAY **********************************
+Cross-node SSH instructions:
+In a distributed job, one might be interested to connect from one node to another (e.g., 
+from node-0 to node-1). You can SSH to another job node using the node's rank. For example, 
+to SSH into node-1, use:
+ssh node-1
+************************************************************************************************
+/etc/profile.d/singularity_base_profile.sh: line 186: SINGULARITY_CHECKPOINT_RESTORE_STRATEGY_TYPE: command not found
+
+You are currently in /scratch/azureml/cr/j/bdabe827861643b999961ff45fe00be7/exe/wd
+Job Executions run from here, your code snapshot and logs are here as well 🏡
+
+/etc/profile.d/singularity_base_profile.sh: line 422: declare: `Microsoft.Azure.AISC.Diagnostics}': not a valid identifier
+Switching to aiscuser...
+/etc/profile.d/singularity_base_profile.sh: line 186: SINGULARITY_CHECKPOINT_RESTORE_STRATEGY_TYPE: command not found
+/etc/profile.d/singularity_base_profile.sh: line 422: declare: `Microsoft.Azure.AISC.Diagnostics}': not a valid identifier
+           _  _  _ _______        _______  _____  _______ _______
+           |  |  | |______ |      |       |     | |  |  | |______
+           |__|__| |______ |_____ |_____  |_____| |  |  | |______
+
+
+                               _______  _____
+                                  |    |     |
+                                  |    |_____|
+
+
+ _______ _____ __   _  ______ _     _        _______  ______ _____ _______ __   __
+ |______   |   | \  | |  ____ |     | |      |_____| |_____/   |      |      \_/
+ ______| __|__ |  \_| |_____| |_____| |_____ |     | |    \_ __|__    |       |
+
+Singularity is a globally distributed, multi-tenant (across both, data and control planes)
+service that provides robust, cost-effective and competitive AI infrastructure
+(compute, networking and storage) for AI training and inferencing.
+To learn more, visit: https://aka.ms/singularity
+
+                           Built with ❤️  by Azure
+                      
+
+Local changes in the container, such as (but not limited to) software installations, 
+local data, and custom configurations (e.g., custom environment variables), will not be 
+saved if container terminates. These changes may be lost during container restarts, 
+failovers, or upgrades.
+
+Singularity is hiring, come join us! For open positions, visit http://www.JoinSingularity.com.
+
+********************************* SINGULARITY HINT OF THE DAY **********************************
+Cross-node SSH instructions:
+In a distributed job, one might be interested to connect from one node to another (e.g., 
+from node-0 to node-1). You can SSH to another job node using the node's rank. For example, 
+to SSH into node-1, use:
+ssh node-1
+************************************************************************************************
+
+You are currently in /scratch/azureml/cr/j/bdabe827861643b999961ff45fe00be7/exe/wd
+Job Executions run from here, your code snapshot and logs are here as well 🏡
+
+
+You are currently in /scratch/azureml/cr/j/bdabe827861643b999961ff45fe00be7/exe/wd
+Job Executions run from here, your code snapshot and logs are here as well 🏡
+
+You are using Common Runtime 🎉
+
+You are currently in $AZUREML_CR_EXECUTION_WORKING_DIR_PATH=/scratch/azureml/cr/j/bdabe827861643b999961ff45fe00be7/exe/wd
+
+Job Executions will run from here, your code Snapshot is here as well 🏡
+You can stream logs to the Run in portal by writing them to the \$AZUREML_CR_EXECUTION_WORKING_DIR_PATH/user_logs folder.

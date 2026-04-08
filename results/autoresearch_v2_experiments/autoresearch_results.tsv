@@ -1,0 +1,4 @@
+iteration	timestamp	action	metric	result	status	notes
+0	2026-04-04T14:30	baseline	40/40 tests pass, py_compile OK	code_ready	keep	V2 rewards implemented: same_route_repetition_penalty, route_switch_evidence_reward, confidence_omission_floor. E9v2/E9bv2/E10v2 modes added to grpo_v2.py.
+1	2026-04-04T14:35	sync_code	3/3 nodes synced	all_synced	keep	rewards.py, grpo_v2.py, launch_v2_experiments.sh synced to EVAL, TRAIN_B, E8 via proxy SSH.
+2	2026-04-04T14:42	launch_training	3/3 experiments launched	training_started	keep	EVAL=E9v2, TRAIN_B=E9bv2, E8=E10v2. 300 steps each (~10h), then auto-eval (~26h). ETA: ~36h total.
