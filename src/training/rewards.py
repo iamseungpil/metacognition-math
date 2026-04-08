@@ -1535,6 +1535,216 @@ def verify_outcome_reward(completions, ground_truth=None, **kwargs):
     return rewards
 
 
+def _method_diff_score(pre: str, post: str) -> float:
+    """Soft method difference score (0-1) for switch_v2.
+
+    3 components per Codex review:
+      method_family_change (0.60): keyword pair matching (expanded)
+      representation_change (0.25): variable/notation differences
+      opener_change (0.15): first-line approach indicator
+    """
+    p = pre.lower()
+    t = post.lower()
+
+    # 1. Method family change (0.60)
+    method_family = 0.0
+    method_pairs = [
+        ("algebra", "invariant"), ("direct", "case split"), ("direct", "case analysis"),
+        ("expand", "contract"), ("forward", "backward"),
+        ("coordinate", "vector"), ("parity", "modular"),
+        ("inclusion-exclusion", "recurrence"), ("brute", "structural"),
+        ("substitut", "parity"), ("counting", "generating function"),
+        ("direct", "recursion"), ("algebra", "geometric"),
+        ("analytic", "numeric"), ("exact", "approximat"),
+        ("induction", "direct"), ("constructive", "contradiction"),
+        ("greedy", "dynamic programming"), ("brute force", "dynamic programming"),
+        ("brute force", "clever"), ("trial", "systematic"), ("guess", "deriv"),
+        ("factoring", "completing the square"), ("synthetic division", "long division"),
+        ("trigonometric", "algebraic"), ("polar", "cartesian"),
+    ]
+    for old_m, new_m in method_pairs:
+        if (old_m in p and new_m in t) or (new_m in p and old_m in t):
+            method_family = 1.0
+            break
+
+    # Explicit switch phrases (weaker signal)
+    if method_family == 0.0 and re.search(
+        r'\b(different method|alternative|instead of the previous|'
+        r'another approach|let me try a different|let me reconsider)\b',
+        t, re.IGNORECASE,
+    ):
+        method_family = 0.5
+
+    # 2. Representation change (0.25): different variables/notation
+    repr_change = 0.0
+    # Check if variables change
+    pre_vars = set(re.findall(r'\b([a-z])\s*=', p))
+    post_vars = set(re.findall(r'\b([a-z])\s*=', t))
+    if pre_vars and post_vars:
+        overlap = len(pre_vars & post_vars) / max(len(pre_vars | post_vars), 1)
+        repr_change = 1.0 - overlap  # less overlap = more change
+
+    # Check if notation style changes (e.g., fraction vs decimal)
+    pre_has_frac = '\\frac' in p or '/' in p
+    post_has_frac = '\\frac' in t or '/' in t
+    pre_has_decimal = bool(re.search(r'\d+\.\d+', p))
+    post_has_decimal = bool(re.search(r'\d+\.\d+', t))
+    if pre_has_frac and post_has_decimal and not pre_has_decimal:
+        repr_change = max(repr_change, 0.7)
+    elif pre_has_decimal and post_has_frac and not pre_has_frac:
+        repr_change = max(repr_change, 0.7)
+
+    # 3. Opener change (0.15): different first approach indicator
+    opener_change = 0.0
+    pre_first = p.strip().split('\n')[0][:80] if p.strip() else ''
+    post_first = t.strip().split('\n')[0][:80] if t.strip() else ''
+    if pre_first and post_first:
+        # Simple word overlap for first line
+        pre_words = set(pre_first.split())
+        post_words = set(post_first.split())
+        if pre_words and post_words:
+            overlap = len(pre_words & post_words) / max(len(pre_words | post_words), 1)
+            opener_change = 1.0 - overlap
+
+    return method_family * 0.60 + repr_change * 0.25 + opener_change * 0.15
+
+
+def structural_switch_reward_v2(completions, ground_truth=None, **kwargs):
+    """R2v2: Soft structural switch reward with gating.
+
+    Per Codex review:
+      - Soft method_diff_score (0-1) instead of binary
+      - Gating: meta required, verify is soft multiplier
+      - Post-meta length: soft ramp instead of hard threshold
+      - Partial credit for attempt even when wrong
+    """
+    _verify_re = re.compile(
+        r"\b(substitut\w*\s+back|plug\w*\s+(back|in)|"
+        r"reverse|inverse|check\w*\s+by|boundary|special\s+case|"
+        r"sanity\s+check|verify\w*\s+by)\b",
+        re.IGNORECASE,
+    )
+    rewards = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        gt = ground_truth[i] if ground_truth is not None else ""
+
+        # Gate: meta must be present
+        meta_start = text.find("<|meta|>")
+        meta_end = text.rfind("<|/meta|>")
+        if meta_start < 0 or meta_end < 0:
+            rewards.append(0.0)
+            continue
+
+        # Strip think tags for content analysis
+        text_clean = re.sub(r'</?think>', '', text)
+        ms = text_clean.find("<|meta|>")
+        me = text_clean.rfind("<|/meta|>")
+        pre = text_clean[:ms].strip()
+        post = text_clean[me + len("<|/meta|>"):].strip()
+        # Remove boxed answer from post for content analysis
+        post_content = re.sub(r'The answer is.*$', '', post, flags=re.DOTALL).strip()
+
+        if len(pre) < 30:
+            rewards.append(0.0)
+            continue
+
+        # Soft post-meta length gate: ramp from 5 to 30 math-ish tokens
+        math_tokens = len(re.findall(r'[=+\-*/^()]|\d+|\\[a-z]+', post_content))
+        length_mult = min(max((math_tokens - 5) / 25.0, 0.0), 1.0)
+
+        if length_mult < 0.01:
+            rewards.append(0.0)
+            continue
+
+        # Soft verify multiplier
+        has_verify = bool(_verify_re.search(post))
+        verify_mult = 1.0 if has_verify else 0.6
+
+        # Soft method diff score
+        diff_score = _method_diff_score(pre, post_content)
+
+        # Combine: diff_score × length_mult × verify_mult
+        raw_score = diff_score * length_mult * verify_mult
+
+        # Scale by correctness
+        is_correct = _check_correctness(text, gt)
+        if is_correct:
+            final = raw_score * 1.0  # full credit
+        else:
+            final = raw_score * 0.5  # partial credit
+
+        rewards.append(min(final, 1.0))
+
+    return rewards
+
+
+# Template phrases for verify_outcome_v2 penalty
+_VERIFY_TEMPLATES = [
+    "let me verify by estimating",
+    "sanity check:",
+    "reverse verification: starting from",
+    "verification: working backwards from",
+    "let me verify: substituting",
+    "quick check: plugging",
+    "cross-check: an alternative approach",
+    "confirming:",
+    "double-checking: recomputing",
+    "testing boundary cases:",
+]
+
+
+def verify_outcome_v2(completions, ground_truth=None, **kwargs):
+    """R4v2: Verify reward with template penalty.
+
+    Per Codex review:
+      - Penalize formulaic template phrases when no computation present
+      - Bonus for actual computation (new equations with prior symbols)
+      - Capped in [-0.3, 0.3] for GDPO stability
+    """
+    _verify_re = re.compile(
+        r"\b(substitut\w*\s+back|plug\w*\s+(back|in)|"
+        r"reverse|inverse|check\w*\s+by|boundary|special\s+case|"
+        r"sanity\s+check|verify\w*\s+by)\b",
+        re.IGNORECASE,
+    )
+    _has_numbers_re = re.compile(r"-?\d[\d,]*\.?\d*\s*[=<>≤≥≠!]|[a-zA-Z]\s*=\s*-?\d")
+
+    rewards = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        gt = ground_truth[i] if ground_truth is not None else ""
+
+        meta_end = text.rfind("<|/meta|>")
+        verify_region = text[meta_end:] if meta_end >= 0 else text[-500:]
+
+        if not _verify_re.search(verify_region):
+            rewards.append(0.0)
+            continue
+
+        has_numerical = bool(_has_numbers_re.search(verify_region))
+        is_correct = _check_correctness(text, gt)
+
+        # Template detection
+        verify_lower = verify_region.lower()
+        is_template = any(t in verify_lower for t in _VERIFY_TEMPLATES)
+
+        if is_template and not has_numerical:
+            # Template phrase with no actual computation → penalty
+            rewards.append(-0.3)
+        elif has_numerical and is_correct:
+            rewards.append(0.3)
+        elif has_numerical and not is_correct:
+            rewards.append(-0.2)
+        elif is_template:
+            # Template but has some numbers → minimal
+            rewards.append(0.05)
+        else:
+            rewards.append(0.1)  # non-template verify phrase
+
+    return rewards
+
+
 def efficiency_bonus_reward(completions, **kwargs):
     """R_len: Reward efficient solutions (shorter = bonus)."""
     rewards = []

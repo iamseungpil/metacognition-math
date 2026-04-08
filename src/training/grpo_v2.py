@@ -210,6 +210,8 @@ from src.training.rewards import (
     # V6.1 rewards (2026-04-05): structural switch + Brier calibration + verify outcome
     structural_switch_reward, brier_calibration_reward, verify_outcome_reward, efficiency_bonus_reward,
     confidence_trajectory_reward,
+    # V8 E21 rewards: soft switch v2 + verify v2
+    structural_switch_reward_v2, verify_outcome_v2,
 )
 from src.training.tokenizer_utils import ensure_meta_tokens_not_special
 
@@ -414,7 +416,7 @@ class SampleSaver:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "E9b", "E9c", "E10", "E9v2", "E9bv2", "E10v2", "E12", "E13", "E14"], default="E1")
+    parser.add_argument("--mode", choices=["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "E9b", "E9c", "E10", "E9v2", "E9bv2", "E10v2", "E12", "E13", "E14", "E21"], default="E1")
     parser.add_argument("--model_path", default="checkpoints/qwen3_meta_sft")
     parser.add_argument("--data", choices=["gsm8k", "filtered", "mixed", "mixed_train"], default="mixed")
     parser.add_argument("--data_path", default="verl_train_filtered.parquet")
@@ -524,6 +526,14 @@ def main():
                  verify_outcome_reward, confidence_trajectory_reward,
                  confidence_omission_floor],
                 [1.0, 0.3, 0.3, 0.15, 0.5]),
+        # V8 E21: soft switch v2 + verify v2 + meta floor
+        # Grounded in: E20a V8 SFT success (meta 99.7%), switch 0.4% needs RL
+        # switch_v2: soft score, gated on meta, verify soft mult
+        # verify_v2: template penalty, computation bonus
+        "E21": ([correctness_reward, structural_switch_reward_v2,
+                 verify_outcome_v2, confidence_trajectory_reward,
+                 confidence_omission_floor],
+                [1.0, 0.15, 0.3, 0.15, 0.5]),
     }
     # ─── Model (Full FT, NO LoRA) ───
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
@@ -570,7 +580,7 @@ def main():
                 contextual_reward_funcs.append(fn)
         reward_funcs = contextual_reward_funcs
 
-    use_gdpo = args.mode in ("E3", "E4", "E5", "E6", "E7", "E8", "E9", "E9b", "E9c", "E10", "E9v2", "E9bv2", "E10v2", "E12", "E13", "E14")  # GDPO when 2+ rewards
+    use_gdpo = args.mode in ("E3", "E4", "E5", "E6", "E7", "E8", "E9", "E9b", "E9c", "E10", "E9v2", "E9bv2", "E10v2", "E12", "E13", "E14", "E21")  # GDPO when 2+ rewards
 
     if use_gdpo:
         _apply_gdpo_patch()
