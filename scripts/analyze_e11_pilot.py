@@ -186,7 +186,10 @@ def analyze(e11_results, e9_results, base_results):
             continue
         pre = comp[:ms]
         post = comp[me + len("<|/meta|>"):]
-        if len(pre) < 30 or len(post) < 30:
+        # Strip <think>/<\/think> tags for length check (V8 format compat)
+        pre_clean = re.sub(r"</?think>", "", pre).strip()
+        post_clean = re.sub(r"</?think>", "", post).strip()
+        if len(pre_clean) < 30 or len(post_clean) < 30:
             continue
 
         pre_m = detect_methods(pre)
