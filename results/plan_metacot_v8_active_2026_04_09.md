@@ -200,7 +200,13 @@ All checkpoints and data must be pushed to HF after completion.
 | base_matched SFT model | pending (training) |
 | E21 RL checkpoint | pending (after training) |
 
-## 8. Stop Rules
+## 8. Eval Policy
+
+- **항상 4 GPU 전부 사용** — 단일 GPU eval은 느림. `device_map="auto"` 또는 multi-GPU eval 사용.
+- vLLM eval 가능 시: `tensor_parallel_size=4`로 4장 활용.
+- HF generate eval 시: `accelerate`로 data parallel 또는 `device_map="auto"`.
+
+## 9. Stop Rules
 
 1. Do not launch RL without verifying reward functions on 50 samples first
 2. Do not use E8 or RUN_C for Meta-CoT experiments
