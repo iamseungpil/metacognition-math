@@ -1,0 +1,16 @@
+{
+  "model": "E21_screen_200",
+  "model_path": "checkpoints/grpo_E21_screen/checkpoint-200",
+  "base_model": null,
+  "is_lora": false,
+  "benchmarks": [
+    "gsm8k",
+    "math500"
+  ],
+  "max_problems_per_benchmark": 1030,
+  "num_samples": 1,
+  "total_problems": 1530,
+  "hostname": "node-0",
+  "utc_timestamp": "2026-04-09T12:01:37Z",
+  "tokenizer_name_or_path": "checkpoints/grpo_E21_screen/checkpoint-200"
+}
