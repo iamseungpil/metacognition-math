@@ -29,17 +29,15 @@ from src.training.rewards import (
 )
 
 
-def compute_score(solution_str, ground_truth, **kwargs):
-    """Compute multi-dimensional reward scores for GDPO.
+def compute_score(data_source=None, solution_str="", ground_truth="", extra_info=None, **kwargs):
+    """Compute multi-dimensional reward scores for veRL 0.7.1 GDPO.
 
-    Args:
-        solution_str: Full model output (prompt + response decoded)
-        ground_truth: Ground truth answer string
+    veRL's GDPORewardManager calls:
+        compute_score(data_source=..., solution_str=..., ground_truth=..., extra_info=...)
 
-    Returns:
-        dict: {reward_name: float} for each GDPO dimension
+    Must return dict with "score" key (combined) + per-dimension keys matching
+    algorithm.gdpo_reward_keys in config.
     """
-    # Format as expected by our reward functions
     completion = [{"content": solution_str}]
     gt = [ground_truth]
 
@@ -68,7 +66,11 @@ def compute_score(solution_str, ground_truth, **kwargs):
     except Exception:
         floor = 0.0
 
+    # Weighted combined score (same weights as E21 config)
+    combined = corr * 1.0 + switch * 0.15 + verify * 0.3 + conf * 0.15 + floor * 0.5
+
     return {
+        "score": combined,  # required by GDPORewardManager
         "correctness": corr,
         "switch_v2": switch,
         "verify_v2": verify,
@@ -77,7 +79,7 @@ def compute_score(solution_str, ground_truth, **kwargs):
     }
 
 
-def compute_score_base(solution_str, ground_truth, **kwargs):
+def compute_score_base(data_source=None, solution_str="", ground_truth="", extra_info=None, **kwargs):
     """Correctness-only reward for base GRPO baseline."""
     completion = [{"content": solution_str}]
     gt = [ground_truth]
