@@ -34,7 +34,8 @@ nohup python -m verl.trainer.main_ppo \
   actor_rollout_ref.actor.kl_loss_coef=0.002 \
   actor_rollout_ref.actor.optim.lr=5e-7 \
   actor_rollout_ref.actor.ppo_mini_batch_size=32 \
-  actor_rollout_ref.actor.ppo_micro_batch_size=4 \
+  actor_rollout_ref.actor.ppo_micro_batch_size=null \
+  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
   actor_rollout_ref.actor.ppo_max_token_len_per_gpu=16384 \
   actor_rollout_ref.rollout.name=vllm \
   actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
@@ -46,8 +47,11 @@ nohup python -m verl.trainer.main_ppo \
   actor_rollout_ref.rollout.prompt_length=512 \
   actor_rollout_ref.rollout.max_num_batched_tokens=8192 \
   actor_rollout_ref.rollout.max_num_seqs=256 \
-  actor_rollout_ref.rollout.log_prob_micro_batch_size=32 \
-  actor_rollout_ref.ref.log_prob_micro_batch_size=32 \
+  ++actor_rollout_ref.rollout.agent.num_workers=4 \
+  actor_rollout_ref.rollout.log_prob_micro_batch_size=null \
+  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=32 \
+  actor_rollout_ref.ref.log_prob_micro_batch_size=null \
+  actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=32 \
   data.train_files=data/verl_train.parquet \
   data.val_files=data/verl_val.parquet \
   data.max_prompt_length=512 \
@@ -59,6 +63,12 @@ nohup python -m verl.trainer.main_ppo \
   algorithm.use_kl_in_reward=False \
   ++reward.custom_reward_function.path=src/training/verl_reward.py \
   ++reward.custom_reward_function.name=compute_score \
+  critic.ppo_mini_batch_size=32 \
+  critic.ppo_micro_batch_size=null \
+  critic.ppo_micro_batch_size_per_gpu=1 \
+  critic.forward_micro_batch_size=null \
+  critic.forward_micro_batch_size_per_gpu=1 \
+  critic.ppo_max_token_len_per_gpu=32768 \
   trainer.experiment_name=verl_e21_historical_0410 \
   trainer.project_name=metacot-math \
   trainer.nnodes=1 \
