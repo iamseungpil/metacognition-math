@@ -1,5 +1,6 @@
-# veRL GDPO config for E21: switch_v2 + verify_v2 + confidence + meta_floor
-# Based on simpleRL-reason patterns, fixed per Codex review
+# veRL GDPO config for historical E21.
+# Keep this file as the clean historical mainline; use E21R/E21S/E21M in
+# separate configs rather than editing this in-place.
 mode: E21
 num_examine: 1  # print 1 decoded sample per step for debugging
 

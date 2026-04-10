@@ -3,6 +3,8 @@ import ast
 import math
 import sys
 
+sys.path.insert(0, ".")
+
 passed = 0
 failed = 0
 
@@ -118,6 +120,53 @@ prompt2_grpo_diff = abs(adv_grpo[2] - adv_grpo[3])
 prompt2_gdpo_diff = abs(adv_gdpo[2] - adv_gdpo[3])
 print(f"  Prompt2 advantage diff: GRPO={prompt2_grpo_diff:.4f}, GDPO={prompt2_gdpo_diff:.4f}")
 check("TC11b: GDPO preserves calib signal for prompt2", prompt2_gdpo_diff > 0.01)
+
+print("\n=== TC12: veRL confidence-centered alignment ===")
+
+with open("src/training/verl_gdpo.py") as f:
+    verl_code = f.read()
+
+
+def extract_uppercase_reward_configs(source: str, assign_name: str):
+    module = ast.parse(source)
+    for node in ast.walk(module):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == assign_name:
+                    out = {}
+                    for key_node, value_node in zip(node.value.keys, node.value.values):
+                        if not isinstance(key_node, ast.Constant):
+                            continue
+                        if not isinstance(value_node, ast.Dict):
+                            continue
+                        reward_len = None
+                        weight_len = None
+                        for sub_key, sub_val in zip(value_node.keys, value_node.values):
+                            if isinstance(sub_key, ast.Constant) and sub_key.value == "funcs":
+                                reward_len = len(sub_val.elts) if isinstance(sub_val, ast.List) else None
+                            if isinstance(sub_key, ast.Constant) and sub_key.value == "weights":
+                                weight_len = len(sub_val.elts) if isinstance(sub_val, ast.List) else None
+                        out[key_node.value] = (reward_len, weight_len)
+                    return out
+    raise RuntimeError(f"{assign_name} not found")
+
+
+verl_lengths = extract_uppercase_reward_configs(verl_code, "REWARD_CONFIGS")
+check("TC12a: veRL E21R reward/weight lengths match", verl_lengths["E21R"][0] == verl_lengths["E21R"][1])
+check("TC12b: veRL E21 reward/weight lengths match", verl_lengths["E21"][0] == verl_lengths["E21"][1])
+
+with open("configs/verl_gdpo_e21.yaml") as f:
+    e21_yaml = f.read()
+check("TC12b2: historical E21 config keeps adv_estimator=gdpo", "adv_estimator: gdpo" in e21_yaml)
+
+from src.training.verl_reward import compute_score_confidence_centered
+
+score = compute_score_confidence_centered(
+    solution_str="<|meta|>confidence: 0.9 I may be overcommitting.<|/meta|>I verify by substitution. \\boxed{4}",
+    ground_truth="4",
+)
+expected_keys = {"score", "correctness", "confidence_revision", "redirect_execution", "verify_execution", "meta_floor"}
+check("TC12c: confidence-centered veRL reward returns exact key set", set(score.keys()) == expected_keys)
 
 print(f"\n=== SUMMARY: {passed} passed, {failed} failed ===")
 
