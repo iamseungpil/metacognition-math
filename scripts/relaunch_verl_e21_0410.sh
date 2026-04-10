@@ -8,6 +8,7 @@ export WANDB_PROJECT="${WANDB_PROJECT:-metacot-math}"
 export WANDB_NAME="${WANDB_NAME:-verl_e21_historical_0410}"
 export WANDB_RUN_GROUP="${WANDB_RUN_GROUP:-e21-historical}"
 export HF_TOKEN="${HF_TOKEN:-}"
+export E21_MODEL_PATH="${E21_MODEL_PATH:-checkpoints/v8_meta_inside_E20a_vllmfix}"
 export HYDRA_FULL_ERROR=1
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
 export NCCL_IB_DISABLE=1
@@ -29,7 +30,7 @@ sleep 2
 nohup python -m verl.trainer.main_ppo \
   --config-path /scratch/simplerl_venv/lib/python3.10/site-packages/verl/trainer/config \
   --config-name ppo_trainer \
-  actor_rollout_ref.model.path=checkpoints/v8_meta_inside_E20a \
+  actor_rollout_ref.model.path="${E21_MODEL_PATH}" \
   actor_rollout_ref.actor.use_kl_loss=True \
   actor_rollout_ref.actor.kl_loss_coef=0.002 \
   actor_rollout_ref.actor.optim.lr=5e-7 \
