@@ -158,6 +158,12 @@ check("TC12b: veRL E21 reward/weight lengths match", verl_lengths["E21"][0] == v
 with open("configs/verl_gdpo_e21.yaml") as f:
     e21_yaml = f.read()
 check("TC12b2: historical E21 config keeps adv_estimator=gdpo", "adv_estimator: gdpo" in e21_yaml)
+check("TC12b3: historical E21 actor uses per_gpu micro batch only", "ppo_micro_batch_size: null" in e21_yaml and "ppo_micro_batch_size_per_gpu: 1" in e21_yaml)
+check("TC12b4: historical E21 ref/rollout log prob uses per_gpu style", "log_prob_micro_batch_size: null" in e21_yaml and "log_prob_micro_batch_size_per_gpu: 32" in e21_yaml)
+
+with open("scripts/relaunch_verl_e21_0410.sh") as f:
+    e21_launch = f.read()
+check("TC12b5: historical E21 launcher clears deprecated actor micro batch", "actor_rollout_ref.actor.ppo_micro_batch_size=null" in e21_launch and "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1" in e21_launch)
 
 from src.training.verl_reward import compute_score_confidence_centered
 

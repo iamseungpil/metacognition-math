@@ -29,8 +29,8 @@ actor_rollout_ref:
   actor:
     strategy: fsdp
     ppo_mini_batch_size: 32
-    ppo_micro_batch_size: 4
-    ppo_micro_batch_size_per_gpu: null
+    ppo_micro_batch_size: null
+    ppo_micro_batch_size_per_gpu: 1
     use_dynamic_bsz: False
     ppo_max_token_len_per_gpu: 16384
     grad_clip: 1.0
@@ -61,8 +61,8 @@ actor_rollout_ref:
       wrap_policy:
         min_num_params: 0
       fsdp_size: -1
-    log_prob_micro_batch_size: 32
-    log_prob_micro_batch_size_per_gpu: null
+    log_prob_micro_batch_size: null
+    log_prob_micro_batch_size_per_gpu: 32
     log_prob_use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
     log_prob_max_token_len_per_gpu: ${actor_rollout_ref.actor.ppo_max_token_len_per_gpu}
     ulysses_sequence_parallel_size: ${actor_rollout_ref.actor.ulysses_sequence_parallel_size}
@@ -82,8 +82,8 @@ actor_rollout_ref:
     tensor_model_parallel_size: 2
     max_num_batched_tokens: 8192
     max_num_seqs: 256
-    log_prob_micro_batch_size: 32
-    log_prob_micro_batch_size_per_gpu: null
+    log_prob_micro_batch_size: null
+    log_prob_micro_batch_size_per_gpu: 32
     log_prob_use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
     log_prob_max_token_len_per_gpu: ${actor_rollout_ref.actor.ppo_max_token_len_per_gpu}
     do_sample: True
@@ -115,9 +115,10 @@ critic:
         min_num_params: 0
       fsdp_size: -1
   ppo_mini_batch_size: ${actor_rollout_ref.actor.ppo_mini_batch_size}
-  ppo_micro_batch_size: 8
-  ppo_micro_batch_size_per_gpu: null
-  forward_micro_batch_size: ${critic.ppo_micro_batch_size}
+  ppo_micro_batch_size: null
+  ppo_micro_batch_size_per_gpu: 1
+  forward_micro_batch_size: null
+  forward_micro_batch_size_per_gpu: 1
   use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
   ppo_max_token_len_per_gpu: 32768
   forward_max_token_len_per_gpu: ${critic.ppo_max_token_len_per_gpu}
