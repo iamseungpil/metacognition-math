@@ -17,6 +17,11 @@ export NCCL_CUMEM_ENABLE=0
 source /scratch/simplerl_venv/bin/activate
 mkdir -p data tmp
 
+if [ ! -f /scratch/metacognition/configs/verl07_e21.yaml ]; then
+  echo "Missing config: /scratch/metacognition/configs/verl07_e21.yaml" >&2
+  exit 1
+fi
+
 if [ ! -f data/verl_train.parquet ] || [ ! -f data/verl_val.parquet ]; then
   python src/training/verl_gdpo_data.py --mode mixed --split train --output data/verl_train.parquet
   python src/training/verl_gdpo_data.py --mode mixed --split val --output data/verl_val.parquet
@@ -39,11 +44,17 @@ echo $! > /scratch/verl_e21_historical_0410.pid
 echo STARTED_E21 $(cat /scratch/verl_e21_historical_0410.pid)
 
 if [ -n "${HF_TOKEN}" ]; then
-  nohup python scripts/sync_checkpoint_to_hf.py \
-    --local-dir /scratch/metacognition/checkpoints/verl_e21_historical_0410 \
-    --repo-id iamseungpil/metacot-verl-e21-historical \
-    --repo-type model \
-    --interval-sec 1800 \
+  nohup bash -lc '
+    while [ ! -d /scratch/metacognition/checkpoints/verl_e21_historical_0410 ]; do
+      sleep 60
+    done
+    cd /scratch/metacognition
+    HF_TOKEN='"'"${HF_TOKEN}"'"' python scripts/sync_checkpoint_to_hf.py \
+      --local-dir /scratch/metacognition/checkpoints/verl_e21_historical_0410 \
+      --repo-id iamseungpil/metacot-verl-e21-historical \
+      --repo-type model \
+      --interval-sec 1800
+  ' \
     > /scratch/hf_sync_e21_historical_0410.log 2>&1 < /dev/null &
   echo $! > /scratch/hf_sync_e21_historical_0410.pid
   echo STARTED_E21_HF_SYNC $(cat /scratch/hf_sync_e21_historical_0410.pid)
