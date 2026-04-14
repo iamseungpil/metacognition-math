@@ -1,27 +1,36 @@
 # Meta-CoT v8 environment (verified working on Azure A100 4×GPU, 2026-04-14)
-# Install order matters — torch first, then vllm, then verl (with --no-deps).
+# Verified by matching the transformers_version (4.57.6) stamped in the
+# verl_e21r_v2_0413/global_step_250 checkpoint config.json.
 #
-# Bootstrap:
+# Bootstrap (install in this exact order — vllm 0.10.2 bumps torch to 2.8.0):
 #   python3 -m venv venv && source venv/bin/activate
 #   pip install --upgrade pip wheel setuptools
-#   pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu124
-#   pip install vllm==0.7.1
+#   pip install torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu126
+#   pip install vllm==0.10.2
+#   pip install transformers==4.57.6
 #   pip install --no-deps verl==0.7.1
 #   pip install -r requirements.txt
 #
-# Post-install patches (run scripts/patch_verl_compat.py):
-#   1. verl/utils/fsdp_utils.py — add DTensorSpec fallback for torch<2.6
-#   2. verl/workers/rollout/vllm_rollout/utils.py — patch get_device_uuid for NvmlCudaPlatform
-#   3. verl/trainer/config/ppo_trainer.yaml — bump update_weights_bucket_megabytes: 2048 → 4096
+# Notes:
+# - `vllm==0.10.2` installs `torch==2.8.0+cu128` as a dependency — that is the
+#   actual torch version at runtime. The explicit `torch==2.7.1` step above
+#   only seeds the cu126 wheels; vllm overrides it.
+# - verl's declared dependency `tensordict<=0.10.0` is violated (we run 0.12.1),
+#   but runtime imports work and this is the combination that trained
+#   verl_e21r_v2_0413 to step 250.
+# - No extra patches needed for torch 2.7+ / vllm 0.10+ (DTensorSpec and
+#   get_device_uuid are both available).
+# - `flash-attn` is NOT installed. verl/transformers fall back to SDPA via
+#   `++actor_rollout_ref.model.override_config.attn_implementation=sdpa`.
 
 # --- Core RL stack ---
-torch==2.5.1
-torchvision==0.20.1
-vllm==0.7.1
+torch==2.8.0
+torchvision==0.23.0
+vllm==0.10.2
 verl==0.7.1
 
-# --- Transformers stack ---
-transformers==4.49.0
+# --- Transformers stack (4.57.6 matches checkpoint config.json) ---
+transformers==4.57.6
 accelerate==1.13.0
 peft==0.19.0
 datasets==4.8.4
@@ -29,14 +38,16 @@ huggingface_hub==0.36.2
 
 # --- veRL runtime deps ---
 hydra-core==1.3.2
-tensordict==0.10.0
+omegaconf==2.3.0
+tensordict==0.12.1
 torchdata==0.11.0
 ray==2.54.1
 codetiming==1.4.0
 dill==0.4.1
 pylatexenc==2.10
 pybind11==3.0.3
-packaging==25.0
+cachetools==7.0.5
+packaging==26.1
 
 # --- Data / logging ---
 numpy==1.26.4
@@ -45,5 +56,5 @@ pyarrow==23.0.1
 wandb==0.26.0
 tensorboard==2.20.0
 
-# --- Optional (bundled with vllm but listed for reproducibility) ---
-xformers==0.0.28.post3
+# --- Pulled in by vllm 0.10.2 (listed for reproducibility) ---
+xformers==0.0.32.post1
