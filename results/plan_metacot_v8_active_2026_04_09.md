@@ -53,7 +53,7 @@ RQ3의 의도는 `OOD에서 self-distill을 성공시킬 수 있는가`이다.
 2. `H2`: meta SFT에서 `question_only_best_of_n` 기반 claim-bearing epistemic self-distill을 하면,
    naive baseline보다 controller retention과 OOD retention이 낫다
 3. `H3`: correctness-only selection은 clean anchor이고, 그 다음 단계의 `correct_then_meta`는
-   같은 정답 후보 집합 내부에서 더 나은 controller transition teacher를 고를 수 있다
+   같은 정답 후보 집합 내부에서 더 나은 `meta_commit_quality` teacher를 고를 수 있다
 4. `H4`: RL은 immediate mainline이 아니라 side branch다.
    reward redesign은 self-distill 비교와 섞지 않고 별도 smoke track에서만 검증한다
 5. `H5`: retrieval은 현재 mainline의 필요조건이 아니다. retrieval claim은 `example_bank loaded + retrieval_nonempty_rate > 0`가 동시에 만족될 때만 허용한다
@@ -173,12 +173,19 @@ The intended dense objective is:
 1. generate `question_only_best_of_n` artifacts
    - base: `scripts/run_self_distill_roundtrip.sh question_only_best_of_n checkpoints/v8_base_matched_strict_sft <train_split> results/self_distill/base_qonly_naive naive 0`
    - meta: `scripts/run_self_distill_roundtrip.sh question_only_best_of_n checkpoints/v8_meta_inside_strict_sft <train_split> results/self_distill/meta_qonly_epistemic epistemic 1`
+   - score extension: `SELF_DISTILL_SELECTOR_MODE=correct_then_meta scripts/run_self_distill_roundtrip.sh question_only_best_of_n checkpoints/v8_meta_inside_strict_sft <train_split> results/self_distill/meta_qonly_epistemic_scored epistemic 1`
    - side lane only: `scripts/run_self_distill_roundtrip.sh fixed_k_repair ...` when testing retrieval / repair effects
 2. verify artifact contract
    - base/meta row counts, candidate_count, selector provenance, `synthetic_meta_injected_rate`, retrieval summary
 3. train SFT readout
    - base: `configs/sft_self_distill_base_qonly_naive.yaml`
    - meta: `configs/sft_self_distill_meta_qonly_epistemic.yaml`
+   - H200 x4 launch: `scripts/run_self_distill_sft_h200.sh <config>`
+   - preferred H200 configs:
+     - `configs/sft_self_distill_base_qonly_naive_h200_4gpu.yaml`
+     - `configs/sft_self_distill_meta_qonly_epistemic_h200_4gpu.yaml`
+     - `configs/sft_self_distill_meta_qonly_scored_h200_4gpu.yaml`
+     - `configs/sft_self_distill_meta_qonly_epistemic_meta_kl_h200_4gpu.yaml`
 4. optional meta-lane dense targets
    - `scripts/build_teacher_topk_targets.py`
    - output: `teacher_topk_targets.parquet`
@@ -254,6 +261,14 @@ RQ2의 초점을 "controller behavior 강화"에서 "redirect execution quality 
 새 가설: reward design 또는 training paradigm 변경을 통해 redirect가 실제 accuracy 개선으로 이어지게 할 수 있다.
 
 ### RQ3. Curriculum / OOD Test-Time Adaptation
+
+**Status note (2026-04-16)**:
+
+이 섹션의 `RQ3-A/B/C`는 controller 활용에 대한 연구 맥락과 side-evidence 설계 메모로 유지한다.
+하지만 claim-bearing execution contract는 이 섹션이 아니라 아래 `RQ3-D. Epistemic Self-Distillation`
+및 문서 상단의 `2026-04-16 Mainline Revision`이 우선한다.
+즉 현재 실제 실행 계단은 `question_only_best_of_n -> correctness_only -> correct_then_meta -> meta_only KL`
+이며, retrieval / branching / search-to-learn은 side-evidence 또는 deferred lane이다.
 
 **의도**
 
@@ -925,81 +940,81 @@ OOD 문제에서도 `diagnosis -> information acquisition -> justified recovery`
 그 다음 `meta-cognitive intervention trace를 함께 distill`할 때
 붕괴를 줄일 수 있는지 검증하는 것이다.
 
-이 lane은 두 단계로 분리한다.
+이 lane은 세 단계 + 확장으로 분리한다.
 
-1. `RQ3-D1`: naive self-distill collapse check
-2. `RQ3-D2a`: offline epistemic-preserving control distill
-3. `RQ3-D2b`: feedback-conditioned OOD recovery distill using teacher-only RAG / side-evidence provenance
-4. `RQ3-D3`: optional dense token distill only after D1/D2 data contract is validated
+1. `RQ3-D0`: clean baseline (`correctness_only`)
+2. `RQ3-D1`: teacher scoring (`correct_then_meta`)
+3. `RQ3-D2`: dense retention (`meta_only` KL)
+4. `RQ3-D3`: RLSD-lite extension
+5. `RQ3-D4`: feedback-conditioned OOD recovery distill using teacher-only RAG / side-evidence provenance
 
 **우선순위 순서 (2026-04-15 revised)**
 
 immediate claim-bearing 비교는 `strict_base_sft`와 `strict_meta_sft`에서 시작해야 하며,
-현재 가장 먼저 해야 할 일은 `공정한 fixed-K repair + reward-ranked teacher selection + SFT`를
-안정화하는 것이다. SDPO / OPD 계열은 그 다음 단계의 확장으로 둔다.
+현재 가장 먼저 해야 할 일은 `question_only_best_of_n + clean selector + SFT`를
+안정화하는 것이다. 그 다음에만 teacher scoring, meta-only KL, RLSD-lite를 순차적으로 붙인다.
 
-1. `P1`: strict paired SFT에서 fair `fixed_k_repair` artifact collection
-   - 두 모델 모두 같은 problem ids, 같은 root decode budget, 같은 `K` repair budget을 쓴다
-   - retrieval은 trigger-earned path가 아니라 `question_only` 또는 완전 비사용으로 고정한다
-   - selection reward는 correctness + controller-execution terms만 사용하고 `meta_count_bonus`는 selector에서 제외한다
-   - 결과 row에는 `repair_candidates`, `selected_candidate_id`, `selection_score_total`, `score_margin`을 남긴다
-2. `P2`: reward-ranked selected trace를 messages parquet로 투영하여 short SFT readout
-   - immediate matrix는 `strict_base_sft -> self-distill` vs `strict_meta_sft -> self-distill`이다
+1. `P1`: strict paired SFT에서 `question_only_best_of_n` artifact collection
+   - 두 모델 모두 같은 problem ids, 같은 decode budget, 같은 `N` sample budget을 쓴다
+   - baseline selector는 `correctness_only`로 고정한다
+   - 결과 row에는 `repair_candidates`, `selected_candidate_id`, `selector_mode`, `selection_score_total`, `selection_score_breakdown`을 남긴다
+2. `P2`: baseline selected trace를 messages parquet로 투영하여 short SFT readout
+   - immediate matrix는 `strict_base_sft -> naive self-distill` vs `strict_meta_sft -> epistemic self-distill`이다
    - 이 단계는 claim-bearing lane이며 synthetic meta 주입을 금지한다
-3. `P3`: collapse / OOD / controller retention readout
-   - `meta_emission`, `wrong_high_confidence`, diagnosis specificity, OOD accuracy를 함께 본다
-   - fair budget에서 meta lane이 실제로 OOD self-distill에 유리한지 먼저 판단한다
-4. `P4`: side-evidence `sdpo_regen` artifact collection
+3. `P3`: score extension (`correct_then_meta`)
+   - correctness가 같은 후보 집합 내부에서만 `meta_commit_quality`로 rerank한다
+   - 이 score는 wrapped meta, diagnosis, study_need, boxed-after-meta, post-meta efficiency, decoherence-like penalty를 사용한다
+   - 오답 candidate를 meta-rich하다는 이유로 승격시키는 것은 금지한다
+4. `P4`: meta-only KL extension
+   - teacher top-k target을 수집하고, `<|meta|> ... <|/meta|>` span에만 dense KL을 건다
+   - full-trace KL은 이 단계에서 금지한다
+5. `P5`: RLSD-lite extension
+   - direction은 verifiable outcome/controller reward가 맡고
+   - magnitude/retention은 meta-only KL이 맡는다
+   - privileged teacher를 쓰더라도 update 대상은 meta span과 post-meta recovery span으로 제한한다
+6. `P6`: side-evidence `sdpo_regen` / retrieval-conditioned lane
    - privileged teacher feedback, retrieval provenance, `study_need`-conditioned retry를 저장한다
    - 이 lane은 claim-bearing 비교와 분리된 side-evidence lane이다
-5. `P5`: teacher top-k query and dense token extension
-   - `sdpo_regen` 또는 selected repair traces에 대해 teacher top-k target을 수집한다
-   - short readout이 통과한 뒤에만 OPD-style dense objective로 넘어간다
-6. `P6`: full OPD / SDPO integration
-   - `verl` loop 안의 token-wise distillation은 마지막 단계다
 
 즉 immediate mainline은
-`strict paired SFT -> fixed_k_repair -> reward-ranked selection -> short SFT readout`
-이고, `sdpo_regen -> top-k -> verl integration`은 side-evidence 확장이다.
+`strict paired SFT -> question_only_best_of_n -> correctness_only SFT readout`
+이고, 그 다음 계단이
+`correct_then_meta -> meta_only KL -> RLSD-lite`
+이다.
 
 **가설**
 
 정답 trace만을 모방하는 naive self-distill은 in-domain에서는 답을 더 짧고 confident하게 만들 수 있지만,
 hard / OOD 문제에서는 uncertainty expression과 recovery behavior를 억누를 수 있다.
-반대로 self-distill teacher를 `root failure -> meta diagnosis -> intervention evidence -> next-meta recovery`
-형태로 구성하면, answer trace만이 아니라 epistemic control pattern도 보존할 수 있다.
-다만 이것만으로는 SDPO-style의 feedback-conditioned distillation이 되는 것은 아니다.
-실제로 OOD self-distill이 성공했다고 주장하려면, teacher가 본 privileged feedback
-(예: teacher-only RAG exemplar, branch-side evidence)가 데이터 contract에 남아 있고,
-그 feedback이 없는 naive/distill baseline보다 OOD에서 더 잘 유지되어야 한다.
+반대로 self-distill teacher를 같은 정답 후보 집합 내부에서 `meta transition quality`로 고르면,
+반대로 self-distill teacher를 같은 정답 후보 집합 내부에서 `meta_commit_quality`로 고르면,
+answer trace만이 아니라 epistemic control pattern도 더 잘 보존할 수 있다.
+그 다음 dense token objective를 `<|meta|>` span에만 제한하면,
+전체 reasoning을 복제하지 않고 controller retention만 강화할 수 있다.
+마지막으로 RLSD-lite는 sparse reward가 줄 방향성과 dense teacher가 줄 미세 조정을
+분리해, privileged teacher의 장점과 RL의 grounded signal을 같이 쓸 수 있다.
 
 보조 가설은 다음과 같다.
 
 1. naive self-distill의 핵심 위험은 accuracy 하락 자체보다 `meta emission`, `diagnosis specificity`, `wrong-high-confidence` 악화이다
-2. epistemic-preserving self-distill은 정답 reasoning만이 아니라 `언제 개입했고 왜 개입했는지`를 같이 남겨야 한다
-3. OOD 성공 여부는 `epistemic wording 보존`만으로 충분하지 않고, `feedback-conditioned recovery advantage`가 실제로 보여야 한다
-4. dense token distill은 데이터 contract가 맞을 때만 의미가 있다. teacher target이 epistemically collapsed되어 있으면 token-wise KL은 붕괴를 더 빠르게 복제할 수 있다
-5. immediate claim-bearing lane에서는 `repair opportunity` 자체가 meta model에 유리하게 주어지면 안 된다.
+2. teacher scoring은 `정답 여부`와 `meta quality`를 분리해야 한다. meta quality는 correct set 내부에서만 작동해야 한다
+3. meta-only KL은 full trace imitation보다 안전하며, controller retention을 더 직접적으로 겨냥한다
+4. RLSD-lite의 핵심은 sparse reward가 `direction`, dense teacher가 `magnitude/retention`을 담당하게 분업시키는 것이다
+5. OOD 성공 여부는 `epistemic wording 보존`만으로 충분하지 않고, `feedback-conditioned recovery advantage`가 실제로 보여야 한다
+6. immediate claim-bearing lane에서는 `repair opportunity` 자체가 meta model에 유리하게 주어지면 안 된다.
    따라서 trigger-gated retrieval path는 mainline selector 생성기로 쓰지 않는다.
 
 **구현 가이드**
 
-1. `D1`은 successful repaired trace 또는 hint-conditioned correct trace를 teacher demonstration으로 삼는 baseline이다
-   immediate implementation은 `fixed_k_repair` selected trace를 사용한다
-2. `D2a/D2b` teacher context에는 반드시 다음을 포함한다:
-   a. root meta state
-   b. failure diagnosis
-   c. study_need 또는 missing perspective
-   d. retrieval / branching evidence
-   e. next-meta recovery summary (`confidence_gain`, `trigger_cleared`, `low_confidence_cleared`)
-3. `D2a`는 offline repaired trace imitation baseline이다.
-   이 lane은 epistemic controller retention을 보는 것이 목적이며, SDPO-style feedback distill을 주장하지 않는다.
-4. `D2b`는 OOD recovery lane이다.
-   teacher completion 외에도 teacher가 실제로 사용한 privileged feedback provenance를 dataset row에 남겨야 하며,
-   현재 구현 기준으로는 `teacher_feedback_kind`, `teacher_feedback_context_json`으로 기록한다.
-   다만 provenance를 저장만 하고 student input에 넣지 않으면 D2b가 아니라 D2a 변형으로 취급한다.
-   따라서 offline D2b의 최소 구현 단위는 `sdpo_regen` message projection이며,
-   root failure, diagnosis, study_need, teacher-side evidence를 user/system context에 실제로 넣는다.
+1. **Authoritative implemented ladder**
+   a. `D0`: `question_only_best_of_n` artifact collection + `correctness_only` selector + CE/SFT readout
+   b. `D1`: same artifact path, but teacher selection upgraded to `correct_then_meta`
+   c. `D2`: same artifact path, plus teacher top-k query and strict `meta_only` KL
+   d. `D3`: RLSD-lite is deferred and must not be claimed before D0/D1/D2 are saved
+2. `fixed_k_repair`, retrieval-conditioned retry, and `sdpo_regen` remain side-evidence paths only.
+   They can inform later OOD recovery work, but they are not the mainline self-distill generator now.
+3. Any feedback-conditioned lane must include real privileged feedback in student-visible context.
+   Storing provenance alone in the parquet is insufficient for a feedback-conditioned claim.
    direct plain eval과 계약을 맞추기 위해 first implementation은 user-conditioned prompt를 우선하며,
    system-only instruction에만 의존하는 schema는 피한다.
 5. 학습은 두 층으로 분리한다:
