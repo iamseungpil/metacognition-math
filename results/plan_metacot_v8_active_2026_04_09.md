@@ -1,6 +1,6 @@
 # Meta-CoT V8 Active Plan
 
-Updated: 2026-04-13
+Updated: 2026-04-15
 
 This is the only claim-bearing mainline plan for the `metacognition` repository.
 Older V5/V6/V7 plans remain useful as historical notes, but they are not the execution contract.
@@ -12,24 +12,151 @@ Current mainline stage is:
 1. strict paired data fixed
 2. strict paired SFT completed from raw `Qwen/Qwen3-8B`
 3. paired eval + behavior + entropy analysis completed (2026-04-12)
-4. Phase 3 E21 anchor completed as `side_evidence` (step 43, stopped — see Phase 3 results)
-5. Phase 4 E21R-v2 (2-head GDPO) checkpointed on `metacognition_eval`, resume required
-6. Base GRPO checkpointed on `metacognition_train_b`, resume required
+4. Phase 3 E21 anchor completed as `side_evidence` (step 43, stopped)
+5. **Phase 4 E21R-v2 (2-head GDPO) completed — 300 steps, evaluated**
+6. **Base GRPO completed — 300 steps, evaluated**
+7. **Phase 5 next: self-distill D1/D2 + reward redesign**
 
-As of 2026-04-13:
+As of 2026-04-15:
 
 1. `data/v8_meta_inside_strict.parquet` and `data/v8_base_matched_strict.parquet` are the authoritative paired SFT datasets (4264 rows each, validator pass)
-2. `checkpoints/v8_meta_inside_strict_sft` and `checkpoints/v8_base_matched_strict_sft` exist on both nodes (trained from raw Qwen3-8B, 3 epochs each)
-3. paired eval on 1560 problems (GSM8K 1030 + MATH500 500 + AIME2024 30): meta 75.38% vs base 75.51%, tied
-4. behavior analysis: meta controller learned (99.94% emission, strong confidence-conditioned routing), but 99.94% single-step collapse
-5. entropy analysis: meta block internal entropy 0.274 nats, after-meta entropy 0.630 nats (+0.30), suggests incomplete resolution
-6. RQ1 partially supported — controller acquisition ✓, controller depth ✗
-7. Phase 3 E21 (6-head GDPO) ran 43 steps: validation peaked at step 30 then declined. Stopped as `side_evidence`. Key finding: 6 reward heads diluted correctness signal to 32%, causing meta to trail base by -6.2pp at step 30
-8. Phase 4 E21R-v2 (2-head GDPO: correctness + outcome_calibration) is the active paired RL design, correctness weight ~77%
-9. All analysis results pushed to HF `iamseungpil/metacot/analysis/`
-10. E21R-v2 interim result (step 30): meta ~43.8% vs base ~48.0%, -4.2pp. Better than E21 (+2pp) but still inferior to base.
-11. Critical behavioral finding: redirect success rate 47.7% = hard-problem baseline → redirect does not improve outcomes. Diagnosis is 99% single template. Backtracking hurts (-17pp, -23pp). Shorter redirects succeed more (55% at ≤150w vs 9% at >400w).
-12. Core diagnosis: detection (WHEN to redirect) is solved at 99.8%; execution (HOW to redirect effectively) is the primary bottleneck. RQ2 focus shifts from controller behavior strengthening to redirect execution quality.
+2. SFT checkpoints on HF: `iamseungpil/metacot` → `models/v8_meta_inside_strict_sft` (merged safetensors, 16.4 GB) and `models/v8_base_matched_strict_sft` (sharded safetensors, 16.4 GB)
+3. RL checkpoints on HF: `checkpoints/verl_e21r_v2_0413/` (steps 190/220/250/latest=300, FSDP shards) and `checkpoints/verl_base_matched_0410/` (steps 50/70/150/200/240/latest=300, FSDP shards)
+4. **Step 300 eval**: E21R-v2 79.81% vs Base 75.92% (+3.88pp). GSM8K tied, MATH500 +9.8pp, AIME -20.0pp
+5. **Paired analysis**: Meta-only wins 117, Base-only wins 77, net +40 (+3.88pp)
+6. **Fisher exact tests**: redirect/diagnosis/epistemic all significantly correlated with lower accuracy (p<0.001) in BOTH models
+7. **Calibration**: AUROC 0.522 (random), confidence collapsed to 0.96 constant (98.9%)
+8. **Root cause findings (2026-04-15)**:
+   a. `<|meta|>` wrapping lost: reward fallback in `_parse_meta_blocks_with_spans` makes free-text confidence reward-equivalent to wrapped. RL dropped structural tokens as zero-value overhead
+   b. Confidence collapse: calibration reward E[cal]=0.3c×(2×acc-1) → c→1 optimal when acc>50%. Structural flaw, not absence
+   c. Template collapse: 908/1030 completions contain identical boilerplate assessment text
+   d. AIME -20pp: redirect on hard problems → token budget exhaustion (85% wrong AIME hit 4096 limit)
+   e. MATH500 +9.8pp: longer reasoning (avg +115 tokens) reaches correct answers
+10. **Strict paired SFT verified rerun (2026-04-15)**: base strict SFT 75.51%, meta strict SFT 75.38%, OOD(AIME) 26.67% vs 16.67%. Meta controller structure is preserved (`meta_emission=99.94%`) but OOD gain is not present at the strict-SFT stage
+11. **Retrieval contract clarification (2026-04-16)**: `fixed_k_repair` supports retrieval only when an example bank is supplied. Without `--example_bank`, mainline roundtrip must be recorded as `repair-only`, not RAG-enabled
+9. **Self-distill code**: fair `fixed_k_repair` + selector provenance + claim-bearing synthetic-meta gate implemented; base/meta self-distill YAML and roundtrip launcher added
+10. **6 H200 nodes available**: `node-recovery-h200-0415` with 6 jobs running
+
+### Executive Summary
+
+**이번 단계의 최우선 질문**
+
+RQ3의 의도는 `OOD에서 self-distill을 성공시킬 수 있는가`이다.
+이를 위해 immediate mainline은 RL을 더 키우는 것이 아니라,
+`strict paired SFT -> fair fixed-K repair -> reward-ranked teacher selection -> short SFT readout`
+으로 고정한다.
+
+**이번 단계의 핵심 가설**
+
+1. `H1`: naive self-distill은 in-domain gain이 있어도 `meta emission`, `wrong-high-confidence`, OOD accuracy를 망가뜨릴 수 있다
+2. `H2`: meta SFT에서 `selected_completion` 기반 claim-bearing epistemic self-distill을 하면,
+   naive baseline보다 controller retention과 OOD retention이 낫다
+3. `H3`: reward-guided teacher selection은 무작위/trigger-earned repair보다 더 나은 distill target을 만든다
+4. `H4`: RL은 immediate mainline이 아니라 side branch다.
+   reward redesign은 self-distill 비교와 섞지 않고 별도 smoke track에서만 검증한다
+5. `H5`: retrieval은 현재 mainline의 필요조건이 아니다. retrieval claim은 `example_bank loaded + retrieval_nonempty_rate > 0`가 동시에 만족될 때만 허용한다
+
+**이번 단계의 실험 순서**
+
+1. `E1`: `strict_base_sft -> fixed_k_repair -> naive self-distill`
+2. `E2`: `strict_meta_sft -> fixed_k_repair -> claim-bearing epistemic self-distill`
+3. `E3`: `E1 vs E2` collapse / OOD / controller retention 비교
+4. `E4`: `selected_completion`에 대해 teacher top-k를 질의하고, `control-span-weighted KL` readout을 붙인 meta self-distill 확장 점검
+5. `E5`: 별도 node에서 RL reward redesign smoke (`E21R-v3-smoke`) 진행
+
+**이번 단계의 성공 기준**
+
+1. `E1/E2`는 같은 strict split, 같은 root/repair budget, 같은 decode setting을 사용해야 한다
+2. claim-bearing lane에서 `synthetic_meta_injected_rate == 0`
+3. `E2`는 `E1` 대비 `meta_emission`과 `wrong_high_confidence`에서 더 낫거나 같아야 한다
+4. `E2`는 `E1` 대비 OOD combined accuracy에서 `+2pp` 이상을 목표로 한다
+5. 위 조건을 만족하지 못하면 `OOD self-distill 성공`이 아니라 `collapse analysis only`로 기록한다
+6. retrieval-based gain은 별도 조건이다. `retrieval_nonempty_rate == 0`이면 그 run은 retrieval evidence로 쓰지 않는다
+
+### Phase 5 Plan: Two-Track Parallel Execution
+
+**Track A — Self-Distill Mainline (allowed nodes only: `metacognition_eval`, `metacognition_train_b`)**
+1. Build fair `fixed_k_repair` artifacts from `strict_base_sft` and `strict_meta_sft`
+2. Project base lane to `naive` baseline and meta lane to claim-bearing `epistemic`
+3. Build teacher top-k targets only for the meta lane that already passed claim-bearing checks
+4. Train:
+   - base lane: CE/SFT only
+   - meta lane: CE/SFT + control-span-weighted KL on wrapped meta / diagnosis / study_need / post-meta recovery spans
+5. Evaluate with `analyze_self_distill_eval.py` for collapse / OOD / controller-retention metrics
+6. Record retrieval contract in every artifact:
+   - `retriever_active`
+   - `retrieval_enabled`
+   - `retrieval_nonempty_rate`
+   Retrieval is considered active evidence only if these fields show actual retrieval use
+
+**Track B — Reward Redesign Smoke (side-evidence only; runs only when mainline node window is free)**
+1. Fix calibration reward to strict wrapped-only proper scoring
+2. Add explicit meta-structure preservation reward so RL cannot collapse wrapped controller state into free text
+3. Keep reward smoke isolated from claim-bearing self-distill tables
+4. Record the exact reward entrypoint (`compute_score_e21r_v3_smoke`) and treat it as side-evidence until rerun cleanly
+
+Reward redesign status (2026-04-15, local code patch in progress):
+1. `outcome_calibration_reward` should use strict wrapped blocks only, not free-text fallback
+2. `confidence_omission_floor` and `meta_count_bonus` should count only wrapped meta blocks
+3. proper scoring rule should reward moving confidence closer to truth, not merely increasing confidence on correct samples
+4. training entrypoint must be checked explicitly:
+   - `src/training/verl_reward.py::compute_score_e21r_v2` is the 2-head path used by the historical E21R-v2 launcher
+   - `src/training/verl_gdpo.py::REWARD_CONFIGS["E21R"]` is a different confidence-centered controller recipe
+   - future claim-bearing runs must record which path was used
+
+Uniform full-trace KL is **not** the target for this phase.
+The intended dense objective is:
+1. select a repair teacher with control-aware scoring
+2. apply CE/SFT on the selected completion
+3. apply KL only on control-critical spans
+
+**Unavailable capacity for mainline**
+1. `rsp_grpo_node_1`
+2. `rsp_grpo_node_2`
+3. `metacognition_e8`
+4. `metacognition_run_c`
+
+### Concrete Node Allocation
+
+**Node plan for this phase**
+
+1. `metacognition_train_b`
+   - first priority: `E1` base self-distill mainline
+   - inputs: `checkpoints/v8_base_matched_strict_sft`, strict paired train slice
+   - artifact path: `results/self_distill/base_fixedk_naive/`
+   - train config: `configs/sft_self_distill_base_fixedk_naive.yaml`
+2. `metacognition_eval`
+   - first priority after resume: `E2` meta self-distill mainline + missing eval-only analyses
+   - inputs: `checkpoints/v8_meta_inside_strict_sft`, strict paired train slice
+   - artifact path: `results/self_distill/meta_fixedk_epistemic/`
+   - train config: `configs/sft_self_distill_meta_fixedk_epistemic.yaml`
+   - KL extension config: `configs/sft_self_distill_meta_fixedk_epistemic_kl.yaml`
+3. `metacognition_eval`
+   - if still paused, local/remote analysis work cannot be claimed as running
+   - resume or reconnect must be verified before launching missing analysis
+4. RL reward redesign smoke
+   - only after `E1/E2/E3` or during explicitly free node windows
+   - do not mix smoke checkpoints into claim-bearing tables
+
+### Immediate Runbook
+
+1. generate `fixed_k_repair` artifacts
+   - base: `scripts/run_fixed_k_self_distill_roundtrip.sh checkpoints/v8_base_matched_strict_sft <train_split> results/self_distill/base_fixedk_naive naive 0`
+   - meta: `scripts/run_fixed_k_self_distill_roundtrip.sh checkpoints/v8_meta_inside_strict_sft <train_split> results/self_distill/meta_fixedk_epistemic epistemic 1`
+   - note: if no example-bank path is appended, the launcher disables retrieval (`rag_top_k=0`, `retrieval_query_mode=none`) and the artifact must be labeled `repair-only`
+2. verify artifact contract
+   - base/meta row counts, candidate_count, selector provenance, `synthetic_meta_injected_rate`, retrieval summary
+3. train SFT readout
+   - base: `configs/sft_self_distill_base_fixedk_naive.yaml`
+   - meta: `configs/sft_self_distill_meta_fixedk_epistemic.yaml`
+4. optional meta-lane dense targets
+   - `scripts/build_teacher_topk_targets.py`
+   - output: `teacher_topk_targets.parquet`
+   - if the parquet is missing or has 0 valid target rows, KL lane must fail closed rather than silently reverting to CE-only
+5. evaluate only new outputs
+   - `scripts/analyze_self_distill_eval.py`
+   - OOD and controller-retention deltas vs strict SFT baselines
+6. only after `E1/E2/E3` are saved, run RL smoke and side-evidence extensions
 
 ## 1. Research Contract
 
@@ -775,6 +902,36 @@ OOD 문제에서도 `diagnosis -> information acquisition -> justified recovery`
 3. `RQ3-D2b`: feedback-conditioned OOD recovery distill using teacher-only RAG / side-evidence provenance
 4. `RQ3-D3`: optional dense token distill only after D1/D2 data contract is validated
 
+**우선순위 순서 (2026-04-15 revised)**
+
+immediate claim-bearing 비교는 `strict_base_sft`와 `strict_meta_sft`에서 시작해야 하며,
+현재 가장 먼저 해야 할 일은 `공정한 fixed-K repair + reward-ranked teacher selection + SFT`를
+안정화하는 것이다. SDPO / OPD 계열은 그 다음 단계의 확장으로 둔다.
+
+1. `P1`: strict paired SFT에서 fair `fixed_k_repair` artifact collection
+   - 두 모델 모두 같은 problem ids, 같은 root decode budget, 같은 `K` repair budget을 쓴다
+   - retrieval은 trigger-earned path가 아니라 `question_only` 또는 완전 비사용으로 고정한다
+   - selection reward는 correctness + controller-execution terms만 사용하고 `meta_count_bonus`는 selector에서 제외한다
+   - 결과 row에는 `repair_candidates`, `selected_candidate_id`, `selection_score_total`, `score_margin`을 남긴다
+2. `P2`: reward-ranked selected trace를 messages parquet로 투영하여 short SFT readout
+   - immediate matrix는 `strict_base_sft -> self-distill` vs `strict_meta_sft -> self-distill`이다
+   - 이 단계는 claim-bearing lane이며 synthetic meta 주입을 금지한다
+3. `P3`: collapse / OOD / controller retention readout
+   - `meta_emission`, `wrong_high_confidence`, diagnosis specificity, OOD accuracy를 함께 본다
+   - fair budget에서 meta lane이 실제로 OOD self-distill에 유리한지 먼저 판단한다
+4. `P4`: side-evidence `sdpo_regen` artifact collection
+   - privileged teacher feedback, retrieval provenance, `study_need`-conditioned retry를 저장한다
+   - 이 lane은 claim-bearing 비교와 분리된 side-evidence lane이다
+5. `P5`: teacher top-k query and dense token extension
+   - `sdpo_regen` 또는 selected repair traces에 대해 teacher top-k target을 수집한다
+   - short readout이 통과한 뒤에만 OPD-style dense objective로 넘어간다
+6. `P6`: full OPD / SDPO integration
+   - `verl` loop 안의 token-wise distillation은 마지막 단계다
+
+즉 immediate mainline은
+`strict paired SFT -> fixed_k_repair -> reward-ranked selection -> short SFT readout`
+이고, `sdpo_regen -> top-k -> verl integration`은 side-evidence 확장이다.
+
 **가설**
 
 정답 trace만을 모방하는 naive self-distill은 in-domain에서는 답을 더 짧고 confident하게 만들 수 있지만,
@@ -792,10 +949,13 @@ hard / OOD 문제에서는 uncertainty expression과 recovery behavior를 억누
 2. epistemic-preserving self-distill은 정답 reasoning만이 아니라 `언제 개입했고 왜 개입했는지`를 같이 남겨야 한다
 3. OOD 성공 여부는 `epistemic wording 보존`만으로 충분하지 않고, `feedback-conditioned recovery advantage`가 실제로 보여야 한다
 4. dense token distill은 데이터 contract가 맞을 때만 의미가 있다. teacher target이 epistemically collapsed되어 있으면 token-wise KL은 붕괴를 더 빠르게 복제할 수 있다
+5. immediate claim-bearing lane에서는 `repair opportunity` 자체가 meta model에 유리하게 주어지면 안 된다.
+   따라서 trigger-gated retrieval path는 mainline selector 생성기로 쓰지 않는다.
 
 **구현 가이드**
 
 1. `D1`은 successful repaired trace 또는 hint-conditioned correct trace를 teacher demonstration으로 삼는 baseline이다
+   immediate implementation은 `fixed_k_repair` selected trace를 사용한다
 2. `D2a/D2b` teacher context에는 반드시 다음을 포함한다:
    a. root meta state
    b. failure diagnosis
@@ -808,19 +968,25 @@ hard / OOD 문제에서는 uncertainty expression과 recovery behavior를 억누
    teacher completion 외에도 teacher가 실제로 사용한 privileged feedback provenance를 dataset row에 남겨야 하며,
    현재 구현 기준으로는 `teacher_feedback_kind`, `teacher_feedback_context_json`으로 기록한다.
    다만 provenance를 저장만 하고 student input에 넣지 않으면 D2b가 아니라 D2a 변형으로 취급한다.
-   따라서 offline D2b의 최소 구현 단위는 `feedback_conditioned` message projection이며,
+   따라서 offline D2b의 최소 구현 단위는 `sdpo_regen` message projection이며,
    root failure, diagnosis, study_need, teacher-side evidence를 user/system context에 실제로 넣는다.
    direct plain eval과 계약을 맞추기 위해 first implementation은 user-conditioned prompt를 우선하며,
    system-only instruction에만 의존하는 schema는 피한다.
 5. 학습은 두 층으로 분리한다:
    a. offline SFT self-distill: teacher-generated repaired dataset을 직접 모방
    b. on-policy dense token distill: SDPO-style teacher-conditioned token distillation
+   c. implementation order는 `live on-policy regeneration artifact -> token-wise KL` 순서로 둔다.
+      즉 먼저 student가 실제로 root attempt를 생성하고, evidence를 보고 같은 모델이 다시 푼 `sdpo_regen` artifact를 저장한 뒤,
+      그 다음에만 dense teacher-logit distillation을 붙인다.
 6. dense token distill은 scalar outcome reward를 token별로 나누는 방식이 아니라,
    teacher-conditioned next-token distribution에 대한 token-wise KL / distillation loss로 구현한다
 7. `D2a/D2b` dataset에는 root가 원래 맞았던 쉬운 문제를 대량으로 넣지 않는다. collapse check가 흐려지기 때문이다
 8. 첫 구현은 offline SFT projection을 우선한다. 즉, 공통 IR을 만든 뒤
    a. `messages` parquet로 투영해 현행 `src/training/sft.py`로 학습 가능하게 만들고
-   b. 같은 IR에서 later `prompt + privileged teacher context + ground_truth` 형태로 SDPO-style distill 경로로 확장한다
+   b. claim-bearing lane은 `selected_completion` + selector provenance를 그대로 남기고 synthetic meta를 금지한다
+   c. 같은 IR에서 later `prompt + privileged teacher context + ground_truth` 형태로 SDPO-style distill 경로로 확장한다
+   d. 현재 구현 기준으로는 `scripts/run_online_sdpo_regen.py`가
+      `fixed_k_repair`와 `sdpo_regen` 두 artifact path를 모두 만든다
 9. `D2a/D2b`의 epistemic 보존은 새로운 rigid schema를 강제하지 않는다.
    기존 control-v5 분포를 유지해야 하므로 meta block 안에는 자연어 diagnosis와 `confidence:`, `study_need:` 정도만 유지한다
 10. OOD readout은 최소 `aime2024`를 포함하고, 가능하면 `omni_math` 또는 `openmath_cot`을 추가한다.
@@ -836,6 +1002,9 @@ hard / OOD 문제에서는 uncertainty expression과 recovery behavior를 억누
    우리는 이를 바로 main branch로 넣지 않고, 먼저 offline D1/D2 data contract를 고정한 뒤 optional D3로 붙인다.
 4. 최근 self-distill / entropy-preserving 계열은 overconfidence와 diversity 감소를 완화하려 하지만,
    본 계획의 직접적 novel point는 `meta-cognitive controller behavior retention`을 분리 계측한다는 점이다.
+5. `thunlp/OPD` 공개 구현은 `verl` 위에서 student on-policy rollout에 대해
+   teacher token signal, top-k 전략, probability weighting을 붙이는 recipe를 제공한다.
+   현재 우리 코드는 이 full objective까지는 아니고, 그 직전 단계인 `live regeneration artifact`까지 구현된 상태다.
 
 **검증 방법**
 
@@ -856,6 +1025,17 @@ hard / OOD 문제에서는 uncertainty expression과 recovery behavior를 억누
 15. `D2b` 성공 판정은 두 readout을 함께 본다:
     a. `analyze_self_distill_eval.py`로 collapse / calibration / benchmark slice
     b. `analyze_rq3_side_eval.py`로 trigger precision / next-meta recovery / OOD combined accuracy gate
+
+**공정성 / 데이터 계약 게이트**
+
+autoresearch나 대규모 원격 실행 전에 다음 조건을 모두 통과해야 한다.
+
+1. base/meta가 같은 strict SFT split, 같은 decode seed schedule, 같은 root/repair budget을 사용한다
+2. claim-bearing lane에서 `synthetic_meta_injected_rate == 0` 이어야 한다
+3. claim-bearing lane에서 retrieval은 trigger-earned path가 아니라 강제 대칭 path 또는 미사용이어야 한다
+4. selector provenance (`candidate_count`, `selected_candidate_id`, `selection_score_total`, `score_margin`)가 artifact row에 저장돼야 한다
+5. selector는 correctness + controller-execution reward를 쓰되, `meta_count_bonus` 같은 style reward는 teacher ranking에서 제외한다
+6. `sdpo_regen` lane는 side-evidence label로만 해석하고 immediate base/meta claim과 합치지 않는다
 
 **성공 기준**
 
