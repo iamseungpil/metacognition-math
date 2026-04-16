@@ -118,6 +118,16 @@ def parse_args() -> argparse.Namespace:
         choices=["bfloat16", "float16", "float32"],
         help="Model dtype for memory efficiency",
     )
+    p.add_argument(
+        "--marker_mode", type=str, default="meta",
+        choices=["meta", "confidence"],
+        help=(
+            "Which marker to locate per completion. "
+            "'meta' finds <|meta|>...<|/meta|> spans. "
+            "'confidence' finds 'confidence: 0.XX' spans as plain text "
+            "(used for RL models that emit unwrapped confidence text)."
+        ),
+    )
     return p.parse_args()
 
 
@@ -302,6 +312,68 @@ def find_meta_token_spans(
                 used_closes.add(cp)
                 break
 
+    return spans
+
+
+# ---------------------------------------------------------------------------
+# Confidence marker detection (plain text, no wrapping)
+# ---------------------------------------------------------------------------
+
+def find_confidence_token_spans(
+    tokenizer,
+    token_ids: list[int],
+    prompt_token_len: int,
+) -> list[tuple[int, int]]:
+    """Find (start, end) token index pairs for `confidence: 0.XX` spans.
+
+    Decodes the completion portion once and regex-matches the textual pattern,
+    then maps character offsets back to token indices via tokenizer re-encode.
+    Span covers the marker text itself (`confidence: 0.XX`), matching the
+    previously published `rl_meta_confidence` output where `conf_length_tokens`
+    is ~7 tokens.
+
+    Returns positions in the shifted token_ids array (already offset by the
+    shift in compute_entropy_and_surprisal).  Only considers tokens after the
+    prompt portion.
+    """
+    import re
+
+    answer_start = max(prompt_token_len - 1, 0)
+    if answer_start >= len(token_ids):
+        return []
+
+    # Decode completion portion only, so character offsets start at 0.
+    completion_ids = token_ids[answer_start:]
+    completion_text = tokenizer.decode(completion_ids, skip_special_tokens=False)
+
+    # Walk tokens, tracking cumulative char offset per token.
+    char_offsets: list[int] = [0]
+    acc = ""
+    for t in completion_ids:
+        acc += tokenizer.decode([t], skip_special_tokens=False)
+        char_offsets.append(len(acc))
+    # char_offsets[i] is the char offset at the START of token i within completion_text
+
+    def char_to_token(char_pos: int) -> int:
+        """Return the index of the first token whose start is >= char_pos."""
+        # Binary-ish linear scan (lists are small)
+        for i, off in enumerate(char_offsets):
+            if off >= char_pos:
+                return i
+        return len(char_offsets) - 1
+
+    pat = re.compile(r"confidence\s*:\s*\d+(?:\.\d+)?", re.IGNORECASE)
+    spans: list[tuple[int, int]] = []
+    for m in pat.finditer(completion_text):
+        c_start, c_end = m.start(), m.end()
+        # Map character offsets back to token indices relative to completion.
+        tok_start_rel = char_to_token(c_start)
+        tok_end_rel = char_to_token(c_end) - 1
+        # Translate to absolute positions in token_ids array (shifted).
+        tok_start = answer_start + tok_start_rel
+        tok_end = answer_start + tok_end_rel
+        if tok_end >= tok_start:
+            spans.append((tok_start, tok_end))
     return spans
 
 
@@ -600,13 +672,20 @@ def main() -> None:
         print(f"ERROR: parquet missing columns: {missing}")
         sys.exit(1)
 
-    # Filter to samples that contain <|meta|> blocks
-    meta_mask = df["completion"].str.contains(r"<\|meta\|>", regex=True, na=False)
-    df_meta = df[meta_mask].reset_index(drop=True)
-    print(f"Samples with <|meta|>: {len(df_meta)} / {len(df)}")
+    # Filter to samples that contain the marker of interest
+    if args.marker_mode == "meta":
+        marker_label = "<|meta|>"
+        mask = df["completion"].str.contains(r"<\|meta\|>", regex=True, na=False)
+    else:  # confidence
+        marker_label = "confidence: 0.XX"
+        mask = df["completion"].str.contains(
+            r"confidence\s*:\s*\d+(?:\.\d+)?", regex=True, na=False, case=False,
+        )
+    df_meta = df[mask].reset_index(drop=True)
+    print(f"Samples with {marker_label}: {len(df_meta)} / {len(df)}")
 
     if len(df_meta) == 0:
-        print("ERROR: No samples contain <|meta|> blocks. Nothing to analyze.")
+        print(f"ERROR: No samples contain {marker_label}. Nothing to analyze.")
         sys.exit(1)
 
     if args.max_samples > 0 and len(df_meta) > args.max_samples:
@@ -616,11 +695,15 @@ def main() -> None:
     # ---- Load model ----
     tokenizer, model = load_model_and_tokenizer(args.model_path, args.dtype)
 
-    # Verify meta tokens exist in tokenizer
-    meta_open_ids = tokenizer.encode("<|meta|>", add_special_tokens=False)
-    meta_close_ids = tokenizer.encode("<|/meta|>", add_special_tokens=False)
-    print(f"<|meta|>  encodes to: {meta_open_ids} -> {[tokenizer.decode([t]) for t in meta_open_ids]}")
-    print(f"<|/meta|> encodes to: {meta_close_ids} -> {[tokenizer.decode([t]) for t in meta_close_ids]}")
+    # Sanity-print marker tokenization
+    if args.marker_mode == "meta":
+        meta_open_ids = tokenizer.encode("<|meta|>", add_special_tokens=False)
+        meta_close_ids = tokenizer.encode("<|/meta|>", add_special_tokens=False)
+        print(f"<|meta|>  encodes to: {meta_open_ids} -> {[tokenizer.decode([t]) for t in meta_open_ids]}")
+        print(f"<|/meta|> encodes to: {meta_close_ids} -> {[tokenizer.decode([t]) for t in meta_close_ids]}")
+    else:
+        probe = tokenizer.encode("confidence: 0.95", add_special_tokens=False)
+        print(f"'confidence: 0.95' encodes to: {probe} ({len(probe)} tokens)")
 
     # ---- Process samples ----
     block_measurements: list[MetaBlockMeasurement] = []
@@ -652,8 +735,11 @@ def main() -> None:
         surprisal = result["surprisal"]
         prompt_token_len = result["prompt_token_len"]
 
-        # Find meta block spans
-        spans = find_meta_token_spans(tokenizer, token_ids, prompt_token_len)
+        # Find marker spans (meta tags or confidence text)
+        if args.marker_mode == "meta":
+            spans = find_meta_token_spans(tokenizer, token_ids, prompt_token_len)
+        else:
+            spans = find_confidence_token_spans(tokenizer, token_ids, prompt_token_len)
         if not spans:
             no_spans += 1
             continue
@@ -726,6 +812,7 @@ def main() -> None:
         "window": args.window,
         "max_seq_len": args.max_seq_len,
         "dtype": args.dtype,
+        "marker_mode": args.marker_mode,
         "elapsed_seconds": round(elapsed, 1),
     }
 
