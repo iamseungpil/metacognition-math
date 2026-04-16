@@ -16,6 +16,10 @@ from src.training.rewards import (
     redirect_execution_reward_v2, verify_execution_reward_v2,
     _check_correctness, _parse_meta_blocks,
 )
+from src.training.rewards import (
+    compute_no_boxed_penalty,
+    no_boxed_penalty_reward,
+)
 
 passed = 0
 failed = 0
@@ -483,6 +487,35 @@ r_redirect_verify_tail = redirect_execution_reward_v2([redirect_with_verify_tail
 r_redirect_route_change = redirect_execution_reward_v2([redirect_with_route_replacement], ground_truth=["4"])
 check("TC24a: verify-style tail does not count as redirect execution", r_redirect_verify_tail[0] <= 0.0, True)
 check("TC24b: real route replacement still gets redirect credit", r_redirect_route_change[0] > 0.0, True)
+
+# ─── TC25: Phase 6 no-boxed commit penalty (NEW 2026-04-16) ───
+# Rationale: plan Phase 6 intervention I1. Evidence:
+# results/aime_failure_analysis_16k/aime_failure_modes.json
+print("=== TC25: no-boxed commit penalty (Phase 6) ===")
+check("TC25a: scalar with \\boxed{5} → 0.0",
+      compute_no_boxed_penalty("The answer is \\boxed{5}."), 0.0)
+check("TC25b: scalar without \\boxed → -0.3",
+      compute_no_boxed_penalty("I keep deliberating but never commit."), -0.3)
+check("TC25c: scalar empty string → -0.3 (treated as no commit)",
+      compute_no_boxed_penalty(""), -0.3)
+check("TC25d: scalar None → -0.3 (treated as no commit)",
+      compute_no_boxed_penalty(None), -0.3)
+check("TC25e: malformed '\\boxed{' without closing brace still counts as commit",
+      compute_no_boxed_penalty("Partially written: \\boxed{"), 0.0)
+check("TC25f: custom penalty propagates",
+      compute_no_boxed_penalty("no commit here", penalty=-0.5), -0.5)
+
+# Batched wrapper parity
+r_boxed = no_boxed_penalty_reward(["\\boxed{42}"])
+r_nocommit = no_boxed_penalty_reward(["still thinking..."])
+r_mixed = no_boxed_penalty_reward([
+    "wander then \\boxed{7}",
+    "decoherent LaTeX \\frac \\frac \\frac",
+])
+check("TC25g: batched committed → [0.0]", r_boxed[0], 0.0)
+check("TC25h: batched no commit → [-0.3]", r_nocommit[0], -0.3)
+check("TC25i: batched mixed committed", r_mixed[0], 0.0)
+check("TC25j: batched mixed no commit", r_mixed[1], -0.3)
 
 print(f"\n=== SUMMARY: {passed} passed, {failed} failed ===")
 

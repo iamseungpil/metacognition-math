@@ -1,6 +1,6 @@
 # Meta-CoT V8 Active Plan
 
-Updated: 2026-04-15
+Updated: 2026-04-16
 
 This is the only claim-bearing mainline plan for the `metacognition` repository.
 Older V5/V6/V7 plans remain useful as historical notes, but they are not the execution contract.
@@ -15,9 +15,9 @@ Current mainline stage is:
 4. Phase 3 E21 anchor completed as `side_evidence` (step 43, stopped)
 5. **Phase 4 E21R-v2 (2-head GDPO) completed — 300 steps, evaluated**
 6. **Base GRPO completed — 300 steps, evaluated**
-7. **Phase 5 next: self-distill D1/D2 + reward redesign**
+7. **Phase 5 next: question-only on-policy self-distill + reward redesign**
 
-As of 2026-04-15:
+As of 2026-04-16:
 
 1. `data/v8_meta_inside_strict.parquet` and `data/v8_base_matched_strict.parquet` are the authoritative paired SFT datasets (4264 rows each, validator pass)
 2. SFT checkpoints on HF: `iamseungpil/metacot` → `models/v8_meta_inside_strict_sft` (merged safetensors, 16.4 GB) and `models/v8_base_matched_strict_sft` (sharded safetensors, 16.4 GB)
@@ -34,54 +34,78 @@ As of 2026-04-15:
    e. MATH500 +9.8pp: longer reasoning (avg +115 tokens) reaches correct answers
 10. **Strict paired SFT verified rerun (2026-04-15)**: base strict SFT 75.51%, meta strict SFT 75.38%, OOD(AIME) 26.67% vs 16.67%. Meta controller structure is preserved (`meta_emission=99.94%`) but OOD gain is not present at the strict-SFT stage
 11. **Retrieval contract clarification (2026-04-16)**: `fixed_k_repair` supports retrieval only when an example bank is supplied. Without `--example_bank`, mainline roundtrip must be recorded as `repair-only`, not RAG-enabled
-9. **Self-distill code**: fair `fixed_k_repair` + selector provenance + claim-bearing synthetic-meta gate implemented; base/meta self-distill YAML and roundtrip launcher added
+9. **Self-distill code revision (2026-04-16)**: claim-bearing mainline moved to `question_only_best_of_n`; `fixed_k_repair` is now side-evidence only. Generic roundtrip launcher and strict `meta_only` KL configs added
 10. **6 H200 nodes available**: `node-recovery-h200-0415` with 6 jobs running
+12. **[NEW 2026-04-16] 16k re-eval**: base 77.0% (+1.1pp), meta 81.65% (+1.8pp). AIME gap persists (13.3% vs 36.7%) — confirmed NOT truncation, confirmed decoherence/no-commit. See `results/aime_failure_analysis_16k/aime_failure_modes.json`: meta wrong=26/30 → 13 decohered into LaTeX gibberish, 12 ran out of tokens without `\boxed{}`, only 1 committed to a coherent wrong answer; base wrong=19/30 → 1 decohered, 0 no-boxed, 18 committed to a coherent wrong `\boxed{}`. Meta GRPO on OOD hard problems loops verify/redirect/epistemic patterns infinitely → no commit → token exhaustion → decoherence. Base commits fast (often wrong, but converges). This is a fundamental training collapse, not a budget problem.
 
 ### Executive Summary
 
 **이번 단계의 최우선 질문**
 
 RQ3의 의도는 `OOD에서 self-distill을 성공시킬 수 있는가`이다.
-이를 위해 immediate mainline은 RL을 더 키우는 것이 아니라,
-`strict paired SFT -> fair fixed-K repair -> reward-ranked teacher selection -> short SFT readout`
+이를 위해 claim-bearing mainline은 RL이나 repair-prompt 개입이 아니라,
+`strict paired SFT -> question-only best-of-N -> claim-clean teacher selection -> short SFT readout`
 으로 고정한다.
 
 **이번 단계의 핵심 가설**
 
 1. `H1`: naive self-distill은 in-domain gain이 있어도 `meta emission`, `wrong-high-confidence`, OOD accuracy를 망가뜨릴 수 있다
-2. `H2`: meta SFT에서 `selected_completion` 기반 claim-bearing epistemic self-distill을 하면,
+2. `H2`: meta SFT에서 `question_only_best_of_n` 기반 claim-bearing epistemic self-distill을 하면,
    naive baseline보다 controller retention과 OOD retention이 낫다
-3. `H3`: reward-guided teacher selection은 무작위/trigger-earned repair보다 더 나은 distill target을 만든다
+3. `H3`: correctness-only selection은 prompt confounding 없이 claim-bearing teacher를 만들고,
+   controller-aware reranking은 side evidence로만 추가 가치를 가진다
 4. `H4`: RL은 immediate mainline이 아니라 side branch다.
    reward redesign은 self-distill 비교와 섞지 않고 별도 smoke track에서만 검증한다
 5. `H5`: retrieval은 현재 mainline의 필요조건이 아니다. retrieval claim은 `example_bank loaded + retrieval_nonempty_rate > 0`가 동시에 만족될 때만 허용한다
 
 **이번 단계의 실험 순서**
 
-1. `E1`: `strict_base_sft -> fixed_k_repair -> naive self-distill`
-2. `E2`: `strict_meta_sft -> fixed_k_repair -> claim-bearing epistemic self-distill`
+1. `E1`: `strict_base_sft -> question_only_best_of_n -> naive self-distill`
+2. `E2`: `strict_meta_sft -> question_only_best_of_n -> claim-bearing epistemic self-distill`
 3. `E3`: `E1 vs E2` collapse / OOD / controller retention 비교
-4. `E4`: `selected_completion`에 대해 teacher top-k를 질의하고, `control-span-weighted KL` readout을 붙인 meta self-distill 확장 점검
+4. `E4`: `selected_completion`에 대해 teacher top-k를 질의하고, `strict meta-only KL` readout을 붙인 meta self-distill 확장 점검
 5. `E5`: 별도 node에서 RL reward redesign smoke (`E21R-v3-smoke`) 진행
+6. `E6`: `fixed_k_repair` / retrieval-conditioned lane는 side-evidence로만 보고 main table과 분리
 
 **이번 단계의 성공 기준**
 
-1. `E1/E2`는 같은 strict split, 같은 root/repair budget, 같은 decode setting을 사용해야 한다
+1. `E1/E2`는 같은 strict split, 같은 question-only sample budget, 같은 decode setting을 사용해야 한다
 2. claim-bearing lane에서 `synthetic_meta_injected_rate == 0`
 3. `E2`는 `E1` 대비 `meta_emission`과 `wrong_high_confidence`에서 더 낫거나 같아야 한다
 4. `E2`는 `E1` 대비 OOD combined accuracy에서 `+2pp` 이상을 목표로 한다
 5. 위 조건을 만족하지 못하면 `OOD self-distill 성공`이 아니라 `collapse analysis only`로 기록한다
 6. retrieval-based gain은 별도 조건이다. `retrieval_nonempty_rate == 0`이면 그 run은 retrieval evidence로 쓰지 않는다
+7. **[NEW 2026-04-16] AIME commit gate**: Phase 5 self-distill readout은 AIME test set에서 `no_boxed_rate < 10%`를 만족해야 한다. 초과 시 self-distill이 commit behavior를 악화시켰다는 증거로 기록하고 claim-bearing table에 포함하지 않는다. 측정 방법: eval output의 완성본에서 `\boxed{` 미등장 비율, `results/aime_failure_analysis_*/aime_failure_modes.json`와 동일한 파서 사용
+
+### 2026-04-16 Mainline Revision
+
+이 문서의 이하 세부 항목 중 기존 `fixed_k_repair` 중심 문구가 남아 있더라도,
+claim-bearing contract는 본 섹션이 우선한다.
+
+1. **Mainline**
+   - artifact generation: `question_only_best_of_n`
+   - selector: `correctness_only`
+   - base lane: CE-only naive self-distill
+   - meta lane: CE-only epistemic self-distill, then strict `meta_only` KL extension
+2. **Side evidence**
+   - `fixed_k_repair`
+   - retrieval-conditioned repair
+   - RLSD-lite / SDPO-style feedback-conditioned regen
+3. **Eval contract**
+   - run with explicit `max_prompt_tokens`
+   - report `prompt_was_truncated`
+   - report `hit_max_new_tokens`
+   - token-budget ablation order: `16384 -> 8192 -> 4096`
 
 ### Phase 5 Plan: Two-Track Parallel Execution
 
 **Track A — Self-Distill Mainline (allowed nodes only: `metacognition_eval`, `metacognition_train_b`)**
-1. Build fair `fixed_k_repair` artifacts from `strict_base_sft` and `strict_meta_sft`
+1. Build `question_only_best_of_n` artifacts from `strict_base_sft` and `strict_meta_sft`
 2. Project base lane to `naive` baseline and meta lane to claim-bearing `epistemic`
 3. Build teacher top-k targets only for the meta lane that already passed claim-bearing checks
 4. Train:
    - base lane: CE/SFT only
-   - meta lane: CE/SFT + control-span-weighted KL on wrapped meta / diagnosis / study_need / post-meta recovery spans
+   - meta lane: CE/SFT first, then CE/SFT + strict `meta_only` KL on wrapped meta spans only
 5. Evaluate with `analyze_self_distill_eval.py` for collapse / OOD / controller-retention metrics
 6. Record retrieval contract in every artifact:
    - `retriever_active`
@@ -121,16 +145,16 @@ The intended dense objective is:
 **Node plan for this phase**
 
 1. `metacognition_train_b`
-   - first priority: `E1` base self-distill mainline
+   - first priority: `E1` base question-only self-distill mainline
    - inputs: `checkpoints/v8_base_matched_strict_sft`, strict paired train slice
-   - artifact path: `results/self_distill/base_fixedk_naive/`
-   - train config: `configs/sft_self_distill_base_fixedk_naive.yaml`
+   - artifact path: `results/self_distill/base_qonly_naive/`
+   - train config: `configs/sft_self_distill_base_qonly_naive.yaml`
 2. `metacognition_eval`
-   - first priority after resume: `E2` meta self-distill mainline + missing eval-only analyses
+   - first priority after resume: `E2` meta question-only self-distill mainline + missing eval-only analyses
    - inputs: `checkpoints/v8_meta_inside_strict_sft`, strict paired train slice
-   - artifact path: `results/self_distill/meta_fixedk_epistemic/`
-   - train config: `configs/sft_self_distill_meta_fixedk_epistemic.yaml`
-   - KL extension config: `configs/sft_self_distill_meta_fixedk_epistemic_kl.yaml`
+   - artifact path: `results/self_distill/meta_qonly_epistemic/`
+   - train config: `configs/sft_self_distill_meta_qonly_epistemic.yaml`
+   - KL extension config: `configs/sft_self_distill_meta_qonly_epistemic_meta_kl.yaml`
 3. `metacognition_eval`
    - if still paused, local/remote analysis work cannot be claimed as running
    - resume or reconnect must be verified before launching missing analysis
@@ -140,15 +164,15 @@ The intended dense objective is:
 
 ### Immediate Runbook
 
-1. generate `fixed_k_repair` artifacts
-   - base: `scripts/run_fixed_k_self_distill_roundtrip.sh checkpoints/v8_base_matched_strict_sft <train_split> results/self_distill/base_fixedk_naive naive 0`
-   - meta: `scripts/run_fixed_k_self_distill_roundtrip.sh checkpoints/v8_meta_inside_strict_sft <train_split> results/self_distill/meta_fixedk_epistemic epistemic 1`
-   - note: if no example-bank path is appended, the launcher disables retrieval (`rag_top_k=0`, `retrieval_query_mode=none`) and the artifact must be labeled `repair-only`
+1. generate `question_only_best_of_n` artifacts
+   - base: `scripts/run_self_distill_roundtrip.sh question_only_best_of_n checkpoints/v8_base_matched_strict_sft <train_split> results/self_distill/base_qonly_naive naive 0`
+   - meta: `scripts/run_self_distill_roundtrip.sh question_only_best_of_n checkpoints/v8_meta_inside_strict_sft <train_split> results/self_distill/meta_qonly_epistemic epistemic 1`
+   - side lane only: `scripts/run_self_distill_roundtrip.sh fixed_k_repair ...` when testing retrieval / repair effects
 2. verify artifact contract
    - base/meta row counts, candidate_count, selector provenance, `synthetic_meta_injected_rate`, retrieval summary
 3. train SFT readout
-   - base: `configs/sft_self_distill_base_fixedk_naive.yaml`
-   - meta: `configs/sft_self_distill_meta_fixedk_epistemic.yaml`
+   - base: `configs/sft_self_distill_base_qonly_naive.yaml`
+   - meta: `configs/sft_self_distill_meta_qonly_epistemic.yaml`
 4. optional meta-lane dense targets
    - `scripts/build_teacher_topk_targets.py`
    - output: `teacher_topk_targets.parquet`
@@ -1202,3 +1226,66 @@ Operational follow-up:
 1. `dynamic_success_library` is now materializable from saved RQ3 traces via `scripts/build_control_rag_dynamic_library.py`
 2. `run_rq3_side_eval.py` accepts both flat retry fields and nested trace-bundle retry fields, so smoke and offline audit artifacts can be replayed through the same path
 3. side-eval manifests now report active bank roles, making stable-seed vs dynamic-success provenance inspectable
+
+## Phase 6: Decoherence / no-commit fix [NEW 2026-04-16]
+
+Phase 5 (self-distill) remains the claim-bearing mainline. Phase 6 is a **side-evidence diagnostic track** that addresses the AIME failure-mode finding surfaced by `results/aime_failure_analysis_16k/aime_failure_modes.json`. Phase 6 must not be mixed into the Phase 5 self-distill readout; it is a separate reward-smoke + eval-instrumentation lane.
+
+**Problem statement (2026-04-16)**
+
+At 16k max_tokens on AIME:
+- Meta GRPO (E21R-v2 step 300) wrong=26/30. Of those wrong: 13 decohered into LaTeX-token gibberish, 12 exhausted token budget without emitting `\boxed{}`, only 1 committed to a coherent wrong answer.
+- Base GRPO wrong=19/30. Of those wrong: 1 decohered, 0 no-boxed, 18 committed to a coherent wrong `\boxed{}`.
+- Meta AIME accuracy 13.3% vs Base 36.7%. Gap is **not** a token-budget truncation artifact (base recovered at 16k, meta did not).
+
+**H6 hypothesis [NEW 2026-04-16]**
+
+`H6`: On OOD hard problems, meta-trained models under GRPO fail to commit because the reward signal has no penalty for missing `\boxed{}`. Correctness-based rewards only differentiate correct vs incorrect commits; both "no commit" and "incorrect commit" currently receive the same non-positive correctness reward. Meta training amplifies verify/redirect/epistemic loops that are individually rewarded by structural/calibration heads, so under GRPO the dominant gradient is toward longer epistemic loops rather than toward commitment. The result is token exhaustion and decoherence on OOD hard problems, not because the model cannot solve them but because the reward surface has no force pushing it to stop deliberating and write a boxed answer.
+
+H6 is a training-reward claim, not an inference-time claim. Inference-time forced decoding (e.g., "emit `\boxed{}` when budget is 80% used") is out of scope for Phase 6; Phase 6 only touches reward shaping, eval instrumentation, and reward-composition wiring.
+
+**Interventions [NEW 2026-04-16]**
+
+Four concrete interventions, each with change / code location / success metric:
+
+1. **Intervention I1: `no_boxed_penalty` reward head**
+   - Change: add a new reward function `compute_no_boxed_penalty(completion, penalty=-0.3)` that returns `-0.3` if the completion contains no `\boxed` substring and `0.0` otherwise.
+   - Location: `src/training/rewards.py`, appended near end of file (after `efficiency_bonus_reward`, approximately line 2174+). Do NOT modify any existing reward.
+   - Success metric (reward smoke): on an AIME decoherence-style fixture, penalty fires on 100% of no-boxed completions and on 0% of boxed completions (unit test in `tests/test_rewards.py`).
+
+2. **Intervention I2: `compute_score_e21r_v3` composed reward (correctness + outcome_calibration + no_boxed_penalty)**
+   - Change: add a new veRL reward entrypoint `compute_score_e21r_v3(data_source, solution_str, ground_truth, extra_info, **kwargs)` in `src/training/verl_reward.py` that calls `correctness_reward`, `outcome_calibration_reward`, and the new `no_boxed_penalty` wrapper, combining as `combined = corr * 1.0 + cal * 1.0 + no_boxed * 1.0 + floor * 0.3`.
+   - Location: `src/training/verl_reward.py`, new function appended after `compute_score_e21r_v3_smoke` (approximately line 249+). The GDPO reward_keys become `[correctness, outcome_calibration, no_boxed_penalty]`.
+   - Success metric (training-level): on a new RL smoke (`E21R-v3-smoke`, isolated node), AIME no-boxed rate drops from Phase 4 observed 40% (12/30) below 15% within 100 steps without losing MATH500 gain. This is a side-evidence smoke claim, not a mainline claim.
+
+3. **Intervention I3: eval-side no-commit instrumentation**
+   - Change: extend `results/aime_failure_analysis_*/aime_failure_modes.json` schema to be produced automatically by `src/eval/eval_hf.py` per-run (not only post-hoc), logging three counters per benchmark: `coherent_boxed`, `no_boxed_rate`, `decoherent_rate`. The parser reuses the same heuristic as the 16k analysis script.
+   - Location: `src/eval/eval_hf.py`, at the aggregation step after all completions are parsed. Add a new dict field `failure_modes` in the saved JSON, do NOT modify existing accuracy fields or truncation fields.
+   - Success metric: every mainline eval JSON from this point on carries `failure_modes.no_boxed_rate` and `failure_modes.decoherent_rate`, enabling Phase 5 AIME commit gate (see Phase 5 success criterion 7) without re-running the post-hoc analyzer.
+
+4. **Intervention I4: Phase 5 eval readout must report `no_boxed_rate` per benchmark**
+   - Change: `scripts/analyze_self_distill_eval.py` must print and save `no_boxed_rate` for `gsm8k`, `math500`, `aime2024` so the Phase 5 commit gate is checkable from the self-distill readout alone.
+   - Location: `scripts/analyze_self_distill_eval.py`, at the summary-print section. Additive only; existing summary fields remain unchanged.
+   - Success metric: Phase 5 readout for both `base_qonly_naive` and `meta_qonly_epistemic` lanes includes the three benchmark-scoped `no_boxed_rate` numbers, and those numbers match the values that `results/aime_failure_analysis_*/` would compute on the same eval JSON.
+
+**Reward wiring (Phase 6 side-evidence only)**
+
+- Proposed new reward key: `compute_score_e21r_v3 = correctness + outcome_calibration + no_boxed_penalty` (weights `1.0 / 1.0 / 1.0`; optional `meta_floor * 0.3` as in v2).
+- This is explicitly a **new entrypoint**. `compute_score_e21r_v2` is unchanged. `compute_score_e21r_v3_smoke` remains the controller-aware multi-head smoke and is not replaced.
+- Any RL run using `compute_score_e21r_v3` is labeled `side_evidence` until a claim-bearing rerun is saved with full provenance.
+
+**Non-goals for Phase 6**
+
+1. Do not modify `compute_score_e21r_v2`, `outcome_calibration_reward`, `confidence_omission_floor`, or any existing reward weight. Phase 6 is additive.
+2. Do not add inference-time forced-boxed decoding. That is a separate eval-time lane, not a reward-shaping lane.
+3. Do not retrain the mainline E21R-v2 checkpoint with Phase 6 rewards. Phase 6 training runs are smoke-only and must not be merged into Phase 5 claim tables.
+4. Do not claim H6 is confirmed until (a) I1 unit tests pass, (b) I2 smoke shows AIME no-boxed drop without MATH500 regression, (c) I3/I4 instrumentation ships and at least one paired Phase 5 readout shows `no_boxed_rate < 10%` on AIME.
+
+**Operational order**
+
+1. Land I1 (reward function + unit tests) — minimal code change, reviewable in isolation
+2. Land I2 (verl_reward entrypoint) — requires only I1; no training needed for code review
+3. Land I3 (eval instrumentation) — independent of I1/I2, testable via dry-run on existing eval JSON
+4. Land I4 (analyze_self_distill_eval report fields) — depends on I3 schema
+5. Only after I1–I4 land: attempt `E21R-v3-smoke` training run on a side-evidence node
+

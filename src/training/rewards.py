@@ -2170,3 +2170,88 @@ def efficiency_bonus_reward(completions, **kwargs):
         ratio = min(len(text) / 8000, 1.0)
         rewards.append(max(0.0, (1.0 - ratio) * 0.1))
     return rewards
+
+
+# ─── Phase 6 [NEW 2026-04-16]: No-Boxed Commit Penalty ───
+#
+# Rationale (Meta-CoT V8 plan, Phase 6, H6):
+#   `results/aime_failure_analysis_16k/aime_failure_modes.json` shows that at
+#   16k max_tokens on AIME, the Meta GRPO (E21R-v2 step 300) model decoheres
+#   on 13/26 wrong cases and runs out of tokens without emitting \boxed{} on
+#   12/26 wrong cases — only 1/26 commits to a coherent wrong answer. Base
+#   GRPO commits to a coherent \boxed{} on 18/19 wrong cases. Meta training
+#   teaches verify/redirect/epistemic patterns, which under GRPO on OOD hard
+#   problems loop infinitely → no commit → token exhaustion → decoherence.
+#
+#   H6 claims that the reward surface has no force pushing the model to stop
+#   deliberating and write a boxed answer. This penalty is the minimal reward
+#   intervention: subtract a fixed amount whenever a completion never emits
+#   \boxed, independent of correctness. It is additive and does not modify
+#   any existing reward head.
+#
+# Evidence class: side_evidence (Phase 6 smoke only). Do not mix into
+# claim-bearing Phase 5 self-distill tables.
+
+
+def compute_no_boxed_penalty(completion: str, penalty: float = -0.3) -> float:
+    """Penalize completions that never emit ``\\boxed{...}``.
+
+    Scalar variant. Used by Phase 6 ``E21R-v3-smoke`` reward composition to
+    push GRPO away from epistemic-loop decoherence on OOD hard problems.
+
+    Args:
+        completion: The raw generated text of a single completion.
+        penalty: Penalty applied when ``\\boxed`` is absent. Defaults to
+            ``-0.3`` per the Phase 6 plan.
+
+    Returns:
+        ``penalty`` if ``\\boxed`` is not present in ``completion``,
+        otherwise ``0.0``.
+
+    Notes:
+        - Detection uses a plain substring check on the literal ``\\boxed``
+          prefix so that malformed tails (e.g., ``\\boxed{`` without a
+          closing brace) still count as "committed": the goal is to reward
+          any commit attempt, not only well-formed commits. Downstream
+          correctness reward already handles whether the commit is valid.
+        - A ``None`` or empty string is treated as no-commit and receives
+          the full penalty.
+        - This function is a scalar helper. For the batched reward-function
+          signature expected by the reward manager, use
+          :func:`no_boxed_penalty_reward` below.
+
+    References:
+        Plan section "Phase 6: Decoherence / no-commit fix [NEW 2026-04-16]",
+        intervention I1. Evidence: ``results/aime_failure_analysis_16k/
+        aime_failure_modes.json`` (2026-04-16).
+    """
+    if not completion:
+        return penalty
+    if r"\boxed" not in completion:
+        return penalty
+    return 0.0
+
+
+def no_boxed_penalty_reward(completions, ground_truth=None, penalty: float = -0.3, **kwargs):
+    """Batched reward wrapper around :func:`compute_no_boxed_penalty`.
+
+    Matches the batched ``(completions, ground_truth=None, **kwargs)``
+    signature used by the rest of this module so it can be composed into
+    ``src/training/verl_reward.py::compute_score_e21r_v3`` without special
+    casing.
+
+    Args:
+        completions: Iterable of completion objects (text, dict, or list
+            form). Parsed via the module-private ``_get_text``.
+        ground_truth: Unused; accepted for signature parity with other
+            rewards in this file.
+        penalty: Forwarded to :func:`compute_no_boxed_penalty`.
+
+    Returns:
+        List of floats, one per completion.
+    """
+    rewards = []
+    for c in completions:
+        text = _get_text(c)
+        rewards.append(compute_no_boxed_penalty(text, penalty=penalty))
+    return rewards
