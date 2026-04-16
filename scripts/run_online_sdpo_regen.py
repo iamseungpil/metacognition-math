@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
 from src.training.self_distill.online import (
     load_online_problems,
     load_retriever,
+    run_online_question_only_best_of_n_rollouts,
     run_online_fixed_k_repair_rollouts,
     run_online_sdpo_rollouts,
     write_online_sdpo_outputs,
@@ -35,7 +36,11 @@ def main() -> None:
     parser.add_argument("--max_problems", type=int, default=500)
     parser.add_argument("--example_bank", nargs="*", default=None)
     parser.add_argument("--rag_top_k", type=int, default=1)
-    parser.add_argument("--mode", default="fixed_k_repair", choices=["sdpo_regen", "fixed_k_repair"])
+    parser.add_argument(
+        "--mode",
+        default="question_only_best_of_n",
+        choices=["sdpo_regen", "fixed_k_repair", "question_only_best_of_n"],
+    )
     parser.add_argument("--dataset_mode", default="auto", choices=["auto", *SUPPORTED_SELF_DISTILL_MODES])
     parser.add_argument(
         "--claim_bearing",
@@ -44,6 +49,11 @@ def main() -> None:
         action="store_true",
     )
     parser.add_argument("--repair_candidates", type=int, default=4)
+    parser.add_argument(
+        "--selector_mode",
+        default="auto",
+        choices=["auto", "correctness_only", "correct_then_meta", "correctness_first", "reward_weighted"],
+    )
     parser.add_argument(
         "--retrieval_query_mode",
         default="question_only",
@@ -96,7 +106,28 @@ def main() -> None:
             file=sys.stderr,
         )
 
-    if args.mode == "fixed_k_repair":
+    selector_mode = args.selector_mode
+    if selector_mode == "auto":
+        selector_mode = "correctness_only" if args.mode == "question_only_best_of_n" else "reward_weighted"
+
+    if args.mode == "question_only_best_of_n":
+        rows = run_online_question_only_best_of_n_rollouts(
+            llm=llm,
+            tokenizer=tokenizer,
+            problems=problems,
+            output_dir=args.output_dir,
+            max_new_tokens=args.max_new_tokens,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            seed=args.seed,
+            num_candidates=args.repair_candidates,
+            selector_mode=selector_mode,
+            chunk_size=args.chunk_size,
+            resume=not args.no_resume,
+        )
+        source_tag = "online_question_only_best_of_n"
+        dataset_mode = args.dataset_mode if args.dataset_mode != "auto" else "epistemic"
+    elif args.mode == "fixed_k_repair":
         rows = run_online_fixed_k_repair_rollouts(
             llm=llm,
             tokenizer=tokenizer,
@@ -110,6 +141,7 @@ def main() -> None:
             rag_top_k=args.rag_top_k,
             repair_candidates=args.repair_candidates,
             retrieval_query_mode=args.retrieval_query_mode,
+            selector_mode=selector_mode,
             chunk_size=args.chunk_size,
             resume=not args.no_resume,
         )

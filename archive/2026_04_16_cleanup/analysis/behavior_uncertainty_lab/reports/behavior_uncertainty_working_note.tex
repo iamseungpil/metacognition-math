@@ -1,0 +1,42 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{hyperref}
+\usepackage{array}
+\title{Behavior, Uncertainty, and Meta-Control\\A Working Note}
+\author{Seungpil Lee}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Introduction}
+This working note tracks a small analysis program that connects two external perspectives to the
+current Meta-CoT project. The first perspective is a four-behavior view of self-improving
+reasoners: verification, backtracking, subgoal setting, and backward chaining. The second
+perspective is an uncertainty view in which useful reasoning depends on epistemic verbalization
+rather than procedural text alone.
+
+\section{Why This Note Exists}
+The main training track now uses three nodes for control-v5 SFT and later RL. In parallel, this note
+defines a separate analysis track that can interpret model outputs before and after training. The main
+question is whether current meta traces already behave like control actions conditioned on uncertainty.
+
+\section{Current Analysis Scope}
+The first pass uses locally available evaluation outputs for existing Meta-CoT models. The placeholder
+goal is to measure benchmark-level rates for verification, redirect-like behavior, subgoal language,
+backward-chaining language, uncertainty language, diagnosis language, and epistemic behavior.
+
+\section{Planned Outputs}
+\begin{itemize}
+\item A summary table over available models and benchmarks.
+\item A small qualitative slice on difficult AIME examples.
+\item A decision memo for how to map the analysis back into reward design and curriculum/RAG.
+\end{itemize}
+
+\section{Status}
+This PDF is a placeholder shell. The quantitative table and qualitative examples are generated in the
+paired Markdown report and can be folded into a later revision once more model outputs are available.
+
+\end{document}

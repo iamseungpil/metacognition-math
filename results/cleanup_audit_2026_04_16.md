@@ -298,7 +298,7 @@ Note: `results/eval_v8_E20a`, `eval_v8_E20b` remain in place since they are refe
 
 ## tmp/ cleanup plan
 
-- KEEP: `tmp/control_rag_seed_library.json` (referenced by active RAG pipeline per pipeline_stages.md — NOT duplicated in `data/`)
+- KEEP (moved 2026-04-16 to `data/control_rag_seed_library.json`): referenced by active RAG pipeline per pipeline_stages.md
 - DELETE: `tmp/control_rag_real_bank.json`, `tmp/rag_all.json`, `tmp/rag_bank_from_meta_eval.json`, `tmp/rag_study.json` (duplicate/intermediate RAG banks — can be rebuilt)
 - DELETE: `tmp/run_base_redirect_0410.sh`, `tmp/run_e21r_redirect_0410.sh` (scratch copies of relaunch scripts that exist in scripts/)
 - DELETE: `tmp/self_distill_smoke/` (smoke run artifacts)
@@ -328,5 +328,5 @@ Sub-project with its own README + PLAN. NOT touched during this cleanup. Untrack
 - `scripts/analyze_control_v5_eval.py` — retained (test file imports it).
 - `scripts/build_probe_rollouts_hf.py` — retained (test file imports it).
 - `scripts/analyze_confidence_distribution.py`, `scripts/extract_aime_qualitative.py` — retained (run_post_sft_bundle.py calls them).
-- `tmp/control_rag_seed_library.json` — retained (docs/pipeline_stages.md + plan references).
+- `data/control_rag_seed_library.json` — retained and relocated from `tmp/` on 2026-04-16 (docs/pipeline_stages.md + plan references updated).
 - All `scripts/relaunch_verl_*.sh` — retained (E21 0410 RL workflow references).

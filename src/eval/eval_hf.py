@@ -88,6 +88,7 @@ def evaluate(
     retriever=None,
     rag_top_k=1,
     *,
+    max_prompt_tokens=2048,
     do_sample=True,
     temperature=0.7,
     top_p=0.95,
@@ -100,8 +101,12 @@ def evaluate(
             messages,
             device=model.device,
             add_generation_prompt=True,
-            max_prompt_tokens=2048,
+            max_prompt_tokens=max_prompt_tokens,
         )
+        prompt_tokenized_full = tokenizer(text, return_tensors="pt", truncation=False)
+        prompt_total_tokens = int(prompt_tokenized_full["input_ids"].shape[1])
+        prompt_len_tokens = int(inputs["input_ids"].shape[1])
+        prompt_was_truncated = prompt_total_tokens > prompt_len_tokens
 
         for _ in range(num_samples):
             with torch.no_grad():
@@ -112,9 +117,9 @@ def evaluate(
                     top_p=top_p,
                     pad_token_id=tokenizer.pad_token_id,
                 )
-            prompt_len_tokens = int(inputs["input_ids"].shape[1])
             completion_ids = output[0][prompt_len_tokens:]
             completion_len_tokens = int(completion_ids.shape[0])
+            hit_max_new_tokens = completion_len_tokens >= int(max_tokens)
             gen = tokenizer.decode(completion_ids, skip_special_tokens=False)
             first_completion = gen
             rag_run = None
@@ -131,6 +136,7 @@ def evaluate(
                 if rag_run["rag_used"]:
                     gen = rag_run["rag_completion"]
                     completion_len_tokens = len(tokenizer(gen, return_tensors="pt")["input_ids"][0])
+                    hit_max_new_tokens = completion_len_tokens >= int(max_tokens)
 
             is_correct = check_correctness(gen, prob["gold_answer"])
             parsed = parse_meta_blocks(gen)
@@ -150,8 +156,11 @@ def evaluate(
                 "full_gold_answer": prob["gold_answer"],
                 "prompt_length_chars": len(text),
                 "prompt_length_tokens": prompt_len_tokens,
+                "prompt_total_tokens_before_truncation": prompt_total_tokens,
+                "prompt_was_truncated": prompt_was_truncated,
                 "completion_length_chars": len(gen),
                 "completion_length_tokens": completion_len_tokens,
+                "hit_max_new_tokens": hit_max_new_tokens,
                 "rag_used": bool(rag_run and rag_run["rag_used"]),
                 "retrieved_questions": [item["question"] for item in (rag_run["retrieved"] if rag_run else [])],
                 "retrieval_scores": [item["score"] for item in (rag_run["retrieved"] if rag_run else [])],
@@ -208,6 +217,7 @@ def build_run_metadata(args, model_name, problems, tokenizer, *, resolved_do_sam
         "max_problems_per_benchmark": args.max_problems,
         "num_samples": args.num_samples,
         "max_new_tokens": args.max_new_tokens,
+        "max_prompt_tokens": args.max_prompt_tokens,
         "do_sample_requested": args.do_sample,
         "do_sample_resolved": resolved_do_sample,
         "temperature": args.temperature,
@@ -216,7 +226,7 @@ def build_run_metadata(args, model_name, problems, tokenizer, *, resolved_do_sam
         "device_map": args.device_map,
         "total_problems": len(problems),
         "hostname": socket.gethostname(),
-        "utc_timestamp": dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "utc_timestamp": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "tokenizer_name_or_path": getattr(tokenizer, "name_or_path", None),
         "meta_token_ids": {
             META_START: tokenizer.convert_tokens_to_ids(META_START),
@@ -264,6 +274,7 @@ def main():
     parser.add_argument("--max_problems", type=int, default=30)
     parser.add_argument("--num_samples", type=int, default=1)
     parser.add_argument("--max_new_tokens", type=int, default=4096)
+    parser.add_argument("--max_prompt_tokens", type=int, default=2048)
     parser.add_argument("--do_sample", action="store_true")
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--top_p", type=float, default=0.95)
@@ -352,6 +363,7 @@ def main():
         args.max_new_tokens,
         retriever=retriever,
         rag_top_k=args.rag_top_k,
+        max_prompt_tokens=args.max_prompt_tokens,
         do_sample=do_sample,
         temperature=args.temperature,
         top_p=args.top_p,

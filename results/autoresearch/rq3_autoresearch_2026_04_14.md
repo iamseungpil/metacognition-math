@@ -181,8 +181,8 @@ Verify:
 
 1. `pytest -q tests/test_control_rag.py tests/test_rq3_pipeline.py tests/test_self_distill_data.py`
 2. `python -m py_compile src/curriculum/control_rag.py scripts/audit_control_rag_real.py scripts/build_control_rag_seed_library.py tests/test_control_rag.py`
-3. `python scripts/build_control_rag_seed_library.py --inputs results/eval_v8_E20a/eval_v8_meta_inside_E20a.json results/eval_v8_E20b/eval_v8_meta_inside_E20b_5ep.json --output tmp/control_rag_seed_library.json --require_correct --require_study_need`
-4. `python scripts/audit_control_rag_real.py --bank_paths tmp/control_rag_seed_library.json --output_json results/control_rag_real_audit_with_seed.json`
+3. `python scripts/build_control_rag_seed_library.py --inputs results/eval_v8_E20a/eval_v8_meta_inside_E20a.json results/eval_v8_E20b/eval_v8_meta_inside_E20b_5ep.json --output data/control_rag_seed_library.json --require_correct --require_study_need`
+4. `python scripts/audit_control_rag_real.py --bank_paths data/control_rag_seed_library.json --output_json results/control_rag_real_audit_with_seed.json`
 
 Result:
 

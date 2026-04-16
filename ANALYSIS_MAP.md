@@ -26,8 +26,8 @@ Local (paired RL redirect subset):
 - `data/verl_train_redirect.parquet`, `data/verl_val_redirect.parquet`
 - `data/verl_train_redirect_base.parquet`, `data/verl_val_redirect_base.parquet`
 
-RAG seed library (active, NOT in `data/`):
-- `tmp/control_rag_seed_library.json` — referenced by `scripts/audit_control_rag_real.py` and `scripts/run_rq3_side_eval.py`
+RAG seed library (active):
+- `data/control_rag_seed_library.json` — referenced by `scripts/audit_control_rag_real.py` and `scripts/run_rq3_side_eval.py`
 
 ## Analysis Code (the 5 mainline scripts)
 

@@ -1,0 +1,31 @@
+{
+  "model": "base_grpo_step300_16k",
+  "model_path": "/scratch/models/verl_base_matched_0410_merged_step300",
+  "output_dir": "results/eval_1030_base_grpo_step300_16k",
+  "benchmarks": [
+    "gsm8k",
+    "math500",
+    "aime2024"
+  ],
+  "max_problems": 500,
+  "max_tokens": 16384,
+  "temperature": 0.7,
+  "top_p": 0.95,
+  "tp_size": 4,
+  "gpu_memory_utilization": 0.85,
+  "max_model_len": 20480,
+  "seed": 42,
+  "num_samples": 1,
+  "total_problems": 1030,
+  "total_rows": 1030,
+  "hostname": "node-0",
+  "start_utc": "2026-04-16T13:00:47Z",
+  "end_utc": "2026-04-16T13:04:05Z",
+  "vllm_version": "0.10.2",
+  "torch_version": "2.8.0+cu126",
+  "tokenizer_name_or_path": "/scratch/models/verl_base_matched_0410_merged_step300",
+  "meta_token_ids": {
+    "<|meta|>": 151669,
+    "<|/meta|>": 151670
+  }
+}

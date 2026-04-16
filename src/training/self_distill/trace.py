@@ -33,7 +33,9 @@ class NormalizedTeacherTrace:
     teacher_feedback_context: dict[str, Any] | None = None
     candidate_count: int = 0
     selected_candidate_id: str = ""
+    selector_mode: str = ""
     selection_score_total: float | None = None
+    selection_meta_transition_score: float | None = None
     selection_margin: float | None = None
     selection_score_breakdown: dict[str, Any] | None = None
 
@@ -156,7 +158,7 @@ def _normalize_from_rq3_case(row: dict[str, Any]) -> NormalizedTeacherTrace | No
             root_completion=first_text(row, ["root_completion"]),
             diagnosis_text=str(root_analysis.get("diagnosis_text", "")).strip(),
             study_need=str(root_analysis.get("study_need", "")).strip(),
-            intervention_summary=first_text(row, ["selected_prompt_kind"]) or "fixed_k_repair",
+            intervention_summary=first_text(row, ["selected_prompt_kind"]) or "selected_completion",
             confidence_gain=(
                 float(selected_meta_transition["confidence_gain"])
                 if selected_meta_transition.get("confidence_gain") is not None
@@ -171,9 +173,15 @@ def _normalize_from_rq3_case(row: dict[str, Any]) -> NormalizedTeacherTrace | No
             teacher_feedback_context=selected_feedback_context or None,
             candidate_count=len(repair_candidates),
             selected_candidate_id=str(selector.get("selected_candidate_id", "")).strip(),
+            selector_mode=str(selector.get("selector_mode", "")).strip(),
             selection_score_total=(
                 float(selector["selected_score"])
                 if selector.get("selected_score") is not None
+                else None
+            ),
+            selection_meta_transition_score=(
+                float((selector.get("selected_breakdown") or {}).get("meta_transition"))
+                if (selector.get("selected_breakdown") or {}).get("meta_transition") is not None
                 else None
             ),
             selection_margin=(

@@ -112,6 +112,7 @@ def build_control_span_weights(
     tokenizer,
     assistant_text: str,
     expected_length: int,
+    mask_mode: str = "control_spans",
     diagnosis_text: str = "",
     study_need: str = "",
     meta_weight: float = 1.0,
@@ -140,9 +141,17 @@ def build_control_span_weights(
                 continue
             weights[token_idx] = max(weights[token_idx], float(value))
 
+    if mask_mode not in {"control_spans", "meta_only"}:
+        raise ValueError(f"Unsupported mask_mode: {mask_mode}")
+
     meta_matches = list(_META_BLOCK_RE.finditer(assistant_text))
     for match in meta_matches:
         add_span_weight(match.start(), match.end(), meta_weight)
+
+    if mask_mode == "meta_only":
+        if len(weights) < expected_length:
+            weights.extend([0.0] * (expected_length - len(weights)))
+        return weights[:expected_length]
 
     for start, end in _find_spans(assistant_text, diagnosis_text):
         add_span_weight(start, end, diagnosis_weight)

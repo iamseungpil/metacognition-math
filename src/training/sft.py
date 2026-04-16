@@ -44,6 +44,7 @@ def _load_teacher_kl_config(config: dict[str, Any]) -> dict[str, Any]:
     teacher.setdefault("enabled", False)
     teacher.setdefault("coef", 0.0)
     teacher.setdefault("require_targets", True)
+    teacher.setdefault("mask_mode", "control_spans")
     teacher.setdefault("meta_weight", 1.0)
     teacher.setdefault("diagnosis_weight", 1.25)
     teacher.setdefault("study_need_weight", 1.4)
@@ -113,6 +114,7 @@ def prepare_sft_dataset(
                         tokenizer=tokenizer,
                         assistant_text=assistant_text,
                         expected_length=len(trimmed.assistant_token_ids),
+                        mask_mode=str(teacher_kl.get("mask_mode", "control_spans")),
                         diagnosis_text=str(row.get("diagnosis_text", "") or ""),
                         study_need=str(row.get("study_need", "") or ""),
                         meta_weight=float(teacher_kl.get("meta_weight", 1.0)),
@@ -127,7 +129,7 @@ def prepare_sft_dataset(
                         "teacher_target_logprobs": trimmed.target_logprobs,
                         "teacher_assistant_token_ids": trimmed.assistant_token_ids,
                         "teacher_position_weights": weights,
-                        "teacher_kl_active": 1,
+                        "teacher_kl_active": int(any(float(weight) > 0.0 for weight in weights)),
                     })
                 else:
                     built["teacher_kl_active"] = 0

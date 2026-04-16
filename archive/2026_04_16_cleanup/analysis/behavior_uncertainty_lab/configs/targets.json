@@ -1,0 +1,12 @@
+{
+  "models": [
+    {
+      "name": "v2_sft",
+      "eval_json": "/home/v-seungplee/metacognition/results/hf_backup_2026_04_01/v2_eval/eval_1030_v2_sft.json"
+    },
+    {
+      "name": "v3_sft",
+      "eval_json": "/home/v-seungplee/metacognition/results/hf_backup_2026_04_01/v3_eval/eval_1030_v3_sft.json"
+    }
+  ]
+}

@@ -85,6 +85,26 @@ def test_build_control_span_weights_prioritizes_meta_and_study_need():
     assert any(weight > 0 for weight in weights)
 
 
+def test_build_control_span_weights_meta_only_masks_non_meta_tokens():
+    tokenizer = DummyTokenizer()
+    assistant_text = (
+        "<|meta|> confidence: 0.31 study_need: factor the count <|/meta|> "
+        "Re-solve carefully and verify by substituting back. \\boxed{4}"
+    )
+    weights = build_control_span_weights(
+        tokenizer=tokenizer,
+        assistant_text=assistant_text,
+        expected_length=len(assistant_text.split()),
+        mask_mode="meta_only",
+        diagnosis_text="factor",
+        study_need="factor the count",
+    )
+
+    meta_token_count = len("<|meta|> confidence: 0.31 study_need: factor the count <|/meta|>".split())
+    assert any(weight > 0 for weight in weights[:meta_token_count])
+    assert all(weight == 0.0 for weight in weights[meta_token_count:])
+
+
 def test_prepare_sft_dataset_fails_closed_when_teacher_kl_enabled_without_targets(tmp_path):
     path = tmp_path / "missing_teacher_targets.parquet"
     pd.DataFrame([
@@ -105,4 +125,36 @@ def test_prepare_sft_dataset_fails_closed_when_teacher_kl_enabled_without_target
             str(path),
             DummyTokenizer(),
             teacher_kl={"enabled": True, "coef": 0.1, "require_targets": True},
+        )
+
+
+def test_prepare_sft_dataset_meta_only_fails_closed_without_meta_spans(tmp_path):
+    path = tmp_path / "meta_only_without_wrapped_meta.parquet"
+    pd.DataFrame([
+        {
+            "messages": json.dumps(
+                [
+                    {"role": "user", "content": "Solve x+3=7."},
+                    {"role": "assistant", "content": "confidence: 0.4 x=4 \\boxed{4}"},
+                ]
+            ),
+            "diagnosis_text": "guessing",
+            "study_need": "direct isolation",
+            "teacher_topk_token_ids_json": json.dumps([[1], [2], [3], [4]]),
+            "teacher_topk_logprobs_json": json.dumps([[-0.1], [-0.2], [-0.3], [-0.4]]),
+            "teacher_target_logprobs_json": json.dumps([-0.1, -0.2, -0.3, -0.4]),
+            "assistant_token_ids_json": json.dumps([10, 11, 12, 13]),
+        }
+    ]).to_parquet(path, index=False)
+
+    with pytest.raises(ValueError, match="teacher_kl is enabled"):
+        prepare_sft_dataset(
+            str(path),
+            DummyTokenizer(),
+            teacher_kl={
+                "enabled": True,
+                "coef": 0.1,
+                "require_targets": True,
+                "mask_mode": "meta_only",
+            },
         )

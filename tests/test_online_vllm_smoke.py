@@ -27,6 +27,7 @@ from src.training.self_distill.online import (  # noqa: E402
     OnlineSdpoProblem,
     _load_completed_ids,
     _stable_problem_id,
+    run_online_question_only_best_of_n_rollouts,
     run_online_fixed_k_repair_rollouts,
     write_online_sdpo_outputs,
 )
@@ -160,6 +161,79 @@ def test_fixed_k_repair_smoke(tmp_path: Path):
             "selected_judgment",
         ]:
             assert key in row, f"Missing key: {key}"
+
+
+def test_question_only_best_of_n_smoke(tmp_path: Path):
+    def canned_question_only(prompt, n):
+        if "2x = 0" in prompt:
+            return [("\\boxed{99}", [1]), ("\\boxed{0}", [1]), ("\\boxed{1}", [1]), ("\\boxed{2}", [1])][:n]
+        return [("\\boxed{99}", [1]), ("\\boxed{1}", [1]), ("\\boxed{0}", [1]), ("\\boxed{2}", [1])][:n]
+
+    problems = make_problems(2)
+    llm = FakeLLM(canned_question_only)
+    rows = run_online_question_only_best_of_n_rollouts(
+        llm=llm,
+        tokenizer=llm.get_tokenizer(),
+        problems=problems,
+        output_dir=tmp_path,
+        num_candidates=4,
+        chunk_size=2,
+        resume=False,
+    )
+
+    assert len(rows) == 2
+    for row in rows:
+        assert row["generation_mode"] == "question_only_best_of_n"
+        assert row["selected_prompt_kind"] == "question_only"
+        assert row["selector"]["selector_mode"] == "correctness_only"
+        assert row["retrieval_enabled"] is False
+
+
+def test_question_only_selector_prefers_correctness_first(tmp_path: Path):
+    def canned(prompt, n):
+        return [
+            ("<|meta|> confidence: 0.95 <|/meta|> wrong \\boxed{99}", [1]),
+            ("<|meta|> confidence: 0.40 <|/meta|> right \\boxed{0}", [1]),
+        ][:n]
+
+    problems = [OnlineSdpoProblem(question="Solve: 2x = 0, find x.", gold_answer="0", benchmark="test")]
+    llm = FakeLLM(canned)
+    rows = run_online_question_only_best_of_n_rollouts(
+        llm=llm,
+        tokenizer=llm.get_tokenizer(),
+        problems=problems,
+        output_dir=tmp_path,
+        num_candidates=2,
+        selector_mode="correctness_first",
+        chunk_size=1,
+        resume=False,
+    )
+
+    assert rows[0]["selector"]["selected_candidate_id"] == "sample_1"
+    assert rows[0]["selected_judgment"]["is_correct"] is True
+
+
+def test_question_only_selector_prefers_correctness_only(tmp_path: Path):
+    def canned(prompt, n):
+        return [
+            ("<|meta|> confidence: 0.99 <|/meta|> wrong \\boxed{99}", [1]),
+            ("plain but correct \\boxed{0}", [1]),
+        ][:n]
+
+    problems = [OnlineSdpoProblem(question="Solve: 2x = 0, find x.", gold_answer="0", benchmark="test")]
+    llm = FakeLLM(canned)
+    rows = run_online_question_only_best_of_n_rollouts(
+        llm=llm,
+        tokenizer=llm.get_tokenizer(),
+        problems=problems,
+        output_dir=tmp_path,
+        num_candidates=2,
+        selector_mode="correctness_only",
+        chunk_size=1,
+        resume=False,
+    )
+
+    assert rows[0]["selector"]["selected_candidate_id"] == "sample_1"
 
 
 def test_resume_skips_processed(tmp_path: Path):

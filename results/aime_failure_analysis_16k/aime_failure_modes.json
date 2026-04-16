@@ -1,0 +1,34 @@
+{
+  "meta_grpo_16k": {
+    "model": "Meta GRPO E21R-v2 16k",
+    "n_total": 30,
+    "n_correct": 4,
+    "accuracy": 0.13333333333333333,
+    "avg_len_correct": 1148.0,
+    "avg_len_wrong": 14627.884615384615,
+    "n_wrong": 26,
+    "failure_modes": {
+      "decohered_gibberish": 13,
+      "no_boxed_nearcap_15k+": 9,
+      "no_boxed_mid_chain": 3,
+      "coherent_wrong_boxed": 1
+    },
+    "avg_hedge_markers_wrong": 5.653846153846154
+  },
+  "base_grpo_16k": {
+    "model": "Base GRPO 16k",
+    "n_total": 30,
+    "n_correct": 11,
+    "accuracy": 0.36666666666666664,
+    "avg_len_correct": 2837.2727272727275,
+    "avg_len_wrong": 6078.315789473684,
+    "n_wrong": 19,
+    "failure_modes": {
+      "decohered_gibberish": 1,
+      "no_boxed_nearcap_15k+": 0,
+      "no_boxed_mid_chain": 0,
+      "coherent_wrong_boxed": 18
+    },
+    "avg_hedge_markers_wrong": 3.8947368421052633
+  }
+}

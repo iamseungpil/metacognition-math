@@ -1,12 +1,14 @@
 """On-policy self-distill artifact builders (vLLM batched).
 
-Two paths are supported:
+Supported paths:
 
-1. `sdpo_regen`: trigger-gated, feedback-conditioned side-evidence collection.
+1. `question_only_best_of_n`: claim-bearing mainline.
+   Sample `n` completions from the original question prompt in one vLLM pass,
+   then select a teacher without repair-prompt confounds.
+2. `fixed_k_repair`: side-evidence lane with root -> diagnosis/retrieval ->
+   repair prompt -> K candidates -> selector.
+3. `sdpo_regen`: trigger-gated, feedback-conditioned side-evidence collection.
    (Currently stubbed for vLLM; P4 lane — see `run_online_sdpo_rollouts`.)
-2. `fixed_k_repair`: fair claim-bearing path with the same root/repair budget for
-   base and meta models, plus reward-ranked candidate selection. Runs as batched
-   vLLM with streaming jsonl writes and resume support.
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any
 
 import pandas as pd
@@ -31,6 +34,7 @@ from src.curriculum.rq3_pipeline import (
     evaluate_meta_transition,
     judge_completion,
 )
+from src.metacot.prompt import META_END, META_START, parse_meta_blocks
 from src.training.self_distill.builders import (
     build_self_distill_dataframe,
     summarize_self_distill_dataframe,
@@ -42,6 +46,18 @@ from src.training.rewards import (
     redirect_execution_reward_v2,
     verify_execution_reward_v2,
 )
+
+
+_WRAPPED_META_RE = re.compile(
+    rf"{re.escape(META_START)}(.*?){re.escape(META_END)}",
+    re.DOTALL | re.IGNORECASE,
+)
+_DIAGNOSIS_SIGNAL_RE = re.compile(
+    r"\b(route is weak|earlier route|diagnosis|missing|contradiction|unsupported|"
+    r"does not control|failed because|the issue is|the problem is)\b",
+    re.IGNORECASE,
+)
+_STUDY_NEED_RE = re.compile(r"study_need\s*:\s*(.+)", re.IGNORECASE)
 
 
 @dataclass
@@ -247,16 +263,21 @@ def _score_completion_for_selection(
         "redirect_execution": 0.30,
         "verify_execution": 0.15,
         "meta_floor": 0.15,
+        "meta_transition": 0.25,
     }
     payload = [{"content": completion}]
     ground_truth = [gold_answer]
+    meta_transition = _score_meta_transition_quality(completion)
     components = {
         "correctness": correctness_reward(payload, ground_truth)[0],
         "confidence_revision": confidence_revision_reward_v2(payload, ground_truth)[0],
         "redirect_execution": redirect_execution_reward_v2(payload, ground_truth)[0],
         "verify_execution": verify_execution_reward_v2(payload, ground_truth)[0],
         "meta_floor": confidence_omission_floor(payload, ground_truth)[0],
+        "meta_transition": meta_transition["total"],
     }
+    for key, value in meta_transition.items():
+        components[f"meta_transition_{key}"] = value
     total = 0.0
     for key, weight in active_weights.items():
         total += float(weight) * float(components.get(key, 0.0))
@@ -264,10 +285,80 @@ def _score_completion_for_selection(
     return components
 
 
+def _score_meta_transition_quality(completion: str) -> dict[str, float]:
+    text = str(completion or "").strip()
+    wrapped_blocks = list(_WRAPPED_META_RE.finditer(text))
+    parsed_wrapped = parse_meta_blocks(text, allow_free_text_fallback=False)
+    diagnosis_present = bool(_DIAGNOSIS_SIGNAL_RE.search(text))
+    study_need_present = bool(_STUDY_NEED_RE.search(text))
+    boxed_idx = text.rfind("\\boxed")
+
+    wrapped_meta_present = 1.0 if wrapped_blocks else 0.0
+    boxed_present = 1.0 if boxed_idx >= 0 else 0.0
+    boxed_after_meta = 0.0
+    post_meta_budget_efficiency = 0.0
+    repeated_meta_penalty = 0.0
+    overlong_post_meta_penalty = 0.0
+    epistemic_outside_meta_penalty = 0.0
+    diagnosis_score = 1.0 if diagnosis_present else 0.0
+    study_need_score = 1.0 if study_need_present else 0.0
+
+    if wrapped_blocks:
+        last_meta_end = wrapped_blocks[-1].end()
+        if boxed_idx > last_meta_end:
+            boxed_after_meta = 1.0
+            post_meta_chars = max(1, boxed_idx - last_meta_end)
+            post_meta_budget_efficiency = max(0.0, 1.0 - min(1.0, post_meta_chars / 1200.0))
+            if post_meta_chars > 2400:
+                overlong_post_meta_penalty = min(1.0, (post_meta_chars - 2400) / 2400.0)
+        elif boxed_present:
+            overlong_post_meta_penalty = 0.5
+        if len(wrapped_blocks) > 2:
+            repeated_meta_penalty = min(1.0, (len(wrapped_blocks) - 2) / 3.0)
+
+        outside_text = text
+        for match in reversed(wrapped_blocks):
+            outside_text = outside_text[:match.start()] + " " + outside_text[match.end():]
+        if re.search(r"\b(maybe|perhaps|probably|not sure|uncertain|i think)\b", outside_text, re.IGNORECASE):
+            epistemic_outside_meta_penalty = 0.5
+    else:
+        if re.search(r"\bconfidence\s*:\s*\d", text, re.IGNORECASE):
+            epistemic_outside_meta_penalty = 1.0
+
+    no_boxed_penalty = 0.0 if boxed_present else 1.0
+    confidence_present = 1.0 if parsed_wrapped.get("confidences") else 0.0
+    total = (
+        0.20 * wrapped_meta_present
+        + 0.12 * confidence_present
+        + 0.12 * diagnosis_score
+        + 0.12 * study_need_score
+        + 0.22 * boxed_after_meta
+        + 0.22 * post_meta_budget_efficiency
+        - 0.12 * repeated_meta_penalty
+        - 0.20 * no_boxed_penalty
+        - 0.15 * overlong_post_meta_penalty
+        - 0.10 * epistemic_outside_meta_penalty
+    )
+    return {
+        "total": float(total),
+        "wrapped_meta_present": wrapped_meta_present,
+        "confidence_present": confidence_present,
+        "diagnosis_present": diagnosis_score,
+        "study_need_present": study_need_score,
+        "boxed_after_meta": boxed_after_meta,
+        "post_meta_budget_efficiency": float(post_meta_budget_efficiency),
+        "repeated_meta_penalty": float(repeated_meta_penalty),
+        "no_boxed_penalty": float(no_boxed_penalty),
+        "overlong_post_meta_penalty": float(overlong_post_meta_penalty),
+        "epistemic_outside_meta_penalty": float(epistemic_outside_meta_penalty),
+    }
+
+
 def _select_best_candidate(
     candidates: list[dict[str, Any]],
     gold_answer: str,
     *,
+    selector_mode: str = "reward_weighted",
     weights: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     scored: list[dict[str, Any]] = []
@@ -284,15 +375,46 @@ def _select_best_candidate(
         })
     if not scored:
         raise ValueError("No non-empty repair candidates to score")
-    ranked = sorted(
-        scored,
-        key=lambda row: (
-            float(row["selection_score"]),
-            bool((row.get("judgment") or {}).get("is_correct")),
-            -len(str(row.get("completion", ""))),
-        ),
-        reverse=True,
-    )
+    if selector_mode == "correctness_only":
+        ranked = sorted(
+            scored,
+            key=lambda row: (
+                bool((row.get("judgment") or {}).get("is_correct")),
+                -len(str(row.get("completion", ""))),
+            ),
+            reverse=True,
+        )
+    elif selector_mode == "correct_then_meta":
+        ranked = sorted(
+            scored,
+            key=lambda row: (
+                bool((row.get("judgment") or {}).get("is_correct")),
+                float((row.get("selector_breakdown") or {}).get("meta_transition", 0.0)),
+                float(row["selection_score"]),
+                -len(str(row.get("completion", ""))),
+            ),
+            reverse=True,
+        )
+    elif selector_mode == "correctness_first":
+        ranked = sorted(
+            scored,
+            key=lambda row: (
+                bool((row.get("judgment") or {}).get("is_correct")),
+                float(row["selection_score"]),
+                -len(str(row.get("completion", ""))),
+            ),
+            reverse=True,
+        )
+    else:
+        ranked = sorted(
+            scored,
+            key=lambda row: (
+                float(row["selection_score"]),
+                bool((row.get("judgment") or {}).get("is_correct")),
+                -len(str(row.get("completion", ""))),
+            ),
+            reverse=True,
+        )
     best = ranked[0]
     runner_up = ranked[1] if len(ranked) > 1 else None
     return {
@@ -302,6 +424,7 @@ def _select_best_candidate(
         "selected_score": float(best["selection_score"]),
         "selected_breakdown": best["selector_breakdown"],
         "score_margin": float(best["selection_score"] - runner_up["selection_score"]) if runner_up else None,
+        "selector_mode": selector_mode,
     }
 
 
@@ -375,6 +498,189 @@ def run_online_sdpo_rollouts(*args, **kwargs):
     )
 
 
+def run_online_question_only_best_of_n_rollouts(
+    *,
+    llm,
+    tokenizer,
+    problems: list[OnlineSdpoProblem],
+    output_dir: str | Path,
+    max_new_tokens: int = 1024,
+    temperature: float = 0.7,
+    top_p: float = 0.95,
+    seed: int = 42,
+    num_candidates: int = 4,
+    selector_mode: str = "correctness_only",
+    selector_weights: dict[str, float] | None = None,
+    chunk_size: int = 64,
+    resume: bool = True,
+) -> list[dict[str, Any]]:
+    """Run question-only best-of-N with a single vLLM pass per chunk."""
+    from vllm import SamplingParams
+
+    outdir = Path(output_dir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    traces_path = outdir / "online_sdpo_traces.jsonl"
+
+    done_ids: set[str] = set()
+    existing_rows: list[dict[str, Any]] = []
+    if resume and traces_path.exists():
+        with traces_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                    pid = row.get("problem_id")
+                    if pid:
+                        done_ids.add(pid)
+                        existing_rows.append(row)
+                except json.JSONDecodeError:
+                    continue
+        _log(f"Resume: {len(done_ids)} problems already done; will skip.")
+
+    to_do = [p for p in problems if _stable_problem_id(p.benchmark, p.question) not in done_ids]
+    _log(
+        "To process: "
+        f"{len(to_do)} of {len(problems)} (chunk_size={chunk_size}, N={num_candidates}, selector={selector_mode})"
+    )
+    if not to_do:
+        return existing_rows
+
+    handle = traces_path.open("a", encoding="utf-8")
+    new_rows: list[dict[str, Any]] = []
+    skipped_problems: list[dict[str, Any]] = []
+
+    try:
+        chunks = _chunks(to_do, chunk_size)
+        for chunk_i, chunk in enumerate(chunks):
+            _log(f"Chunk {chunk_i + 1}/{len(chunks)} ({len(chunk)} problems)")
+            prompts = [_render_chat_prompt(tokenizer, p.question) for p in chunk]
+            sampling = SamplingParams(
+                n=max(1, int(num_candidates)),
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_new_tokens,
+                skip_special_tokens=False,
+            )
+            t0 = datetime.now()
+            outputs = _safe_generate(llm, prompts, sampling)
+            _log(
+                f"  Question-only pass: {len(chunk)} × {num_candidates} candidates in "
+                f"{(datetime.now() - t0).total_seconds():.1f}s"
+            )
+
+            for p, prompt_text, output in zip(chunk, prompts, outputs):
+                pid = _stable_problem_id(p.benchmark, p.question)
+                if not output.outputs:
+                    skipped_problems.append({
+                        "problem_id": pid,
+                        "benchmark": p.benchmark,
+                        "question_preview": p.question[:80],
+                        "phase": "question_only",
+                        "reason": "no_outputs",
+                    })
+                    _log(f"  Skipping problem {pid[:8]}: question-only generation returned no outputs")
+                    continue
+
+                candidates: list[dict[str, Any]] = []
+                for ci, candidate_output in enumerate(output.outputs):
+                    completion = candidate_output.text
+                    analysis = analyze_completion_for_rag(completion)
+                    judgment = judge_completion(completion, p.gold_answer)
+                    candidates.append({
+                        "candidate_id": f"sample_{ci}",
+                        "prompt": prompt_text,
+                        "prompt_tokens": len(output.prompt_token_ids),
+                        "completion_tokens": len(candidate_output.token_ids),
+                        "completion": completion,
+                        "analysis": analysis,
+                        "judgment": judgment,
+                        "meta_transition": {},
+                    })
+
+                try:
+                    selector = _select_best_candidate(
+                        candidates,
+                        p.gold_answer,
+                        selector_mode=selector_mode,
+                        weights=selector_weights,
+                    )
+                except ValueError as exc:
+                    skipped_problems.append({
+                        "problem_id": pid,
+                        "benchmark": p.benchmark,
+                        "question_preview": p.question[:80],
+                        "phase": "selector",
+                        "reason": f"selector_failed: {exc}",
+                    })
+                    _log(f"  Selector failed for problem {pid[:8]}: {exc}")
+                    continue
+
+                selected = selector["selected"]
+                row = {
+                    "problem_id": pid,
+                    "question": p.question,
+                    "gold_answer": p.gold_answer,
+                    "benchmark": p.benchmark,
+                    "metadata": p.metadata or {},
+                    "generation_mode": "question_only_best_of_n",
+                    "source": "online_question_only_best_of_n",
+                    "root_prompt": prompt_text,
+                    "root_prompt_tokens": len(output.prompt_token_ids),
+                    "root_completion_tokens": 0,
+                    "root_completion": "",
+                    "root_analysis": {},
+                    "root_judgment": {},
+                    "repair_prompt": "",
+                    "repair_budget": int(max(1, num_candidates)),
+                    "retrieval_mode_requested": "none",
+                    "retrieval_mode_used": "none",
+                    "retrieved": [],
+                    "repair_candidates": selector["ranked_candidates"],
+                    "selector": {
+                        "selected_candidate_id": selector["selected_candidate_id"],
+                        "selected_score": selector["selected_score"],
+                        "selected_breakdown": selector["selected_breakdown"],
+                        "score_margin": selector["score_margin"],
+                        "selector_mode": selector["selector_mode"],
+                        "weights": selector_weights or {
+                            "correctness": 1.0,
+                            "confidence_revision": 0.35,
+                            "redirect_execution": 0.30,
+                            "verify_execution": 0.15,
+                            "meta_floor": 0.15,
+                            "meta_transition": 0.25,
+                        },
+                    },
+                    "selected_completion": selected["completion"],
+                    "selected_judgment": selected["judgment"],
+                    "selected_analysis": selected["analysis"],
+                    "selected_meta_transition": selected["meta_transition"],
+                    "selected_prompt_kind": "question_only",
+                    "selected_feedback_kind": "",
+                    "selected_feedback_context": {},
+                    "retriever_active": False,
+                    "retrieval_enabled": False,
+                    "retrieval_nonempty": False,
+                }
+                _append_trace(handle, row)
+                new_rows.append(row)
+
+            _log(f"  Chunk {chunk_i + 1} done: {len(new_rows)} new rows total")
+    finally:
+        handle.close()
+
+    if skipped_problems:
+        skipped_path = outdir / "skipped_problems.jsonl"
+        with skipped_path.open("a", encoding="utf-8") as sh:
+            for skip in skipped_problems:
+                sh.write(json.dumps(skip, ensure_ascii=False) + "\n")
+        _log(f"Skipped {len(skipped_problems)} problems (see {skipped_path})")
+
+    return existing_rows + new_rows
+
+
 def run_online_fixed_k_repair_rollouts(
     *,
     llm,  # vllm.LLM
@@ -389,6 +695,7 @@ def run_online_fixed_k_repair_rollouts(
     rag_top_k: int = 1,
     repair_candidates: int = 4,
     retrieval_query_mode: str = "question_only",
+    selector_mode: str = "reward_weighted",
     selector_weights: dict[str, float] | None = None,
     chunk_size: int = 64,
     resume: bool = True,
@@ -566,7 +873,12 @@ def run_online_fixed_k_repair_rollouts(
                     })
 
                 try:
-                    selector = _select_best_candidate(candidates, d["problem"].gold_answer, weights=selector_weights)
+                    selector = _select_best_candidate(
+                        candidates,
+                        d["problem"].gold_answer,
+                        selector_mode=selector_mode,
+                        weights=selector_weights,
+                    )
                 except ValueError as exc:
                     pid = _stable_problem_id(d["problem"].benchmark, d["problem"].question)
                     skipped_problems.append({
@@ -632,12 +944,14 @@ def run_online_fixed_k_repair_rollouts(
                         "selected_score": selector["selected_score"],
                         "selected_breakdown": selector["selected_breakdown"],
                         "score_margin": selector["score_margin"],
+                        "selector_mode": selector["selector_mode"],
                         "weights": selector_weights or {
                             "correctness": 1.0,
                             "confidence_revision": 0.35,
                             "redirect_execution": 0.30,
                             "verify_execution": 0.15,
                             "meta_floor": 0.15,
+                            "meta_transition": 0.25,
                         },
                     },
                     "selected_completion": selected["completion"],
@@ -766,6 +1080,7 @@ __all__ = [
     "OnlineSdpoProblem",
     "load_online_problems",
     "load_retriever",
+    "run_online_question_only_best_of_n_rollouts",
     "run_online_fixed_k_repair_rollouts",
     "run_online_sdpo_rollouts",
     "write_online_sdpo_outputs",

@@ -1212,8 +1212,8 @@ Verification:
 4. refined family classification to avoid false geometry matches from bare `power` and to capture `geometric sequence` under `exponential_growth`
 5. verified with:
    - `pytest -q tests/test_control_rag.py tests/test_rq3_pipeline.py tests/test_self_distill_data.py`
-   - `python scripts/build_control_rag_seed_library.py --inputs results/eval_v8_E20a/eval_v8_meta_inside_E20a.json results/eval_v8_E20b/eval_v8_meta_inside_E20b_5ep.json --output tmp/control_rag_seed_library.json --require_correct --require_study_need`
-   - `python scripts/audit_control_rag_real.py --bank_paths tmp/control_rag_seed_library.json`
+   - `python scripts/build_control_rag_seed_library.py --inputs results/eval_v8_E20a/eval_v8_meta_inside_E20a.json results/eval_v8_E20b/eval_v8_meta_inside_E20b_5ep.json --output data/control_rag_seed_library.json --require_correct --require_study_need`
+   - `python scripts/audit_control_rag_real.py --bank_paths data/control_rag_seed_library.json`
 
 Current readout:
 
