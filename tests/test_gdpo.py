@@ -171,7 +171,7 @@ score = compute_score_confidence_centered(
     solution_str="<|meta|>confidence: 0.9 I may be overcommitting.<|/meta|>I verify by substitution. \\boxed{4}",
     ground_truth="4",
 )
-expected_keys = {"score", "correctness", "confidence_revision", "redirect_execution", "verify_execution", "meta_floor"}
+expected_keys = {"score", "correctness", "confidence_revision", "redirect_execution", "verify_execution", "meta_floor", "meta_count_bonus"}
 check("TC12c: confidence-centered veRL reward returns exact key set", set(score.keys()) == expected_keys)
 
 print(f"\n=== SUMMARY: {passed} passed, {failed} failed ===")

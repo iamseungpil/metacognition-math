@@ -1,0 +1,24 @@
+{
+  "model": "strict_meta_sft_local",
+  "model_path": "/home/v-seungplee/metacognition/hf_tmp_meta/models/v8_meta_inside_strict_sft",
+  "base_model": null,
+  "is_lora": false,
+  "benchmarks": [
+    "gsm8k",
+    "math500",
+    "aime2024"
+  ],
+  "max_problems_per_benchmark": 30,
+  "num_samples": 1,
+  "max_new_tokens": 4096,
+  "do_sample_requested": false,
+  "do_sample_resolved": false,
+  "temperature": 0.0,
+  "top_p": 1.0,
+  "seed": 42,
+  "device_map": "auto",
+  "total_problems": 90,
+  "hostname": "GCRAZGDL1471",
+  "utc_timestamp": "2026-04-11T04:10:16Z",
+  "tokenizer_name_or_path": "/home/v-seungplee/metacognition/hf_tmp_meta/models/v8_meta_inside_strict_sft"
+}

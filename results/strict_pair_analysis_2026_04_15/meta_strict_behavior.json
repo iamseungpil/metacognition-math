@@ -1,0 +1,166 @@
+{
+  "rows": 1560,
+  "accuracy": 0.7538461538461538,
+  "meta_block_count_dist": {
+    "0": 1,
+    "1": 1559
+  },
+  "meta_emission_rate": 0.9993589743589744,
+  "avg_num_meta_blocks": 0.9993589743589744,
+  "avg_confidence": 0.6245670301475305,
+  "wrong_high_conf_07": 0.08653846153846154,
+  "wrong_high_conf_08": 0.035897435897435895,
+  "low_conf_redirect_rate": 0.896774193548387,
+  "high_conf_verify_rate": 1.0,
+  "marker_accuracy": {
+    "overall": {
+      "has_verify": {
+        "n_present": 1199,
+        "acc_present": 0.841534612176814,
+        "n_absent": 361,
+        "acc_absent": 0.4626038781163435
+      },
+      "has_redirect": {
+        "n_present": 429,
+        "acc_present": 0.4568764568764569,
+        "n_absent": 1131,
+        "acc_absent": 0.8664898320070734
+      },
+      "has_diagnosis": {
+        "n_present": 83,
+        "acc_present": 0.42168674698795183,
+        "n_absent": 1477,
+        "acc_absent": 0.7725118483412322
+      },
+      "has_epistemic": {
+        "n_present": 19,
+        "acc_present": 0.3157894736842105,
+        "n_absent": 1541,
+        "acc_absent": 0.7592472420506164
+      }
+    },
+    "hard": {
+      "has_verify": {
+        "n_present": 176,
+        "acc_present": 0.5738636363636364,
+        "n_absent": 354,
+        "acc_absent": 0.4604519774011299
+      },
+      "has_redirect": {
+        "n_present": 413,
+        "acc_present": 0.45036319612590797,
+        "n_absent": 117,
+        "acc_absent": 0.6666666666666666
+      },
+      "has_diagnosis": {
+        "n_present": 80,
+        "acc_present": 0.425,
+        "n_absent": 450,
+        "acc_absent": 0.5111111111111111
+      },
+      "has_epistemic": {
+        "n_present": 18,
+        "acc_present": 0.2777777777777778,
+        "n_absent": 512,
+        "acc_absent": 0.505859375
+      }
+    },
+    "gsm8k": {
+      "has_verify": {
+        "n_present": 1023,
+        "acc_present": 0.8875855327468231,
+        "n_absent": 7,
+        "acc_absent": 0.5714285714285714
+      },
+      "has_redirect": {
+        "n_present": 16,
+        "acc_present": 0.625,
+        "n_absent": 1014,
+        "acc_absent": 0.8895463510848126
+      },
+      "has_diagnosis": {
+        "n_present": 3,
+        "acc_present": 0.3333333333333333,
+        "n_absent": 1027,
+        "acc_absent": 0.887049659201558
+      },
+      "has_epistemic": {
+        "n_present": 1,
+        "acc_present": 1.0,
+        "n_absent": 1029,
+        "acc_absent": 0.8853255587949466
+      }
+    }
+  },
+  "by_benchmark": {
+    "aime2024": {
+      "n": 30,
+      "accuracy": 0.16666666666666666,
+      "verify_rate": 0.3,
+      "redirect_rate": 0.9666666666666667,
+      "diagnosis_rate": 0.3,
+      "epistemic_rate": 0.06666666666666667,
+      "avg_confidence": 0.24033333333333343,
+      "wrong_high_conf_07": 0.0
+    },
+    "gsm8k": {
+      "n": 1030,
+      "accuracy": 0.8854368932038835,
+      "verify_rate": 0.9932038834951457,
+      "redirect_rate": 0.015533980582524271,
+      "diagnosis_rate": 0.002912621359223301,
+      "epistemic_rate": 0.000970873786407767,
+      "avg_confidence": 0.763990291262136,
+      "wrong_high_conf_07": 0.11165048543689321
+    },
+    "math500": {
+      "n": 500,
+      "accuracy": 0.518,
+      "verify_rate": 0.334,
+      "redirect_rate": 0.768,
+      "diagnosis_rate": 0.142,
+      "epistemic_rate": 0.032,
+      "avg_confidence": 0.35987975951903806,
+      "wrong_high_conf_07": 0.04
+    }
+  },
+  "confidence_bins": [
+    {
+      "bin": "0.0-0.3",
+      "n": 187,
+      "accuracy": 0.32620320855614976,
+      "verify_rate": 0.2727272727272727,
+      "redirect_rate": 0.9786096256684492
+    },
+    {
+      "bin": "0.3-0.5",
+      "n": 278,
+      "accuracy": 0.5683453237410072,
+      "verify_rate": 0.19784172661870503,
+      "redirect_rate": 0.841726618705036
+    },
+    {
+      "bin": "0.5-0.7",
+      "n": 7,
+      "accuracy": 0.7142857142857143,
+      "verify_rate": 0.8571428571428571,
+      "redirect_rate": 0.2857142857142857
+    },
+    {
+      "bin": "0.7-0.9",
+      "n": 1087,
+      "accuracy": 0.8758049678012879,
+      "verify_rate": 1.0,
+      "redirect_rate": 0.00827966881324747
+    },
+    {
+      "bin": "0.9-1.0",
+      "n": 0,
+      "accuracy": null,
+      "verify_rate": null,
+      "redirect_rate": null
+    }
+  ],
+  "ece": 0.12976266837716482,
+  "artifact_source": "results/eval_v8_meta_inside_strict_sft/eval_v8_meta_inside_strict_sft.remote.parquet"
+}

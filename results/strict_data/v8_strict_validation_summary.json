@@ -1,0 +1,10 @@
+{
+  "meta_rows": 4264,
+  "base_rows": 4264,
+  "scenario_counts": {
+    "redirect": 2199,
+    "verify": 2065
+  },
+  "failures": {},
+  "passed": true
+}

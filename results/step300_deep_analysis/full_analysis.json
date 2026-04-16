@@ -1,0 +1,1207 @@
+{
+  "meta_summary": {
+    "label": "E21R-v2",
+    "n": 1030,
+    "accuracy": 0.7980582524271844,
+    "n_with_conf": 918,
+    "avg_confidence": 0.9545533769063183,
+    "conf_std": 0.06547436163171173,
+    "auroc": 0.5220690819081908,
+    "ece": 0.07677559912854055,
+    "brier": 0.10918453159041396,
+    "wrong_high_conf_07": 0.1029126213592233,
+    "wrong_high_conf_09": 0.10194174757281553,
+    "markers": {
+      "has_verify": {
+        "rate": 0.9533980582524272,
+        "acc_present": 0.8340122199592668,
+        "acc_absent": 0.0625,
+        "n_present": 982
+      },
+      "has_redirect": {
+        "rate": 0.13106796116504854,
+        "acc_present": 0.2962962962962963,
+        "acc_absent": 0.8737430167597765,
+        "n_present": 135
+      },
+      "has_diagnosis": {
+        "rate": 0.08058252427184466,
+        "acc_present": 0.25301204819277107,
+        "acc_absent": 0.8458289334741288,
+        "n_present": 83
+      },
+      "has_epistemic": {
+        "rate": 0.20388349514563106,
+        "acc_present": 0.42857142857142855,
+        "acc_absent": 0.8926829268292683,
+        "n_present": 210
+      },
+      "has_study_need": {
+        "rate": 0.0,
+        "acc_present": null,
+        "acc_absent": 0.7980582524271844,
+        "n_present": 0
+      },
+      "has_assessment": {
+        "rate": 0.8912621359223301,
+        "acc_present": 0.8801742919389978,
+        "acc_absent": 0.125,
+        "n_present": 918
+      },
+      "has_meta_content": {
+        "rate": 0.8912621359223301,
+        "acc_present": 0.8801742919389978,
+        "acc_absent": 0.125,
+        "n_present": 918
+      },
+      "has_meta_wrap": {
+        "rate": 0.0,
+        "acc_present": null,
+        "acc_absent": 0.7980582524271844,
+        "n_present": 0
+      }
+    },
+    "action_dist": {},
+    "confidence_bins": [
+      {
+        "bin": "0.0-0.3",
+        "n": 6,
+        "accuracy": 0.3333333333333333,
+        "verify_rate": 0.5,
+        "redirect_rate": 1.0
+      },
+      {
+        "bin": "0.3-0.5",
+        "n": 0,
+        "accuracy": null,
+        "verify_rate": null,
+        "redirect_rate": null
+      },
+      {
+        "bin": "0.5-0.7",
+        "n": 0,
+        "accuracy": null,
+        "verify_rate": null,
+        "redirect_rate": null
+      },
+      {
+        "bin": "0.7-0.9",
+        "n": 1,
+        "accuracy": 0.0,
+        "verify_rate": 1.0,
+        "redirect_rate": 0.0
+      },
+      {
+        "bin": "0.9-1.0",
+        "n": 911,
+        "accuracy": 0.884742041712404,
+        "verify_rate": 1.0,
+        "redirect_rate": 0.04610318331503842
+      }
+    ],
+    "by_benchmark": {
+      "gsm8k": {
+        "n": 500,
+        "accuracy": 0.92,
+        "meta_content_rate": 0.99,
+        "verify_rate": 0.996,
+        "redirect_rate": 0.01,
+        "diagnosis_rate": 0.012,
+        "epistemic_rate": 0.024,
+        "avg_conf": 0.9600000000000002,
+        "n_with_conf": 495
+      },
+      "math500": {
+        "n": 500,
+        "accuracy": 0.716,
+        "meta_content_rate": 0.832,
+        "verify_rate": 0.934,
+        "redirect_rate": 0.214,
+        "diagnosis_rate": 0.13,
+        "epistemic_rate": 0.338,
+        "avg_conf": 0.9479807692307696,
+        "n_with_conf": 416
+      },
+      "aime2024": {
+        "n": 30,
+        "accuracy": 0.13333333333333333,
+        "meta_content_rate": 0.23333333333333334,
+        "verify_rate": 0.5666666666666667,
+        "redirect_rate": 0.7666666666666667,
+        "diagnosis_rate": 0.4,
+        "epistemic_rate": 0.9666666666666667,
+        "avg_conf": 0.96,
+        "n_with_conf": 7
+      }
+    },
+    "avg_completion_tokens": 723.3320388349515
+  },
+  "base_summary": {
+    "label": "Base",
+    "n": 1030,
+    "accuracy": 0.7592233009708738,
+    "n_with_conf": 0,
+    "avg_confidence": null,
+    "conf_std": null,
+    "auroc": null,
+    "ece": null,
+    "brier": null,
+    "wrong_high_conf_07": 0.0,
+    "wrong_high_conf_09": 0.0,
+    "markers": {
+      "has_verify": {
+        "rate": 0.18058252427184465,
+        "acc_present": 0.532258064516129,
+        "acc_absent": 0.8092417061611374,
+        "n_present": 186
+      },
+      "has_redirect": {
+        "rate": 0.0766990291262136,
+        "acc_present": 0.3291139240506329,
+        "acc_absent": 0.7949526813880127,
+        "n_present": 79
+      },
+      "has_diagnosis": {
+        "rate": 0.05436893203883495,
+        "acc_present": 0.3392857142857143,
+        "acc_absent": 0.7833675564681725,
+        "n_present": 56
+      },
+      "has_epistemic": {
+        "rate": 0.09611650485436893,
+        "acc_present": 0.3939393939393939,
+        "acc_absent": 0.7980665950590763,
+        "n_present": 99
+      },
+      "has_study_need": {
+        "rate": 0.0,
+        "acc_present": null,
+        "acc_absent": 0.7592233009708738,
+        "n_present": 0
+      },
+      "has_assessment": {
+        "rate": 0.0,
+        "acc_present": null,
+        "acc_absent": 0.7592233009708738,
+        "n_present": 0
+      },
+      "has_meta_content": {
+        "rate": 0.0,
+        "acc_present": null,
+        "acc_absent": 0.7592233009708738,
+        "n_present": 0
+      },
+      "has_meta_wrap": {
+        "rate": 0.0,
+        "acc_present": null,
+        "acc_absent": 0.7592233009708738,
+        "n_present": 0
+      }
+    },
+    "action_dist": {},
+    "confidence_bins": [
+      {
+        "bin": "0.0-0.3",
+        "n": 0,
+        "accuracy": null,
+        "verify_rate": null,
+        "redirect_rate": null
+      },
+      {
+        "bin": "0.3-0.5",
+        "n": 0,
+        "accuracy": null,
+        "verify_rate": null,
+        "redirect_rate": null
+      },
+      {
+        "bin": "0.5-0.7",
+        "n": 0,
+        "accuracy": null,
+        "verify_rate": null,
+        "redirect_rate": null
+      },
+      {
+        "bin": "0.7-0.9",
+        "n": 0,
+        "accuracy": null,
+        "verify_rate": null,
+        "redirect_rate": null
+      },
+      {
+        "bin": "0.9-1.0",
+        "n": 0,
+        "accuracy": null,
+        "verify_rate": null,
+        "redirect_rate": null
+      }
+    ],
+    "by_benchmark": {
+      "gsm8k": {
+        "n": 500,
+        "accuracy": 0.926,
+        "meta_content_rate": 0.0,
+        "verify_rate": 0.004,
+        "redirect_rate": 0.004,
+        "diagnosis_rate": 0.002,
+        "epistemic_rate": 0.004,
+        "avg_conf": null,
+        "n_with_conf": 0
+      },
+      "math500": {
+        "n": 500,
+        "accuracy": 0.618,
+        "meta_content_rate": 0.0,
+        "verify_rate": 0.318,
+        "redirect_rate": 0.12,
+        "diagnosis_rate": 0.088,
+        "epistemic_rate": 0.156,
+        "avg_conf": null,
+        "n_with_conf": 0
+      },
+      "aime2024": {
+        "n": 30,
+        "accuracy": 0.3333333333333333,
+        "meta_content_rate": 0.0,
+        "verify_rate": 0.8333333333333334,
+        "redirect_rate": 0.5666666666666667,
+        "diagnosis_rate": 0.36666666666666664,
+        "epistemic_rate": 0.6333333333333333,
+        "avg_conf": null,
+        "n_with_conf": 0
+      }
+    },
+    "avg_completion_tokens": 452.0339805825243
+  },
+  "paired": {
+    "n_paired": 1030,
+    "meta_only_win": 117,
+    "base_only_win": 77,
+    "both_correct": 705,
+    "both_wrong": 131,
+    "meta_win_rate": 0.11359223300970873,
+    "base_win_rate": 0.07475728155339806,
+    "net_win_rate": 0.038834951456310676,
+    "by_benchmark": {
+      "math500": {
+        "meta_win": 102,
+        "base_win": 53,
+        "both_correct": 256,
+        "both_wrong": 89,
+        "n": 500
+      },
+      "gsm8k": {
+        "meta_win": 14,
+        "base_win": 17,
+        "both_correct": 446,
+        "both_wrong": 23,
+        "n": 500
+      },
+      "aime2024": {
+        "meta_win": 1,
+        "base_win": 7,
+        "both_correct": 3,
+        "both_wrong": 19,
+        "n": 30
+      }
+    },
+    "meta_win_behavior": {
+      "has_verify": 115,
+      "has_meta_content": 110,
+      "has_redirect": 10,
+      "has_diagnosis": 4
+    },
+    "base_win_meta_behavior": {
+      "meta_has_verify": 63,
+      "meta_has_redirect": 40,
+      "meta_has_diagnosis": 25,
+      "meta_has_meta_content": 39
+    },
+    "meta_win_examples": [
+      {
+        "bench": "math500",
+        "question": "Four points, $A$, $B$, $C$, and $D$, are chosen randomly and independently on the circumference of a",
+        "meta_answer": "3",
+        "base_answer": "\\frac13",
+        "gold": "\\frac{1}{3}",
+        "meta_conf": 0.96,
+        "meta_has_redirect": false,
+        "meta_completion_len": 510
+      },
+      {
+        "bench": "math500",
+        "question": "Compute $58_9 - 18_9.$ Express your answer in base $9.$",
+        "meta_answer": "9",
+        "base_answer": "40_9",
+        "gold": "40_9",
+        "meta_conf": 0.96,
+        "meta_has_redirect": false,
+        "meta_completion_len": 244
+      },
+      {
+        "bench": "math500",
+        "question": "Compute $\\arcsin \\left( -\\frac{1}{2} \\right).$  Express your answer in radians.",
+        "meta_answer": "6",
+        "base_answer": "-\\frac{\\pi}{6}",
+        "gold": "-\\frac{\\pi}{6}",
+        "meta_conf": 0.96,
+        "meta_has_redirect": false,
+        "meta_completion_len": 179
+      },
+      {
+        "bench": "math500",
+        "question": "For what values of $x$ is it true that $x^2 - 5x - 4 \\le 10$? Express your answer in interval notati",
+        "meta_answer": "7",
+        "base_answer": "[-2,7]",
+        "gold": "x \\in [-2,7]",
+        "meta_conf": 0.96,
+        "meta_has_redirect": false,
+        "meta_completion_len": 234
+      },
+      {
+        "bench": "math500",
+        "question": "What is the smallest real number $x$ in the domain of the function $$g(x) = \\sqrt{(x-3)^2-(x-8)^2}~?",
+        "meta_answer": "2",
+        "base_answer": "\\frac{11}{2}",
+        "gold": "\\frac{11}{2}",
+        "meta_conf": 0.96,
+        "meta_has_redirect": false,
+        "meta_completion_len": 418
+      },
+      {
+        "bench": "math500",
+        "question": "Remmy wants to divide $10$ by $\\frac{2}{3}$, but he cannot remember how to do that.  By what number ",
+        "meta_answer": "2",
+        "base_answer": "\\frac{3}{2}",
+        "gold": "\\frac{3}{2}",
+        "meta_conf": 0.96,
+        "meta_has_redirect": false,
+        "meta_completion_len": 115
+      },
+      {
+        "bench": "math500",
+        "question": "Let $z = 1+i$ and $w = \\dfrac{3z+1}{5z+7}$. Find $|w|$.",
+        "meta_answer": "13",
+        "base_answer": "\\frac{5}{13}",
+        "gold": "\\frac{5}{13}",
+        "meta_conf": 0.96,
+        "meta_has_redirect": true,
+        "meta_completion_len": 408
+      },
+      {
+        "bench": "math500",
+        "question": "Convert the point $(0,3)$ in rectangular coordinates to polar coordinates.  Enter your answer in the",
+        "meta_answer": "2",
+        "base_answer": "\\left(3,\\frac{\\pi}{2}\\right)",
+        "gold": "\\left( 3, \\frac{\\pi}{2} \\right)",
+        "meta_conf": 0.96,
+        "meta_has_redirect": false,
+        "meta_completion_len": 257
+      },
+      {
+        "bench": "math500",
+        "question": "For $0 \\le x \\le 40$ and $0 \\le y \\le 50,$ find the minimum value of\n\\[\\sqrt{x^2 + 400} + \\sqrt{y^2 ",
+        "meta_answer": "2",
+        "base_answer": "114.3",
+        "gold": "70 \\sqrt{2}",
+        "meta_conf": null,
+        "meta_has_redirect": false,
+        "meta_completion_len": 4096
+      },
+      {
+        "bench": "math500",
+        "question": "Expand and simplify completely: \\begin{align*}\nx\\left(x(1+x)+2x\\right)-3(x^2-x+2)\n\\end{align*}",
+        "meta_answer": "-6",
+        "base_answer": "x^3+3x-6",
+        "gold": "x^3+3x-6",
+        "meta_conf": 0.96,
+        "meta_has_redirect": false,
+        "meta_completion_len": 295
+      },
+      {
+        "bench": "math500",
+        "question": "The point $(0,0)$ is reflected over the vertical line $x=1$.  When its image is then reflected over ",
+        "meta_answer": "4",
+        "base_answer": "(2,4)",
+        "gold": "(2,4)",
+        "meta_conf": 0.96,
+        "meta_has_redirect": false,
+        "meta_completion_len": 266
+      },
+      {
+        "bench": "math500",
+        "question": "Triangle $ABC$ is isosceles, with $AB=AC$ and altitude $AM=11.$ Suppose that there is a point $D$ on",
+        "meta_answer": "11",
+        "base_answer": "110",
+        "gold": "11 \\sqrt{5} + 11",
+        "meta_conf": null,
+        "meta_has_redirect": true,
+        "meta_completion_len": 4096
+      },
+      {
+        "bench": "gsm8k",
+        "question": "Toulouse has twice as many sheep as Charleston. Charleston has 4 times as many sheep as Seattle. How",
+        "meta_answer": "260",
+        "base_answer": "160",
+        "gold": "260",
+        "meta_conf": 0.96,
+        "meta_has_redirect": false,
+        "meta_completion_len": 145
+      },
+      {
+        "bench": "math500",
+        "question": "Sam is carrying a 2 gallon bucket of milk to his house from the barn, which is 3 miles away from his",
+        "meta_answer": "27",
+        "base_answer": "\\frac{16}{27}",
+        "gold": "\\frac{16}{27}",
+        "meta_conf": 0.96,
+        "meta_has_redirect": false,
+        "meta_completion_len": 263
+      },
+      {
+        "bench": "gsm8k",
+        "question": "Wayne and Bernadette are movie stars heading to the premiere of their latest film. Bernadette wants ",
+        "meta_answer": "17",
+        "base_answer": "7",
+        "gold": "17",
+        "meta_conf": 0.96,
+        "meta_has_redirect": false,
+        "meta_completion_len": 463
+      }
+    ],
+    "base_win_examples": [
+      {
+        "bench": "math500",
+        "question": "Find the degree measure of the least positive angle $\\theta$ for which\n\\[\\tan \\theta = \\frac{\\cos 5^",
+        "meta_answer": "2",
+        "base_answer": "120",
+        "gold": "120^\\circ",
+        "meta_conf": null,
+        "meta_has_redirect": true,
+        "meta_completion_len": 4096
+      },
+      {
+        "bench": "math500",
+        "question": "Find the smallest positive real number $C$ for which\n\\[\\left\\| \\begin{pmatrix} 2 & 3 \\\\ 0 & -2 \\end{",
+        "meta_answer": "16",
+        "base_answer": "4",
+        "gold": "4",
+        "meta_conf": null,
+        "meta_has_redirect": true,
+        "meta_completion_len": 3332
+      },
+      {
+        "bench": "math500",
+        "question": "In the diagram below, we have $\\overline{ST}\\parallel\\overline{QR}$, $\\angle P= 40^\\circ$, and $\\ang",
+        "meta_answer": "40",
+        "base_answer": "75",
+        "gold": "75^\\circ",
+        "meta_conf": null,
+        "meta_has_redirect": true,
+        "meta_completion_len": 4096
+      },
+      {
+        "bench": "math500",
+        "question": "Tom got a Mr. Potato Head for his birthday. It came with 3 hairstyles, 2 sets of eyebrows, 1 pair of",
+        "meta_answer": "48",
+        "base_answer": "64",
+        "gold": "64",
+        "meta_conf": 0.96,
+        "meta_has_redirect": false,
+        "meta_completion_len": 336
+      },
+      {
+        "bench": "math500",
+        "question": "Let $z$ be a complex number such that\n\\[z + \\frac{1}{z} = \\frac{1 + \\sqrt{5}}{2}.\\]Find\n\\[z^{85} + \\",
+        "meta_answer": "2",
+        "base_answer": "-2",
+        "gold": "-2",
+        "meta_conf": 0.96,
+        "meta_has_redirect": false,
+        "meta_completion_len": 1649
+      },
+      {
+        "bench": "math500",
+        "question": "In the diagram, $AD=BD=CD$ and $\\angle BCA = 40^\\circ.$ What is the measure of $\\angle BAC?$\n\n[asy]\n",
+        "meta_answer": "40",
+        "base_answer": "90",
+        "gold": "90^\\circ",
+        "meta_conf": null,
+        "meta_has_redirect": true,
+        "meta_completion_len": 4096
+      },
+      {
+        "bench": "gsm8k",
+        "question": "Marilyn's first record sold 10 times as many copies as Harald's. If they sold 88,000 copies combined",
+        "meta_answer": "80000",
+        "base_answer": "8000",
+        "gold": "8000",
+        "meta_conf": 0.96,
+        "meta_has_redirect": false,
+        "meta_completion_len": 207
+      },
+      {
+        "bench": "math500",
+        "question": "The expression $$1 + 2 + 3 - 4 + 5 + 6$$is equivalent to 13. If we add parentheses in various locati",
+        "meta_answer": "-4",
+        "base_answer": "-9",
+        "gold": "-9",
+        "meta_conf": null,
+        "meta_has_redirect": true,
+        "meta_completion_len": 4096
+      },
+      {
+        "bench": "math500",
+        "question": "Let $F_1$ and $F_2$ be the foci of the ellipse $kx^2 + y^2 = 1,$ where $k > 1$ is a constant. Suppos",
+        "meta_answer": "0",
+        "base_answer": "2",
+        "gold": "2",
+        "meta_conf": null,
+        "meta_has_redirect": true,
+        "meta_completion_len": 4096
+      },
+      {
+        "bench": "math500",
+        "question": "The medians $AD$, $BE$, and $CF$ of triangle $ABC$ intersect at the centroid $G$.  The line through ",
+        "meta_answer": "0",
+        "base_answer": "8",
+        "gold": "8",
+        "meta_conf": null,
+        "meta_has_redirect": true,
+        "meta_completion_len": 4096
+      },
+      {
+        "bench": "gsm8k",
+        "question": "Bill is signing up for a new streaming service. He got a special introductory deal where the first 6",
+        "meta_answer": "268",
+        "base_answer": "284",
+        "gold": "284",
+        "meta_conf": 0.96,
+        "meta_has_redirect": false,
+        "meta_completion_len": 300
+      },
+      {
+        "bench": "math500",
+        "question": "Consider the function \\[ f(x) =\n\\begin{cases}\nax^2 & \\text{if } x \\geq a,\\\\\nax +2a& \\text{if } x <a,",
+        "meta_answer": "a) The linear part for \\(x < a\\):",
+        "base_answer": "2",
+        "gold": "2",
+        "meta_conf": null,
+        "meta_has_redirect": false,
+        "meta_completion_len": 4096
+      },
+      {
+        "bench": "gsm8k",
+        "question": "Debra is monitoring a beehive to see how many bees come and go in a day. She sees 30 bees leave the ",
+        "meta_answer": "90",
+        "base_answer": "75",
+        "gold": "75",
+        "meta_conf": 0.96,
+        "meta_has_redirect": false,
+        "meta_completion_len": 366
+      },
+      {
+        "bench": "gsm8k",
+        "question": "Mary has 30 sheep. She gets 1 kg of milk from half of them and 2 kg of milk from the other half ever",
+        "meta_answer": "3",
+        "base_answer": "45",
+        "gold": "45",
+        "meta_conf": 0.96,
+        "meta_has_redirect": false,
+        "meta_completion_len": 136
+      },
+      {
+        "bench": "math500",
+        "question": "A polynomial with integer coefficients is of the form\n\\[2x^4 + a_3 x^3 + a_2 x^2 + a_1 x + 1 = 0.\\]F",
+        "meta_answer": "5",
+        "base_answer": "4",
+        "gold": "4",
+        "meta_conf": 0.96,
+        "meta_has_redirect": false,
+        "meta_completion_len": 1273
+      }
+    ]
+  },
+  "aime_audit": {
+    "n_aime": 30,
+    "meta_correct": 4,
+    "base_correct": 10,
+    "meta_accuracy": 0.13333333333333333,
+    "base_accuracy": 0.3333333333333333,
+    "delta_pp": -20.0,
+    "meta_avg_completion_tokens": 3493.3333333333335,
+    "base_avg_completion_tokens": 2602.266666666667,
+    "base_wins_aime": [
+      {
+        "question": "Every morning Aya goes for a $9$-kilometer-long walk and stops at a coffee shop afterwards. When she walks at a constant speed of $s$ kilometers per hour, the walk takes her 4 hours, including $t$ min",
+        "meta_correct": false,
+        "base_correct": true,
+        "meta_answer": "27",
+        "base_answer": "204",
+        "gold": "204",
+        "meta_conf": 0.96,
+        "meta_n_confs": 1,
+        "meta_has_redirect": false,
+        "meta_has_diagnosis": false,
+        "meta_completion_tokens": 1458,
+        "base_completion_tokens": 1064
+      },
+      {
+        "question": "Consider the paths of length $16$ that follow the lines from the lower left corner to the upper right corner on an $8\\times 8$ grid. Find the number of such paths that change direction exactly four ti",
+        "meta_correct": false,
+        "base_correct": true,
+        "meta_answer": "1",
+        "base_answer": "294",
+        "gold": "294",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": true,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 568
+      },
+      {
+        "question": "Find the largest possible real part of \\[(75+117i)z+\\frac{96+144i}{z}\\]where $z$ is a complex number with $|z|=4$.",
+        "meta_correct": false,
+        "base_correct": true,
+        "meta_answer": "45",
+        "base_answer": "540",
+        "gold": "540",
+        "meta_conf": 0.96,
+        "meta_n_confs": 1,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": false,
+        "meta_completion_tokens": 1492,
+        "base_completion_tokens": 669
+      },
+      {
+        "question": "Let $\\omega\\neq 1$ be a 13th root of unity. Find the remainder when\n\\[\\prod_{k=0}^{12}(2-2\\omega^k+\\omega^{2k})\\]\nis divided by 1000.",
+        "meta_correct": false,
+        "base_correct": true,
+        "meta_answer": "1",
+        "base_answer": "321",
+        "gold": "321",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": false,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 2736
+      },
+      {
+        "question": "Let $x,y$ and $z$ be positive real numbers that satisfy the following system of equations:\n\\[\\log_2\\left({x \\over yz}\\right) = {1 \\over 2}\\]\\[\\log_2\\left({y \\over xz}\\right) = {1 \\over 3}\\]\\[\\log_2\\le",
+        "meta_correct": false,
+        "base_correct": true,
+        "meta_answer": "2",
+        "base_answer": "33",
+        "gold": "033",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": true,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 1603
+      },
+      {
+        "question": "Let ABCDEF be a convex equilateral hexagon in which all pairs of opposite sides are parallel. The triangle whose sides are extensions of segments AB, CD, and EF has side lengths 200, 240, and 300. Fin",
+        "meta_correct": false,
+        "base_correct": true,
+        "meta_answer": "3",
+        "base_answer": "80",
+        "gold": "080",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": false,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 804
+      },
+      {
+        "question": "Alice chooses a set $A$ of positive integers. Then Bob lists all finite nonempty sets $B$ of positive integers with the property that the maximum element of $B$ belongs to $A$. Bob's list has 2024 set",
+        "meta_correct": false,
+        "base_correct": true,
+        "meta_answer": "2",
+        "base_answer": "55",
+        "gold": "055",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": false,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 778
+      }
+    ],
+    "meta_wins_aime": [
+      {
+        "question": "Alice and Bob play the following game. A stack of $n$ tokens lies before them. The players take turns with Alice going first. On each turn, the player removes either $1$ token or $4$ tokens from the s",
+        "meta_correct": true,
+        "base_correct": false,
+        "meta_answer": "809",
+        "base_answer": "1. If \\(n\\equiv 0\\) or \\(2\\pmod 5\\), then \\(n\\) is losing",
+        "gold": "809",
+        "meta_conf": 0.96,
+        "meta_n_confs": 1,
+        "meta_has_redirect": false,
+        "meta_has_diagnosis": false,
+        "meta_completion_tokens": 2017,
+        "base_completion_tokens": 4096
+      }
+    ],
+    "all_pairs": [
+      {
+        "question": "Every morning Aya goes for a $9$-kilometer-long walk and stops at a coffee shop afterwards. When she walks at a constant speed of $s$ kilometers per hour, the walk takes her 4 hours, including $t$ min",
+        "meta_correct": false,
+        "base_correct": true,
+        "meta_answer": "27",
+        "base_answer": "204",
+        "gold": "204",
+        "meta_conf": 0.96,
+        "meta_n_confs": 1,
+        "meta_has_redirect": false,
+        "meta_has_diagnosis": false,
+        "meta_completion_tokens": 1458,
+        "base_completion_tokens": 1064
+      },
+      {
+        "question": "Let $ABC$ be a triangle inscribed in circle $\\omega$. Let the tangents to $\\omega$ at $B$ and $C$ intersect at point $D$, and let $\\overline{AD}$ intersect $\\omega$ at $P$. If $AB=5$, $BC=9$, and $AC=",
+        "meta_correct": false,
+        "base_correct": false,
+        "meta_answer": "2",
+        "base_answer": "2",
+        "gold": "113",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": true,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 4096
+      },
+      {
+        "question": "Each vertex of a regular octagon is independently colored either red or blue with equal probability. The probability that the octagon can then be rotated so that all of the blue vertices end up at pos",
+        "meta_correct": false,
+        "base_correct": false,
+        "meta_answer": "4",
+        "base_answer": "281",
+        "gold": "371",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": false,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 1450
+      },
+      {
+        "question": "Define $f(x)=|| x|-\\tfrac{1}{2}|$ and $g(x)=|| x|-\\tfrac{1}{4}|$. Find the number of intersections of the graphs of \\[y=4 g(f(\\sin (2 \\pi x))) \\quad\\text{ and }\\quad x=4 g(f(\\cos (3 \\pi y))).\\]",
+        "meta_correct": false,
+        "base_correct": false,
+        "meta_answer": "5",
+        "base_answer": "2",
+        "gold": "385",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": false,
+        "meta_has_diagnosis": false,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 4096
+      },
+      {
+        "question": "Let $p$ be the least prime number for which there exists a positive integer $n$ such that $n^{4}+1$ is divisible by $p^{2}$. Find the least positive integer $m$ such that $m^{4}+1$ is divisible by $p^",
+        "meta_correct": false,
+        "base_correct": false,
+        "meta_answer": "4",
+        "base_answer": "291",
+        "gold": "110",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": true,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 1940
+      },
+      {
+        "question": "Let $ABCD$ be a tetrahedron such that $AB=CD= \\sqrt{41}$, $AC=BD= \\sqrt{80}$, and $BC=AD= \\sqrt{89}$. There exists a point $I$ inside the tetrahedron such that the distances from $I$ to each of the fa",
+        "meta_correct": false,
+        "base_correct": false,
+        "meta_answer": "3",
+        "base_answer": "536",
+        "gold": "104",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": true,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 3290
+      },
+      {
+        "question": "Let $\\mathcal{B}$ be the set of rectangular boxes with surface area $54$ and volume $23$. Let $r$ be the radius of the smallest sphere that can contain each of the rectangular boxes that are elements ",
+        "meta_correct": false,
+        "base_correct": false,
+        "meta_answer": "46",
+        "base_answer": "689",
+        "gold": "721",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": false,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 2353
+      },
+      {
+        "question": "There exist real numbers $x$ and $y$, both greater than 1, such that $\\log_x\\left(y^x\\right)=\\log_y\\left(x^{4y}\\right)=10$. Find $xy$.",
+        "meta_correct": true,
+        "base_correct": true,
+        "meta_answer": "25",
+        "base_answer": "25",
+        "gold": "025",
+        "meta_conf": 0.96,
+        "meta_n_confs": 1,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": false,
+        "meta_completion_tokens": 696,
+        "base_completion_tokens": 1135
+      },
+      {
+        "question": "Alice and Bob play the following game. A stack of $n$ tokens lies before them. The players take turns with Alice going first. On each turn, the player removes either $1$ token or $4$ tokens from the s",
+        "meta_correct": true,
+        "base_correct": false,
+        "meta_answer": "809",
+        "base_answer": "1. If \\(n\\equiv 0\\) or \\(2\\pmod 5\\), then \\(n\\) is losing",
+        "gold": "809",
+        "meta_conf": 0.96,
+        "meta_n_confs": 1,
+        "meta_has_redirect": false,
+        "meta_has_diagnosis": false,
+        "meta_completion_tokens": 2017,
+        "base_completion_tokens": 4096
+      },
+      {
+        "question": "Jen enters a lottery by picking $4$ distinct numbers from $S=\\{1,2,3,\\cdots,9,10\\}.$ $4$ numbers are randomly chosen from $S.$ She wins a prize if at least two of her numbers were $2$ of the randomly ",
+        "meta_correct": true,
+        "base_correct": true,
+        "meta_answer": "116",
+        "base_answer": "116",
+        "gold": "116",
+        "meta_conf": 0.96,
+        "meta_n_confs": 1,
+        "meta_has_redirect": false,
+        "meta_has_diagnosis": false,
+        "meta_completion_tokens": 1252,
+        "base_completion_tokens": 706
+      },
+      {
+        "question": "Rectangles $ABCD$ and $EFGH$ are drawn such that $D,E,C,F$ are collinear. Also, $A,D,H,G$ all lie on a circle. If $BC=16$,$AB=107$,$FG=17$, and $EF=184$, what is the length of $CE$?",
+        "meta_correct": false,
+        "base_correct": false,
+        "meta_answer": "1",
+        "base_answer": "-214",
+        "gold": "104",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": false,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 4096
+      },
+      {
+        "question": "Consider the paths of length $16$ that follow the lines from the lower left corner to the upper right corner on an $8\\times 8$ grid. Find the number of such paths that change direction exactly four ti",
+        "meta_correct": false,
+        "base_correct": true,
+        "meta_answer": "1",
+        "base_answer": "294",
+        "gold": "294",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": true,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 568
+      },
+      {
+        "question": "Find the largest possible real part of \\[(75+117i)z+\\frac{96+144i}{z}\\]where $z$ is a complex number with $|z|=4$.",
+        "meta_correct": false,
+        "base_correct": true,
+        "meta_answer": "45",
+        "base_answer": "540",
+        "gold": "540",
+        "meta_conf": 0.96,
+        "meta_n_confs": 1,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": false,
+        "meta_completion_tokens": 1492,
+        "base_completion_tokens": 669
+      },
+      {
+        "question": "Eight circles of radius $34$ are sequentially tangent, and two of the circles are tangent to $AB$ and $BC$ of triangle $ABC$, respectively. $2024$ circles of radius $1$ can be arranged in the same man",
+        "meta_correct": false,
+        "base_correct": false,
+        "meta_answer": "2",
+        "base_answer": "2",
+        "gold": "197",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": true,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 4096
+      },
+      {
+        "question": "Let $A$, $B$, $C$, and $D$ be point on the hyperbola $\\frac{x^2}{20}- \\frac{y^2}{24} = 1$ such that $ABCD$ is a rhombus whose diagonals intersect at the origin. Find the greatest real number that is l",
+        "meta_correct": false,
+        "base_correct": false,
+        "meta_answer": "4",
+        "base_answer": "0",
+        "gold": "480",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": true,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 4096
+      },
+      {
+        "question": "Among the 900 residents of Aimeville, there are 195 who own a diamond ring, 367 who own a set of golf clubs, and 562 who own a garden spade. In addition, each of the 900 residents owns a bag of candy ",
+        "meta_correct": true,
+        "base_correct": true,
+        "meta_answer": "73",
+        "base_answer": "73",
+        "gold": "073",
+        "meta_conf": 0.96,
+        "meta_n_confs": 1,
+        "meta_has_redirect": false,
+        "meta_has_diagnosis": false,
+        "meta_completion_tokens": 2098,
+        "base_completion_tokens": 895
+      },
+      {
+        "question": "Let $\\triangle ABC$ have circumcenter $O$ and incenter $I$ with $\\overline{IA}\\perp\\overline{OI}$, circumradius $13$, and inradius $6$. Find $AB\\cdot AC$.",
+        "meta_correct": false,
+        "base_correct": false,
+        "meta_answer": "2",
+        "base_answer": "2",
+        "gold": "468",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": false,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 4096
+      },
+      {
+        "question": "Find the number of triples of nonnegative integers \\((a,b,c)\\) satisfying \\(a + b + c = 300\\) and\n\\begin{equation*}\na^2b + a^2c + b^2a + b^2c + c^2a + c^2b = 6,000,000.\n\\end{equation*}",
+        "meta_correct": false,
+        "base_correct": false,
+        "meta_answer": "000",
+        "base_answer": "100",
+        "gold": "601",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": true,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 4096
+      },
+      {
+        "question": "Let \\(O=(0,0)\\), \\(A=\\left(\\tfrac{1}{2},0\\right)\\), and \\(B=\\left(0,\\tfrac{\\sqrt{3}}{2}\\right)\\) be points in the coordinate plane. Let \\(\\mathcal{F}\\) be the family of segments \\(\\overline{PQ}\\) of u",
+        "meta_correct": false,
+        "base_correct": false,
+        "meta_answer": "1",
+        "base_answer": "1",
+        "gold": "023",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": false,
+        "meta_has_diagnosis": false,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 4096
+      },
+      {
+        "question": "Let $\\omega\\neq 1$ be a 13th root of unity. Find the remainder when\n\\[\\prod_{k=0}^{12}(2-2\\omega^k+\\omega^{2k})\\]\nis divided by 1000.",
+        "meta_correct": false,
+        "base_correct": true,
+        "meta_answer": "1",
+        "base_answer": "321",
+        "gold": "321",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": false,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 2736
+      },
+      {
+        "question": "Let \\(b\\ge 2\\) be an integer. Call a positive integer \\(n\\) \\(b\\text-\\textit{eautiful}\\) if it has exactly two digits when expressed in base \\(b\\)  and these two digits sum to \\(\\sqrt n\\). For example",
+        "meta_correct": false,
+        "base_correct": false,
+        "meta_answer": "10",
+        "base_answer": "7",
+        "gold": "211",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": true,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 4096
+      },
+      {
+        "question": "Find the number of rectangles that can be formed inside a fixed regular dodecagon ($12$-gon) where each side of the rectangle lies on either a side or a diagonal of the dodecagon. The diagram below sh",
+        "meta_correct": false,
+        "base_correct": false,
+        "meta_answer": "6",
+        "base_answer": "6",
+        "gold": "315",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": true,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 4096
+      },
+      {
+        "question": "A list of positive integers has the following properties:\n$\\bullet$ The sum of the items in the list is $30$.\n$\\bullet$ The unique mode of the list is $9$.\n$\\bullet$ The median of the list is a positi",
+        "meta_correct": false,
+        "base_correct": false,
+        "meta_answer": "6",
+        "base_answer": "242",
+        "gold": "236",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": true,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 951
+      },
+      {
+        "question": "Find the number of ways to place a digit in each cell of a 2x3 grid so that the sum of the two numbers formed by reading left to right is $999$, and the sum of the three numbers formed by reading top ",
+        "meta_correct": false,
+        "base_correct": false,
+        "meta_answer": "2025",
+        "base_answer": "1000",
+        "gold": "045",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": false,
+        "meta_completion_tokens": 3000,
+        "base_completion_tokens": 1659
+      },
+      {
+        "question": "Let $x,y$ and $z$ be positive real numbers that satisfy the following system of equations:\n\\[\\log_2\\left({x \\over yz}\\right) = {1 \\over 2}\\]\\[\\log_2\\left({y \\over xz}\\right) = {1 \\over 3}\\]\\[\\log_2\\le",
+        "meta_correct": false,
+        "base_correct": true,
+        "meta_answer": "2",
+        "base_answer": "33",
+        "gold": "033",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": true,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 1603
+      },
+      {
+        "question": "Let ABCDEF be a convex equilateral hexagon in which all pairs of opposite sides are parallel. The triangle whose sides are extensions of segments AB, CD, and EF has side lengths 200, 240, and 300. Fin",
+        "meta_correct": false,
+        "base_correct": true,
+        "meta_answer": "3",
+        "base_answer": "80",
+        "gold": "080",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": false,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 804
+      },
+      {
+        "question": "Alice chooses a set $A$ of positive integers. Then Bob lists all finite nonempty sets $B$ of positive integers with the property that the maximum element of $B$ belongs to $A$. Bob's list has 2024 set",
+        "meta_correct": false,
+        "base_correct": true,
+        "meta_answer": "2",
+        "base_answer": "55",
+        "gold": "055",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": false,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 778
+      },
+      {
+        "question": "Let $N$ be the greatest four-digit positive integer with the property that whenever one of its digits is changed to $1$, the resulting number is divisible by $7$. Let $Q$ and $R$ be the quotient and r",
+        "meta_correct": false,
+        "base_correct": false,
+        "meta_answer": "513",
+        "base_answer": "6",
+        "gold": "699",
+        "meta_conf": 0.96,
+        "meta_n_confs": 1,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": false,
+        "meta_completion_tokens": 2675,
+        "base_completion_tokens": 4096
+      },
+      {
+        "question": "Torus $T$ is the surface produced by revolving a circle with radius $3$ around an axis in the plane of the circle that is a distance $6$ from the center of the circle (so like a donut). Let $S$ be a s",
+        "meta_correct": false,
+        "base_correct": false,
+        "meta_answer": "11",
+        "base_answer": "0",
+        "gold": "127",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": true,
+        "meta_has_diagnosis": false,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 4096
+      },
+      {
+        "question": "There is a collection of $25$ indistinguishable white chips and $25$ indistinguishable black chips. Find the number of ways to place some of these chips in the $25$ unit cells of a $5\\times5$ grid suc",
+        "meta_correct": false,
+        "base_correct": false,
+        "meta_answer": "2",
+        "base_answer": "1562",
+        "gold": "902",
+        "meta_conf": null,
+        "meta_n_confs": 0,
+        "meta_has_redirect": false,
+        "meta_has_diagnosis": true,
+        "meta_completion_tokens": 4096,
+        "base_completion_tokens": 2219
+      }
+    ]
+  },
+  "meta_format": {
+    "n": 1030,
+    "has_meta_wrap_rate": 0.0,
+    "has_conf_text_rate": 0.8912621359223301,
+    "has_study_need_rate": 0.0,
+    "has_assessment_rate": 0.8912621359223301,
+    "has_any_meta_rate": 0.8912621359223301,
+    "total_conf_values": 920,
+    "avg_confs_per_completion": 0.8932038834951457,
+    "conf_histogram": {
+      "0.0-0.3": 7,
+      "0.3-0.5": 0,
+      "0.5-0.7": 0,
+      "0.7-0.9": 1,
+      "0.9-1.0": 912
+    }
+  },
+  "base_format": {
+    "n": 1030,
+    "has_meta_wrap_rate": 0.0,
+    "has_conf_text_rate": 0.0,
+    "has_study_need_rate": 0.0,
+    "has_assessment_rate": 0.0,
+    "has_any_meta_rate": 0.0,
+    "total_conf_values": 0,
+    "avg_confs_per_completion": 0.0,
+    "conf_histogram": {
+      "0.0-0.3": 0,
+      "0.3-0.5": 0,
+      "0.5-0.7": 0,
+      "0.7-0.9": 0,
+      "0.9-1.0": 0
+    }
+  }
+}

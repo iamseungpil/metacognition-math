@@ -1,0 +1,165 @@
+{
+  "rows": 1030,
+  "accuracy": 0.7980582524271844,
+  "meta_block_count_dist": {
+    "0": 1030
+  },
+  "meta_emission_rate": 0.0,
+  "avg_num_meta_blocks": 0.0,
+  "avg_confidence": NaN,
+  "wrong_high_conf_07": 0.0,
+  "wrong_high_conf_08": 0.0,
+  "low_conf_redirect_rate": NaN,
+  "high_conf_verify_rate": NaN,
+  "marker_accuracy": {
+    "overall": {
+      "has_verify": {
+        "n_present": 982,
+        "acc_present": 0.8340122199592668,
+        "n_absent": 48,
+        "acc_absent": 0.0625
+      },
+      "has_redirect": {
+        "n_present": 135,
+        "acc_present": 0.2962962962962963,
+        "n_absent": 895,
+        "acc_absent": 0.8737430167597765
+      },
+      "has_diagnosis": {
+        "n_present": 83,
+        "acc_present": 0.25301204819277107,
+        "n_absent": 947,
+        "acc_absent": 0.8458289334741288
+      },
+      "has_epistemic": {
+        "n_present": 210,
+        "acc_present": 0.42857142857142855,
+        "n_absent": 820,
+        "acc_absent": 0.8926829268292683
+      }
+    },
+    "hard": {
+      "has_verify": {
+        "n_present": 484,
+        "acc_present": 0.7417355371900827,
+        "n_absent": 46,
+        "acc_absent": 0.06521739130434782
+      },
+      "has_redirect": {
+        "n_present": 130,
+        "acc_present": 0.27692307692307694,
+        "n_absent": 400,
+        "acc_absent": 0.815
+      },
+      "has_diagnosis": {
+        "n_present": 77,
+        "acc_present": 0.24675324675324675,
+        "n_absent": 453,
+        "acc_absent": 0.7571743929359823
+      },
+      "has_epistemic": {
+        "n_present": 198,
+        "acc_present": 0.4292929292929293,
+        "n_absent": 332,
+        "acc_absent": 0.8343373493975904
+      }
+    },
+    "gsm8k": {
+      "has_verify": {
+        "n_present": 498,
+        "acc_present": 0.9236947791164659,
+        "n_absent": 2,
+        "acc_absent": 0.0
+      },
+      "has_redirect": {
+        "n_present": 5,
+        "acc_present": 0.8,
+        "n_absent": 495,
+        "acc_absent": 0.9212121212121213
+      },
+      "has_diagnosis": {
+        "n_present": 6,
+        "acc_present": 0.3333333333333333,
+        "n_absent": 494,
+        "acc_absent": 0.9271255060728745
+      },
+      "has_epistemic": {
+        "n_present": 12,
+        "acc_present": 0.4166666666666667,
+        "n_absent": 488,
+        "acc_absent": 0.9323770491803278
+      }
+    }
+  },
+  "by_benchmark": {
+    "aime2024": {
+      "n": 30,
+      "accuracy": 0.13333333333333333,
+      "verify_rate": 0.5666666666666667,
+      "redirect_rate": 0.7666666666666667,
+      "diagnosis_rate": 0.4,
+      "epistemic_rate": 0.9666666666666667,
+      "avg_confidence": NaN,
+      "wrong_high_conf_07": 0.0
+    },
+    "gsm8k": {
+      "n": 500,
+      "accuracy": 0.92,
+      "verify_rate": 0.996,
+      "redirect_rate": 0.01,
+      "diagnosis_rate": 0.012,
+      "epistemic_rate": 0.024,
+      "avg_confidence": NaN,
+      "wrong_high_conf_07": 0.0
+    },
+    "math500": {
+      "n": 500,
+      "accuracy": 0.716,
+      "verify_rate": 0.934,
+      "redirect_rate": 0.214,
+      "diagnosis_rate": 0.13,
+      "epistemic_rate": 0.338,
+      "avg_confidence": NaN,
+      "wrong_high_conf_07": 0.0
+    }
+  },
+  "confidence_bins": [
+    {
+      "bin": "0.0-0.3",
+      "n": 0,
+      "accuracy": null,
+      "verify_rate": null,
+      "redirect_rate": null
+    },
+    {
+      "bin": "0.3-0.5",
+      "n": 0,
+      "accuracy": null,
+      "verify_rate": null,
+      "redirect_rate": null
+    },
+    {
+      "bin": "0.5-0.7",
+      "n": 0,
+      "accuracy": null,
+      "verify_rate": null,
+      "redirect_rate": null
+    },
+    {
+      "bin": "0.7-0.9",
+      "n": 0,
+      "accuracy": null,
+      "verify_rate": null,
+      "redirect_rate": null
+    },
+    {
+      "bin": "0.9-1.0",
+      "n": 0,
+      "accuracy": null,
+      "verify_rate": null,
+      "redirect_rate": null
+    }
+  ],
+  "ece": 0.0,
+  "artifact_source": "results/step300_deep_analysis/e21r_v2_step300.parquet"
+}

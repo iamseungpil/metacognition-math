@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.analyze_self_distill_eval import load_eval_table
+from src.training.self_distill.eval_metrics import load_eval_table
 from src.training.sft import prepare_sft_dataset
 from src.training.self_distill_data import (
     build_epistemic_teacher_completion,
@@ -124,6 +124,49 @@ def test_dataframe_builder_tracks_mode_and_metrics():
     assert bool(epistemic.iloc[0]["teacher_feedback_available"]) is False
 
 
+def test_claim_bearing_epistemic_refuses_synthetic_meta():
+    rows = [
+        {
+            "question": "Solve x+3=7.",
+            "gold_answer": "4",
+            "selected_completion": "Subtract 3 from both sides, so x=4. \\boxed{4}",
+            "selected_judgment": {"is_correct": True},
+            "root_completion": "I guessed \\boxed{5}",
+            "root_analysis": {"diagnosis_text": "Guessing is weak.", "study_need": "direct isolation"},
+            "repair_candidates": [{"candidate_id": "repair_0"}],
+            "selector": {"selected_candidate_id": "repair_0", "selected_score": 1.0, "score_margin": 0.2},
+        }
+    ]
+    built = build_self_distill_dataframe(rows, mode="epistemic", claim_bearing=True)
+    assert built.empty
+
+
+def test_claim_bearing_epistemic_keeps_real_meta_and_selector_provenance():
+    rows = [
+        {
+            "question": "Solve x+3=7.",
+            "gold_answer": "4",
+            "selected_completion": "<|meta|>\nconfidence: 0.41\nThe earlier guess was unsupported.\nstudy_need: direct isolation\n<|/meta|>\nSubtract 3 from both sides, so x=4. \\boxed{4}",
+            "selected_judgment": {"is_correct": True},
+            "root_completion": "I guessed \\boxed{5}",
+            "root_analysis": {"diagnosis_text": "Guessing is weak.", "study_need": "direct isolation"},
+            "repair_candidates": [{"candidate_id": "repair_0"}, {"candidate_id": "repair_1"}],
+            "selector": {
+                "selected_candidate_id": "repair_1",
+                "selected_score": 1.25,
+                "selected_breakdown": {"correctness": 1.0, "total": 1.25},
+                "score_margin": 0.15,
+            },
+        }
+    ]
+    built = build_self_distill_dataframe(rows, mode="epistemic", claim_bearing=True)
+    assert len(built) == 1
+    assert bool(built.iloc[0]["synthetic_meta_injected"]) is False
+    assert built.iloc[0]["candidate_count"] == 2
+    assert built.iloc[0]["selected_candidate_id"] == "repair_1"
+    assert built.iloc[0]["selection_margin"] == pytest.approx(0.15)
+
+
 def test_rq3_dataframe_preserves_feedback_context_and_benchmark():
     rows = [
         {
@@ -165,17 +208,20 @@ def test_feedback_conditioned_mode_uses_feedback_in_prompt():
             "root_analysis": {"diagnosis_text": "Guessing is weak.", "study_need": "direct isolation"},
         }
     ]
-    built = build_self_distill_dataframe(rows, mode="feedback_conditioned")
+    built = build_self_distill_dataframe(rows, mode="sdpo_regen")
     assert len(built) == 1
     messages = json.loads(built.iloc[0]["messages"])
     assert len(messages) == 2
     assert messages[0]["role"] == "user"
-    assert "privileged teacher-side feedback" in messages[0]["content"]
-    assert "Failed root attempt" in messages[0]["content"]
+    assert "teacher-side recovery feedback and evidence" in messages[0]["content"]
+    assert "unsuccessful earlier attempt" in messages[0]["content"]
     assert "Solve x+4=9." in messages[0]["content"]
     assert messages[1]["role"] == "assistant"
     assert "\\boxed{5}" in messages[1]["content"]
     assert built.iloc[0]["teacher_feedback_kind"] == "teacher_only_rag"
+    assert built.iloc[0]["self_distill_mode"] == "sdpo_regen"
+    assert built.iloc[0]["teacher_prompt_kind"] == "sdpo_regen"
+    assert "Correctly solve the original question." in built.iloc[0]["teacher_prompt_text"]
 
 
 def test_feedback_conditioned_messages_require_feedback():
@@ -194,6 +240,25 @@ def test_feedback_conditioned_messages_require_feedback():
     assert trace is not None
     with pytest.raises(ValueError):
         build_feedback_conditioned_messages(trace)
+
+
+def test_feedback_conditioned_alias_maps_to_sdpo_regen():
+    rows = [
+        {
+            "question": "Solve x+7=12.",
+            "gold_answer": "5",
+            "curriculum_retry": {
+                "retry_completion": "Subtract 7 from both sides, so x=5. \\boxed{5}",
+                "retry_judgment": {"is_correct": True},
+                "retrieved": [{"question": "Solve x+4=9.", "source": "stable_seed_library", "score": 0.9}],
+            },
+            "root_completion": "I guessed \\boxed{4}",
+            "root_analysis": {"diagnosis_text": "Guessing is weak.", "study_need": "direct isolation"},
+        }
+    ]
+    built = build_self_distill_dataframe(rows, mode="feedback_conditioned")
+    assert len(built) == 1
+    assert built.iloc[0]["self_distill_mode"] == "sdpo_regen"
 
 
 def test_incorrect_root_fallback_is_not_used():

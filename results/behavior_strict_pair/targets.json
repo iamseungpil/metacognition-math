@@ -1,0 +1,13 @@
+
+{
+  "models": [
+    {
+      "name": "strict_meta_sft",
+      "eval_json": "results/eval_v8_meta_inside_strict_sft/eval_v8_meta_inside_strict_sft.json"
+    },
+    {
+      "name": "strict_base_sft",
+      "eval_json": "results/eval_v8_base_matched_strict_sft/eval_v8_base_matched_strict_sft.json"
+    }
+  ]
+}

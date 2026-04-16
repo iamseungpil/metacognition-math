@@ -1,0 +1,24 @@
+
+{
+  "model": "v8_base_matched_strict_sft",
+  "model_path": "checkpoints/v8_base_matched_strict_sft",
+  "base_model": null,
+  "is_lora": false,
+  "benchmarks": [
+    "gsm8k",
+    "math500",
+    "aime2024"
+  ],
+  "max_problems_per_benchmark": 1030,
+  "num_samples": 1,
+  "max_new_tokens": 4096,
+  "do_sample_requested": false,
+  "do_sample_resolved": false,
+  "temperature": 0.7,
+  "top_p": 0.95,
+  "seed": 42,
+  "device_map": "single",
+  "total_problems": 1560,
+  "hostname": "node-0",
+  "utc_timestamp": "2026-04-11T12:06:56Z",
+  "tokenizer_name_or_path": "checkpoints/v8_base_matched_strict_sft"

@@ -1,0 +1,67 @@
+{
+  "question": "Solve x + 7 = 12.",
+  "policy_label": "confidence_bucket_side_evidence",
+  "confidence_bucket": "low",
+  "branch_budget": 3,
+  "best_branch_index": 1,
+  "branches": [
+    {
+      "label": "plain_retry",
+      "source": "retry",
+      "retrieved_questions": [],
+      "value": 0.0,
+      "score_breakdown": {
+        "low_confidence_awareness": 0.0,
+        "failure_diagnosis": 0.0,
+        "failure_decomposition": 0.0,
+        "next_strategy": 0.0,
+        "retrieval_ready": 0.0,
+        "meta_presence": 0.0,
+        "confidence_prior": 0.0,
+        "mid_confidence_bonus": 0.0,
+        "total": 0.0
+      },
+      "completion": "I will retry but I am still unsure. \\boxed{4}"
+    },
+    {
+      "label": "retrieval_1",
+      "source": "retrieval",
+      "retrieved_questions": [
+        "Find y if 2y = 14."
+      ],
+      "value": 0.178,
+      "score_breakdown": {
+        "low_confidence_awareness": 0.0,
+        "failure_diagnosis": 0.0,
+        "failure_decomposition": 0.0,
+        "next_strategy": 0.0,
+        "retrieval_ready": 0.0,
+        "meta_presence": 0.05,
+        "confidence_prior": 0.07800000000000001,
+        "mid_confidence_bonus": 0.05,
+        "total": 0.178
+      },
+      "completion": "<|meta|>\nconfidence: 0.78\nI can now solve it directly.\n<|/meta|>\nSubtract 7 from both sides, so x = 5. \\boxed{5}"
+    },
+    {
+      "label": "retrieval_2",
+      "source": "retrieval",
+      "retrieved_questions": [
+        "Solve x + 4 = 9."
+      ],
+      "value": 0.165,
+      "score_breakdown": {
+        "low_confidence_awareness": 0.0,
+        "failure_diagnosis": 0.0,
+        "failure_decomposition": 0.0,
+        "next_strategy": 0.0,
+        "retrieval_ready": 0.0,
+        "meta_presence": 0.05,
+        "confidence_prior": 0.065,
+        "mid_confidence_bonus": 0.05,
+        "total": 0.165
+      },
+      "completion": "<|meta|>\nconfidence: 0.65\nLet me check by substitution.\n<|/meta|>\nWe get x=5 and 5+7=12, so \\boxed{5}"
+    }
+  ]
+}

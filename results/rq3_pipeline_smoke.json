@@ -1,0 +1,331 @@
+{
+  "summary": {
+    "num_cases": 1,
+    "root_accuracy": 0.0,
+    "triggering": {
+      "trigger_rate": 1.0,
+      "trigger_on_wrong_root_rate": 1.0,
+      "false_trigger_on_correct_root_rate": 0.0
+    },
+    "curriculum_retry": {
+      "eligible_rate": 1.0,
+      "applied_rate": 1.0,
+      "retry_accuracy": 1.0,
+      "improvement_rate_over_root": 1.0,
+      "beats_plain_retry_rate": 1.0,
+      "next_meta": {
+        "confidence_recovery_rate": 1.0,
+        "trigger_clear_rate": 1.0,
+        "mean_study_need_followthrough": 0.4,
+        "correct_with_cleared_trigger_rate": 1.0,
+        "recovery_rate": 1.0
+      }
+    },
+    "selective_branching": {
+      "applied_rate": 1.0,
+      "bucket_counts": {
+        "low": 1
+      },
+      "best_branch_accuracy": 1.0,
+      "improvement_rate_over_root": 1.0,
+      "beats_plain_retry_rate": 1.0,
+      "beats_retrieval_retry_rate": 0.0,
+      "wasted_expansion_rate": 0.0
+    },
+    "winner_distribution": {
+      "root": 0,
+      "plain_retry": 0,
+      "retrieval_retry": 1,
+      "mcts_lite": 0,
+      "none": 0
+    }
+  },
+  "results": [
+    {
+      "question": "Solve x + 7 = 12.",
+      "gold_answer": "5",
+      "root_completion": "<|meta|>\nconfidence: 0.32\nThe issue is that the current route is weak because I am not isolating the variable cleanly.\nstudy_need: direct isolation of the variable\nswitch to a cleaner direct equation-solving method.\n<|/meta|>\nI guessed x=4. \\boxed{4}",
+      "root_analysis": {
+        "meta_blocks": [
+          {
+            "text": "confidence: 0.32\nThe issue is that the current route is weak because I am not isolating the variable cleanly.\nstudy_need: direct isolation of the variable\nswitch to a cleaner direct equation-solving method.",
+            "confidence": 0.32,
+            "length": 32
+          }
+        ],
+        "meta_count": 1,
+        "min_confidence": 0.32,
+        "has_trigger": false,
+        "has_low_confidence": true,
+        "has_diagnosis": true,
+        "has_decomposition": false,
+        "has_next_strategy": true,
+        "has_switch": true,
+        "study_need": "direct isolation of the variable",
+        "trigger_reasons": [
+          "low_confidence",
+          "failure_diagnosis",
+          "next_strategy",
+          "study_need"
+        ],
+        "should_retrieve": true,
+        "diagnosis_text": "The issue is that the current route is weak because I am not isolating the variable cleanly.\nswitch to a cleaner direct equation-solving method.",
+        "retrieval_mode": "diagnosis_triggered_retry"
+      },
+      "root_judgment": {
+        "boxed_answer": "4",
+        "normalized_prediction": "4",
+        "normalized_gold": "5",
+        "is_correct": false
+      },
+      "trigger_fired": true,
+      "plain_retry": {
+        "lane_label": "plain_retry_control",
+        "evidence_class": "side_evidence",
+        "available": true,
+        "completion": "I will retry but still guess x=4. \\boxed{4}",
+        "judgment": {
+          "boxed_answer": "4",
+          "normalized_prediction": "4",
+          "normalized_gold": "5",
+          "is_correct": false
+        }
+      },
+      "curriculum_retry": {
+        "lane_label": "curriculum_retry",
+        "evidence_class": "side_evidence",
+        "eligible": true,
+        "applied": true,
+        "query": "Solve x + 7 = 12.\nThe issue is that the current route is weak because I am not isolating the variable cleanly.\nswitch to a cleaner direct equation-solving method.\nmissing skill or perspective: direct isolation of the variable\nstrategy family: arithmetic_translation\nneeds a different solution method",
+        "prompt": "You are retrying a math problem after a metacognitive redirect signal.\nUse the retrieved solved example as a hint about strategy, not as something to copy blindly.\nIf the previous route was weak, switch methods and solve the original problem correctly.\nUse <|meta|> blocks only if they genuinely change your behavior, and end with a final \\boxed{answer}.\n\nWhy the previous route looked weak:\nThe issue is that the current route is weak because I am not isolating the variable cleanly.\nswitch to a cleaner direct equation-solving method.\n\nMissing skill or perspective to recover:\ndirect isolation of the variable\n\nRetrieved example policy:\nUse the example only as strategic evidence. Adapt it to the current problem rather than copying surface details.\n\n[Retrieved Example 1] (score=0.545, topic=linear equation, difficulty=easy)\nProblem:\nFind y if 2y = 14.\n\nSolved approach:\nDivide by 2 to get y = 7. \\boxed{7}\nFinal answer: 7\n\nOriginal problem:\nSolve x + 7 = 12.\n",
+        "retrieved": [
+          {
+            "question": "Find y if 2y = 14.",
+            "answer": "7",
+            "source": "synthetic",
+            "score": 0.5446526171013939,
+            "score_breakdown": {
+              "problem_similarity": 0.0,
+              "diagnosis_to_solution": 0.13483997249264842,
+              "study_need_to_strategy": 0.0,
+              "strategy_hint": 0.0,
+              "study_need_family_match": 0.0,
+              "dynamic_bonus": 0.0,
+              "typed_strategy_bonus": 1.0,
+              "easy_bonus": 1.0,
+              "generic_penalty": 0.0,
+              "total": 0.5446526171013939
+            }
+          }
+        ],
+        "retry_completion": "<|meta|>\nconfidence: 0.78\nThe retrieved example suggests isolating the variable directly.\n<|/meta|>\nSubtract 7 from both sides, so x = 5. \\boxed{5}",
+        "retry_analysis": {
+          "meta_blocks": [
+            {
+              "text": "confidence: 0.78\nThe retrieved example suggests isolating the variable directly.",
+              "confidence": 0.78,
+              "length": 10
+            }
+          ],
+          "meta_count": 1,
+          "min_confidence": 0.78,
+          "has_trigger": false,
+          "has_low_confidence": false,
+          "has_diagnosis": false,
+          "has_decomposition": false,
+          "has_next_strategy": false,
+          "has_switch": false,
+          "study_need": "",
+          "trigger_reasons": [],
+          "should_retrieve": false,
+          "diagnosis_text": "",
+          "retrieval_mode": "none"
+        },
+        "retry_judgment": {
+          "boxed_answer": "5",
+          "normalized_prediction": "5",
+          "normalized_gold": "5",
+          "is_correct": true
+        },
+        "meta_transition": {
+          "root_min_confidence": 0.32,
+          "retry_min_confidence": 0.78,
+          "confidence_gain": 0.46,
+          "confidence_recovered": true,
+          "trigger_cleared": true,
+          "low_confidence_cleared": true,
+          "study_need_followthrough": 0.4,
+          "still_needs_retrieval": false,
+          "retry_correct": true
+        },
+        "improved_over_root": true
+      },
+      "selective_branching": {
+        "lane_label": "confidence_bucket_branching",
+        "evidence_class": "side_evidence",
+        "eligible": true,
+        "applied": true,
+        "policy_label": "confidence_bucket_side_evidence",
+        "confidence_bucket": "low",
+        "branch_budget": 3,
+        "best_branch_index": 1,
+        "best_branch_label": "retrieval_1",
+        "best_branch_value": 0.174,
+        "best_branch_completion": "<|meta|>\nconfidence: 0.74\nI can now isolate the variable directly.\n<|/meta|>\nSubtract 7 from both sides, so x=5. \\boxed{5}",
+        "best_branch_judgment": {
+          "boxed_answer": "5",
+          "normalized_prediction": "5",
+          "normalized_gold": "5",
+          "is_correct": true
+        },
+        "plain_retry_judgment": {
+          "boxed_answer": "4",
+          "normalized_prediction": "4",
+          "normalized_gold": "5",
+          "is_correct": false
+        },
+        "improved_over_root": true,
+        "improved_over_plain_retry": true,
+        "branches": [
+          {
+            "label": "plain_retry",
+            "source": "retry",
+            "retrieved_questions": [],
+            "value": 0.0,
+            "score_breakdown": {
+              "low_confidence_awareness": 0.0,
+              "failure_diagnosis": 0.0,
+              "failure_decomposition": 0.0,
+              "next_strategy": 0.0,
+              "retrieval_ready": 0.0,
+              "meta_presence": 0.0,
+              "confidence_prior": 0.0,
+              "mid_confidence_bonus": 0.0,
+              "total": 0.0
+            },
+            "analysis": {
+              "meta_blocks": [],
+              "meta_count": 0,
+              "min_confidence": null,
+              "has_trigger": false,
+              "has_low_confidence": false,
+              "has_diagnosis": false,
+              "has_decomposition": false,
+              "has_next_strategy": false,
+              "has_switch": false,
+              "study_need": "",
+              "trigger_reasons": [],
+              "should_retrieve": false,
+              "diagnosis_text": "",
+              "retrieval_mode": "none"
+            },
+            "judgment": {
+              "boxed_answer": "4",
+              "normalized_prediction": "4",
+              "normalized_gold": "5",
+              "is_correct": false
+            },
+            "completion": "I will retry but still guess x=4. \\boxed{4}"
+          },
+          {
+            "label": "retrieval_1",
+            "source": "retrieval",
+            "retrieved_questions": [
+              "Find y if 2y = 14."
+            ],
+            "value": 0.174,
+            "score_breakdown": {
+              "low_confidence_awareness": 0.0,
+              "failure_diagnosis": 0.0,
+              "failure_decomposition": 0.0,
+              "next_strategy": 0.0,
+              "retrieval_ready": 0.0,
+              "meta_presence": 0.05,
+              "confidence_prior": 0.074,
+              "mid_confidence_bonus": 0.05,
+              "total": 0.174
+            },
+            "analysis": {
+              "meta_blocks": [
+                {
+                  "text": "confidence: 0.74\nI can now isolate the variable directly.",
+                  "confidence": 0.74,
+                  "length": 9
+                }
+              ],
+              "meta_count": 1,
+              "min_confidence": 0.74,
+              "has_trigger": false,
+              "has_low_confidence": false,
+              "has_diagnosis": false,
+              "has_decomposition": false,
+              "has_next_strategy": false,
+              "has_switch": false,
+              "study_need": "",
+              "trigger_reasons": [],
+              "should_retrieve": false,
+              "diagnosis_text": "",
+              "retrieval_mode": "none"
+            },
+            "judgment": {
+              "boxed_answer": "5",
+              "normalized_prediction": "5",
+              "normalized_gold": "5",
+              "is_correct": true
+            },
+            "completion": "<|meta|>\nconfidence: 0.74\nI can now isolate the variable directly.\n<|/meta|>\nSubtract 7 from both sides, so x=5. \\boxed{5}"
+          },
+          {
+            "label": "retrieval_2",
+            "source": "retrieval",
+            "retrieved_questions": [
+              "Solve x + 4 = 9."
+            ],
+            "value": 0.166,
+            "score_breakdown": {
+              "low_confidence_awareness": 0.0,
+              "failure_diagnosis": 0.0,
+              "failure_decomposition": 0.0,
+              "next_strategy": 0.0,
+              "retrieval_ready": 0.0,
+              "meta_presence": 0.05,
+              "confidence_prior": 0.066,
+              "mid_confidence_bonus": 0.05,
+              "total": 0.166
+            },
+            "analysis": {
+              "meta_blocks": [
+                {
+                  "text": "confidence: 0.66\nLet me verify by substitution.",
+                  "confidence": 0.66,
+                  "length": 7
+                }
+              ],
+              "meta_count": 1,
+              "min_confidence": 0.66,
+              "has_trigger": false,
+              "has_low_confidence": false,
+              "has_diagnosis": false,
+              "has_decomposition": false,
+              "has_next_strategy": false,
+              "has_switch": false,
+              "study_need": "",
+              "trigger_reasons": [],
+              "should_retrieve": false,
+              "diagnosis_text": "",
+              "retrieval_mode": "none"
+            },
+            "judgment": {
+              "boxed_answer": "5",
+              "normalized_prediction": "5",
+              "normalized_gold": "5",
+              "is_correct": true
+            },
+            "completion": "<|meta|>\nconfidence: 0.66\nLet me verify by substitution.\n<|/meta|>\nWe get x=5 and 5+7=12, so \\boxed{5}"
+          }
+        ]
+      },
+      "winner": "retrieval_retry"
+    }
+  ]
+}

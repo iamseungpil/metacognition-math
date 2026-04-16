@@ -1,9 +1,12 @@
 gnosis_repo/
 checkpoints/
+checkpoints_recovered/
+hf_tmp_meta/
 data/
 results/
 *.log
 *.parquet
+*.safetensors
 __pycache__/
 .git/
 wandb/

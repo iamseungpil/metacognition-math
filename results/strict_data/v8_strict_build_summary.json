@@ -1,0 +1,15 @@
+{
+  "meta_input_rows": 6329,
+  "base_input_rows": 6329,
+  "kept_rows": 4264,
+  "kept_by_scenario": {
+    "redirect": 2199,
+    "verify": 2065
+  },
+  "rejected_by_reason": {
+    "redirect:ValueError": 1062,
+    "verify:ValueError": 1003
+  },
+  "meta_output": "/home/v-seungplee/metacognition/data/v8_meta_inside_strict.parquet",
+  "base_output": "/home/v-seungplee/metacognition/data/v8_base_matched_strict.parquet"
+}

@@ -12,6 +12,8 @@ from src.training.rewards import (
     overconfidence_verify_reward,
     same_route_repetition_penalty, route_switch_evidence_reward,
     confidence_omission_floor,
+    outcome_calibration_reward, meta_structure_reward,
+    redirect_execution_reward_v2, verify_execution_reward_v2,
     _check_correctness, _parse_meta_blocks,
 )
 
@@ -391,6 +393,96 @@ r_batch = confidence_omission_floor([no_meta, with_meta])
 check("TC22d: batch [no_meta, with_meta] length", len(r_batch), 2)
 check("TC22d: batch first is penalty", r_batch[0] < 0, True)
 check("TC22d: batch second passes", r_batch[1], 0.0)
+
+# TC22e: free-text confidence without wrapped meta still fails strict floor
+free_text_only = "confidence: 0.7\nI should verify.\n\\boxed{4}"
+r = confidence_omission_floor([free_text_only])
+check("TC22e: free-text confidence without wrapping → penalty", r[0] < 0, True)
+
+print("\n=== TC22f-TC22i: strict structure + calibration ===")
+wrapped = "<|meta|>confidence: 0.82\nI should verify.<|/meta|>\\boxed{4}"
+unwrapped = "confidence: 0.82\nI should verify.\n\\boxed{4}"
+check(
+    "TC22f: structure reward prefers wrapped meta",
+    meta_structure_reward([wrapped])[0] > meta_structure_reward([unwrapped])[0],
+    True,
+)
+
+correct_cal = outcome_calibration_reward([wrapped], ground_truth=["4"])[0]
+wrong_overconf = outcome_calibration_reward(
+    ["<|meta|>confidence: 0.82<|/meta|>\\boxed{5}"],
+    ground_truth=["4"],
+)[0]
+check("TC22g: calibrated correct beats wrong overconfident", correct_cal > wrong_overconf, True)
+
+revision_good = """<|meta|>
+confidence: 0.95
+Something feels off.
+<|/meta|>
+work
+<|meta|>
+confidence: 0.35
+I should redirect.
+<|/meta|>
+\\boxed{5}"""
+revision_bad = """<|meta|>
+confidence: 0.35
+Something feels off.
+<|/meta|>
+work
+<|meta|>
+confidence: 0.95
+I am now sure.
+<|/meta|>
+\\boxed{5}"""
+check(
+    "TC22h: wrong answer with downward confidence revision beats upward revision",
+    outcome_calibration_reward([revision_good], ground_truth=["4"])[0]
+    > outcome_calibration_reward([revision_bad], ground_truth=["4"])[0],
+    True,
+)
+check("TC22i: free-text confidence alone gets no calibration credit", outcome_calibration_reward([unwrapped], ground_truth=["4"])[0], 0.0)
+
+print("\n=== TC23-TC24: confidence-centered controller alignment ===")
+verify_without_overcommit = """<|meta|>
+confidence: 0.92
+The route looks coherent, so I will verify once before finalizing.
+<|/meta|>
+I recompute the quantity independently and check by substitution.
+\\boxed{4}"""
+verify_with_overcommit = """<|meta|>
+confidence: 0.92
+The answer came too quickly from a single route, so I may be overcommitting.
+I should verify independently before finalizing.
+<|/meta|>
+I recompute the quantity independently and check by substitution.
+\\boxed{4}"""
+r_verify_no_gate = verify_execution_reward_v2([verify_without_overcommit], ground_truth=["4"])
+r_verify_gate = verify_execution_reward_v2([verify_with_overcommit], ground_truth=["4"])
+check("TC23a: high confidence alone does not unlock verify_v2", r_verify_no_gate[0], 0.0)
+check("TC23b: high confidence plus overcommit unlocks verify_v2", r_verify_gate[0] > 0.0, True)
+
+redirect_with_verify_tail = """I first expand everything algebraically and keep getting a mismatch.
+<|meta|>
+confidence: 0.34
+Something feels off. The current algebraic route is weak because it ignores the invariant.
+I should switch to an invariant-based view.
+<|/meta|>
+I verify the candidate by substitution and numerically confirm the same expression.
+\\boxed{4}"""
+redirect_with_route_replacement = """I first expand everything algebraically and keep getting a mismatch.
+<|meta|>
+confidence: 0.34
+Something feels off. The current algebraic route is weak because it ignores the invariant.
+I should switch to an invariant-based view.
+<|/meta|>
+Using an invariant instead of the previous algebra, I track parity across each move and the contradiction disappears.
+This route yields exactly 4 valid states.
+\\boxed{4}"""
+r_redirect_verify_tail = redirect_execution_reward_v2([redirect_with_verify_tail], ground_truth=["4"])
+r_redirect_route_change = redirect_execution_reward_v2([redirect_with_route_replacement], ground_truth=["4"])
+check("TC24a: verify-style tail does not count as redirect execution", r_redirect_verify_tail[0] <= 0.0, True)
+check("TC24b: real route replacement still gets redirect credit", r_redirect_route_change[0] > 0.0, True)
 
 print(f"\n=== SUMMARY: {passed} passed, {failed} failed ===")
 

@@ -1,4 +1,8 @@
-# Research Plan: Learning Models That Know What They Don't Know
+# [DEPRECATED] Research Plan: Learning Models That Know What They Don't Know
+
+> **이 문서는 deprecated입니다.** Active plan은 `results/plan_metacot_v8_active_2026_04_09.md`를 참조하세요.
+> 구현/데이터/런처 인덱스는 `docs/mainline_registry_2026_04_13.md`, machine-readable contract는 `configs/mainline_contract.yaml`를 참조하세요.
+> 이 파일은 초기 4-branch RL 계획이며 현재 V8 Meta-CoT 파이프라인과 무관합니다.
 
 ## Research Question
 Can we train a model to accurately recognize its own uncertainty during reasoning,

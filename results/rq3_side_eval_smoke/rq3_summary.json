@@ -1,0 +1,21 @@
+{
+  "num_cases": 1,
+  "root_accuracy": 0.0,
+  "curriculum_retry": {
+    "eligible_rate": 1.0,
+    "applied_rate": 0.0,
+    "trigger_precision_on_wrong_roots": 0.0,
+    "retry_accuracy": 0.0,
+    "improvement_rate_over_root": 0.0
+  },
+  "selective_branching": {
+    "applied_rate": 1.0,
+    "bucket_counts": {
+      "low": 1
+    },
+    "best_branch_accuracy": 0.0,
+    "improvement_rate_over_root": 0.0,
+    "beats_plain_retry_rate": 0.0,
+    "wasted_expansion_rate": 1.0
+  }
+}

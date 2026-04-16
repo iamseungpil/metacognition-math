@@ -1,0 +1,91 @@
+{
+  "baseline": {
+    "rows": 1030,
+    "accuracy": 0.7592233009708738,
+    "hard_accuracy": 0.6018867924528302,
+    "ood_accuracy": 0.3333333333333333,
+    "meta_emission_rate": 0.0,
+    "avg_num_meta_blocks": 0.0,
+    "avg_completion_length_tokens": 452.0339805825243,
+    "avg_confidence": null,
+    "wrong_high_conf_07": 0.0,
+    "diagnosis_rate": 0.05436893203883495,
+    "study_need_rate": 0.0,
+    "epistemic_rate": 0.09611650485436893,
+    "ece": null,
+    "benchmark_breakdown": {
+      "aime2024": {
+        "rows": 30,
+        "accuracy": 0.3333333333333333,
+        "meta_emission_rate": 0.0,
+        "wrong_high_conf_07": 0.0,
+        "ece": null
+      },
+      "gsm8k": {
+        "rows": 500,
+        "accuracy": 0.926,
+        "meta_emission_rate": 0.0,
+        "wrong_high_conf_07": 0.0,
+        "ece": null
+      },
+      "math500": {
+        "rows": 500,
+        "accuracy": 0.618,
+        "meta_emission_rate": 0.0,
+        "wrong_high_conf_07": 0.0,
+        "ece": null
+      }
+    }
+  },
+  "candidate": {
+    "rows": 1030,
+    "accuracy": 0.7980582524271844,
+    "hard_accuracy": 0.6830188679245283,
+    "ood_accuracy": 0.13333333333333333,
+    "meta_emission_rate": 0.0,
+    "avg_num_meta_blocks": 0.0,
+    "avg_completion_length_tokens": 723.3320388349515,
+    "avg_confidence": null,
+    "wrong_high_conf_07": 0.0,
+    "diagnosis_rate": 0.08058252427184466,
+    "study_need_rate": 0.0,
+    "epistemic_rate": 0.20388349514563106,
+    "ece": null,
+    "benchmark_breakdown": {
+      "aime2024": {
+        "rows": 30,
+        "accuracy": 0.13333333333333333,
+        "meta_emission_rate": 0.0,
+        "wrong_high_conf_07": 0.0,
+        "ece": null
+      },
+      "gsm8k": {
+        "rows": 500,
+        "accuracy": 0.92,
+        "meta_emission_rate": 0.0,
+        "wrong_high_conf_07": 0.0,
+        "ece": null
+      },
+      "math500": {
+        "rows": 500,
+        "accuracy": 0.716,
+        "meta_emission_rate": 0.0,
+        "wrong_high_conf_07": 0.0,
+        "ece": null
+      }
+    }
+  },
+  "delta": {
+    "rows": 0,
+    "accuracy": 0.03883495145631066,
+    "hard_accuracy": 0.0811320754716981,
+    "ood_accuracy": -0.19999999999999998,
+    "meta_emission_rate": 0.0,
+    "avg_num_meta_blocks": 0.0,
+    "avg_completion_length_tokens": 271.2980582524272,
+    "wrong_high_conf_07": 0.0,
+    "diagnosis_rate": 0.02621359223300971,
+    "study_need_rate": 0.0,
+    "epistemic_rate": 0.10776699029126213
+  }
+}

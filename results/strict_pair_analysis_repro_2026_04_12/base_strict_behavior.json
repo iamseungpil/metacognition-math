@@ -1,0 +1,115 @@
+{
+  "rows": 1560,
+  "accuracy": 0.7551282051282051,
+  "meta_block_count_dist": {
+    "0": 1560
+  },
+  "meta_emission_rate": 0.0,
+  "marker_accuracy": {
+    "overall": {
+      "has_verify": {
+        "n_present": 83,
+        "acc_present": 0.4939759036144578,
+        "n_absent": 1477,
+        "acc_absent": 0.7698036560595802
+      },
+      "has_redirect": {
+        "n_present": 71,
+        "acc_present": 0.2535211267605634,
+        "n_absent": 1489,
+        "acc_absent": 0.7790463398253862
+      },
+      "has_diagnosis": {
+        "n_present": 21,
+        "acc_present": 0.2857142857142857,
+        "n_absent": 1539,
+        "acc_absent": 0.7615334632878492
+      },
+      "has_epistemic": {
+        "n_present": 10,
+        "acc_present": 0.2,
+        "n_absent": 1550,
+        "acc_absent": 0.7587096774193548
+      }
+    },
+    "hard": {
+      "has_verify": {
+        "n_present": 80,
+        "acc_present": 0.475,
+        "n_absent": 450,
+        "acc_absent": 0.5066666666666667
+      },
+      "has_redirect": {
+        "n_present": 68,
+        "acc_present": 0.22058823529411764,
+        "n_absent": 462,
+        "acc_absent": 0.5432900432900433
+      },
+      "has_diagnosis": {
+        "n_present": 19,
+        "acc_present": 0.21052631578947367,
+        "n_absent": 511,
+        "acc_absent": 0.512720156555773
+      },
+      "has_epistemic": {
+        "n_present": 9,
+        "acc_present": 0.2222222222222222,
+        "n_absent": 521,
+        "acc_absent": 0.5067178502879078
+      }
+    },
+    "gsm8k": {
+      "has_verify": {
+        "n_present": 3,
+        "acc_present": 1.0,
+        "n_absent": 1027,
+        "acc_absent": 0.8851022395326192
+      },
+      "has_redirect": {
+        "n_present": 3,
+        "acc_present": 1.0,
+        "n_absent": 1027,
+        "acc_absent": 0.8851022395326192
+      },
+      "has_diagnosis": {
+        "n_present": 2,
+        "acc_present": 1.0,
+        "n_absent": 1028,
+        "acc_absent": 0.8852140077821011
+      },
+      "has_epistemic": {
+        "n_present": 1,
+        "acc_present": 0.0,
+        "n_absent": 1029,
+        "acc_absent": 0.8862973760932945
+      }
+    }
+  },
+  "by_benchmark": {
+    "aime2024": {
+      "n": 30,
+      "accuracy": 0.26666666666666666,
+      "verify_rate": 0.3333333333333333,
+      "redirect_rate": 0.43333333333333335,
+      "diagnosis_rate": 0.2,
+      "epistemic_rate": 0.0
+    },
+    "gsm8k": {
+      "n": 1030,
+      "accuracy": 0.8854368932038835,
+      "verify_rate": 0.002912621359223301,
+      "redirect_rate": 0.002912621359223301,
+      "diagnosis_rate": 0.001941747572815534,
+      "epistemic_rate": 0.000970873786407767
+    },
+    "math500": {
+      "n": 500,
+      "accuracy": 0.516,
+      "verify_rate": 0.14,
+      "redirect_rate": 0.11,
+      "diagnosis_rate": 0.026,
+      "epistemic_rate": 0.018
+    }
+  },
+  "artifact_source": "results/eval_v8_base_matched_strict_sft/eval_v8_base_matched_strict_sft.remote.parquet"
+}

@@ -1,0 +1,34 @@
+{
+  "num_cases": 1,
+  "root_accuracy": 0.0,
+  "triggering": {
+    "trigger_rate": 1.0,
+    "trigger_on_wrong_root_rate": 1.0,
+    "false_trigger_on_correct_root_rate": 0.0
+  },
+  "curriculum_retry": {
+    "eligible_rate": 1.0,
+    "applied_rate": 0.0,
+    "retry_accuracy": 0.0,
+    "improvement_rate_over_root": 0.0,
+    "beats_plain_retry_rate": 0.0
+  },
+  "selective_branching": {
+    "applied_rate": 1.0,
+    "bucket_counts": {
+      "low": 1
+    },
+    "best_branch_accuracy": 0.0,
+    "improvement_rate_over_root": 0.0,
+    "beats_plain_retry_rate": 0.0,
+    "beats_retrieval_retry_rate": 0.0,
+    "wasted_expansion_rate": 1.0
+  },
+  "winner_distribution": {
+    "root": 0,
+    "plain_retry": 0,
+    "retrieval_retry": 0,
+    "mcts_lite": 0,
+    "none": 1
+  }
+}

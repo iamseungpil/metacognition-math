@@ -3,6 +3,32 @@
   "question": "Solve x + 7 = 12.",
   "rag_run": {
     "rag_used": true,
+    "analysis": {
+      "meta_blocks": [
+        {
+          "text": "confidence: 0.38\nSomething feels off. I may be forcing the wrong transformation and should switch back to isolating the variable directly.",
+          "confidence": 0.38,
+          "length": 21
+        }
+      ],
+      "meta_count": 1,
+      "min_confidence": 0.38,
+      "has_trigger": true,
+      "has_low_confidence": true,
+      "has_diagnosis": true,
+      "has_decomposition": false,
+      "has_next_strategy": false,
+      "has_switch": false,
+      "study_need": "",
+      "trigger_reasons": [
+        "surface_uncertainty_or_conflict",
+        "low_confidence",
+        "failure_diagnosis"
+      ],
+      "should_retrieve": true,
+      "diagnosis_text": "Something feels off. I may be forcing the wrong transformation and should switch back to isolating the variable directly.",
+      "retrieval_mode": "diagnosis_triggered_retry"
+    },
     "retrieved": [
       {
         "question": "Solve x + 4 = 9.",
