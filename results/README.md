@@ -31,6 +31,9 @@ See also: top-level `ANALYSIS_MAP.md` and `results/cleanup_audit_2026_04_16.md`.
    - `codex_reviews/rq3_mainline_review_2026_04_16.md`
    - `cleanup_audit_2026_04_16.md`
 
+6. RQ3 self-distill mainline outputs:
+   - `self_distill/` (question-only artifact generation, scored teacher selection, teacher-topk KL targets, and SFT readouts)
+
 ## 16k Re-Eval (NEW 2026-04-16)
 
 Produced by `scripts/eval_vllm_1030.py` (configurable max_tokens). In-flight on remote:

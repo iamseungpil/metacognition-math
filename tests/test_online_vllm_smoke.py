@@ -27,10 +27,13 @@ from src.training.self_distill.online import (  # noqa: E402
     OnlineSdpoProblem,
     _load_completed_ids,
     _stable_problem_id,
+    run_online_sdpo_rollouts,
     run_online_question_only_best_of_n_rollouts,
     run_online_fixed_k_repair_rollouts,
     write_online_sdpo_outputs,
 )
+from src.training.meta_quality import score_meta_commit_quality  # noqa: E402
+from src.curriculum.control_rag import ExampleRecord  # noqa: E402
 
 
 class FakeCompletion:
@@ -85,6 +88,20 @@ class FakeLLM:
         return self._tokenizer
 
 
+class FakeRetriever:
+    def search(self, query, top_k=1):
+        return [{
+            "record": ExampleRecord(
+                question="Solve x+4=9.",
+                solution="Subtract 4 from both sides so x=5. \\boxed{5}",
+                answer="5",
+                source="seed_bank",
+            ),
+            "score": 0.9,
+            "score_breakdown": {"question": 0.9},
+        }][:top_k]
+
+
 @pytest.fixture(autouse=True)
 def patch_sampling(monkeypatch):
     """Ensure a fake vllm module is importable inside run_online_fixed_k_repair_rollouts."""
@@ -118,6 +135,29 @@ def canned_root_then_repair(prompt: str, n: int) -> list[tuple[str, list[int]]]:
         return cands
     # Root phase: always wrong
     return [(r"<think>guessing</think>\boxed{99}", [1, 2, 3])]
+
+
+def canned_root_then_sdpo(prompt: str, n: int) -> list[tuple[str, list[int]]]:
+    if "The following is an unsuccessful earlier attempt" in prompt:
+        return [
+            (
+                "<|meta|>\nconfidence: 0.44\nThe earlier route was unsupported.\n"
+                "study_need: direct isolation\n<|/meta|>\nWrong retry \\boxed{0}",
+                [1, 2, 3],
+            ),
+            (
+                "<|meta|>\nconfidence: 0.79\nThe retrieved evidence supports direct isolation.\n"
+                "study_need: direct isolation\n<|/meta|>\nSubtract 7 from both sides, so x=5. \\boxed{5}",
+                [1, 2, 3],
+            ),
+        ][:n]
+    return [
+        (
+            "<|meta|>\nconfidence: 0.31\nThe issue is that the route is weak.\n"
+            "study_need: direct isolation\n<|/meta|>\nI guessed x=4. \\boxed{4}",
+            [1, 2, 3],
+        )
+    ]
 
 
 def test_fixed_k_repair_smoke(tmp_path: Path):
@@ -189,6 +229,34 @@ def test_question_only_best_of_n_smoke(tmp_path: Path):
         assert row["retrieval_enabled"] is False
 
 
+def test_sdpo_regen_smoke(tmp_path: Path):
+    problems = [OnlineSdpoProblem(question="Solve x + 7 = 12.", gold_answer="5", benchmark="test")]
+    llm = FakeLLM(canned_root_then_sdpo)
+    retriever = FakeRetriever()
+    rows = run_online_sdpo_rollouts(
+        llm=llm,
+        tokenizer=llm.get_tokenizer(),
+        problems=problems,
+        output_dir=tmp_path,
+        retriever=retriever,
+        repair_candidates=2,
+        rag_top_k=1,
+        retrieval_query_mode="analysis_or_question",
+        selector_mode="correct_then_meta",
+        chunk_size=1,
+        resume=False,
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["generation_mode"] == "sdpo_regen"
+    assert row["selected_prompt_kind"] == "sdpo_regen"
+    assert row["selected_feedback_kind"] == "teacher_only_rag"
+    assert row["retrieval_nonempty"] is True
+    assert row["selected_judgment"]["is_correct"] is True
+    assert row["selector"]["selected_candidate_id"] == "regen_1"
+
+
 def test_question_only_selector_prefers_correctness_first(tmp_path: Path):
     def canned(prompt, n):
         return [
@@ -236,7 +304,7 @@ def test_question_only_selector_prefers_correctness_only(tmp_path: Path):
     assert rows[0]["selector"]["selected_candidate_id"] == "sample_1"
 
 
-def test_question_only_selector_prefers_meta_transition_within_correct_set(tmp_path: Path):
+def test_question_only_selector_prefers_meta_commit_quality_within_correct_set(tmp_path: Path):
     def canned(prompt, n):
         return [
             ("plain correct \\boxed{0}", [1]),
@@ -263,8 +331,95 @@ def test_question_only_selector_prefers_meta_transition_within_correct_set(tmp_p
     selector = rows[0]["selector"]
     assert selector["selected_candidate_id"] == "sample_1"
     assert selector["selector_mode"] == "correct_then_meta"
-    assert selector["selected_breakdown"]["meta_transition"] > 0.0
-    assert selector["selected_breakdown"]["meta_transition_boxed_after_meta"] == 1.0
+    assert selector["selected_breakdown"]["meta_commit_quality"] > 0.0
+    assert selector["selected_breakdown"]["meta_commit_quality_boxed_after_meta"] == 1.0
+
+
+def test_question_only_selector_penalizes_post_boxed_drift(tmp_path: Path):
+    def canned(prompt, n):
+        return [
+            (
+                "<|meta|>\nconfidence: 0.41\nThe route is weak.\nstudy_need: isolate x\n<|/meta|>\n"
+                "Solve and conclude \\boxed{0}\nThen keep rambling about another route for a long while.",
+                [1],
+            ),
+            (
+                "<|meta|>\nconfidence: 0.41\nThe route is weak.\nstudy_need: isolate x\n<|/meta|>\n"
+                "Solve and conclude \\boxed{0}",
+                [1],
+            ),
+        ][:n]
+
+    problems = [OnlineSdpoProblem(question="Solve: 2x = 0, find x.", gold_answer="0", benchmark="test")]
+    llm = FakeLLM(canned)
+    rows = run_online_question_only_best_of_n_rollouts(
+        llm=llm,
+        tokenizer=llm.get_tokenizer(),
+        problems=problems,
+        output_dir=tmp_path,
+        num_candidates=2,
+        selector_mode="correct_then_meta",
+        chunk_size=1,
+        resume=False,
+    )
+
+    selector = rows[0]["selector"]
+    assert selector["selected_candidate_id"] == "sample_1"
+    assert selector["selected_breakdown"]["meta_commit_quality_post_boxed_text_penalty"] == 0.0
+
+
+def test_question_only_selector_does_not_penalize_long_boxed_expression(tmp_path: Path):
+    long_boxed = "\\boxed{(x^2 + 2x + 1) / (x+1) = x+1,\\; x \\neq -1}"
+
+    def canned(prompt, n):
+        return [
+            (
+                "<|meta|>\nconfidence: 0.51\nThe route is weak.\nstudy_need: simplify first\n<|/meta|>\n"
+                f"Conclude with {long_boxed}",
+                [1],
+            ),
+            (
+                "<|meta|>\nconfidence: 0.51\nThe route is weak.\nstudy_need: simplify first\n<|/meta|>\n"
+                f"Conclude with {long_boxed}\nThen continue drifting after the answer with extra text.",
+                [1],
+            ),
+        ][:n]
+
+    problems = [OnlineSdpoProblem(question="Simplify.", gold_answer="x+1", benchmark="test")]
+    llm = FakeLLM(canned)
+    rows = run_online_question_only_best_of_n_rollouts(
+        llm=llm,
+        tokenizer=llm.get_tokenizer(),
+        problems=problems,
+        output_dir=tmp_path,
+        num_candidates=2,
+        selector_mode="correct_then_meta",
+        chunk_size=1,
+        resume=False,
+    )
+
+    ranked = rows[0]["repair_candidates"]
+    assert ranked[0]["candidate_id"] == "sample_0"
+    assert ranked[0]["selector_breakdown"]["meta_commit_quality_post_boxed_text_penalty"] == 0.0
+    assert ranked[1]["selector_breakdown"]["meta_commit_quality_post_boxed_text_penalty"] > 0.0
+
+
+def test_meta_commit_quality_penalizes_decoherence_like_tail():
+    clean = (
+        "<|meta|>\nconfidence: 0.42\nThe route is weak.\nstudy_need: isolate x\n<|/meta|>\n"
+        "Solve cleanly and conclude \\boxed{0}"
+    )
+    decohered = (
+        "<|meta|>\nconfidence: 0.42\nThe route is weak.\nstudy_need: isolate x\n<|/meta|>\n"
+        "Solve but then drift into malformed latex \\frac{\\frac{\\frac{ x and keep repeating "
+        "the same tail the same tail the same tail"
+    )
+
+    clean_score = score_meta_commit_quality(clean)
+    bad_score = score_meta_commit_quality(decohered)
+
+    assert clean_score["total"] > bad_score["total"]
+    assert bad_score["decoherence_penalty"] > 0.0
 
 
 def test_resume_skips_processed(tmp_path: Path):

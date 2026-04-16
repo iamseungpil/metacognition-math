@@ -33,6 +33,7 @@ from src.training.rewards import (
     correctness_reward,
     outcome_calibration_reward,
     meta_structure_reward,
+    meta_commit_shape_reward,
     structural_switch_reward_v2,
     verify_outcome_v2,
     confidence_trajectory_reward,
@@ -246,6 +247,82 @@ def compute_score_e21r_v3_smoke(data_source=None, solution_str="", ground_truth=
         "verify_execution": verify_exec,
         "meta_floor": floor,
         "meta_structure": structure,
+    }
+
+
+def compute_score_e21r_v4_smoke(data_source=None, solution_str="", ground_truth="", extra_info=None, **kwargs):
+    """Smoke reward that incorporates commit/decoherence findings from analysis.
+
+    Intended for future RLSD-lite / controller-smoke experiments only.
+    It keeps correctness dominant, then adds:
+      - structured calibration / revision
+      - controller execution terms
+      - commit-shape reward based on good-meta vs bad-meta findings
+    """
+    completion = [{"content": solution_str}]
+    gt = [ground_truth]
+
+    try:
+        corr = correctness_reward(completion, gt)[0]
+    except Exception:
+        corr = 0.0
+
+    try:
+        cal = outcome_calibration_reward(completion, gt)[0]
+    except Exception:
+        cal = 0.0
+
+    try:
+        conf_rev = confidence_revision_reward_v2(completion, gt)[0]
+    except Exception:
+        conf_rev = 0.0
+
+    try:
+        redirect_exec = redirect_execution_reward_v2(completion, gt)[0]
+    except Exception:
+        redirect_exec = 0.0
+
+    try:
+        verify_exec = verify_execution_reward_v2(completion, gt)[0]
+    except Exception:
+        verify_exec = 0.0
+
+    try:
+        floor = confidence_omission_floor(completion, gt)[0]
+    except Exception:
+        floor = 0.0
+
+    try:
+        structure = meta_structure_reward(completion, gt)[0]
+    except Exception:
+        structure = 0.0
+
+    try:
+        commit_shape = meta_commit_shape_reward(completion, gt)[0]
+    except Exception:
+        commit_shape = 0.0
+
+    combined = (
+        corr * 1.0
+        + cal * 0.45
+        + conf_rev * 0.25
+        + redirect_exec * 0.20
+        + verify_exec * 0.10
+        + floor * 0.20
+        + structure * 0.15
+        + commit_shape * 0.35
+    )
+
+    return {
+        "score": combined,
+        "correctness": corr,
+        "outcome_calibration": cal,
+        "confidence_revision": conf_rev,
+        "redirect_execution": redirect_exec,
+        "verify_execution": verify_exec,
+        "meta_floor": floor,
+        "meta_structure": structure,
+        "meta_commit_shape": commit_shape,
     }
 
 

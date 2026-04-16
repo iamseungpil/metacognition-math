@@ -6,6 +6,7 @@ cd "$ROOT"
 
 if [[ $# -lt 6 ]]; then
   echo "Usage: $0 <mode:{question_only_best_of_n|fixed_k_repair}> <model_path> <input_path> <output_dir> <dataset_mode:{naive|epistemic}> <claim_bearing:{0|1}> [example_bank ...]" >&2
+  echo "  note: question_only_best_of_n is the claim-bearing mainline; fixed_k_repair is side-evidence only." >&2
   exit 1
 fi
 
@@ -15,6 +16,7 @@ INPUT_PATH="$3"
 OUTPUT_DIR="$4"
 DATASET_MODE="$5"
 CLAIM_BEARING_FLAG="$6"
+PYTHON_BIN="${PYTHON_BIN:-python}"
 shift 6
 
 EXAMPLE_BANK_ARGS=()
@@ -24,9 +26,9 @@ done
 
 RAG_TOP_K=0
 RETRIEVAL_QUERY_MODE=none
-SELECTOR_MODE=correctness_only
+SELECTOR_MODE="${SELF_DISTILL_SELECTOR_MODE:-correctness_only}"
 if [[ "$MODE" == "fixed_k_repair" ]]; then
-  SELECTOR_MODE=reward_weighted
+  SELECTOR_MODE="${SELF_DISTILL_SELECTOR_MODE:-reward_weighted}"
   if [[ ${#EXAMPLE_BANK_ARGS[@]} -gt 0 ]]; then
     RAG_TOP_K=1
     RETRIEVAL_QUERY_MODE=question_only
@@ -40,7 +42,7 @@ if [[ "$CLAIM_BEARING_FLAG" == "1" ]]; then
   CLAIM_BEARING_ARGS+=(--claim-bearing)
 fi
 
-PYTHONPATH=. python scripts/run_online_sdpo_regen.py \
+PYTHONPATH=. "$PYTHON_BIN" scripts/run_online_sdpo_regen.py \
   --model_path "$MODEL_PATH" \
   --input_path "$INPUT_PATH" \
   --output_dir "$OUTPUT_DIR" \

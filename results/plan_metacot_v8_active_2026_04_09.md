@@ -32,11 +32,11 @@ As of 2026-04-16:
    c. Template collapse: 908/1030 completions contain identical boilerplate assessment text
    d. AIME -20pp: redirect on hard problems → token budget exhaustion (85% wrong AIME hit 4096 limit)
    e. MATH500 +9.8pp: longer reasoning (avg +115 tokens) reaches correct answers
-10. **Strict paired SFT verified rerun (2026-04-15)**: base strict SFT 75.51%, meta strict SFT 75.38%, OOD(AIME) 26.67% vs 16.67%. Meta controller structure is preserved (`meta_emission=99.94%`) but OOD gain is not present at the strict-SFT stage
+9. **Strict paired SFT verified rerun (2026-04-15)**: base strict SFT 75.51%, meta strict SFT 75.38%, OOD(AIME) 26.67% vs 16.67%. Meta controller structure is preserved (`meta_emission=99.94%`) but OOD gain is not present at the strict-SFT stage
+10. **Self-distill code revision (2026-04-16)**: claim-bearing mainline moved to `question_only_best_of_n`; `fixed_k_repair` is now side-evidence only. Generic roundtrip launcher and strict `meta_only` KL configs added
 11. **Retrieval contract clarification (2026-04-16)**: `fixed_k_repair` supports retrieval only when an example bank is supplied. Without `--example_bank`, mainline roundtrip must be recorded as `repair-only`, not RAG-enabled
-9. **Self-distill code revision (2026-04-16)**: claim-bearing mainline moved to `question_only_best_of_n`; `fixed_k_repair` is now side-evidence only. Generic roundtrip launcher and strict `meta_only` KL configs added
-10. **6 H200 nodes available**: `node-recovery-h200-0415` with 6 jobs running
-12. **[NEW 2026-04-16] 16k re-eval**: base 77.0% (+1.1pp), meta 81.65% (+1.8pp). AIME gap persists (13.3% vs 36.7%) — confirmed NOT truncation, confirmed decoherence/no-commit. See `results/aime_failure_analysis_16k/aime_failure_modes.json`: meta wrong=26/30 → 13 decohered into LaTeX gibberish, 12 ran out of tokens without `\boxed{}`, only 1 committed to a coherent wrong answer; base wrong=19/30 → 1 decohered, 0 no-boxed, 18 committed to a coherent wrong `\boxed{}`. Meta GRPO on OOD hard problems loops verify/redirect/epistemic patterns infinitely → no commit → token exhaustion → decoherence. Base commits fast (often wrong, but converges). This is a fundamental training collapse, not a budget problem.
+12. **6 H200 nodes available**: `node-recovery-h200-0415` with 6 jobs running
+13. **[NEW 2026-04-16] 16k re-eval**: base 77.0% (+1.1pp), meta 81.65% (+1.8pp). AIME gap persists (13.3% vs 36.7%) — confirmed NOT truncation, confirmed decoherence/no-commit. See `results/aime_failure_analysis_16k/aime_failure_modes.json`: meta wrong=26/30 → 13 decohered into LaTeX gibberish, 12 ran out of tokens without `\boxed{}`, only 1 committed to a coherent wrong answer; base wrong=19/30 → 1 decohered, 0 no-boxed, 18 committed to a coherent wrong `\boxed{}`. Meta GRPO on OOD hard problems loops verify/redirect/epistemic patterns infinitely → no commit → token exhaustion → decoherence. Base commits fast (often wrong, but converges). This is a fundamental training collapse, not a budget problem.
 
 ### Executive Summary
 
@@ -122,8 +122,9 @@ claim-bearing contract는 본 섹션이 우선한다.
 **Track B — Reward Redesign Smoke (side-evidence only; runs only when mainline node window is free)**
 1. Fix calibration reward to strict wrapped-only proper scoring
 2. Add explicit meta-structure preservation reward so RL cannot collapse wrapped controller state into free text
-3. Keep reward smoke isolated from claim-bearing self-distill tables
-4. Record the exact reward entrypoint (`compute_score_e21r_v3_smoke`) and treat it as side-evidence until rerun cleanly
+3. Add `meta_commit_shape` so RL can directly penalize no-boxed / repeated-meta / decoherence-like failures found in AIME
+4. Keep reward smoke isolated from claim-bearing self-distill tables
+5. Record the exact reward entrypoint (`compute_score_e21r_v3_smoke` or `compute_score_e21r_v4_smoke`) and treat it as side-evidence until rerun cleanly
 
 Reward redesign status (2026-04-15, local code patch in progress):
 1. `outcome_calibration_reward` should use strict wrapped blocks only, not free-text fallback
@@ -194,6 +195,10 @@ The intended dense objective is:
    - `scripts/analyze_self_distill_eval.py`
    - OOD and controller-retention deltas vs strict SFT baselines
 6. only after `E1/E2/E3` are saved, run RL smoke and side-evidence extensions
+7. additive RL comparison lane:
+   - historical anchor: `scripts/launch_e21_vs_base_matched_0410.sh` with `compute_score_e21r_v2`
+   - new smoke lane: `scripts/launch_e21r_v4_commit_shape_0416.sh` with `compute_score_e21r_v4_smoke`
+   - do not overwrite or relabel historical `E21R-v2` outputs
 
 ## 1. Research Contract
 
@@ -925,7 +930,7 @@ RQ3-A/B에서 얻은 successful repaired trace를 모으면,
 1. 이 lane은 RQ3의 확장 연구축이며, RQ1/RQ2의 mainline claim과 분리한다
 2. retrieval/search가 성공해도 distill 이후 재현되지 않으면 training signal로서의 가치는 약하다
 
-#### RQ3-D. Epistemic Self-Distillation (priority side branch after RQ2)
+#### RQ3-D. Epistemic Self-Distillation (current claim-bearing mainline after RQ2)
 
 **의도**
 
@@ -963,18 +968,25 @@ immediate claim-bearing 비교는 `strict_base_sft`와 `strict_meta_sft`에서 �
    - 이 단계는 claim-bearing lane이며 synthetic meta 주입을 금지한다
 3. `P3`: score extension (`correct_then_meta`)
    - correctness가 같은 후보 집합 내부에서만 `meta_commit_quality`로 rerank한다
-   - 이 score는 wrapped meta, diagnosis, study_need, boxed-after-meta, post-meta efficiency, decoherence-like penalty를 사용한다
+   - 이 score는 wrapped meta, diagnosis, study_need, boxed-after-meta, post-meta efficiency, single-meta bonus를 보상한다
+   - no-boxed, repeated-meta loop, post-boxed drift, delimiter imbalance, repeated-tail 같은 decoherence proxy는 패널티로 준다
    - 오답 candidate를 meta-rich하다는 이유로 승격시키는 것은 금지한다
 4. `P4`: meta-only KL extension
    - teacher top-k target을 수집하고, `<|meta|> ... <|/meta|>` span에만 dense KL을 건다
+   - row-level `meta_commit_quality`와 teacher entropy profile을 이용해 불안정한 teacher row는 KL 가중치를 낮춘다
    - full-trace KL은 이 단계에서 금지한다
 5. `P5`: RLSD-lite extension
    - direction은 verifiable outcome/controller reward가 맡고
    - magnitude/retention은 meta-only KL이 맡는다
+   - smoke reward는 `meta_commit_shape`를 추가해 no-boxed / decoherence / repeated-meta loop를 직접 패널티화한다
    - privileged teacher를 쓰더라도 update 대상은 meta span과 post-meta recovery span으로 제한한다
 6. `P6`: side-evidence `sdpo_regen` / retrieval-conditioned lane
    - privileged teacher feedback, retrieval provenance, `study_need`-conditioned retry를 저장한다
    - 이 lane은 claim-bearing 비교와 분리된 side-evidence lane이다
+   - fail-closed guardrail: selected regenerated teacher가 incorrect이면 parquet / teacher-topk / KL 단계로 넘기지 않는다
+   - retrieval-conditioned claim은 explicit example bank가 있을 때만 허용한다. warning-only fallback은 valid RAG로 간주하지 않는다
+   - runnable full-loop entrypoint: `scripts/run_rq3_sdpo_regen_roundtrip.sh`
+   - this helper can optionally build teacher top-k targets and generate a launch-ready SFT config without mutating historical checkpoints
 
 즉 immediate mainline은
 `strict paired SFT -> question_only_best_of_n -> correctness_only SFT readout`
@@ -986,7 +998,6 @@ immediate claim-bearing 비교는 `strict_base_sft`와 `strict_meta_sft`에서 �
 
 정답 trace만을 모방하는 naive self-distill은 in-domain에서는 답을 더 짧고 confident하게 만들 수 있지만,
 hard / OOD 문제에서는 uncertainty expression과 recovery behavior를 억누를 수 있다.
-반대로 self-distill teacher를 같은 정답 후보 집합 내부에서 `meta transition quality`로 고르면,
 반대로 self-distill teacher를 같은 정답 후보 집합 내부에서 `meta_commit_quality`로 고르면,
 answer trace만이 아니라 epistemic control pattern도 더 잘 보존할 수 있다.
 그 다음 dense token objective를 `<|meta|>` span에만 제한하면,
@@ -1206,8 +1217,8 @@ Other long-lived AMLT holders are outside the mainline scheduler.
    c. Priority 3: Subgoal data rebuild (4b-C) — if execution quality is data-limited
 6. Defer E21S (stepwise dense reward) until redirect content quality is solved
 7. Keep E21M and MCTS-lite in Phase 5 side-evidence until RQ2 paired readout is complete
-8. Start `RQ3-D1 naive self-distill collapse check` immediately after RQ2 paired readout
-9. Only start `RQ3-D2 epistemic-preserving self-distill` after D1 collapse analysis is saved
+8. Start `RQ3-D0 question-only correctness-only self-distill baseline` immediately after RQ2 paired readout
+9. Only start `RQ3-D1 correct_then_meta` and `RQ3-D2 meta-only KL` after the D0 baseline analysis is saved
 10. Push all checkpoints to HF every 3 hours (automated)
 11. Experiment report: results/metacot_v8_experiment_report.md
 

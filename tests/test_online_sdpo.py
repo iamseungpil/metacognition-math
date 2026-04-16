@@ -75,6 +75,7 @@ def test_write_online_outputs_claim_bearing_tracks_selector_contract(tmp_path):
         claim_bearing=True,
     )
     assert payload["dataset_mode"] == "epistemic"
+    assert payload["evidence_class"] == "side_evidence"
     assert payload["claim_bearing"] is True
     assert payload["num_dataset_rows"] == 1
     summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
@@ -146,3 +147,26 @@ def test_write_online_outputs_claim_bearing_refuses_empty_dataset(tmp_path):
             mode="epistemic",
             claim_bearing=True,
         )
+
+
+def test_write_online_outputs_drops_incorrect_selected_teacher(tmp_path):
+    rows = [
+        {
+            "question": "Solve x+3=7.",
+            "gold_answer": "4",
+            "generation_mode": "question_only_best_of_n",
+            "selected_completion": "Wrong route. \\boxed{5}",
+            "selected_judgment": {"is_correct": False},
+            "repair_candidates": [{"candidate_id": "sample_0"}],
+            "selector": {"selected_candidate_id": "sample_0", "selected_score": 0.1},
+        }
+    ]
+    payload = write_online_sdpo_outputs(
+        rows=rows,
+        output_dir=tmp_path,
+        source_tag="online_question_only_best_of_n",
+        mode="naive",
+        claim_bearing=False,
+    )
+    assert payload["num_rollouts"] == 1
+    assert payload["num_dataset_rows"] == 0

@@ -54,6 +54,43 @@ RL:
 4. `src/training/verl_gdpo.py`
 5. `scripts/verify_mainline_alignment.py`
 
+RQ3 self-distill mainline (current claim-bearing next stage):
+
+Ladder:
+
+1. `question_only_best_of_n`
+2. `correctness_only`
+3. `correct_then_meta`
+4. `meta_only KL`
+
+1. `scripts/run_self_distill_roundtrip.sh`
+2. `scripts/run_self_distill_sft_h200.sh`
+3. `scripts/build_teacher_topk_targets.py`
+4. `src/training/self_distill/online.py`
+5. `src/training/self_distill/teacher_query.py`
+6. `src/training/meta_quality.py`
+7. `configs/sft_self_distill_base_qonly_naive_h200_4gpu.yaml`
+8. `configs/sft_self_distill_meta_qonly_epistemic_h200_4gpu.yaml`
+9. `configs/sft_self_distill_meta_qonly_scored_h200_4gpu.yaml`
+10. `configs/sft_self_distill_meta_qonly_epistemic_meta_kl_h200_4gpu.yaml`
+
+Additive side-evidence RL smoke:
+
+1. `scripts/launch_e21r_v4_commit_shape_0416.sh`
+2. `src/training/verl_reward.py::compute_score_e21r_v4_smoke`
+
+Feedback-conditioned side-evidence full loop:
+
+1. `scripts/run_rq3_sdpo_regen_roundtrip.sh`
+2. `scripts/prepare_self_distill_sft_config.py`
+3. `src/training/self_distill/pipeline.py`
+
+Guardrails:
+
+1. `sdpo_regen` is side-evidence only and must not be marked claim-bearing
+2. incorrect selected teachers are dropped before parquet / teacher-topk / KL
+3. retrieval-conditioned runs require an explicit example bank; warning-only fallback is not considered valid RAG
+
 Eval / analysis:
 
 1. `src/eval/eval_hf.py`
@@ -65,6 +102,7 @@ Eval / analysis:
 1. `results/eval_v8_meta_inside_strict_sft/`
 2. `results/eval_v8_base_matched_strict_sft/`
 3. `results/strict_pair_analysis_repro_2026_04_12/`
+4. `results/self_distill/` (RQ3 mainline outputs as they are generated)
 
 ## Historical / Side-Evidence Areas
 

@@ -22,3 +22,8 @@ teacher_kl:
   study_need_weight: 0.0
   recovery_weight: 0.0
   verify_weight: 0.0
+  row_quality_scaling: true
+  entropy_beta: 0.35
+  entropy_weight_floor: 0.70
+  entropy_weight_ceil: 1.05
+  entropy_penalty_strength: 0.35

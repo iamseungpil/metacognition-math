@@ -228,6 +228,83 @@ def check_analysis_artifacts(contract: dict, errors: list[str]) -> None:
         emit(payload.get("rows") == 1560, "paired behavior report rows = 1560", errors)
 
 
+def check_self_distill_contract(contract: dict, errors: list[str]) -> None:
+    print("\n## Self-Distill Next")
+    sd = contract.get("self_distill_next")
+    if not sd:
+        emit(False, "self_distill_next is missing from contract", errors)
+        return
+
+    shared = sd.get("shared", {})
+    verify_file_exists(shared.get("launcher_roundtrip", ""), errors)
+    verify_file_exists(shared.get("launcher_sft_h200", ""), errors)
+    verify_file_exists(shared.get("teacher_topk_builder", ""), errors)
+
+    emit(sd.get("artifact_mode") == "question_only_best_of_n", "self-distill artifact_mode=question_only_best_of_n", errors)
+    emit(
+        sd.get("selector_ladder") == ["correctness_only", "correct_then_meta", "meta_only_kl"],
+        "self-distill selector ladder matches D0/D1/D2",
+        errors,
+    )
+    emit(shared.get("repair_candidates") == 4, "self-distill repair_candidates=4", errors)
+    emit(shared.get("max_length") == 4096, "self-distill max_length=4096", errors)
+    emit(shared.get("synthetic_meta_injected_rate_must_equal") == 0, "self-distill synthetic_meta_injected_rate_must_equal=0", errors)
+
+    for lane in ["base", "meta"]:
+        lane_cfg = sd.get(lane, {})
+        if lane == "base":
+            verify_file_exists(lane_cfg.get("sft_config_h200", ""), errors)
+        else:
+            verify_file_exists(lane_cfg.get("sft_config_h200", ""), errors)
+            verify_file_exists(lane_cfg.get("scored_config_h200", ""), errors)
+            verify_file_exists(lane_cfg.get("meta_kl_config_h200", ""), errors)
+
+    plan_text = (ROOT / contract["plan_doc"]).read_text(encoding="utf-8")
+    registry_text = (ROOT / "docs/mainline_registry_2026_04_13.md").read_text(encoding="utf-8")
+    for needle in [
+        "question_only_best_of_n",
+        "correct_then_meta",
+        "meta_only KL",
+        "compute_score_e21r_v4_smoke",
+    ]:
+        assert_contains(plan_text, needle, f"plan mentions {needle}", errors)
+        assert_contains(registry_text, needle, f"registry mentions {needle}", errors)
+
+
+def check_side_evidence_smoke(contract: dict, errors: list[str]) -> None:
+    print("\n## Side-Evidence RL Smoke")
+    smoke = contract.get("side_evidence_rl_smoke")
+    if not smoke:
+        emit(False, "side_evidence_rl_smoke is missing from contract", errors)
+        return
+
+    launcher_path = verify_file_exists(smoke.get("launcher", ""), errors)
+    if launcher_path.exists():
+        text = launcher_path.read_text(encoding="utf-8")
+        assert_contains(text, smoke.get("reward_name", ""), "side-evidence launcher uses configured reward name", errors)
+    emit(smoke.get("evidence_class") == "side_evidence", "side-evidence RL smoke is labeled side_evidence", errors)
+    emit(bool(smoke.get("must_not_overwrite_historical")), "side-evidence RL smoke preserves historical checkpoint path", errors)
+
+
+def check_side_evidence_sdpo_regen(contract: dict, errors: list[str]) -> None:
+    print("\n## Side-Evidence SDPO Regen")
+    lane = contract.get("side_evidence_sdpo_regen")
+    if not lane:
+        emit(False, "side_evidence_sdpo_regen is missing from contract", errors)
+        return
+
+    verify_file_exists(lane.get("launcher_roundtrip", ""), errors)
+    generate_path = verify_file_exists(lane.get("launcher_generate", ""), errors)
+    verify_file_exists(lane.get("teacher_topk_builder", ""), errors)
+    verify_file_exists(lane.get("config_generator", ""), errors)
+    emit(lane.get("dataset_mode") == "sdpo_regen", "sdpo_regen contract dataset_mode=sdpo_regen", errors)
+    emit(lane.get("evidence_class") == "side_evidence", "sdpo_regen lane is labeled side_evidence", errors)
+    emit(bool(lane.get("must_not_be_claim_bearing")), "sdpo_regen lane must_not_be_claim_bearing=true", errors)
+    if generate_path.exists():
+        text = generate_path.read_text(encoding="utf-8")
+        assert_contains(text, "--claim-bearing is only allowed for question_only_best_of_n", "sdpo_regen launcher rejects claim-bearing side-evidence modes", errors)
+
+
 def main() -> int:
     contract = load_yaml(CONTRACT_PATH)
     errors: list[str] = []
@@ -239,6 +316,9 @@ def main() -> int:
     check_rl_launcher(contract, errors)
     check_docs(contract, errors)
     check_analysis_artifacts(contract, errors)
+    check_self_distill_contract(contract, errors)
+    check_side_evidence_smoke(contract, errors)
+    check_side_evidence_sdpo_regen(contract, errors)
 
     print("\n## Verdict")
     if errors:

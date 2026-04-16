@@ -24,6 +24,7 @@ from src.training.self_distill.online import (
     write_online_sdpo_outputs,
 )
 from src.training.self_distill import SUPPORTED_SELF_DISTILL_MODES
+from src.training.self_distill.runtime_tokenizer import prepare_runtime_tokenizer_dir
 
 
 def main() -> None:
@@ -72,11 +73,20 @@ def main() -> None:
     parser.add_argument("--no_resume", action="store_true")
     args = parser.parse_args()
 
+    if args.claim_bearing and args.mode != "question_only_best_of_n":
+        raise SystemExit("--claim-bearing is only allowed for question_only_best_of_n. side-evidence modes stay non-claim-bearing.")
+
     print(f"Loading vLLM: {args.model_path} (tp={args.tp_size})")
     from vllm import LLM
 
+    tokenizer_path, tokenizer_mode = prepare_runtime_tokenizer_dir(args.model_path, args.output_dir)
+    if tokenizer_path is not None:
+        print(f"Using sanitized runtime tokenizer: {tokenizer_path}")
+
     llm = LLM(
         model=args.model_path,
+        tokenizer=tokenizer_path,
+        tokenizer_mode=tokenizer_mode,
         tensor_parallel_size=args.tp_size,
         gpu_memory_utilization=args.gpu_memory_utilization,
         max_model_len=args.max_model_len,
@@ -122,6 +132,7 @@ def main() -> None:
             seed=args.seed,
             num_candidates=args.repair_candidates,
             selector_mode=selector_mode,
+            require_correct_teacher=True,
             chunk_size=args.chunk_size,
             resume=not args.no_resume,
         )
@@ -142,13 +153,31 @@ def main() -> None:
             repair_candidates=args.repair_candidates,
             retrieval_query_mode=args.retrieval_query_mode,
             selector_mode=selector_mode,
+            require_correct_teacher=True,
             chunk_size=args.chunk_size,
             resume=not args.no_resume,
         )
         source_tag = "online_fixed_k_repair"
         dataset_mode = args.dataset_mode if args.dataset_mode != "auto" else "epistemic"
     else:
-        rows = run_online_sdpo_rollouts()  # raises NotImplementedError
+        rows = run_online_sdpo_rollouts(
+            llm=llm,
+            tokenizer=tokenizer,
+            problems=problems,
+            output_dir=args.output_dir,
+            retriever=retriever,
+            max_new_tokens=args.max_new_tokens,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            seed=args.seed,
+            rag_top_k=args.rag_top_k,
+            repair_candidates=args.repair_candidates,
+            retrieval_query_mode=args.retrieval_query_mode,
+            selector_mode=selector_mode,
+            require_correct_teacher=True,
+            chunk_size=args.chunk_size,
+            resume=not args.no_resume,
+        )
         source_tag = "online_sdpo_regen"
         dataset_mode = args.dataset_mode if args.dataset_mode != "auto" else "sdpo_regen"
 

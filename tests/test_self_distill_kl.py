@@ -15,6 +15,11 @@ from src.training.self_distill.kl import (
     load_teacher_topk_payload,
     trim_teacher_payload,
 )
+from src.training.meta_quality import (
+    apply_entropy_weighting,
+    compute_teacher_kl_row_scale,
+    summarize_entropy_profile,
+)
 
 
 class DummyTokenizer:
@@ -158,3 +163,43 @@ def test_prepare_sft_dataset_meta_only_fails_closed_without_meta_spans(tmp_path)
                 "mask_mode": "meta_only",
             },
         )
+
+
+def test_compute_teacher_kl_row_scale_penalizes_bad_meta_rows():
+    row = {
+        "selection_meta_commit_quality": 0.2,
+        "teacher_no_boxed_penalty": 1.0,
+        "teacher_decoherence_penalty": 1.0,
+        "teacher_entropy_delta_post_vs_pre": 0.4,
+    }
+    scale = compute_teacher_kl_row_scale(row, entropy_penalty_strength=0.35)
+    assert 0.1 <= scale < 1.0
+
+
+def test_apply_entropy_weighting_downweights_high_entropy_positions():
+    weights = [1.0, 1.0, 0.0]
+    scaled = apply_entropy_weighting(
+        position_weights=weights,
+        entropy_values=[0.1, 1.0, 0.5],
+        beta=0.5,
+        floor=0.6,
+        ceil=1.0,
+    )
+    assert scaled[0] > scaled[1]
+    assert scaled[2] == 0.0
+
+
+def test_summarize_entropy_profile_reports_meta_and_post_regions():
+    tokenizer = DummyTokenizer()
+    assistant_text = (
+        "<|meta|> confidence: 0.31 study_need: factor the count <|/meta|> "
+        "Re-solve carefully and conclude \\boxed{4}"
+    )
+    entropy_values = [0.2] * len(assistant_text.split())
+    summary = summarize_entropy_profile(
+        tokenizer=tokenizer,
+        assistant_text=assistant_text,
+        entropy_values=entropy_values,
+    )
+    assert summary["teacher_entropy_mean"] is not None
+    assert summary["teacher_meta_entropy_mean"] is not None

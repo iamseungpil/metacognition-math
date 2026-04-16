@@ -1,0 +1,40 @@
+{
+  "num_rollouts": 1,
+  "num_dataset_rows": 1,
+  "num_sdpo_regen_rows": 1,
+  "dataset_mode": "sdpo_regen",
+  "evidence_class": "side_evidence",
+  "claim_bearing": false,
+  "trace_path": "results/rq3_online_sdpo_regen_roundtrip_smoke_fresh/online_sdpo_traces.jsonl",
+  "parquet_path": "results/rq3_online_sdpo_regen_roundtrip_smoke_fresh/online_sdpo_regen.parquet",
+  "summary": {
+    "rows": 1,
+    "meta_emission_rate": 1.0,
+    "avg_num_meta_blocks": 1.0,
+    "avg_confidence": 0.24,
+    "study_need_rate": 1.0,
+    "diagnosis_rate": 1.0,
+    "epistemic_rate": 0.0,
+    "feedback_available_rate": 1.0,
+    "synthetic_meta_injected_rate": 0.0,
+    "avg_candidate_count": 4.0,
+    "avg_completion_length_chars": 1316.0,
+    "sdpo_prompt_rate": 1.0
+  },
+  "skipped_count": 1,
+  "skipped_by_phase": {
+    "selected_incorrect": 1
+  },
+  "retrieval": {
+    "rows_with_retriever": 0,
+    "rows_with_retrieval_enabled": 0,
+    "rows_with_nonempty_retrieval": 0,
+    "retrieval_nonempty_rate": 0.0,
+    "requested_modes": [
+      "none"
+    ],
+    "used_modes": [
+      "none"
+    ]
+  }
+}

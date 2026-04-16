@@ -8,7 +8,8 @@ Supported paths:
 2. `fixed_k_repair`: side-evidence lane with root -> diagnosis/retrieval ->
    repair prompt -> K candidates -> selector.
 3. `sdpo_regen`: trigger-gated, feedback-conditioned side-evidence collection.
-   (Currently stubbed for vLLM; P4 lane — see `run_online_sdpo_rollouts`.)
+   This path performs a real two-phase root->feedback->regeneration rollout and
+   can optionally feed teacher top-k / meta-only KL preparation downstream.
 """
 from __future__ import annotations
 
@@ -18,7 +19,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
 from typing import Any
 
 import pandas as pd
@@ -36,9 +36,12 @@ from src.curriculum.rq3_pipeline import (
 )
 from src.metacot.prompt import META_END, META_START, parse_meta_blocks
 from src.training.self_distill.builders import (
+    build_sdpo_regen_user_prompt,
     build_self_distill_dataframe,
     summarize_self_distill_dataframe,
 )
+from src.training.self_distill.trace import NormalizedTeacherTrace
+from src.training.meta_quality import score_meta_commit_quality
 from src.training.rewards import (
     confidence_omission_floor,
     confidence_revision_reward_v2,
@@ -46,18 +49,6 @@ from src.training.rewards import (
     redirect_execution_reward_v2,
     verify_execution_reward_v2,
 )
-
-
-_WRAPPED_META_RE = re.compile(
-    rf"{re.escape(META_START)}(.*?){re.escape(META_END)}",
-    re.DOTALL | re.IGNORECASE,
-)
-_DIAGNOSIS_SIGNAL_RE = re.compile(
-    r"\b(route is weak|earlier route|diagnosis|missing|contradiction|unsupported|"
-    r"does not control|failed because|the issue is|the problem is)\b",
-    re.IGNORECASE,
-)
-_STUDY_NEED_RE = re.compile(r"study_need\s*:\s*(.+)", re.IGNORECASE)
 
 
 @dataclass
@@ -263,21 +254,21 @@ def _score_completion_for_selection(
         "redirect_execution": 0.30,
         "verify_execution": 0.15,
         "meta_floor": 0.15,
-        "meta_transition": 0.25,
+        "meta_commit_quality": 0.25,
     }
     payload = [{"content": completion}]
     ground_truth = [gold_answer]
-    meta_transition = _score_meta_transition_quality(completion)
+    meta_commit_quality = _score_meta_commit_quality(completion)
     components = {
         "correctness": correctness_reward(payload, ground_truth)[0],
         "confidence_revision": confidence_revision_reward_v2(payload, ground_truth)[0],
         "redirect_execution": redirect_execution_reward_v2(payload, ground_truth)[0],
         "verify_execution": verify_execution_reward_v2(payload, ground_truth)[0],
         "meta_floor": confidence_omission_floor(payload, ground_truth)[0],
-        "meta_transition": meta_transition["total"],
+        "meta_commit_quality": meta_commit_quality["total"],
     }
-    for key, value in meta_transition.items():
-        components[f"meta_transition_{key}"] = value
+    for key, value in meta_commit_quality.items():
+        components[f"meta_commit_quality_{key}"] = value
     total = 0.0
     for key, weight in active_weights.items():
         total += float(weight) * float(components.get(key, 0.0))
@@ -285,73 +276,12 @@ def _score_completion_for_selection(
     return components
 
 
-def _score_meta_transition_quality(completion: str) -> dict[str, float]:
-    text = str(completion or "").strip()
-    wrapped_blocks = list(_WRAPPED_META_RE.finditer(text))
-    parsed_wrapped = parse_meta_blocks(text, allow_free_text_fallback=False)
-    diagnosis_present = bool(_DIAGNOSIS_SIGNAL_RE.search(text))
-    study_need_present = bool(_STUDY_NEED_RE.search(text))
-    boxed_idx = text.rfind("\\boxed")
+def _score_meta_commit_quality(completion: str) -> dict[str, float]:
+    return score_meta_commit_quality(completion)
 
-    wrapped_meta_present = 1.0 if wrapped_blocks else 0.0
-    boxed_present = 1.0 if boxed_idx >= 0 else 0.0
-    boxed_after_meta = 0.0
-    post_meta_budget_efficiency = 0.0
-    repeated_meta_penalty = 0.0
-    overlong_post_meta_penalty = 0.0
-    epistemic_outside_meta_penalty = 0.0
-    diagnosis_score = 1.0 if diagnosis_present else 0.0
-    study_need_score = 1.0 if study_need_present else 0.0
 
-    if wrapped_blocks:
-        last_meta_end = wrapped_blocks[-1].end()
-        if boxed_idx > last_meta_end:
-            boxed_after_meta = 1.0
-            post_meta_chars = max(1, boxed_idx - last_meta_end)
-            post_meta_budget_efficiency = max(0.0, 1.0 - min(1.0, post_meta_chars / 1200.0))
-            if post_meta_chars > 2400:
-                overlong_post_meta_penalty = min(1.0, (post_meta_chars - 2400) / 2400.0)
-        elif boxed_present:
-            overlong_post_meta_penalty = 0.5
-        if len(wrapped_blocks) > 2:
-            repeated_meta_penalty = min(1.0, (len(wrapped_blocks) - 2) / 3.0)
-
-        outside_text = text
-        for match in reversed(wrapped_blocks):
-            outside_text = outside_text[:match.start()] + " " + outside_text[match.end():]
-        if re.search(r"\b(maybe|perhaps|probably|not sure|uncertain|i think)\b", outside_text, re.IGNORECASE):
-            epistemic_outside_meta_penalty = 0.5
-    else:
-        if re.search(r"\bconfidence\s*:\s*\d", text, re.IGNORECASE):
-            epistemic_outside_meta_penalty = 1.0
-
-    no_boxed_penalty = 0.0 if boxed_present else 1.0
-    confidence_present = 1.0 if parsed_wrapped.get("confidences") else 0.0
-    total = (
-        0.20 * wrapped_meta_present
-        + 0.12 * confidence_present
-        + 0.12 * diagnosis_score
-        + 0.12 * study_need_score
-        + 0.22 * boxed_after_meta
-        + 0.22 * post_meta_budget_efficiency
-        - 0.12 * repeated_meta_penalty
-        - 0.20 * no_boxed_penalty
-        - 0.15 * overlong_post_meta_penalty
-        - 0.10 * epistemic_outside_meta_penalty
-    )
-    return {
-        "total": float(total),
-        "wrapped_meta_present": wrapped_meta_present,
-        "confidence_present": confidence_present,
-        "diagnosis_present": diagnosis_score,
-        "study_need_present": study_need_score,
-        "boxed_after_meta": boxed_after_meta,
-        "post_meta_budget_efficiency": float(post_meta_budget_efficiency),
-        "repeated_meta_penalty": float(repeated_meta_penalty),
-        "no_boxed_penalty": float(no_boxed_penalty),
-        "overlong_post_meta_penalty": float(overlong_post_meta_penalty),
-        "epistemic_outside_meta_penalty": float(epistemic_outside_meta_penalty),
-    }
+def _is_correct_judgment(judgment: dict[str, Any] | None) -> bool:
+    return bool((judgment or {}).get("is_correct"))
 
 
 def _select_best_candidate(
@@ -389,7 +319,7 @@ def _select_best_candidate(
             scored,
             key=lambda row: (
                 bool((row.get("judgment") or {}).get("is_correct")),
-                float((row.get("selector_breakdown") or {}).get("meta_transition", 0.0)),
+                float((row.get("selector_breakdown") or {}).get("meta_commit_quality", 0.0)),
                 float(row["selection_score"]),
                 -len(str(row.get("completion", ""))),
             ),
@@ -487,15 +417,367 @@ def _retrieve_examples_for_fixed_k(
 
 
 def run_online_sdpo_rollouts(*args, **kwargs):
-    """SDPO-regen mode (P4 lane). Not implemented in vLLM path yet.
+    """Run feedback-conditioned regeneration with on-policy root attempts."""
+    return _run_online_sdpo_rollouts_impl(*args, **kwargs)
 
-    For triggered-retry logic, port the on-policy retry lane from
-    `rq3_pipeline.run_curriculum_retry_lane` using batched vLLM. This is a P4
-    lane and not blocking P1 (fixed_k_repair).
-    """
-    raise NotImplementedError(
-        "sdpo_regen vLLM path not implemented yet (P4 deferred). Use fixed_k_repair mode."
+
+def _build_sdpo_feedback_context(
+    *,
+    root_analysis: dict[str, Any],
+    root_judgment: dict[str, Any],
+    retrieved: list[dict[str, Any]],
+    retrieval_mode_used: str,
+) -> tuple[str, dict[str, Any]]:
+    evidence_items = []
+    for item in retrieved:
+        if not isinstance(item, dict):
+            continue
+        record = item.get("record")
+        evidence_items.append({
+            "question": str(getattr(record, "question", "")),
+            "source": str(getattr(record, "source", "")),
+            "score": item.get("score"),
+            "score_breakdown": item.get("score_breakdown", {}),
+        })
+
+    feedback_kind = "teacher_only_rag" if evidence_items else "teacher_feedback_only"
+    context = {
+        "lane": "sdpo_regen",
+        "retrieval_mode": retrieval_mode_used,
+        "evidence_items": evidence_items,
+        "failure_signals": {
+            "root_correct": bool(root_judgment.get("is_correct")),
+            "should_retrieve": bool(root_analysis.get("should_retrieve")),
+            "has_low_confidence": bool(root_analysis.get("has_low_confidence")),
+            "has_diagnosis": bool(root_analysis.get("has_diagnosis")),
+            "has_next_strategy": bool(root_analysis.get("has_next_strategy")),
+        },
+    }
+    return feedback_kind, context
+
+
+def _build_sdpo_regen_prompt(
+    *,
+    question: str,
+    gold_answer: str,
+    benchmark: str,
+    root_completion: str,
+    root_analysis: dict[str, Any],
+    feedback_kind: str,
+    feedback_context: dict[str, Any],
+) -> str:
+    trace = NormalizedTeacherTrace(
+        question=question,
+        teacher_completion="",
+        gold_answer=gold_answer,
+        benchmark=benchmark,
+        origin="sdpo_regen_prompt",
+        root_completion=root_completion,
+        diagnosis_text=str(root_analysis.get("diagnosis_text", "")).strip(),
+        study_need=str(root_analysis.get("study_need", "")).strip(),
+        intervention_summary="sdpo_regen",
+        teacher_feedback_kind=feedback_kind,
+        teacher_feedback_context=feedback_context,
     )
+    return build_sdpo_regen_user_prompt(trace)
+
+
+def _run_online_sdpo_rollouts_impl(
+    *,
+    llm,
+    tokenizer,
+    problems: list[OnlineSdpoProblem],
+    output_dir: str | Path,
+    retriever: TfidfExampleRetriever | None = None,
+    max_new_tokens: int = 1024,
+    temperature: float = 0.7,
+    top_p: float = 0.95,
+    seed: int = 42,
+    rag_top_k: int = 1,
+    repair_candidates: int = 4,
+    retrieval_query_mode: str = "analysis_or_question",
+    selector_mode: str = "reward_weighted",
+    selector_weights: dict[str, float] | None = None,
+    require_correct_teacher: bool = False,
+    chunk_size: int = 64,
+    resume: bool = True,
+) -> list[dict[str, Any]]:
+    from vllm import SamplingParams
+
+    outdir = Path(output_dir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    traces_path = outdir / "online_sdpo_traces.jsonl"
+
+    done_ids: set[str] = set()
+    existing_rows: list[dict[str, Any]] = []
+    if resume and traces_path.exists():
+        with traces_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                    pid = row.get("problem_id")
+                    if pid:
+                        done_ids.add(pid)
+                        existing_rows.append(row)
+                except json.JSONDecodeError:
+                    continue
+        _log(f"Resume: {len(done_ids)} problems already done; will skip.")
+
+    to_do = [p for p in problems if _stable_problem_id(p.benchmark, p.question) not in done_ids]
+    _log(
+        "To process: "
+        f"{len(to_do)} of {len(problems)} (chunk_size={chunk_size}, K={repair_candidates}, mode=sdpo_regen)"
+    )
+    if not to_do:
+        return existing_rows
+
+    handle = traces_path.open("a", encoding="utf-8")
+    new_rows: list[dict[str, Any]] = []
+    skipped_problems: list[dict[str, Any]] = []
+
+    try:
+        chunks = _chunks(to_do, chunk_size)
+        for chunk_i, chunk in enumerate(chunks):
+            _log(f"Chunk {chunk_i + 1}/{len(chunks)} ({len(chunk)} problems)")
+            root_prompts = [_render_chat_prompt(tokenizer, p.question) for p in chunk]
+            root_sampling = SamplingParams(
+                n=1,
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_new_tokens,
+                seed=seed,
+                skip_special_tokens=False,
+            )
+            t0 = datetime.now()
+            root_outputs = _safe_generate(llm, root_prompts, root_sampling)
+            _log(f"  Phase 1 root: {len(chunk)} prompts in {(datetime.now()-t0).total_seconds():.1f}s")
+
+            root_data: list[dict[str, Any]] = []
+            for p, root_prompt, root_out in zip(chunk, root_prompts, root_outputs):
+                pid = _stable_problem_id(p.benchmark, p.question)
+                if not root_out.outputs:
+                    skipped_problems.append({
+                        "problem_id": pid,
+                        "benchmark": p.benchmark,
+                        "question_preview": p.question[:80],
+                        "phase": "root",
+                        "reason": "no_outputs",
+                    })
+                    _log(f"  Skipping problem {pid[:8]}: root returned no outputs")
+                    continue
+
+                root_completion = root_out.outputs[0].text
+                root_completion_tokens = len(root_out.outputs[0].token_ids)
+                root_prompt_tokens = len(root_out.prompt_token_ids)
+                root_analysis = analyze_completion_for_rag(root_completion)
+                root_judgment = judge_completion(root_completion, p.gold_answer)
+                trigger_fired = bool(root_analysis.get("should_retrieve")) or not bool(root_judgment.get("is_correct"))
+                if not trigger_fired:
+                    skipped_problems.append({
+                        "problem_id": pid,
+                        "benchmark": p.benchmark,
+                        "question_preview": p.question[:80],
+                        "phase": "feedback_gate",
+                        "reason": "root_correct_without_trigger",
+                    })
+                    continue
+
+                retrieved, retrieval_mode_used = _retrieve_examples_for_fixed_k(
+                    question=p.question,
+                    root_analysis=root_analysis,
+                    retriever=retriever,
+                    rag_top_k=rag_top_k,
+                    retrieval_query_mode=retrieval_query_mode,
+                )
+                feedback_kind, feedback_context = _build_sdpo_feedback_context(
+                    root_analysis=root_analysis,
+                    root_judgment=root_judgment,
+                    retrieved=retrieved,
+                    retrieval_mode_used=retrieval_mode_used,
+                )
+                sdpo_prompt = _build_sdpo_regen_prompt(
+                    question=p.question,
+                    gold_answer=p.gold_answer,
+                    benchmark=p.benchmark,
+                    root_completion=_truncate_for_repair(root_completion),
+                    root_analysis=root_analysis,
+                    feedback_kind=feedback_kind,
+                    feedback_context=feedback_context,
+                )
+                root_data.append({
+                    "problem": p,
+                    "root_prompt": root_prompt,
+                    "root_prompt_tokens": root_prompt_tokens,
+                    "root_completion": root_completion,
+                    "root_completion_tokens": root_completion_tokens,
+                    "root_analysis": root_analysis,
+                    "root_judgment": root_judgment,
+                    "trigger_fired": trigger_fired,
+                    "retrieved": retrieved,
+                    "retrieval_mode_used": retrieval_mode_used,
+                    "selected_feedback_kind": feedback_kind,
+                    "selected_feedback_context": feedback_context,
+                    "sdpo_prompt": sdpo_prompt,
+                })
+
+            if not root_data:
+                _log(f"  Chunk {chunk_i + 1}: no eligible feedback-gated problems, skipping regen phase")
+                continue
+
+            sdpo_prompts = [_render_chat_prompt(tokenizer, d["sdpo_prompt"]) for d in root_data]
+            sdpo_sampling = SamplingParams(
+                n=repair_candidates,
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_new_tokens,
+                skip_special_tokens=False,
+            )
+            t0 = datetime.now()
+            regen_outputs = _safe_generate(llm, sdpo_prompts, sdpo_sampling)
+            _log(
+                f"  Phase 2 sdpo_regen: {len(root_data)} × {repair_candidates} candidates in "
+                f"{(datetime.now()-t0).total_seconds():.1f}s"
+            )
+
+            for d, regen_out in zip(root_data, regen_outputs):
+                pid = _stable_problem_id(d["problem"].benchmark, d["problem"].question)
+                if not regen_out.outputs:
+                    skipped_problems.append({
+                        "problem_id": pid,
+                        "benchmark": d["problem"].benchmark,
+                        "question_preview": d["problem"].question[:80],
+                        "phase": "sdpo_regen",
+                        "reason": "no_outputs",
+                    })
+                    _log(f"  Skipping problem {pid[:8]}: sdpo_regen returned no outputs")
+                    continue
+
+                candidates: list[dict[str, Any]] = []
+                for ci, cand in enumerate(regen_out.outputs):
+                    completion = cand.text
+                    analysis = analyze_completion_for_rag(completion)
+                    judgment = judge_completion(completion, d["problem"].gold_answer)
+                    meta_transition = evaluate_meta_transition(
+                        root_analysis=d["root_analysis"],
+                        retry_completion=completion,
+                        retry_analysis=analysis,
+                        retry_judgment=judgment,
+                    )
+                    candidates.append({
+                        "candidate_id": f"regen_{ci}",
+                        "prompt": d["sdpo_prompt"],
+                        "prompt_tokens": len(regen_out.prompt_token_ids),
+                        "completion_tokens": len(cand.token_ids),
+                        "completion": completion,
+                        "analysis": analysis,
+                        "judgment": judgment,
+                        "meta_transition": meta_transition,
+                    })
+
+                try:
+                    selector = _select_best_candidate(
+                        candidates,
+                        d["problem"].gold_answer,
+                        selector_mode=selector_mode,
+                        weights=selector_weights,
+                    )
+                except ValueError as exc:
+                    skipped_problems.append({
+                        "problem_id": pid,
+                        "benchmark": d["problem"].benchmark,
+                        "question_preview": d["problem"].question[:80],
+                        "phase": "selector",
+                        "reason": f"selector_failed: {exc}",
+                    })
+                    _log(f"  Selector failed for problem {pid[:8]}: {exc}")
+                    continue
+
+                selected = selector["selected"]
+                if require_correct_teacher and not _is_correct_judgment(selected.get("judgment")):
+                    skipped_problems.append({
+                        "problem_id": pid,
+                        "benchmark": d["problem"].benchmark,
+                        "question_preview": d["problem"].question[:80],
+                        "phase": "selected_incorrect",
+                        "reason": "best_regen_candidate_incorrect",
+                    })
+                    _log(f"  Skipping problem {pid[:8]}: selected sdpo_regen teacher is incorrect")
+                    continue
+                row = {
+                    "problem_id": pid,
+                    "question": d["problem"].question,
+                    "gold_answer": d["problem"].gold_answer,
+                    "benchmark": d["problem"].benchmark,
+                    "metadata": d["problem"].metadata or {},
+                    "generation_mode": "sdpo_regen",
+                    "evidence_class": "side_evidence",
+                    "source": "online_sdpo_regen",
+                    "root_prompt": d["root_prompt"],
+                    "root_prompt_tokens": d["root_prompt_tokens"],
+                    "root_completion_tokens": d["root_completion_tokens"],
+                    "root_completion": d["root_completion"],
+                    "root_analysis": d["root_analysis"],
+                    "root_judgment": d["root_judgment"],
+                    "trigger_fired": d["trigger_fired"],
+                    "repair_prompt": d["sdpo_prompt"],
+                    "repair_budget": int(max(1, repair_candidates)),
+                    "retrieval_mode_requested": retrieval_query_mode,
+                    "retrieval_mode_used": d["retrieval_mode_used"],
+                    "retrieved": [
+                        {
+                            "score": item["score"],
+                            "score_breakdown": item.get("score_breakdown", {}),
+                            "question": item["record"].question,
+                            "source": item["record"].source,
+                            "answer": item["record"].answer,
+                        }
+                        for item in d["retrieved"]
+                    ],
+                    "repair_candidates": selector["ranked_candidates"],
+                    "selector": {
+                        "selected_candidate_id": selector["selected_candidate_id"],
+                        "selected_score": selector["selected_score"],
+                        "selected_breakdown": selector["selected_breakdown"],
+                        "score_margin": selector["score_margin"],
+                        "selector_mode": selector["selector_mode"],
+                        "weights": selector_weights or {
+                            "correctness": 1.0,
+                            "confidence_revision": 0.35,
+                            "redirect_execution": 0.30,
+                            "verify_execution": 0.15,
+                            "meta_floor": 0.15,
+                            "meta_commit_quality": 0.25,
+                        },
+                    },
+                    "selected_completion": selected["completion"],
+                    "selected_judgment": selected["judgment"],
+                    "selected_analysis": selected["analysis"],
+                    "selected_meta_transition": selected["meta_transition"],
+                    "selected_prompt_kind": "sdpo_regen",
+                    "selected_feedback_kind": d["selected_feedback_kind"],
+                    "selected_feedback_context": d["selected_feedback_context"],
+                    "retriever_active": retriever is not None,
+                    "retrieval_enabled": rag_top_k > 0 and retrieval_query_mode != "none",
+                    "retrieval_nonempty": bool(d["retrieved"]),
+                }
+                _append_trace(handle, row)
+                new_rows.append(row)
+
+            _log(f"  Chunk {chunk_i + 1} done: {len(new_rows)} new rows total")
+    finally:
+        handle.close()
+
+    if skipped_problems:
+        skipped_path = outdir / "skipped_problems.jsonl"
+        with skipped_path.open("a", encoding="utf-8") as sh:
+            for skip in skipped_problems:
+                sh.write(json.dumps(skip, ensure_ascii=False) + "\n")
+        _log(f"Skipped {len(skipped_problems)} problems (see {skipped_path})")
+
+    return existing_rows + new_rows
 
 
 def run_online_question_only_best_of_n_rollouts(
@@ -511,6 +793,7 @@ def run_online_question_only_best_of_n_rollouts(
     num_candidates: int = 4,
     selector_mode: str = "correctness_only",
     selector_weights: dict[str, float] | None = None,
+    require_correct_teacher: bool = False,
     chunk_size: int = 64,
     resume: bool = True,
 ) -> list[dict[str, Any]]:
@@ -618,6 +901,16 @@ def run_online_question_only_best_of_n_rollouts(
                     continue
 
                 selected = selector["selected"]
+                if require_correct_teacher and not _is_correct_judgment(selected.get("judgment")):
+                    skipped_problems.append({
+                        "problem_id": pid,
+                        "benchmark": p.benchmark,
+                        "question_preview": p.question[:80],
+                        "phase": "selected_incorrect",
+                        "reason": "best_question_only_candidate_incorrect",
+                    })
+                    _log(f"  Skipping problem {pid[:8]}: selected question-only teacher is incorrect")
+                    continue
                 row = {
                     "problem_id": pid,
                     "question": p.question,
@@ -625,6 +918,7 @@ def run_online_question_only_best_of_n_rollouts(
                     "benchmark": p.benchmark,
                     "metadata": p.metadata or {},
                     "generation_mode": "question_only_best_of_n",
+                    "evidence_class": "mainline",
                     "source": "online_question_only_best_of_n",
                     "root_prompt": prompt_text,
                     "root_prompt_tokens": len(output.prompt_token_ids),
@@ -650,7 +944,7 @@ def run_online_question_only_best_of_n_rollouts(
                             "redirect_execution": 0.30,
                             "verify_execution": 0.15,
                             "meta_floor": 0.15,
-                            "meta_transition": 0.25,
+                            "meta_commit_quality": 0.25,
                         },
                     },
                     "selected_completion": selected["completion"],
@@ -697,6 +991,7 @@ def run_online_fixed_k_repair_rollouts(
     retrieval_query_mode: str = "question_only",
     selector_mode: str = "reward_weighted",
     selector_weights: dict[str, float] | None = None,
+    require_correct_teacher: bool = False,
     chunk_size: int = 64,
     resume: bool = True,
 ) -> list[dict[str, Any]]:
@@ -891,6 +1186,17 @@ def run_online_fixed_k_repair_rollouts(
                     _log(f"  Selector failed for problem {pid[:8]}: {exc}")
                     continue
                 selected = selector["selected"]
+                pid = _stable_problem_id(d["problem"].benchmark, d["problem"].question)
+                if require_correct_teacher and not _is_correct_judgment(selected.get("judgment")):
+                    skipped_problems.append({
+                        "problem_id": pid,
+                        "benchmark": d["problem"].benchmark,
+                        "question_preview": d["problem"].question[:80],
+                        "phase": "selected_incorrect",
+                        "reason": "best_fixed_k_candidate_incorrect",
+                    })
+                    _log(f"  Skipping problem {pid[:8]}: selected fixed_k teacher is incorrect")
+                    continue
 
                 selected_feedback_context: dict[str, Any] = {}
                 selected_feedback_kind = ""
@@ -911,12 +1217,13 @@ def run_online_fixed_k_repair_rollouts(
                     }
 
                 row = {
-                    "problem_id": _stable_problem_id(d["problem"].benchmark, d["problem"].question),
+                    "problem_id": pid,
                     "question": d["problem"].question,
                     "gold_answer": d["problem"].gold_answer,
                     "benchmark": d["problem"].benchmark,
                     "metadata": d["problem"].metadata or {},
                     "generation_mode": "fixed_k_repair",
+                    "evidence_class": "side_evidence",
                     "source": "online_fixed_k_repair",
                     "root_prompt": d["root_prompt"],
                     "root_prompt_tokens": d["root_prompt_tokens"],
@@ -951,7 +1258,7 @@ def run_online_fixed_k_repair_rollouts(
                             "redirect_execution": 0.30,
                             "verify_execution": 0.15,
                             "meta_floor": 0.15,
-                            "meta_transition": 0.25,
+                            "meta_commit_quality": 0.25,
                         },
                     },
                     "selected_completion": selected["completion"],
@@ -1018,6 +1325,7 @@ def write_online_sdpo_outputs(
         )
 
     summary = summarize_self_distill_dataframe(df)
+    evidence_class = "mainline" if mode == "epistemic" and source_tag == "online_question_only_best_of_n" else "side_evidence"
 
     # Reconcile skipped-problem log (written by run_online_fixed_k_repair_rollouts)
     # into the summary so downstream analyses see attempt vs success counts.
@@ -1043,6 +1351,7 @@ def write_online_sdpo_outputs(
         "num_dataset_rows": int(len(df)),
         "num_sdpo_regen_rows": int(len(df)),
         "dataset_mode": mode,
+        "evidence_class": evidence_class,
         "claim_bearing": bool(claim_bearing),
         "trace_path": str(traces_path),
         "parquet_path": str(parquet_path) if not df.empty else "",

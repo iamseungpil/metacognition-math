@@ -224,6 +224,45 @@ def test_feedback_conditioned_mode_uses_feedback_in_prompt():
     assert "Correctly solve the original question." in built.iloc[0]["teacher_prompt_text"]
 
 
+def test_sdpo_regen_skips_incorrect_selected_teacher_rows():
+    rows = [
+        {
+            "question": "Solve x+3=7.",
+            "gold_answer": "4",
+            "generation_mode": "sdpo_regen",
+            "root_completion": "I guessed \\boxed{5}",
+            "root_analysis": {"diagnosis_text": "Guessing is weak.", "study_need": "direct isolation"},
+            "selected_completion": "<|meta|>\nconfidence: 0.62\n<|/meta|>\nWrong route. \\boxed{5}",
+            "selected_judgment": {"is_correct": False},
+            "selected_feedback_kind": "teacher_feedback_only",
+            "selected_feedback_context": {"lane": "sdpo_regen", "evidence_items": []},
+            "repair_candidates": [{"candidate_id": "regen_0"}],
+            "selector": {"selected_candidate_id": "regen_0", "selected_score": 0.2},
+        }
+    ]
+    built = build_self_distill_dataframe(rows, mode="sdpo_regen")
+    assert built.empty
+
+
+def test_claim_bearing_sdpo_regen_is_rejected():
+    rows = [
+        {
+            "question": "Solve x+7=12.",
+            "gold_answer": "5",
+            "benchmark": "aime2024",
+            "curriculum_retry": {
+                "retry_completion": "Subtract 7 from both sides, so x=5. \\boxed{5}",
+                "retry_judgment": {"is_correct": True},
+                "retrieved": [{"question": "Solve x+4=9.", "source": "stable_seed_library", "score": 0.9}],
+            },
+            "root_completion": "I guessed \\boxed{4}",
+            "root_analysis": {"diagnosis_text": "Guessing is weak.", "study_need": "direct isolation"},
+        }
+    ]
+    built = build_self_distill_dataframe(rows, mode="sdpo_regen", claim_bearing=True)
+    assert built.empty
+
+
 def test_feedback_conditioned_messages_require_feedback():
     trace = normalize_teacher_row(
         {

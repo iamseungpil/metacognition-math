@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Build OPD-style teacher top-k targets from an sdpo_regen/self-distill parquet."""
+"""Build teacher top-k targets from a self-distill parquet.
+
+Mainline use:
+  - `question_only_best_of_n` claim-bearing meta lane before `meta_only` KL
+
+Side-evidence use:
+  - `fixed_k_repair`
+  - `sdpo_regen`
+"""
 from __future__ import annotations
 
 import argparse
@@ -18,6 +26,8 @@ from src.training.self_distill.teacher_query import (
     build_teacher_query_dataset,
     query_teacher_topk_for_messages,
 )
+from src.training.self_distill.runtime_tokenizer import prepare_runtime_tokenizer_dir
+from src.training.self_distill.trace import read_table
 
 
 def main() -> None:
@@ -41,8 +51,9 @@ def main() -> None:
     if use_cuda and args.device_map == "auto":
         model_load_kwargs["device_map"] = "auto"
 
+    tokenizer_path, _ = prepare_runtime_tokenizer_dir(args.teacher_model_path, Path(args.output).parent)
     model = AutoModelForCausalLM.from_pretrained(args.teacher_model_path, **model_load_kwargs)
-    tokenizer = AutoTokenizer.from_pretrained(args.teacher_model_path, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path or args.teacher_model_path, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     if not (use_cuda and args.device_map == "auto"):
@@ -58,6 +69,7 @@ def main() -> None:
             max_length=args.max_length,
         )
 
+    input_rows = len(read_table(args.input))
     df = build_teacher_query_dataset(
         args.input,
         query_fn=_query,
@@ -72,7 +84,9 @@ def main() -> None:
     df.to_parquet(output_path, index=False)
 
     summary = {
+        "input_rows": int(input_rows),
         "rows": int(len(df)),
+        "skipped_rows": int(max(0, int(input_rows) - int(len(df)))),
         "teacher_query_top_k": int(args.top_k),
         "avg_teacher_num_positions": float(df["teacher_num_positions"].mean()),
         "avg_teacher_completion_len_tokens": float(df["teacher_completion_len_tokens"].mean()),

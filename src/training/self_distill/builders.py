@@ -73,7 +73,7 @@ SELF_DISTILL_COLUMNS = [
     "selected_candidate_id",
     "selector_mode",
     "selection_score_total",
-    "selection_meta_transition_score",
+    "selection_meta_commit_quality",
     "selection_margin",
     "selection_score_breakdown_json",
     "synthetic_meta_injected",
@@ -311,6 +311,8 @@ def _build_messages_for_mode(
     claim_bearing: bool = False,
 ) -> tuple[list[dict[str, str]], str, str, str, bool]:
     mode = canonical_mode(mode)
+    if claim_bearing and mode == MODE_SDPO_REGEN:
+        raise ValueError("sdpo_regen is side-evidence only and cannot be marked claim-bearing")
     if mode == MODE_NAIVE:
         completion = build_naive_teacher_completion(trace)
         messages = [
@@ -349,6 +351,9 @@ def build_self_distill_dataframe(
 
     built_rows: list[dict[str, Any]] = []
     for raw_row in rows:
+        selected_judgment = raw_row.get("selected_judgment") or {}
+        if raw_row.get("selected_completion") and selected_judgment and not bool(selected_judgment.get("is_correct")):
+            continue
         trace = normalize_teacher_row(raw_row)
         if trace is None:
             continue
@@ -397,7 +402,7 @@ def build_self_distill_dataframe(
             "selected_candidate_id": trace.selected_candidate_id,
             "selector_mode": trace.selector_mode,
             "selection_score_total": trace.selection_score_total,
-            "selection_meta_transition_score": trace.selection_meta_transition_score,
+            "selection_meta_commit_quality": trace.selection_meta_commit_quality,
             "selection_margin": trace.selection_margin,
             "selection_score_breakdown_json": json.dumps(trace.selection_score_breakdown or {}, ensure_ascii=False),
             **metrics,

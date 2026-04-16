@@ -50,6 +50,11 @@ def _load_teacher_kl_config(config: dict[str, Any]) -> dict[str, Any]:
     teacher.setdefault("study_need_weight", 1.4)
     teacher.setdefault("recovery_weight", 0.7)
     teacher.setdefault("verify_weight", 1.1)
+    teacher.setdefault("row_quality_scaling", True)
+    teacher.setdefault("entropy_beta", 0.0)
+    teacher.setdefault("entropy_weight_floor", 0.65)
+    teacher.setdefault("entropy_weight_ceil", 1.10)
+    teacher.setdefault("entropy_penalty_strength", 0.35)
     return teacher
 
 
@@ -69,6 +74,10 @@ def prepare_sft_dataset(
         build_control_span_weights,
         load_teacher_topk_payload,
         trim_teacher_payload,
+    )
+    from src.training.meta_quality import (
+        apply_entropy_weighting,
+        compute_teacher_kl_row_scale,
     )
 
     def tokenize_row(row):
@@ -123,6 +132,25 @@ def prepare_sft_dataset(
                         recovery_weight=float(teacher_kl.get("recovery_weight", 0.7)),
                         verify_weight=float(teacher_kl.get("verify_weight", 1.1)),
                     )
+                    if bool(teacher_kl.get("row_quality_scaling", True)):
+                        row_scale = compute_teacher_kl_row_scale(
+                            row,
+                            entropy_penalty_strength=float(teacher_kl.get("entropy_penalty_strength", 0.35)),
+                        )
+                        weights = [float(weight) * float(row_scale) for weight in weights]
+                    entropy_payload = row.get("teacher_token_entropy_json")
+                    if entropy_payload:
+                        if isinstance(entropy_payload, str):
+                            entropy_values = json.loads(entropy_payload)
+                        else:
+                            entropy_values = entropy_payload
+                        weights = apply_entropy_weighting(
+                            position_weights=weights,
+                            entropy_values=entropy_values,
+                            beta=float(teacher_kl.get("entropy_beta", 0.0)),
+                            floor=float(teacher_kl.get("entropy_weight_floor", 0.65)),
+                            ceil=float(teacher_kl.get("entropy_weight_ceil", 1.10)),
+                        )
                     built.update({
                         "teacher_topk_token_ids": trimmed.token_ids,
                         "teacher_topk_logprobs": trimmed.logprobs,

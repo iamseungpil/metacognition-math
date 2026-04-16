@@ -13,6 +13,7 @@ Reference: Open-R1 (https://github.com/huggingface/open-r1)
 import math
 from pathlib import Path
 import re
+from src.training.meta_quality import score_meta_commit_quality
 
 # Math verification via sympy (same as Open-R1)
 try:
@@ -785,6 +786,34 @@ def meta_structure_reward(completions, ground_truth=None, **kwargs):
             rewards.append(-0.10)
         else:
             rewards.append(0.0)
+    return rewards
+
+
+def meta_commit_shape_reward(completions, ground_truth=None, **kwargs):
+    """Analysis-driven reward for good meta -> commit behavior.
+
+    This is intentionally controller-focused rather than style-focused.
+    It rewards:
+      - wrapped meta with diagnosis/study_need
+      - concise post-meta reasoning that reaches a boxed commit
+    And it penalizes:
+      - no-boxed/non-commit outputs
+      - repeated meta loops
+      - post-boxed drift
+      - decoherence-like delimiter imbalance / repeated tail fragments
+
+    Range is modest on purpose so correctness remains dominant.
+    """
+    rewards = []
+    for c in completions:
+        text = _get_text(c)
+        quality = score_meta_commit_quality(text)
+        shaped = 0.30 * float(quality["total"])
+        if float(quality.get("no_boxed_penalty", 0.0)) > 0.0:
+            shaped -= 0.15
+        if float(quality.get("decoherence_penalty", 0.0)) > 0.0:
+            shaped -= 0.10 * float(quality["decoherence_penalty"])
+        rewards.append(max(-0.35, min(0.35, shaped)))
     return rewards
 
 

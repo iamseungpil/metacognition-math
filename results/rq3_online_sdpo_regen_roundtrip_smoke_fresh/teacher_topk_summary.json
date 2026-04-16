@@ -1,0 +1,8 @@
+{
+  "input_rows": 1,
+  "rows": 1,
+  "skipped_rows": 0,
+  "teacher_query_top_k": 16,
+  "avg_teacher_num_positions": 102.0,
+  "avg_teacher_completion_len_tokens": 102.0
+}

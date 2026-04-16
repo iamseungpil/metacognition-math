@@ -98,3 +98,44 @@ analysis:
     meta: "results/eval_v8_meta_inside_strict_sft/eval_v8_meta_inside_strict_sft.remote.parquet"
     base: "results/eval_v8_base_matched_strict_sft/eval_v8_base_matched_strict_sft.remote.parquet"
   paired_behavior_report: "results/strict_pair_analysis_repro_2026_04_12/paired_strict_behavior.json"
+
+self_distill_next:
+  stage: "rq3_claim_bearing_mainline"
+  artifact_mode: "question_only_best_of_n"
+  selector_ladder:
+    - "correctness_only"
+    - "correct_then_meta"
+    - "meta_only_kl"
+  shared:
+    repair_candidates: 4
+    max_length: 4096
+    launcher_roundtrip: "scripts/run_self_distill_roundtrip.sh"
+    launcher_sft_h200: "scripts/run_self_distill_sft_h200.sh"
+    teacher_topk_builder: "scripts/build_teacher_topk_targets.py"
+    synthetic_meta_injected_rate_must_equal: 0
+  base:
+    model_path: "checkpoints/v8_base_matched_strict_sft"
+    output_dir: "results/self_distill/base_qonly_naive"
+    sft_config_h200: "configs/sft_self_distill_base_qonly_naive_h200_4gpu.yaml"
+  meta:
+    model_path: "checkpoints/v8_meta_inside_strict_sft"
+    output_dir: "results/self_distill/meta_qonly_epistemic"
+    scored_output_dir: "results/self_distill/meta_qonly_epistemic_scored"
+    sft_config_h200: "configs/sft_self_distill_meta_qonly_epistemic_h200_4gpu.yaml"
+    scored_config_h200: "configs/sft_self_distill_meta_qonly_scored_h200_4gpu.yaml"
+    meta_kl_config_h200: "configs/sft_self_distill_meta_qonly_epistemic_meta_kl_h200_4gpu.yaml"
+
+side_evidence_rl_smoke:
+  launcher: "scripts/launch_e21r_v4_commit_shape_0416.sh"
+  reward_name: "compute_score_e21r_v4_smoke"
+  evidence_class: "side_evidence"
+  must_not_overwrite_historical: "checkpoints/verl_e21r_v2_0413"
+
+side_evidence_sdpo_regen:
+  launcher_roundtrip: "scripts/run_rq3_sdpo_regen_roundtrip.sh"
+  launcher_generate: "scripts/run_online_sdpo_regen.py"
+  dataset_mode: "sdpo_regen"
+  evidence_class: "side_evidence"
+  teacher_topk_builder: "scripts/build_teacher_topk_targets.py"
+  config_generator: "scripts/prepare_self_distill_sft_config.py"
+  must_not_be_claim_bearing: true

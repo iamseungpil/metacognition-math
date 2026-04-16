@@ -35,7 +35,7 @@ class NormalizedTeacherTrace:
     selected_candidate_id: str = ""
     selector_mode: str = ""
     selection_score_total: float | None = None
-    selection_meta_transition_score: float | None = None
+    selection_meta_commit_quality: float | None = None
     selection_margin: float | None = None
     selection_score_breakdown: dict[str, Any] | None = None
 
@@ -179,9 +179,9 @@ def _normalize_from_rq3_case(row: dict[str, Any]) -> NormalizedTeacherTrace | No
                 if selector.get("selected_score") is not None
                 else None
             ),
-            selection_meta_transition_score=(
-                float((selector.get("selected_breakdown") or {}).get("meta_transition"))
-                if (selector.get("selected_breakdown") or {}).get("meta_transition") is not None
+            selection_meta_commit_quality=(
+                float((selector.get("selected_breakdown") or {}).get("meta_commit_quality"))
+                if (selector.get("selected_breakdown") or {}).get("meta_commit_quality") is not None
                 else None
             ),
             selection_margin=(

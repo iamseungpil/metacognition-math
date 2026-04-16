@@ -11,10 +11,12 @@ from src.training.rewards import (
     confidence_revision_reward_v2 as CR,
     redirect_execution_reward_v2 as RR,
     verify_execution_reward_v2 as VR,
+    meta_commit_shape_reward as MS,
     stepwise_trajectory_reward as ST,
     confidence_omission_floor as FL,
     correctness_reward as CO,
     meta_count_bonus as MB,
+    meta_structure_reward as MT,
 )
 
 cases = {
@@ -75,6 +77,7 @@ cases = {
 gt = ["-5"]
 W = {"co": 1.0, "cr": 0.35, "rr": 0.30, "vr": 0.15, "fl": 0.50, "mb": 1.0}
 W_E21 = {"co": 1.0, "sw": 0.15, "vo": 0.30, "ct": 0.15, "fl": 0.50, "mb": 1.0}
+W_V4 = {"co": 1.0, "cal": 0.45, "cr": 0.25, "rr": 0.20, "vr": 0.10, "fl": 0.20, "mt": 0.15, "ms": 0.35}
 
 print("=== E21R Smoke ===")
 header = f"{'Case':25s} {'co':>5s}  {'cr':>7s}  {'rr':>7s}  {'vr':>7s}  {'fl':>5s}  {'mb':>5s}  {'combined':>8s}"
@@ -148,6 +151,35 @@ for desc, result in [
     ("good_redirect > no_meta", e21_scores["good_redirect"] > e21_scores["no_meta"]),
     ("verify_only > no_meta", e21_scores["verify_only"] > e21_scores["no_meta"]),
     ("wrong_redirect < good_redirect", e21_scores["wrong_redirect"] < e21_scores["good_redirect"]),
+]:
+    print(f"  [{'PASS' if result else 'FAIL'}] {desc}")
+    all_pass = all_pass and result
+
+print("\n=== E21R-v4 Commit-Shape Smoke ===")
+v4_scores = {}
+header = f"{'Case':25s} {'co':>5s}  {'cr':>7s}  {'rr':>7s}  {'vr':>7s}  {'fl':>5s}  {'mt':>5s}  {'ms':>5s}  {'combined':>8s}"
+print(header)
+print("-" * len(header))
+for name, text in cases.items():
+    comp = [{"content": text}]
+    co = CO(comp, gt)[0]
+    cr = CR(comp, gt)[0]
+    rr = RR(comp, gt)[0]
+    vr = VR(comp, gt)[0]
+    fl = FL(comp, gt)[0]
+    mt = MT(comp, gt)[0]
+    ms = MS(comp, gt)[0]
+    comb = (
+        co * W_V4["co"] + cr * W_V4["cr"] + rr * W_V4["rr"] + vr * W_V4["vr"]
+        + fl * W_V4["fl"] + mt * W_V4["mt"] + ms * W_V4["ms"]
+    )
+    v4_scores[name] = comb
+    print(f"{name:25s} {co:+.1f}  {cr:+.3f}  {rr:+.3f}  {vr:+.3f}  {fl:+.2f}  {mt:+.2f}  {ms:+.2f}  {comb:+.3f}")
+
+for desc, result in [
+    ("good_redirect > no_meta", v4_scores["good_redirect"] > v4_scores["no_meta"]),
+    ("good_redirect > wrong_redirect", v4_scores["good_redirect"] > v4_scores["wrong_redirect"]),
+    ("trigger_no_exec < good_redirect", v4_scores["trigger_no_exec"] < v4_scores["good_redirect"]),
 ]:
     print(f"  [{'PASS' if result else 'FAIL'}] {desc}")
     all_pass = all_pass and result
