@@ -1,0 +1,75 @@
+{
+  "total_samples": 200,
+  "total_blocks": 208,
+  "correct_samples": 200,
+  "incorrect_samples": 0,
+  "all_blocks": {
+    "n": 208,
+    "before_entropy_mean": 1.0225464385002851,
+    "meta_entropy_mean": 0.6193516856023612,
+    "after_entropy_mean": 0.9098941056201091,
+    "delta_entropy_mean": -0.11265233288017604,
+    "delta_entropy_std": 0.5636837655641646,
+    "before_surprisal_mean": 0.924670859795207,
+    "meta_surprisal_mean": 0.6945347885887784,
+    "after_surprisal_mean": 0.6578674002263981,
+    "delta_surprisal_mean": -0.26680345956880885,
+    "delta_surprisal_std": 1.011580071839759,
+    "meta_length_tokens_mean": 64.75961538461539
+  },
+  "correct_blocks": {
+    "n": 208,
+    "before_entropy_mean": 1.0225464385002851,
+    "meta_entropy_mean": 0.6193516856023612,
+    "after_entropy_mean": 0.9098941056201091,
+    "delta_entropy_mean": -0.11265233288017604,
+    "delta_entropy_std": 0.5636837655641646,
+    "before_surprisal_mean": 0.924670859795207,
+    "meta_surprisal_mean": 0.6945347885887784,
+    "after_surprisal_mean": 0.6578674002263981,
+    "delta_surprisal_mean": -0.26680345956880885,
+    "delta_surprisal_std": 1.011580071839759,
+    "meta_length_tokens_mean": 64.75961538461539
+  },
+  "incorrect_blocks": {
+    "n": 0
+  },
+  "all_samples": {
+    "n": 200,
+    "avg_before_entropy": 1.0126230022311211,
+    "avg_meta_entropy": 0.6111336098145693,
+    "avg_after_entropy": 0.9037265978753567,
+    "avg_delta": -0.10889640435576439,
+    "avg_before_surprisal": 0.9008957160823047,
+    "avg_meta_surprisal": 0.6818361263908446,
+    "avg_after_surprisal": 0.6483397406339645,
+    "avg_delta_surprisal": -0.2525559754483402,
+    "full_sequence_entropy": 0.4019868978857994,
+    "full_sequence_surprisal": 0.4603159990161657
+  },
+  "correct_sample_stats": {
+    "n": 200,
+    "avg_before_entropy": 1.0126230022311211,
+    "avg_meta_entropy": 0.6111336098145693,
+    "avg_after_entropy": 0.9037265978753567,
+    "avg_delta": -0.10889640435576439,
+    "avg_before_surprisal": 0.9008957160823047,
+    "avg_meta_surprisal": 0.6818361263908446,
+    "avg_after_surprisal": 0.6483397406339645,
+    "avg_delta_surprisal": -0.2525559754483402,
+    "full_sequence_entropy": 0.4019868978857994,
+    "full_sequence_surprisal": 0.4603159990161657
+  },
+  "incorrect_sample_stats": {
+    "n": 0
+  },
+  "config": {
+    "model_path": "/scratch/models/v8_meta_inside_strict_sft",
+    "eval_parquet": "/scratch/entropy_analysis/sft_meta_samples.parquet",
+    "max_samples": 200,
+    "window": 8,
+    "max_seq_len": 8192,
+    "dtype": "bfloat16",
+    "elapsed_seconds": 13.5
+  }
+}

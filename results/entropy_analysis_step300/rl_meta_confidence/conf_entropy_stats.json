@@ -1,0 +1,40 @@
+{
+  "total_samples": 200,
+  "total_blocks": 200,
+  "all_blocks": {
+    "label": "all",
+    "n": 200,
+    "before_entropy": 0.42048129871487616,
+    "conf_entropy": 0.4337449485063553,
+    "after_entropy": 0.36818780452013017,
+    "delta_entropy": -0.05229349419474602,
+    "before_surprisal": 0.756001715362072,
+    "conf_surprisal": 0.7387255141139031,
+    "after_surprisal": 0.24757905684411527,
+    "delta_surprisal": -0.5084226578474045
+  },
+  "correct_blocks": {
+    "label": "correct",
+    "n": 186,
+    "before_entropy": 0.41003751738737987,
+    "conf_entropy": 0.43332526055715415,
+    "after_entropy": 0.368371053408551,
+    "delta_entropy": -0.04166646397882892,
+    "before_surprisal": 0.7557417026130102,
+    "conf_surprisal": 0.7401018834883167,
+    "after_surprisal": 0.24898863359484621,
+    "delta_surprisal": -0.5067530681369126
+  },
+  "incorrect_blocks": {
+    "label": "incorrect",
+    "n": 14,
+    "before_entropy": 0.5592343934944698,
+    "conf_entropy": 0.43932080268859863,
+    "after_entropy": 0.36575321214539663,
+    "delta_entropy": -0.19348118134907313,
+    "before_surprisal": 0.7594561704567501,
+    "conf_surprisal": 0.7204394638538361,
+    "after_surprisal": 0.22885182287011827,
+    "delta_surprisal": -0.5306043497153691
+  }
+}
