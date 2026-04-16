@@ -438,6 +438,7 @@ def run_online_fixed_k_repair_rollouts(
     # Open jsonl in append mode
     handle = traces_path.open("a", encoding="utf-8")
     new_rows: list[dict[str, Any]] = []
+    skipped_problems: list[dict[str, Any]] = []
 
     try:
         chunks = _chunks(to_do, chunk_size)
@@ -461,6 +462,18 @@ def run_online_fixed_k_repair_rollouts(
             # CPU: analyse + retrieve + build repair prompts
             root_data: list[dict[str, Any]] = []
             for p, root_prompt, root_out in zip(chunk, root_prompts, root_outputs):
+                # Skip problems where root generation failed (placeholder from _safe_generate)
+                if not root_out.outputs:
+                    pid = _stable_problem_id(p.benchmark, p.question)
+                    skipped_problems.append({
+                        "problem_id": pid,
+                        "benchmark": p.benchmark,
+                        "question_preview": p.question[:80],
+                        "phase": "root",
+                        "reason": "no_outputs",
+                    })
+                    _log(f"  Skipping problem {pid[:8]}: root returned no outputs")
+                    continue
                 root_completion = root_out.outputs[0].text
                 root_completion_tokens = len(root_out.outputs[0].token_ids)
                 root_prompt_tokens = len(root_out.prompt_token_ids)
@@ -519,7 +532,15 @@ def run_online_fixed_k_repair_rollouts(
             for d, repair_out in zip(root_data, repair_outputs):
                 # Skip problems where repair generation failed entirely (placeholder from _safe_generate)
                 if not repair_out.outputs:
-                    _log(f"  Skipping problem {_stable_problem_id(d['problem'].benchmark, d['problem'].question)[:8]}: repair returned no outputs")
+                    pid = _stable_problem_id(d["problem"].benchmark, d["problem"].question)
+                    skipped_problems.append({
+                        "problem_id": pid,
+                        "benchmark": d["problem"].benchmark,
+                        "question_preview": d["problem"].question[:80],
+                        "phase": "repair",
+                        "reason": "no_outputs",
+                    })
+                    _log(f"  Skipping problem {pid[:8]}: repair returned no outputs")
                     continue
                 candidates: list[dict[str, Any]] = []
                 for ci in range(len(repair_out.outputs)):
@@ -547,7 +568,15 @@ def run_online_fixed_k_repair_rollouts(
                 try:
                     selector = _select_best_candidate(candidates, d["problem"].gold_answer, weights=selector_weights)
                 except ValueError as exc:
-                    _log(f"  Selector failed for problem {_stable_problem_id(d['problem'].benchmark, d['problem'].question)[:8]}: {exc}")
+                    pid = _stable_problem_id(d["problem"].benchmark, d["problem"].question)
+                    skipped_problems.append({
+                        "problem_id": pid,
+                        "benchmark": d["problem"].benchmark,
+                        "question_preview": d["problem"].question[:80],
+                        "phase": "selector",
+                        "reason": f"selector_failed: {exc}",
+                    })
+                    _log(f"  Selector failed for problem {pid[:8]}: {exc}")
                     continue
                 selected = selector["selected"]
 
@@ -630,6 +659,14 @@ def run_online_fixed_k_repair_rollouts(
     finally:
         handle.close()
 
+    # Persist skipped-problem log alongside traces for later audit + summary reconciliation
+    if skipped_problems:
+        skipped_path = outdir / "skipped_problems.jsonl"
+        with skipped_path.open("a", encoding="utf-8") as sh:
+            for skip in skipped_problems:
+                sh.write(json.dumps(skip, ensure_ascii=False) + "\n")
+        _log(f"Skipped {len(skipped_problems)} problems (see {skipped_path})")
+
     return existing_rows + new_rows
 
 
@@ -667,6 +704,26 @@ def write_online_sdpo_outputs(
         )
 
     summary = summarize_self_distill_dataframe(df)
+
+    # Reconcile skipped-problem log (written by run_online_fixed_k_repair_rollouts)
+    # into the summary so downstream analyses see attempt vs success counts.
+    skipped_path = outdir / "skipped_problems.jsonl"
+    skipped_count = 0
+    skipped_by_phase: dict[str, int] = {}
+    if skipped_path.exists():
+        with skipped_path.open("r", encoding="utf-8") as sh:
+            for line in sh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                skipped_count += 1
+                phase = str(entry.get("phase", "unknown"))
+                skipped_by_phase[phase] = skipped_by_phase.get(phase, 0) + 1
+
     payload = {
         "num_rollouts": len(rows),
         "num_dataset_rows": int(len(df)),
@@ -676,6 +733,8 @@ def write_online_sdpo_outputs(
         "trace_path": str(traces_path),
         "parquet_path": str(parquet_path) if not df.empty else "",
         "summary": summary,
+        "skipped_count": skipped_count,
+        "skipped_by_phase": skipped_by_phase,
         "retrieval": {
             "rows_with_retriever": int(sum(bool(row.get("retriever_active", False)) for row in rows)),
             "rows_with_retrieval_enabled": int(sum(bool(row.get("retrieval_enabled", False)) for row in rows)),

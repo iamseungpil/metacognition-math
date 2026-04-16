@@ -387,3 +387,87 @@ def test_truncate_handles_small_max_chars():
     assert len(out) <= 60, f"Output len {len(out)} exceeds safe bound for max_chars=50"
     # Should keep tail (where boxed lives) when budget is tiny
     assert "\\boxed{7}" in out, "Tiny max_chars should still preserve tail"
+
+
+def test_root_fallback_failure_does_not_crash(tmp_path: Path):
+    """Verify root-phase generation failure for one prompt doesn't crash the whole chunk.
+
+    Regression for Bug 1: _safe_generate emits a _Stub placeholder (outputs=[])
+    when a single prompt fails during per-prompt fallback. The root-phase loop
+    must skip these rather than IndexError on outputs[0].
+    """
+    call_state = {"batch_call": 0, "per_prompt_call": 0}
+
+    def raising_canned(prompt, n):
+        # This canned is called once per prompt inside the underlying FakeLLM.generate.
+        # We fail the very first per-prompt invocation (mimics a prompt-too-long error
+        # for problem 0 during the per-prompt fallback), then serve normal outputs.
+        call_state["per_prompt_call"] += 1
+        if call_state["per_prompt_call"] == 1:
+            raise RuntimeError("Simulated prompt-too-long")
+        if "Previous attempt" in prompt:
+            return [(r"<think>retry</think>\boxed{42}", [1, 2, 3])] * n
+        return [(r"<think>guess</think>\boxed{99}", [1, 2, 3])]
+
+    class RaisingFakeLLM(FakeLLM):
+        def generate(self, prompts, sampling, **kwargs):
+            call_state["batch_call"] += 1
+            if call_state["batch_call"] == 1:
+                # First call is the root batch; fail it so _safe_generate falls
+                # back to per-prompt retries.
+                raise RuntimeError("Simulated batch failure")
+            return super().generate(prompts, sampling, **kwargs)
+
+    problems = make_problems(3)
+    llm = RaisingFakeLLM(raising_canned)
+
+    # Should not crash; problem 0 skipped due to root-phase _Stub, rest succeed.
+    rows = run_online_fixed_k_repair_rollouts(
+        llm=llm, tokenizer=llm.get_tokenizer(),
+        problems=problems, output_dir=tmp_path,
+        retriever=None, repair_candidates=2, chunk_size=3, resume=False,
+    )
+    # Problem 0 skipped at root-phase guard -> at most 2 rows produced.
+    assert len(rows) <= 2
+
+    # Skipped log should exist and record the root-phase failure.
+    skipped_path = tmp_path / "skipped_problems.jsonl"
+    assert skipped_path.exists(), "skipped_problems.jsonl should be created"
+    skipped = [
+        json.loads(l) for l in skipped_path.read_text().strip().split("\n") if l.strip()
+    ]
+    assert len(skipped) >= 1, "At least one problem should be logged as skipped"
+    assert any(s["phase"] == "root" for s in skipped), "Expected at least one root-phase skip"
+
+
+def test_summary_includes_skipped_count(tmp_path: Path):
+    """Verify write_online_sdpo_outputs summary includes skip counters.
+
+    Regression for Bug 2: claim-bearing fairness requires explicit skip tracking
+    so base/meta pairings can reconcile attempt vs success counts.
+    """
+    # Pre-create a skipped_problems.jsonl simulating mixed-phase failures.
+    skipped_path = tmp_path / "skipped_problems.jsonl"
+    with skipped_path.open("w") as f:
+        f.write(json.dumps({"problem_id": "abc", "phase": "root", "reason": "no_outputs"}) + "\n")
+        f.write(json.dumps({"problem_id": "def", "phase": "repair", "reason": "no_outputs"}) + "\n")
+        f.write(json.dumps({"problem_id": "ghi", "phase": "selector", "reason": "selector_failed: no candidates"}) + "\n")
+
+    problems = make_problems(2)
+    llm = FakeLLM(canned_root_then_repair)
+    rows = run_online_fixed_k_repair_rollouts(
+        llm=llm, tokenizer=llm.get_tokenizer(),
+        problems=problems, output_dir=tmp_path,
+        retriever=None, repair_candidates=2, chunk_size=2, resume=False,
+    )
+
+    payload = write_online_sdpo_outputs(
+        rows=rows, output_dir=tmp_path,
+        source_tag="test", mode="naive", claim_bearing=False,
+        traces_already_written=True,
+    )
+
+    assert payload["skipped_count"] == 3, f"Expected 3 skipped, got {payload.get('skipped_count')}"
+    assert payload["skipped_by_phase"]["root"] == 1
+    assert payload["skipped_by_phase"]["repair"] == 1
+    assert payload["skipped_by_phase"]["selector"] == 1
