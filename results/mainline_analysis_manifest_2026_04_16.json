@@ -1,0 +1,81 @@
+{
+  "updated": "2026-04-16",
+  "mainline": {
+    "strict_pair_analysis": {
+      "script": "scripts/run_strict_pair_analysis.py",
+      "status": "verified_rerun",
+      "outputs": [
+        "results/strict_pair_analysis_2026_04_15/meta_strict_behavior.json",
+        "results/strict_pair_analysis_2026_04_15/base_strict_behavior.json",
+        "results/strict_pair_analysis_2026_04_15/paired_strict_behavior.json",
+        "results/strict_pair_analysis_2026_04_15/meta_strict_aime_examples.txt"
+      ]
+    },
+    "entropy_analysis": {
+      "script": "scripts/analyze_entropy_meta.py",
+      "status": "artifact_validated_not_rerun",
+      "outputs": [
+        "results/entropy_strict_meta/entropy_stats.json",
+        "results/entropy_strict_meta/entropy_per_block.csv",
+        "results/entropy_strict_meta/entropy_per_sample.csv"
+      ],
+      "note": "expensive HF forward-pass analysis; JSON artifact was repaired and parsed successfully"
+    },
+    "self_distill_compare": {
+      "script": "scripts/analyze_self_distill_eval.py",
+      "status": "verified_rerun",
+      "outputs": [
+        "results/strict_pair_analysis_2026_04_15/strict_self_distill_eval_compare.remote.json"
+      ]
+    },
+    "step300_deep_analysis": {
+      "script": "results/step300_deep_analysis/analysis_report.md",
+      "status": "existing_verified_artifacts",
+      "outputs": [
+        "results/step300_deep_analysis/full_analysis.json",
+        "results/step300_deep_analysis/self_distill_comparison.json",
+        "results/step300_deep_analysis/e21r_v2_step300.json",
+        "results/step300_deep_analysis/base_step300.json"
+      ]
+    }
+  },
+  "side_evidence": {
+    "rq3_side_eval": {
+      "script": "scripts/analyze_rq3_side_eval.py",
+      "status": "verified_rerun",
+      "outputs": [
+        "results/rq3_side_eval_smoke/rq3_summary.json",
+        "results/rq3_side_eval_smoke_rel/rq3_summary.json"
+      ]
+    },
+    "control_rag_audit": {
+      "script": "scripts/audit_control_rag_real.py",
+      "status": "verified_rerun",
+      "outputs": [
+        "results/control_rag_real_audit.json"
+      ]
+    },
+    "mcts_smoke": {
+      "script": "scripts/smoke_mcts_lite.py",
+      "status": "verified_rerun",
+      "outputs": [
+        "results/mcts_lite_smoke.json"
+      ]
+    },
+    "rq3_pipeline_smoke": {
+      "script": "scripts/smoke_rq3_pipeline.py",
+      "status": "verified_rerun",
+      "outputs": [
+        "results/rq3_pipeline_smoke.json"
+      ]
+    }
+  },
+  "legacy": {
+    "scripts": [
+      "scripts/analyze_control_v5_eval.py",
+      "scripts/analyze_1030_eval.py",
+      "scripts/final_analysis.py"
+    ],
+    "note": "historical or ad hoc analyses; not current claim-bearing V8 mainline"
+  }
+}

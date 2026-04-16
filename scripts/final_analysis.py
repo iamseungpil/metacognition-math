@@ -1,4 +1,8 @@
-"""Final analysis: V2 accuracy drop + AIME ECE improvement."""
+"""Legacy scratch analysis for older eval dumps.
+
+Not part of the current V8 claim-bearing pipeline.
+Uses hardcoded `/scratch/metacognition/results` paths.
+"""
 import json, os, glob, re
 
 results_dir = "/scratch/metacognition/results"
