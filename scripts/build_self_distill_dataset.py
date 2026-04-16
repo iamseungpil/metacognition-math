@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a self-distillation parquet for naive or epistemic-preserving lanes."""
+"""Build self-distillation or SDPO-style regeneration parquets."""
 from __future__ import annotations
 
 import argparse
@@ -25,6 +25,7 @@ def main() -> None:
     parser.add_argument("--mode", choices=list(SUPPORTED_SELF_DISTILL_MODES), required=True)
     parser.add_argument("--source-tag", default=None)
     parser.add_argument("--allow-missing-boxed", action="store_true")
+    parser.add_argument("--claim-bearing", action="store_true")
     parser.add_argument("--summary-json", default=None)
     args = parser.parse_args()
 
@@ -33,6 +34,7 @@ def main() -> None:
         mode=args.mode,
         source_tag=args.source_tag,
         require_boxed=not args.allow_missing_boxed,
+        claim_bearing=args.claim_bearing,
     )
     if df.empty:
         raise ValueError(

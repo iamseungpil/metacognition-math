@@ -1,0 +1,113 @@
+"""Structured self-distillation utilities.
+
+Layout:
+1. `trace.py`: normalize raw artifacts into a stable teacher-trace IR
+2. `builders.py`: project traces into naive / epistemic / SDPO-style datasets
+"""
+from src.training.self_distill.builders import (
+    MODE_EPISTEMIC,
+    MODE_FEEDBACK_CONDITIONED,
+    MODE_NAIVE,
+    MODE_SDPO_REGEN,
+    SELF_DISTILL_COLUMNS,
+    SUPPORTED_SELF_DISTILL_MODES,
+    build_epistemic_teacher_completion,
+    build_feedback_conditioned_messages,
+    build_naive_teacher_completion,
+    build_sdpo_regen_messages,
+    build_sdpo_regen_user_prompt,
+    build_self_distill_dataframe,
+    build_self_distill_dataset,
+    build_teacher_feedback_payload,
+    canonical_mode,
+    normalize_summary,
+    record_teacher_metrics,
+    summarize_self_distill_dataframe,
+)
+from src.training.self_distill.eval_metrics import (
+    HARD_BENCHMARKS,
+    OOD_BENCHMARKS,
+    load_eval_table,
+    summarize_eval_table,
+)
+from src.training.self_distill.trace import (
+    NormalizedTeacherTrace,
+    extract_last_boxed,
+    first_text,
+    load_messages,
+    normalize_teacher_row,
+    parse_study_need,
+    read_table,
+)
+from src.training.self_distill.online import (
+    OnlineSdpoProblem,
+    load_online_problems,
+    load_retriever,
+    run_online_fixed_k_repair_case,
+    run_online_fixed_k_repair_rollouts,
+    run_online_sdpo_case,
+    run_online_sdpo_rollouts,
+    write_online_sdpo_outputs,
+)
+from src.training.self_distill.teacher_query import (
+    build_teacher_query_dataframe,
+    build_teacher_query_dataset,
+    extract_topk_targets,
+    query_teacher_topk_for_messages,
+    tokenize_chat_messages,
+)
+from src.training.self_distill.kl import (
+    TeacherTopKPayload,
+    build_control_span_weights,
+    load_teacher_topk_payload,
+    trim_teacher_payload,
+)
+
+__all__ = [
+    "MODE_EPISTEMIC",
+    "MODE_FEEDBACK_CONDITIONED",
+    "MODE_NAIVE",
+    "MODE_SDPO_REGEN",
+    "NormalizedTeacherTrace",
+    "OnlineSdpoProblem",
+    "HARD_BENCHMARKS",
+    "OOD_BENCHMARKS",
+    "SELF_DISTILL_COLUMNS",
+    "SUPPORTED_SELF_DISTILL_MODES",
+    "TeacherTopKPayload",
+    "build_epistemic_teacher_completion",
+    "build_control_span_weights",
+    "build_feedback_conditioned_messages",
+    "build_naive_teacher_completion",
+    "build_sdpo_regen_messages",
+    "build_sdpo_regen_user_prompt",
+    "build_self_distill_dataframe",
+    "build_self_distill_dataset",
+    "build_teacher_feedback_payload",
+    "build_teacher_query_dataframe",
+    "build_teacher_query_dataset",
+    "canonical_mode",
+    "extract_topk_targets",
+    "extract_last_boxed",
+    "first_text",
+    "load_messages",
+    "load_online_problems",
+    "load_teacher_topk_payload",
+    "load_retriever",
+    "load_eval_table",
+    "normalize_summary",
+    "normalize_teacher_row",
+    "parse_study_need",
+    "read_table",
+    "record_teacher_metrics",
+    "run_online_fixed_k_repair_case",
+    "run_online_fixed_k_repair_rollouts",
+    "run_online_sdpo_case",
+    "run_online_sdpo_rollouts",
+    "summarize_eval_table",
+    "summarize_self_distill_dataframe",
+    "query_teacher_topk_for_messages",
+    "tokenize_chat_messages",
+    "trim_teacher_payload",
+    "write_online_sdpo_outputs",
+]

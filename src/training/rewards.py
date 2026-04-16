@@ -97,7 +97,9 @@ def _text_after_last_meta(text):
 def _has_verification_signal(text):
     """Detect explicit verification/checking language."""
     return bool(re.search(
-        r'\b(verify|verified|verification|double-check|check again|re-check|sanity check)\b',
+        r'\b(verify|verified|verification|double-check|check again|re-check|'
+        r'check my answer|confirm|confirmation|cross-?check|validate|validation|'
+        r'consistency check|sanity check)\b',
         text,
         re.IGNORECASE,
     ))
@@ -106,7 +108,7 @@ def _has_verification_signal(text):
 def _has_uncertainty_signal(text):
     """Detect uncertainty/stuck language before a correction attempt."""
     return bool(re.search(
-        r'\b(wait|hmm|not sure|uncertain|stuck|hold on|let me think|I should check)\b',
+        r'\b(wait|hmm|not sure|uncertain|stuck|hold on|let me think)\b',
         text,
         re.IGNORECASE,
     ))
@@ -123,11 +125,23 @@ def _has_redirection_signal(text):
 
 def _has_effective_verification_signal(text):
     """Detect verification that re-checks the answer, not just decorative wording."""
-    return bool(re.search(
-        r'\b(substitute|plug(?:ging)? back|back-?substitut|recomput|recalculat|independent check|check by|sanity check|verify by|test the result)\b',
+    keyword = bool(re.search(
+        r'\b(substitut\w*(?:\s+back)?|plug(?:ging)?(?:\s+\w+){0,3}\s+(?:back|in|into)|back-?substitut|'
+        r'recomput|recalculat|independent check|check by|check that|check:|sanity check|'
+        r'verify by|verify that|verify:|test the result|cross-?check|confirm by|working backward|'
+        r'work backwards|small case|boundary case|compare both sides|numerically)\b',
         text,
         re.IGNORECASE,
     ))
+    if keyword:
+        return True
+    # Numerical verification: chained equalities like "(-1)^2 + 6(-1) + 5 = 1 - 6 + 5 = 0"
+    has_chained = bool(re.search(
+        r'=\s*-?[\d.]+\s*[-+*/]\s*-?[\d.]+\s*[-+*/=]', text,
+    )) or bool(re.search(r'=\s*-?[\d.]+\s*=\s*-?[\d.]', text))
+    # f(number) pattern
+    has_eval = bool(re.search(r'(?:\w+)?\s*\(\s*-?\d+(?:\.\d+)?\s*\)\s*=', text))
+    return has_chained or has_eval
 
 
 def _has_anomaly_notice_signal(text):
@@ -181,12 +195,15 @@ def _has_failure_diagnosis(text):
     return bool(
         re.search(
             r'(the issue is|the problem is|the current route fails because|this approach fails because|'
-            r'this route is weak because|I may be forcing|I am forcing|I committed too early|'
+            r'this route is weak because|current route is weak because|route is weak because|approach is weak because|'
+            r'I may be forcing|I am forcing|I committed too early|'
             r'I overcommitted|I am missing|I\'m missing|this only checks|this does not control|'
             r'this does not explain|the real task is|not needed here|unnecessary|'
             r'would be unnecessary|would be weak|too indirect|too complicated|'
             r'solve the wrong problem|not the game structure|can hide a mismatch|'
-            r'does not match the structure)',
+            r'does not match the structure|wrong formula|wrong assumption|'
+            r'ignored a constraint|ignore(?:d)? the constraint|conflated two cases|'
+            r'this is going nowhere|too brittle|unjustified)',
             text,
             re.IGNORECASE,
         )
@@ -223,15 +240,50 @@ def _has_next_strategy(text):
     """Detect an explicit next-strategy declaration."""
     return bool(
         re.search(
-            r'(switch_method|switch to|different method|alternative approach|case split|'
+            r'(switch_method|switch to|different method|different approach|'
+            r'alternative approach|try a different|try another|try different|case split|'
             r'reframe|instead I\'ll|instead I will|better to use|use a parity|'
             r'use an invariant|use a direct check|constraint-based analysis|'
             r'parity-based case split|switch to a parity|'
-            r'study before retrying|redirect to)',
+            r'study before retrying|redirect to|start over|restart|work backwards?|'
+            r'factor(?:ing)? instead|use symmetry|use the discriminant|'
+            r'count directly|direct enumeration|try a cleaner approach|'
+            r'try an alternative|alternative algebraic manipulation|'
+            r'identity-based approach|exact fraction-based method|'
+            r'base-height analysis|sample-space view|enumerat(?:e|ing) the joint outcomes|'
+            r'boundary[- ]tracing|trace the shaded boundary|'
+            r'use a substitution|switch to multiplying|year-by-year factors|'
+            r'tangent-center configuration|structural identity)',
             text,
             re.IGNORECASE,
         )
     )
+
+
+def _strategy_terms(text: str) -> set[str]:
+    s = text.lower()
+    mapping = {
+        "invariant": [r"\binvariant\b"],
+        "parity": [r"\bparity\b"],
+        "factor": [r"\bfactor(?:ing)?\b"],
+        "identity": [r"\bidentity\b", r"\bproduct-to-sum\b"],
+        "fraction": [r"\bfraction\b", r"\brepeating decimal\b"],
+        "substitution": [r"\bsubstitution\b", r"\buse a substitution\b"],
+        "sample_space": [r"\bsample[- ]space\b", r"\bjoint outcomes\b", r"\bequally likely pairs\b", r"\benumerat"],
+        "boundary_trace": [r"\bboundary\b", r"\btrace the shaded boundary\b"],
+        "base_height": [r"\bbase-height\b", r"\bparallel sides\b", r"\btrapezoid area\b"],
+        "direct_check": [r"\bdirect check\b", r"\bplug(?:ging)? .* (?:into|in|back)\b"],
+        "symmetry": [r"\bsymmetry\b"],
+        "discriminant": [r"\bdiscriminant\b"],
+        "scale_factors": [r"\bscale factors\b", r"\byear-by-year factors\b", r"\bmultiplying\b"],
+        "tangent_center": [r"\btangent-center configuration\b", r"\btangent\b", r"\bradius\b", r"\bincenter\b"],
+        "backward": [r"\bwork backwards?\b", r"\bworking backward\b"],
+    }
+    terms = set()
+    for label, patterns in mapping.items():
+        if any(re.search(p, s, re.IGNORECASE) for p in patterns):
+            terms.add(label)
+    return terms
 
 
 def _has_confidence_drop(text, margin=0.08):
@@ -276,6 +328,15 @@ def _has_low_confidence(text, threshold=0.55):
     return any(v <= threshold for v in vals)
 
 
+def _first_and_last_confidence(text):
+    """Return first and last parsed confidence values, if any."""
+    blocks = _parse_meta_blocks(text)
+    confs = [b["confidence"] for b in blocks if b["confidence"] is not None]
+    if not confs:
+        return None, None
+    return confs[0], confs[-1]
+
+
 def _get_text(completion):
     """Extract text from TRL completion format."""
     if isinstance(completion, list):
@@ -283,8 +344,8 @@ def _get_text(completion):
     return str(completion)
 
 
-def _parse_meta_blocks(text):
-    """Parse <|meta|> blocks from text. Works even when tokens are stripped.
+def _parse_meta_blocks(text, allow_free_text_fallback=True):
+    """Parse meta blocks from text.
 
     Returns list of dicts: [{text, confidence, length}, ...]
     """
@@ -294,11 +355,14 @@ def _parse_meta_blocks(text):
             "confidence": block["confidence"],
             "length": block["length"],
         }
-        for block in _parse_meta_blocks_with_spans(text)
+        for block in _parse_meta_blocks_with_spans(
+            text,
+            allow_free_text_fallback=allow_free_text_fallback,
+        )
     ]
 
 
-def _parse_meta_blocks_with_spans(text):
+def _parse_meta_blocks_with_spans(text, allow_free_text_fallback=True):
     """Parse meta blocks and retain end offsets for prefix-based probe scoring."""
     blocks = []
 
@@ -329,7 +393,7 @@ def _parse_meta_blocks_with_spans(text):
             })
 
     # Fallback: detect meta-like patterns in stripped text
-    if not blocks:
+    if allow_free_text_fallback and not blocks:
         conf_matches = re.findall(
             r'(?:probability|confidence|확률|확신)[:\s\w]*?(\d+\.\d+|\d+)\s*%?',
             text, re.IGNORECASE
@@ -342,6 +406,17 @@ def _parse_meta_blocks_with_spans(text):
             blocks.append({"text": "", "confidence": v, "length": 0, "start": 0, "end": len(text)})
 
     return blocks
+
+
+def _has_structured_meta(text):
+    return bool(_parse_meta_blocks(text, allow_free_text_fallback=False))
+
+
+def _has_free_text_confidence_without_structure(text):
+    return (
+        not _has_structured_meta(text)
+        and bool(_parse_meta_blocks(text, allow_free_text_fallback=True))
+    )
 
 
 def _meta_block_prefixes(text):
@@ -584,6 +659,15 @@ def _score_stepwise_blocks(
                 score -= 0.05
 
         if is_last:
+            if prev_conf is not None:
+                recovered = conf >= prev_conf + 0.15
+                if is_correct and recovered:
+                    # Successful redirect/verify should be allowed to regain confidence.
+                    score += 0.35
+                elif not is_correct and recovered:
+                    # Confidence rebound on a wrong final trajectory is bad calibration.
+                    score -= 0.25
+
             conf_clamped = max(0.01, min(0.99, conf))
             if is_correct:
                 score += 0.5 * math.log(conf_clamped)
@@ -608,6 +692,100 @@ def _parse_confidence(text):
             v /= 100
         return max(0.01, min(0.99, v))
     return None
+
+
+def meta_count_bonus(completions, ground_truth=None, max_rewarded_blocks=3, per_block_bonus=0.1, **kwargs):
+    """Correctness-conditioned reward for multiple meta checkpoints.
+
+    Bonus is applied ONLY if the final answer is correct. This prevents the
+    naive "add meta blocks to farm reward" hacking observed in earlier runs
+    where easy problems lost -10pp accuracy when meta blocks were rewarded
+    unconditionally.
+
+    When is_correct:
+      - 0 blocks -> 0.0
+      - 1 block  -> 0.1
+      - 2 blocks -> 0.2
+      - 3+       -> 0.3 (cap)
+    When not is_correct:
+      - any      -> 0.0
+    """
+    rewards = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        gt = ground_truth[i] if ground_truth is not None else ""
+        if not _check_correctness(text, gt):
+            rewards.append(0.0)
+            continue
+        n_blocks = len(_parse_meta_blocks(text, allow_free_text_fallback=False))
+        rewards.append(float(min(n_blocks, max_rewarded_blocks)) * per_block_bonus)
+    return rewards
+
+
+# ─── R0: Outcome-Aware Calibration (E21R-v2) ───
+
+def outcome_calibration_reward(completions, ground_truth=None, **kwargs):
+    """Structured proper-scoring calibration with revision credit.
+
+    This reward is intentionally strict about structure:
+      - only confidence inside wrapped meta blocks counts
+      - free-text confidence without meta wrapping gets no calibration credit
+
+    Components:
+      1. Endpoint proper score using Brier against binary correctness
+      2. Revision credit when final confidence is closer to the true outcome
+         than the first confidence
+
+    Range: approximately [-0.25, +0.25].
+    """
+    rewards = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        gt = ground_truth[i] if ground_truth is not None else ""
+        is_correct = _check_correctness(text, gt)
+        blocks = _parse_meta_blocks(text, allow_free_text_fallback=False)
+        confs = [b["confidence"] for b in blocks if b["confidence"] is not None]
+
+        if not confs:
+            rewards.append(0.0)
+            continue
+
+        target = 1.0 if is_correct else 0.0
+        last_conf = confs[-1]
+        endpoint = 0.3 * (1.0 - (last_conf - target) ** 2) - 0.15
+
+        trajectory = 0.0
+        if len(confs) >= 2:
+            first_conf = confs[0]
+            first_err = (first_conf - target) ** 2
+            last_err = (last_conf - target) ** 2
+            trajectory = 0.1 * (first_err - last_err)
+
+        rewards.append(endpoint + trajectory)
+    return rewards
+
+
+def meta_structure_reward(completions, ground_truth=None, **kwargs):
+    """Reward preserving wrapped meta structure.
+
+    The goal is not to reward meta content directly, but to prevent RL from
+    collapsing wrapped controller state into reward-equivalent free text.
+
+    Rewards:
+      +0.10  at least one wrapped meta block exists
+      -0.10  confidence/meta-like text exists only in free text
+       0.00  no meta-like content at all
+    """
+    rewards = []
+    for c in completions:
+        text = _get_text(c)
+        if _has_structured_meta(text):
+            rewards.append(0.10)
+        elif _has_free_text_confidence_without_structure(text):
+            rewards.append(-0.10)
+        else:
+            rewards.append(0.0)
+    return rewards
 
 
 # ─── R1: Correctness ───
@@ -1214,6 +1392,62 @@ def _text_before_last_meta(text):
     return text[:idx]
 
 
+def _redirect_context(text):
+    """Shared redirect context for confidence-centered control rewards."""
+    meta_text = _meta_joined_text(text)
+    solve_tail = _text_after_last_meta(text)
+    prefix = _text_before_last_meta(text)
+    first_conf, last_conf = _first_and_last_confidence(text)
+    has_trigger = (
+        _has_conflict_trigger(meta_text)
+        or _has_uncertainty_signal(meta_text)
+        or _has_low_confidence(text)
+        or _has_confidence_drop(text)
+    )
+    has_diag = _has_failure_diagnosis(meta_text) or _has_decomposition_plan(meta_text)
+    has_next = _has_next_strategy(meta_text)
+    method_diff = _method_diff_score(prefix, solve_tail)
+    strategy_overlap = len(_strategy_terms(meta_text) & _strategy_terms(solve_tail))
+    tail_has_alt_method = bool(re.search(
+        r'\b(factor|discriminant|symmetry|work backwards?|'
+        r'count directly|enumerat|identity|product-to-sum|'
+        r'fraction|parallel sides|trapezoid area)\b',
+        solve_tail,
+        re.IGNORECASE,
+    ))
+    followthrough_keywords = (
+        ("invariant" in meta_text.lower() and "invariant" in solve_tail.lower())
+        or ("parity" in meta_text.lower() and "parity" in solve_tail.lower())
+        or ("case split" in meta_text.lower() and "case split" in solve_tail.lower())
+        or ("constraint" in meta_text.lower() and "constraint" in solve_tail.lower())
+    )
+    nontrivial_tail = len(solve_tail.split()) >= 8
+    has_verify_tail = _has_effective_verification_signal(solve_tail)
+    has_route_replacement = nontrivial_tail and (
+        method_diff >= 0.30
+        or (has_diag and has_next and method_diff >= 0.18 and not has_verify_tail)
+        or strategy_overlap > 0
+        or (has_next and followthrough_keywords)
+        or (has_next and tail_has_alt_method)
+    )
+    has_execution = has_route_replacement
+    return {
+        "meta_text": meta_text,
+        "solve_tail": solve_tail,
+        "prefix": prefix,
+        "first_conf": first_conf,
+        "last_conf": last_conf,
+        "has_trigger": has_trigger,
+        "has_diag": has_diag,
+        "has_next": has_next,
+        "method_diff": method_diff,
+        "strategy_overlap": strategy_overlap,
+        "has_verify_tail": has_verify_tail,
+        "has_route_replacement": has_route_replacement,
+        "has_execution": has_execution,
+    }
+
+
 _REPETITION_RE = re.compile(
     r'\b(repeat(?:ing)?|same (calculation|approach|route|steps|method|way|chain)|'
     r'again compute|re-?compute the same|re-?check the same|'
@@ -1318,6 +1552,69 @@ def route_switch_evidence_reward(completions, ground_truth=None, **kwargs):
     return rewards
 
 
+def redirect_execution_reward(completions, ground_truth=None, **kwargs):
+    """Reward confidence-triggered redirect that actually changes the route.
+
+    This is intentionally simpler than the older full controller:
+      - a redirect should be triggered by low confidence, anomaly, or diagnosis
+      - the meta block should name a next strategy
+      - the post-meta solve tail should differ structurally from the pre-meta route
+
+    The reward stays mildly positive for incomplete-but-valid redirect attempts,
+    so hard problems are not forced into all-or-nothing credit.
+    """
+    rewards = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        meta_text = _meta_joined_text(text)
+        solve_tail = _text_after_last_meta(text)
+        prefix = _text_before_last_meta(text)
+        gt = ground_truth[i] if ground_truth is not None else ""
+        is_correct = _check_correctness(text, gt)
+
+        has_trigger = (
+            _has_low_confidence(text)
+            or _has_conflict_trigger(meta_text)
+            or _has_uncertainty_signal(meta_text)
+            or _has_failure_diagnosis(meta_text)
+            or _has_decomposition_plan(meta_text)
+        )
+        has_strategy = _has_next_strategy(meta_text)
+        methods_differ = _methods_structurally_differ(prefix, solve_tail)
+        tail_coherent = (
+            len(solve_tail.split()) >= 10
+            and bool(re.search(r'\\boxed\{|####|[=+\-*/^()]|\d', solve_tail))
+        )
+
+        if has_trigger and has_strategy and methods_differ and tail_coherent:
+            rewards.append(0.9 if is_correct else 0.25)
+        elif has_trigger and has_strategy and (methods_differ or tail_coherent):
+            rewards.append(0.45 if is_correct else 0.1)
+        elif has_trigger and has_strategy:
+            rewards.append(0.1)
+        elif has_trigger and not has_strategy:
+            rewards.append(-0.2)
+        elif has_strategy and not has_trigger:
+            rewards.append(-0.05)
+        else:
+            rewards.append(0.0)
+    return rewards
+
+
+def verify_execution_reward(completions, ground_truth=None, **kwargs):
+    """Reward verification only when it is actually executed.
+
+    Combines:
+      - `effective_verification_reward`: real check in the solve tail
+      - `overconfidence_verify_reward`: high-confidence / overcommit gating
+
+    This keeps verify as a conditional controller rather than a ubiquitous
+    phrase-level reward.
+    """
+    r1 = effective_verification_reward(completions, ground_truth=ground_truth, **kwargs)
+    r2 = overconfidence_verify_reward(completions, ground_truth=ground_truth, **kwargs)
+    return [0.7 * a + 0.3 * b for a, b in zip(r1, r2)]
+
 def _methods_structurally_differ(prefix_text, tail_text):
     """Heuristic: do prefix and tail use substantively different approaches?
 
@@ -1368,7 +1665,7 @@ def confidence_omission_floor(completions, ground_truth=None, **kwargs):
     rewards = []
     for c in completions:
         text = _get_text(c)
-        blocks = _parse_meta_blocks(text)
+        blocks = _parse_meta_blocks(text, allow_free_text_fallback=False)
         if not blocks:
             rewards.append(-0.5)
         else:
@@ -1742,6 +2039,126 @@ def verify_outcome_v2(completions, ground_truth=None, **kwargs):
         else:
             rewards.append(0.1)  # non-template verify phrase
 
+    return rewards
+
+
+def confidence_revision_reward_v2(completions, ground_truth=None, **kwargs):
+    """Confidence-centered revision reward.
+
+    This is the main controller reward. It prefers:
+      - confidence drops when the meta text signals conflict/low-confidence
+      - lower final confidence on triggered trajectories
+      - calibrated final confidence on non-triggered trajectories
+    """
+    rewards = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        gt = ground_truth[i] if ground_truth is not None else ""
+        is_correct = _check_correctness(text, gt)
+        ctx = _redirect_context(text)
+        first_conf = ctx["first_conf"]
+        last_conf = ctx["last_conf"]
+        has_trigger = ctx["has_trigger"]
+
+        if first_conf is None and last_conf is None:
+            rewards.append(-0.05)
+            continue
+
+        conf = last_conf if last_conf is not None else first_conf
+        target = 1.0 if is_correct else 0.0
+        base = 1.0 - (conf - target) ** 2
+
+        if has_trigger:
+            drop = (
+                first_conf is not None
+                and last_conf is not None
+                and last_conf <= first_conf - 0.08
+            )
+            low_enough = conf <= 0.55
+            has_action = ctx["has_execution"] or ctx["has_next"]
+            if drop and has_action:
+                rewards.append(min(0.15 + 0.45 * base, 0.6))
+            elif drop or (low_enough and has_action):
+                rewards.append(min(0.1 + 0.3 * base, 0.4))
+            elif low_enough and not has_action:
+                # Low confidence but no action: small credit for honesty
+                rewards.append(min(0.05 * base, 0.1))
+            else:
+                rewards.append(max(-0.35 + 0.15 * base, -0.35))
+        else:
+            rewards.append(max(min(base * 0.2, 0.2), -0.2))
+    return rewards
+
+
+def redirect_execution_reward_v2(completions, ground_truth=None, **kwargs):
+    """Reward true redirect execution after confidence-triggered diagnosis.
+
+    A redirect gets credit only if:
+      - a trigger exists,
+      - the meta contains diagnosis or next-strategy evidence,
+      - and the post-meta solve tail structurally changes.
+    """
+    rewards = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        gt = ground_truth[i] if ground_truth is not None else ""
+        is_correct = _check_correctness(text, gt)
+        ctx = _redirect_context(text)
+
+        if not ctx["has_trigger"]:
+            rewards.append(0.0)
+            continue
+
+        if ctx["has_diag"] and ctx["has_next"] and ctx["has_execution"]:
+            rewards.append(0.6 if is_correct else 0.2)
+        elif ctx["has_diag"] and ctx["has_execution"]:
+            rewards.append(0.35 if is_correct else 0.1)
+        elif ctx["has_next"] and not ctx["has_execution"]:
+            rewards.append(-0.2)
+        elif ctx["has_diag"] and not ctx["has_execution"]:
+            # Diagnosed but didn't act — mild penalty
+            rewards.append(-0.1)
+        elif ctx["has_trigger"] and not (ctx["has_diag"] or ctx["has_next"]):
+            rewards.append(-0.25)
+        else:
+            rewards.append(0.0)
+    return rewards
+
+
+def verify_execution_reward_v2(completions, ground_truth=None, **kwargs):
+    """Reward verification only for high-confidence overcommit cases.
+
+    This avoids giving dense reward to generic verification on every sample.
+    """
+    rewards = []
+    for i, c in enumerate(completions):
+        text = _get_text(c)
+        gt = ground_truth[i] if ground_truth is not None else ""
+        is_correct = _check_correctness(text, gt)
+        meta_text = _meta_joined_text(text)
+        solve_tail = _text_after_last_meta(text)
+        _, last_conf = _first_and_last_confidence(text)
+
+        if last_conf is None:
+            rewards.append(0.0)
+            continue
+
+        high_conf = last_conf >= 0.85
+        overcommit = _has_overconfidence_signal(meta_text)
+        gated = high_conf and overcommit
+        has_intent = _has_verification_signal(meta_text) or overcommit
+        has_exec = _has_effective_verification_signal(solve_tail)
+
+        if not gated:
+            rewards.append(0.0)
+        elif has_intent and has_exec:
+            rewards.append(0.25 if is_correct else 0.05)
+        elif gated and has_intent and not has_exec:
+            rewards.append(-0.15 if is_correct else -0.3)
+        elif gated and not has_intent and not has_exec and not is_correct:
+            rewards.append(-0.2)
+        else:
+            rewards.append(0.0)
     return rewards
 
 

@@ -41,6 +41,10 @@ from src.training.rewards import (
     verify_outcome_reward,
     verify_outcome_v2,
     confidence_omission_floor,
+    confidence_revision_reward_v2,
+    redirect_execution_reward_v2,
+    verify_execution_reward_v2,
+    meta_count_bonus,
 )
 from src.training.verl_gdpo_algos import compute_gdpo_outcome_advantage
 
@@ -50,6 +54,10 @@ from src.training.verl_gdpo_algos import compute_gdpo_outcome_advantage
 # ---------------------------------------------------------------------------
 
 REWARD_CONFIGS = {
+    "BASE_R": {
+        "funcs": [correctness_reward],
+        "weights": [1.0],
+    },
     "E12": {
         "funcs": [correctness_reward, structural_switch_reward],
         "weights": [1.0, 0.3],
@@ -68,8 +76,14 @@ REWARD_CONFIGS = {
     "E21": {
         "funcs": [correctness_reward, structural_switch_reward_v2,
                   verify_outcome_v2, confidence_trajectory_reward,
-                  confidence_omission_floor],
-        "weights": [1.0, 0.15, 0.3, 0.15, 0.5],
+                  confidence_omission_floor, meta_count_bonus],
+        "weights": [1.0, 0.15, 0.3, 0.15, 0.5, 1.0],
+    },
+    "E21R": {
+        "funcs": [correctness_reward, confidence_revision_reward_v2,
+                  redirect_execution_reward_v2, verify_execution_reward_v2,
+                  confidence_omission_floor, meta_count_bonus],
+        "weights": [1.0, 0.35, 0.30, 0.15, 0.5, 1.0],
     },
     # Future experiments can be added here without touching any other file
 }
@@ -349,9 +363,13 @@ def main_task(config):
     pprint(OmegaConf.to_container(config, resolve=True))
     OmegaConf.resolve(config)
 
-    # Patch veRL to support 'gdpo' advantage estimator
-    if config.algorithm.adv_estimator == 'gdpo':
+    # Always apply GDPO patch for multi-reward modes (E13, E14, E21, E21R)
+    # Config uses adv_estimator='grpo' for veRL compatibility,
+    # but compute_advantage is patched to do per-reward normalization (GDPO)
+    mode = config.get('mode', 'E13')
+    if mode in ('E13', 'E14', 'E21', 'E21R'):
         _patch_verl_for_gdpo()
+        print(f"[verl_gdpo] GDPO patch applied for mode={mode}")
 
     # Download model checkpoint (handles HDFS paths transparently)
     local_path = copy_local_path_from_hdfs(config.actor_rollout_ref.model.path)

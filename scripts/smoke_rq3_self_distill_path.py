@@ -62,7 +62,7 @@ def main() -> None:
     row = case.to_dict()
     row["benchmark"] = "aime2024"
     df = build_self_distill_dataframe([row], mode="epistemic")
-    feedback_df = build_self_distill_dataframe([row], mode="feedback_conditioned")
+    feedback_df = build_self_distill_dataframe([row], mode="sdpo_regen")
 
     check("one epistemic row should be built", len(df) == 1)
     built = df.iloc[0]
@@ -73,8 +73,9 @@ def main() -> None:
     check("benchmark should survive into self-distill row", built["benchmark"] == "aime2024")
     check("one feedback-conditioned row should be built", len(feedback_df) == 1)
     feedback_messages = json.loads(feedback_df.iloc[0]["messages"])
-    check("feedback-conditioned prompt should include root attempt", "Failed root attempt" in feedback_messages[0]["content"])
+    check("feedback-conditioned prompt should include root attempt", "unsuccessful earlier attempt" in feedback_messages[0]["content"])
     check("feedback-conditioned prompt should include retrieved evidence", "Solve x + 4 = 9." in feedback_messages[0]["content"])
+    check("feedback-conditioned row should be marked sdpo_regen", feedback_df.iloc[0]["self_distill_mode"] == "sdpo_regen")
 
     with tempfile.NamedTemporaryFile("w+", suffix=".json", delete=False) as handle:
         json.dump({"rows": len(df), "feedback_rows": len(feedback_df), "feedback_kind": built["teacher_feedback_kind"]}, handle)

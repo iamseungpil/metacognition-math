@@ -56,9 +56,11 @@ def main() -> None:
 
     naive = build_self_distill_dataframe(rows, mode="naive")
     epistemic = build_self_distill_dataframe(rows, mode="epistemic")
+    sdpo_regen = build_self_distill_dataframe(rows, mode="sdpo_regen")
 
     check("naive should build one row", len(naive) == 1)
     check("epistemic should build one row", len(epistemic) == 1)
+    check("sdpo_regen without feedback should skip rows", len(sdpo_regen) == 0)
 
     naive_msgs = json.loads(naive.iloc[0]["messages"])
     epi_msgs = json.loads(epistemic.iloc[0]["messages"])
@@ -78,6 +80,7 @@ def main() -> None:
     out = {
         "naive": naive_summary,
         "epistemic": epi_summary,
+        "sdpo_regen": summarize_self_distill_dataframe(sdpo_regen),
     }
     print(json.dumps(out, ensure_ascii=False, indent=2))
 

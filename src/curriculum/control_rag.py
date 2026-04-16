@@ -89,6 +89,44 @@ def _parse_study_need(text: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+def _infer_difficulty(row: dict[str, Any]) -> str:
+    explicit = _first_nonempty(row, ["difficulty"])
+    if explicit:
+        return explicit
+    benchmark = _first_nonempty(row, ["benchmark"]).lower()
+    if benchmark == "gsm8k":
+        return "easy"
+    if benchmark == "math500":
+        return "medium"
+    if benchmark == "aime2024":
+        return "hard"
+    return ""
+
+
+def _classify_study_need_family(text: str) -> str:
+    lowered = (text or "").lower()
+    if not lowered.strip():
+        return ""
+    families = [
+        ("exponential_growth", ["exponential", "factor-power", "multiplicative structure", "decay", "compounding", "geometric sequence", "growth factor"]),
+        ("arithmetic_translation", ["rate", "unit", "percent", "time component", "translate word", "direct isolation", "sample-space"]),
+        ("probability_counting", ["probability", "counting", "combin", "sample-space", "stars-and-bars", "inclusion-exclusion"]),
+        ("algebraic_structure", ["factor", "identity", "substitution", "common denominator", "index substitution", "functional equation", "binomial", "remainder", "synthetic division"]),
+        ("geometry", ["geometric", "coordinate", "circle", "angle", "power of a point", "incenter", "triangle"]),
+        ("invariant_modular", ["invariant", "modular", "parity", "residue", "mod "]),
+        ("game_dp", ["alternating-turn", "game state", "recurrence", "target-based", "dp", "state analysis"]),
+    ]
+    for label, keywords in families:
+        if any(keyword in lowered for keyword in keywords):
+            return label
+    return "other"
+
+
+def _prefer_easy_example(study_need: str, strategy_hint: str = "") -> bool:
+    family = _classify_study_need_family("\n".join(part for part in [study_need, strategy_hint] if part))
+    return family in {"arithmetic_translation", "exponential_growth", "probability_counting"}
+
+
 def _has_next_strategy(text: str) -> bool:
     return bool(re.search(
         r"\b(switch to|different method|alternative approach|instead I'll|instead I will|"
@@ -124,6 +162,30 @@ class ExampleRecord:
         payload = asdict(self)
         payload["metadata"] = self.metadata or {}
         return payload
+
+
+@dataclass
+class RetrievalQuery:
+    """Structured retrieval query for meta-conditioned example lookup."""
+
+    problem: str
+    diagnosis: str = ""
+    study_need: str = ""
+    strategy_hint: str = ""
+    study_need_family: str = ""
+    prefer_easy: bool = False
+
+    def to_text(self) -> str:
+        parts = [self.problem.strip()]
+        if self.diagnosis.strip():
+            parts.append(self.diagnosis.strip())
+        if self.study_need.strip():
+            parts.append(f"missing skill or perspective: {self.study_need.strip()}")
+        if self.study_need_family.strip():
+            parts.append(f"strategy family: {self.study_need_family.strip()}")
+        if self.strategy_hint.strip():
+            parts.append(self.strategy_hint.strip())
+        return "\n".join(part for part in parts if part)
 
 
 def render_messages_as_text(messages: list[dict[str, str]], add_generation_prompt: bool = False) -> str:
@@ -236,18 +298,29 @@ def load_example_bank(paths: list[str] | list[Path], require_solution: bool = Tr
             continue
 
         for row in rows:
+            nested_meta = row.get("metadata", {}) if isinstance(row.get("metadata"), dict) else {}
             question = _first_nonempty(row, ["full_question", "question", "problem", "text"])
             solution = _first_nonempty(row, ["completion", "solution", "response", "assistant"])
             answer = _first_nonempty(row, ["full_gold_answer", "gold_answer", "answer"])
             if not question or (require_solution and not solution):
                 continue
             metadata = {
-                "benchmark": row.get("benchmark", ""),
-                "source": row.get("source", file_path.stem),
-                "topic": row.get("topic", ""),
-                "difficulty": row.get("difficulty", ""),
-                "is_correct": row.get("is_correct", True),
+                "benchmark": row.get("benchmark", nested_meta.get("benchmark", "")),
+                "source": row.get("source", nested_meta.get("source", file_path.stem)),
+                "topic": row.get("topic", nested_meta.get("topic", "")),
+                "difficulty": _infer_difficulty({**nested_meta, **row}),
+                "is_correct": row.get("is_correct", nested_meta.get("is_correct", True)),
+                "study_need": (
+                    _first_nonempty(row, ["study_need", "missing_skill", "missing_perspective"])
+                    or _first_nonempty(nested_meta, ["study_need", "missing_skill", "missing_perspective"])
+                    or _parse_study_need(solution)
+                ),
+                "strategy_tags": row.get("strategy_tags", nested_meta.get("strategy_tags", row.get("method_tags", nested_meta.get("method_tags", [])))),
+                "method": _first_nonempty(row, ["method", "strategy", "approach"]) or _first_nonempty(nested_meta, ["method", "strategy", "approach"]),
             }
+            for key, value in nested_meta.items():
+                metadata.setdefault(key, value)
+            metadata["study_need_family"] = nested_meta.get("study_need_family") or _classify_study_need_family(metadata["study_need"])
             records.append(
                 ExampleRecord(
                     question=question,
@@ -265,10 +338,28 @@ class TfidfExampleRetriever:
 
     def __init__(self, records: list[ExampleRecord]):
         self.records = records
-        self.corpus_tokens = [self._tokenize(self._record_to_text(record)) for record in records]
+        self.problem_tokens = [self._tokenize(self._record_problem_text(record)) for record in records]
+        self.solution_tokens = [self._tokenize(self._record_solution_text(record)) for record in records]
+        self.strategy_tokens = [self._tokenize(self._record_strategy_text(record)) for record in records]
+        self.study_families = [
+            str((record.metadata or {}).get("study_need_family", "")).strip()
+            or _classify_study_need_family(str((record.metadata or {}).get("study_need", "")))
+            or _classify_study_need_family(record.solution)
+            for record in records
+        ]
+        self.difficulties = [str((record.metadata or {}).get("difficulty", "")).strip().lower() for record in records]
+        self.dynamic_flags = [
+            bool((record.metadata or {}).get("from_lane")) or "dynamic" in str(record.source).lower()
+            for record in records
+        ]
+        self.has_strategy_signal = [bool(tokens) for tokens in self.strategy_tokens]
 
     @staticmethod
-    def _record_to_text(record: ExampleRecord) -> str:
+    def _join_nonempty(parts: Iterable[Any]) -> str:
+        return "\n".join(str(part).strip() for part in parts if str(part).strip())
+
+    @staticmethod
+    def _record_problem_text(record: ExampleRecord) -> str:
         meta = record.metadata or {}
         meta_bits = [
             meta.get("benchmark", ""),
@@ -276,38 +367,193 @@ class TfidfExampleRetriever:
             meta.get("topic", ""),
             meta.get("difficulty", ""),
         ]
-        return "\n".join([record.question] + [bit for bit in meta_bits if bit])
+        return TfidfExampleRetriever._join_nonempty([record.question] + meta_bits)
+
+    @staticmethod
+    def _record_solution_text(record: ExampleRecord) -> str:
+        return TfidfExampleRetriever._join_nonempty([record.solution, record.answer])
+
+    @staticmethod
+    def _record_strategy_text(record: ExampleRecord) -> str:
+        meta = record.metadata or {}
+        tags = meta.get("strategy_tags", [])
+        if isinstance(tags, str):
+            tags = [tags]
+        return TfidfExampleRetriever._join_nonempty([
+            meta.get("method", ""),
+            meta.get("topic", ""),
+            meta.get("study_need", ""),
+            " ".join(tag for tag in tags if isinstance(tag, str)),
+            _parse_study_need(record.solution),
+        ])
 
     @staticmethod
     def _tokenize(text: str) -> set[str]:
         return set(re.findall(r"[a-zA-Z0-9_]+", text.lower()))
 
-    def search(self, query: str, top_k: int = 1) -> list[dict[str, Any]]:
+    @staticmethod
+    def _normalized_overlap(query_tokens: set[str], doc_tokens: set[str]) -> float:
+        if not query_tokens or not doc_tokens:
+            return 0.0
+        overlap = len(query_tokens & doc_tokens)
+        norm = np.sqrt(len(query_tokens) * len(doc_tokens))
+        return overlap / norm if norm else 0.0
+
+    def _score_structured_query(
+        self,
+        query: RetrievalQuery,
+        idx: int,
+    ) -> tuple[float, dict[str, float]]:
+        weights = {
+            "problem_similarity": 0.45,
+            "diagnosis_to_solution": 0.20,
+            "study_need_to_strategy": 0.25,
+            "strategy_hint": 0.10,
+        }
+        query_problem = self._tokenize(query.problem)
+        query_diagnosis = self._tokenize(query.diagnosis)
+        query_study_need = self._tokenize(query.study_need)
+        query_strategy = self._tokenize(query.strategy_hint)
+
+        problem_score = self._normalized_overlap(query_problem, self.problem_tokens[idx])
+        diagnosis_score = self._normalized_overlap(
+            query_diagnosis,
+            self.solution_tokens[idx] | self.strategy_tokens[idx],
+        )
+        study_need_score = self._normalized_overlap(
+            query_study_need,
+            self.strategy_tokens[idx] | self.solution_tokens[idx],
+        )
+        strategy_score = self._normalized_overlap(
+            query_strategy,
+            self.strategy_tokens[idx] | self.solution_tokens[idx],
+        )
+        family_score = 0.0
+        if (
+            query.study_need_family
+            and query.study_need_family != "other"
+            and query.study_need_family == self.study_families[idx]
+        ):
+            family_score = 1.0
+        dynamic_bonus = 1.0 if self.dynamic_flags[idx] else 0.0
+        typed_strategy_bonus = 1.0 if self.has_strategy_signal[idx] else 0.0
+        difficulty = self.difficulties[idx]
+        easy_bonus = 0.0
+        if query.prefer_easy and difficulty == "easy" and (
+            family_score > 0.0
+            or study_need_score > 0.0
+            or typed_strategy_bonus > 0.0
+        ):
+            easy_bonus = 1.0
+        generic_penalty = 0.0
+        if query.study_need.strip() and not self.has_strategy_signal[idx]:
+            generic_penalty += 0.10
+        if query.prefer_easy and difficulty == "easy" and easy_bonus == 0.0:
+            generic_penalty += 0.08
+        if (
+            query.study_need_family
+            and query.study_need_family != "other"
+            and not self.study_families[idx]
+        ):
+            generic_penalty += 0.06
+        breakdown = {
+            "problem_similarity": problem_score,
+            "diagnosis_to_solution": diagnosis_score,
+            "study_need_to_strategy": study_need_score,
+            "strategy_hint": strategy_score,
+            "study_need_family_match": family_score,
+            "dynamic_bonus": dynamic_bonus,
+            "typed_strategy_bonus": typed_strategy_bonus,
+            "easy_bonus": easy_bonus,
+            "generic_penalty": generic_penalty,
+        }
+        total = 0.0
+        active_weight = 0.0
+        for key, value in breakdown.items():
+            if key == "study_need_family_match":
+                if value > 0.0:
+                    total += 0.15 * value
+                    active_weight += 0.15
+                continue
+            if key == "dynamic_bonus":
+                if value > 0.0:
+                    total += 0.10 * value
+                    active_weight += 0.10
+                continue
+            if key == "typed_strategy_bonus":
+                if value > 0.0:
+                    total += 0.10 * value
+                    active_weight += 0.10
+                continue
+            if key == "easy_bonus":
+                if value > 0.0:
+                    total += 0.08 * value
+                    active_weight += 0.08
+                continue
+            if key == "generic_penalty":
+                continue
+            if value > 0.0:
+                total += weights[key] * value
+                active_weight += weights[key]
+        if active_weight > 0:
+            total /= active_weight
+        total = max(0.0, total - generic_penalty)
+        breakdown["total"] = total
+        return total, breakdown
+
+    def _candidate_indices(self, query: RetrievalQuery | str) -> list[int]:
+        indices = list(range(len(self.records)))
+        if not isinstance(query, RetrievalQuery):
+            return indices
+
+        if query.study_need_family:
+            family_indices = [idx for idx in indices if self.study_families[idx] == query.study_need_family]
+            if len(family_indices) >= 5:
+                indices = family_indices
+
+        if query.prefer_easy:
+            easy_indices = [idx for idx in indices if self.difficulties[idx] == "easy"]
+            if len(easy_indices) >= 5:
+                indices = easy_indices
+
+        dynamic_indices = [idx for idx in indices if self.dynamic_flags[idx]]
+        if len(dynamic_indices) >= 3:
+            indices = dynamic_indices + [idx for idx in indices if idx not in set(dynamic_indices)]
+        return indices
+
+    def search(self, query: str | RetrievalQuery, top_k: int = 1) -> list[dict[str, Any]]:
         if not self.records:
-            return []
-        query_tokens = self._tokenize(query)
-        if not query_tokens:
             return []
 
         scores = []
-        for idx, doc_tokens in enumerate(self.corpus_tokens):
-            if not doc_tokens:
-                score = 0.0
-            else:
-                overlap = len(query_tokens & doc_tokens)
-                norm = np.sqrt(len(query_tokens) * len(doc_tokens))
-                score = overlap / norm if norm else 0.0
-            scores.append(score)
+        candidate_indices = self._candidate_indices(query)
+        if isinstance(query, RetrievalQuery):
+            if not query.to_text().strip():
+                return []
+            for idx in candidate_indices:
+                score, breakdown = self._score_structured_query(query, idx)
+                scores.append((score, breakdown))
+        else:
+            query_tokens = self._tokenize(query)
+            if not query_tokens:
+                return []
+            for idx in candidate_indices:
+                doc_tokens = self.problem_tokens[idx]
+                score = self._normalized_overlap(query_tokens, doc_tokens)
+                scores.append((score, {"problem_similarity": score, "total": score}))
 
-        order = np.argsort(np.asarray(scores))[::-1][:top_k]
+        order = np.argsort(np.asarray([score for score, _ in scores]))[::-1][:top_k]
         results = []
         for idx in order:
-            score = float(scores[idx])
+            score, breakdown = scores[idx]
+            record_idx = candidate_indices[idx]
+            score = float(score)
             if score <= 0:
                 continue
-            record = self.records[idx]
+            record = self.records[record_idx]
             results.append({
                 "score": score,
+                "score_breakdown": breakdown,
                 "record": record,
             })
         return results
@@ -351,6 +597,19 @@ def analyze_completion_for_rag(completion: str) -> dict[str, Any]:
     has_low_conf = _has_low_confidence(completion)
     study_needs = [need for need in (_parse_study_need(block.get("text", "")) for block in blocks) if need]
     study_need = study_needs[0] if study_needs else ""
+    trigger_reasons = []
+    if has_trigger:
+        trigger_reasons.append("surface_uncertainty_or_conflict")
+    if has_low_conf:
+        trigger_reasons.append("low_confidence")
+    if has_diagnosis:
+        trigger_reasons.append("failure_diagnosis")
+    if has_decomposition:
+        trigger_reasons.append("failure_decomposition")
+    if has_next_strategy or has_switch:
+        trigger_reasons.append("next_strategy")
+    if study_need:
+        trigger_reasons.append("study_need")
 
     should_retrieve = (has_trigger or has_low_conf or bool(study_need)) and (
         has_diagnosis or has_decomposition or has_next_strategy or has_switch or bool(study_need)
@@ -368,24 +627,34 @@ def analyze_completion_for_rag(completion: str) -> dict[str, Any]:
         "has_next_strategy": has_next_strategy,
         "has_switch": has_switch,
         "study_need": study_need,
+        "trigger_reasons": trigger_reasons,
         "should_retrieve": should_retrieve,
         "diagnosis_text": diagnosis_text,
+        "retrieval_mode": "diagnosis_triggered_retry" if should_retrieve else "none",
     }
 
 
-def build_retrieval_query(question: str, analysis: dict[str, Any]) -> str:
-    parts = [question.strip()]
+def build_retrieval_query_bundle(question: str, analysis: dict[str, Any]) -> RetrievalQuery:
     diagnosis = analysis.get("diagnosis_text", "").strip()
-    if diagnosis:
-        parts.append(diagnosis)
     study_need = analysis.get("study_need", "").strip()
-    if study_need:
-        parts.append(f"missing skill or perspective: {study_need}")
+    strategy_hints = []
     if analysis.get("has_decomposition"):
-        parts.append("needs failure diagnosis and the right missing skill")
+        strategy_hints.append("needs failure diagnosis and the right missing skill")
     if analysis.get("has_next_strategy") or analysis.get("has_switch"):
-        parts.append("needs a different solution method")
-    return "\n".join(parts)
+        strategy_hints.append("needs a different solution method")
+    study_need_family = _classify_study_need_family("\n".join([study_need, diagnosis]))
+    return RetrievalQuery(
+        problem=question.strip(),
+        diagnosis=diagnosis,
+        study_need=study_need,
+        strategy_hint="\n".join(strategy_hints),
+        study_need_family=study_need_family,
+        prefer_easy=_prefer_easy_example(study_need, "\n".join(strategy_hints)),
+    )
+
+
+def build_retrieval_query(question: str, analysis: dict[str, Any]) -> str:
+    return build_retrieval_query_bundle(question, analysis).to_text()
 
 
 def format_retrieved_example(record: ExampleRecord, score: float, rank: int) -> str:
@@ -424,6 +693,7 @@ def build_incontext_user_prompt(
         "Use <|meta|> blocks only if they genuinely change your behavior, and end with a final \\boxed{answer}.\n\n"
         f"Why the previous route looked weak:\n{diagnosis_section}\n\n"
         f"Missing skill or perspective to recover:\n{study_need_section}\n\n"
+        f"Retrieved example policy:\nUse the example only as strategic evidence. Adapt it to the current problem rather than copying surface details.\n\n"
         f"{examples}\n"
         f"Original problem:\n{question}\n"
     )

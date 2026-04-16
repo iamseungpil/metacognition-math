@@ -60,7 +60,7 @@ nohup python -m verl.trainer.main_ppo \
   data.train_batch_size=128 \
   data.val_batch_size=64 \
   algorithm.adv_estimator=gdpo \
-  ++algorithm.gdpo_reward_keys='[correctness,switch_v2,verify_v2,conf_traj,meta_floor]' \
+  ++algorithm.gdpo_reward_keys='[correctness,switch_v2,verify_v2,conf_traj,meta_floor,meta_count_bonus]' \
   algorithm.use_kl_in_reward=False \
   ++reward.custom_reward_function.path=src/training/verl_reward.py \
   ++reward.custom_reward_function.name=compute_score \

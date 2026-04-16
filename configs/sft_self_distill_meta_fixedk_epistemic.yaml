@@ -1,0 +1,14 @@
+# Meta strict-SFT -> fixed-K claim-bearing epistemic self-distill.
+model_name_or_path: checkpoints/v8_meta_inside_strict_sft
+dataset_path: results/self_distill/meta_fixedk_epistemic/online_sdpo_regen.parquet
+output_dir: checkpoints/self_distill_meta_fixedk_epistemic
+run_name: self-distill-meta-fixedk-epistemic
+wandb_project: metacot-math
+
+num_train_epochs: 2
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 4
+learning_rate: 1.0e-6
+max_length: 4096
+save_strategy: epoch
+eval_strategy: "no"

@@ -1,10 +1,9 @@
-# veRL 0.7.1 E21 GDPO config
-# Override the default ppo_trainer.yaml
+# veRL 0.7.1 confidence-centered redirect pilot config
+# Preserves legacy E21 while making E21R launchable on the old custom-reward path.
 
 defaults:
   - ppo_trainer
 
-# Model
 actor_rollout_ref:
   model:
     path: checkpoints/v8_meta_inside_E20a
@@ -22,31 +21,27 @@ actor_rollout_ref:
     response_length: 4096
     prompt_length: 512
 
-# Data
 data:
-  train_files: data/verl_train.parquet
-  val_files: data/verl_val.parquet
+  train_files: data/verl_train_redirect.parquet
+  val_files: data/verl_val_redirect.parquet
   max_prompt_length: 512
   max_response_length: 4096
   train_batch_size: 128
 
-# Algorithm - GDPO
 algorithm:
   adv_estimator: gdpo
-  gdpo_reward_keys: [correctness, switch_v2, verify_v2, conf_traj, meta_floor, meta_count_bonus]
+  gdpo_reward_keys: [correctness, confidence_revision, redirect_execution, verify_execution, meta_floor, meta_count_bonus]
   use_kl_in_reward: False
 
-# Reward - our custom function
 reward:
   custom_reward_function:
     path: src/training/verl_reward.py
-    name: compute_score
+    name: compute_score_confidence_centered
 
-# Trainer
 trainer:
   total_epochs: 20
   project_name: metacot-math
-  experiment_name: verl_e21_gdpo
+  experiment_name: verl_e21r_gdpo
   nnodes: 1
   n_gpus_per_node: 4
   save_freq: 100

@@ -7,11 +7,15 @@ conda activate "$REMOTE_CONDA_ENV"
 cd /scratch/metacognition
 export PYTHONPATH=/scratch/metacognition
 export WANDB_API_KEY=$(cat ~/.wandb_key 2>/dev/null || echo "2f4e627868f1f9dad10bcb1a14fbf96817e6baa9")
+export WANDB_PROJECT="${WANDB_PROJECT:-metacot-math}"
+export WANDB_NAME="${WANDB_NAME:-}"
+export WANDB_RUN_GROUP="${WANDB_RUN_GROUP:-}"
 
 MODE=${MODE:-${1:-E3}}
 STEPS=${2:-1000}
 MODEL_PATH="${MODEL_PATH:-checkpoints/qwen3_metacot_control_v5_all_sft}"
 DATA="${DATA:-mixed_train}"
+DATA_PATH="${DATA_PATH:-verl_train_filtered.parquet}"
 OUTPUT_DIR="${OUTPUT_DIR:-checkpoints/grpo_v2_${MODE}}"
 PROBE_PATH="${PROBE_PATH:-checkpoints/simple_probe_control_v5_all_sft/best_probe.pt}"
 NUM_GENERATIONS="${NUM_GENERATIONS:-2}"
@@ -24,11 +28,18 @@ EXTRA_ARGS=()
 if [[ "$MODE" == "E6" || "$MODE" == "E7" ]]; then
     EXTRA_ARGS+=(--probe_path "$PROBE_PATH")
 fi
+if [[ "$DATA" == "filtered" || -n "${DATA_PATH:-}" ]]; then
+    EXTRA_ARGS+=(--data_path "$DATA_PATH")
+fi
 
 echo "=== GRPO v2: $MODE, $STEPS steps ==="
 echo "  model_path=$MODEL_PATH"
 echo "  data=$DATA"
+echo "  data_path=$DATA_PATH"
 echo "  output_dir=$OUTPUT_DIR"
+echo "  wandb_project=$WANDB_PROJECT"
+echo "  wandb_name=${WANDB_NAME:-<auto>}"
+echo "  wandb_group=${WANDB_RUN_GROUP:-<none>}"
 echo "  num_generations=$NUM_GENERATIONS"
 echo "  max_completion_length=$MAX_COMPLETION_LENGTH"
 echo "  max_prompt_length=$MAX_PROMPT_LENGTH"

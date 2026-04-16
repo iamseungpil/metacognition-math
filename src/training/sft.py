@@ -3,12 +3,16 @@ import inspect
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
-import torch
 import yaml
 from datasets import Dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM
+
+try:
+    import torch
+except ImportError:  # pragma: no cover - dataset prep should still be testable without torch
+    torch = None
 
 
 def _normalize_token_ids(encoded) -> list[int]:
@@ -18,7 +22,7 @@ def _normalize_token_ids(encoded) -> list[int]:
     elif isinstance(encoded, dict) and "input_ids" in encoded:
         encoded = encoded["input_ids"]
 
-    if isinstance(encoded, torch.Tensor):
+    if torch is not None and isinstance(encoded, torch.Tensor):
         encoded = encoded.tolist()
 
     if encoded and isinstance(encoded[0], (list, tuple)):
@@ -27,12 +31,47 @@ def _normalize_token_ids(encoded) -> list[int]:
     return [int(x) for x in encoded]
 
 
-def prepare_sft_dataset(data_path: str, tokenizer, max_length: int = 4096) -> Dataset:
+def _load_messages(raw_messages):
+    if isinstance(raw_messages, list):
+        return raw_messages
+    if isinstance(raw_messages, str):
+        return json.loads(raw_messages)
+    raise TypeError(f"Unsupported messages payload type: {type(raw_messages)!r}")
+
+
+def _load_teacher_kl_config(config: dict[str, Any]) -> dict[str, Any]:
+    teacher = dict(config.get("teacher_kl", {}) or {})
+    teacher.setdefault("enabled", False)
+    teacher.setdefault("coef", 0.0)
+    teacher.setdefault("require_targets", True)
+    teacher.setdefault("meta_weight", 1.0)
+    teacher.setdefault("diagnosis_weight", 1.25)
+    teacher.setdefault("study_need_weight", 1.4)
+    teacher.setdefault("recovery_weight", 0.7)
+    teacher.setdefault("verify_weight", 1.1)
+    return teacher
+
+
+def prepare_sft_dataset(
+    data_path: str,
+    tokenizer,
+    max_length: int = 4096,
+    *,
+    teacher_kl: dict[str, Any] | None = None,
+) -> Dataset:
     """Load and tokenize Meta-CoT SFT data."""
     df = pd.read_parquet(data_path)
+    teacher_kl = dict(teacher_kl or {})
+    teacher_kl_enabled = bool(teacher_kl.get("enabled", False))
+
+    from src.training.self_distill.kl import (
+        build_control_span_weights,
+        load_teacher_topk_payload,
+        trim_teacher_payload,
+    )
 
     def tokenize_row(row):
-        messages = json.loads(row["messages"])
+        messages = _load_messages(row["messages"])
 
         # Tokenize prompt (all messages except the last assistant) to find boundary
         # Messages can be [user, assistant] or [system, user, assistant]
@@ -57,25 +96,229 @@ def prepare_sft_dataset(data_path: str, tokenizer, max_length: int = 4096) -> Da
             labels[i] = -100
 
         attention_mask = [1] * len(full_ids)
-        return {
+        num_target_tokens = sum(1 for token in labels if token != -100)
+        built = {
             "input_ids": full_ids,
             "attention_mask": attention_mask,
             "labels": labels,
+            "num_target_tokens": num_target_tokens,
         }
+        if teacher_kl_enabled:
+            teacher_payload = load_teacher_topk_payload(row)
+            if teacher_payload is not None and num_target_tokens > 0:
+                trimmed = trim_teacher_payload(teacher_payload, target_length=num_target_tokens)
+                if trimmed.assistant_token_ids:
+                    assistant_text = str(messages[-1]["content"])
+                    weights = build_control_span_weights(
+                        tokenizer=tokenizer,
+                        assistant_text=assistant_text,
+                        expected_length=len(trimmed.assistant_token_ids),
+                        diagnosis_text=str(row.get("diagnosis_text", "") or ""),
+                        study_need=str(row.get("study_need", "") or ""),
+                        meta_weight=float(teacher_kl.get("meta_weight", 1.0)),
+                        diagnosis_weight=float(teacher_kl.get("diagnosis_weight", 1.25)),
+                        study_need_weight=float(teacher_kl.get("study_need_weight", 1.4)),
+                        recovery_weight=float(teacher_kl.get("recovery_weight", 0.7)),
+                        verify_weight=float(teacher_kl.get("verify_weight", 1.1)),
+                    )
+                    built.update({
+                        "teacher_topk_token_ids": trimmed.token_ids,
+                        "teacher_topk_logprobs": trimmed.logprobs,
+                        "teacher_target_logprobs": trimmed.target_logprobs,
+                        "teacher_assistant_token_ids": trimmed.assistant_token_ids,
+                        "teacher_position_weights": weights,
+                        "teacher_kl_active": 1,
+                    })
+                else:
+                    built["teacher_kl_active"] = 0
+            else:
+                built["teacher_kl_active"] = 0
+        return built
 
     ds = Dataset.from_pandas(df)
     ds = ds.map(tokenize_row, remove_columns=df.columns.tolist())
+    ds = ds.filter(lambda row: row["num_target_tokens"] > 0)
+    if len(ds) == 0:
+        raise ValueError("SFT dataset has zero trainable rows after truncation/masking.")
+    if teacher_kl_enabled:
+        active_rows = sum(int(x) for x in ds["teacher_kl_active"]) if "teacher_kl_active" in ds.column_names else 0
+        if active_rows == 0 and bool(teacher_kl.get("require_targets", True)):
+            raise ValueError(
+                "teacher_kl is enabled, but no rows contained teacher top-k targets. "
+                "Build teacher_topk_targets.parquet first or disable teacher_kl."
+            )
+        if "teacher_kl_active" in ds.column_names:
+            ds = ds.remove_columns(["teacher_kl_active"])
+    ds = ds.remove_columns(["num_target_tokens"])
     return ds
+
+
+class DistillDataCollator:
+    """Pad normal SFT fields and optional teacher-KL annotations."""
+
+    EXTRA_KEYS = {
+        "teacher_topk_token_ids",
+        "teacher_topk_logprobs",
+        "teacher_target_logprobs",
+        "teacher_assistant_token_ids",
+        "teacher_position_weights",
+    }
+
+    def __init__(self, tokenizer):
+        from transformers import DataCollatorForSeq2Seq
+
+        self.base = DataCollatorForSeq2Seq(tokenizer=tokenizer, padding=True, return_tensors="pt")
+
+    def __call__(self, features):
+        import torch
+
+        extra_payloads = [{k: feature.pop(k) for k in list(feature.keys()) if k in self.EXTRA_KEYS} for feature in features]
+        batch = self.base(features)
+
+        if not any(payload for payload in extra_payloads):
+            return batch
+
+        max_positions = max((len(payload.get("teacher_assistant_token_ids", [])) for payload in extra_payloads), default=0)
+        max_top_k = max(
+            (
+                len(position)
+                for payload in extra_payloads
+                for position in payload.get("teacher_topk_token_ids", [])
+            ),
+            default=0,
+        )
+        if max_positions == 0 or max_top_k == 0:
+            return batch
+
+        bsz = len(extra_payloads)
+        token_ids = torch.full((bsz, max_positions, max_top_k), -1, dtype=torch.long)
+        logprobs = torch.full((bsz, max_positions, max_top_k), -1e9, dtype=torch.float32)
+        target_logprobs = torch.full((bsz, max_positions), -1e9, dtype=torch.float32)
+        assistant_token_ids = torch.full((bsz, max_positions), -1, dtype=torch.long)
+        position_weights = torch.zeros((bsz, max_positions), dtype=torch.float32)
+
+        for batch_idx, payload in enumerate(extra_payloads):
+            positions = min(
+                len(payload.get("teacher_assistant_token_ids", [])),
+                len(payload.get("teacher_topk_token_ids", [])),
+                len(payload.get("teacher_topk_logprobs", [])),
+                len(payload.get("teacher_target_logprobs", [])),
+                len(payload.get("teacher_position_weights", [])),
+            )
+            for pos_idx in range(positions):
+                ids = [int(x) for x in payload["teacher_topk_token_ids"][pos_idx][:max_top_k]]
+                lps = [float(x) for x in payload["teacher_topk_logprobs"][pos_idx][:max_top_k]]
+                size = min(len(ids), len(lps), max_top_k)
+                if size:
+                    token_ids[batch_idx, pos_idx, :size] = torch.tensor(ids[:size], dtype=torch.long)
+                    logprobs[batch_idx, pos_idx, :size] = torch.tensor(lps[:size], dtype=torch.float32)
+                target_logprobs[batch_idx, pos_idx] = float(payload["teacher_target_logprobs"][pos_idx])
+                assistant_token_ids[batch_idx, pos_idx] = int(payload["teacher_assistant_token_ids"][pos_idx])
+                position_weights[batch_idx, pos_idx] = float(payload["teacher_position_weights"][pos_idx])
+
+        batch["teacher_topk_token_ids"] = token_ids
+        batch["teacher_topk_logprobs"] = logprobs
+        batch["teacher_target_logprobs"] = target_logprobs
+        batch["teacher_assistant_token_ids"] = assistant_token_ids
+        batch["teacher_position_weights"] = position_weights
+        return batch
+
+
+class DistillTrainerMixin:
+    """Add optional control-span teacher KL on top of standard CE/SFT."""
+
+    EXTRA_KEYS = DistillDataCollator.EXTRA_KEYS
+
+    def __init__(self, *args, teacher_kl_coef: float = 0.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.teacher_kl_coef = float(teacher_kl_coef)
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        import torch
+
+        teacher_inputs = {key: inputs.pop(key) for key in list(inputs.keys()) if key in self.EXTRA_KEYS}
+        outputs = model(**inputs)
+        loss = outputs.loss
+
+        if self.teacher_kl_coef > 0.0 and teacher_inputs:
+            kl_loss = self._compute_teacher_kl(outputs.logits, inputs["labels"], teacher_inputs)
+            if kl_loss is not None:
+                loss = loss + self.teacher_kl_coef * kl_loss
+
+        return (loss, outputs) if return_outputs else loss
+
+    def _compute_teacher_kl(self, logits, labels, teacher_inputs):
+        import torch
+
+        teacher_token_ids = teacher_inputs.get("teacher_topk_token_ids")
+        teacher_logprobs = teacher_inputs.get("teacher_topk_logprobs")
+        teacher_target_logprobs = teacher_inputs.get("teacher_target_logprobs")
+        teacher_assistant_token_ids = teacher_inputs.get("teacher_assistant_token_ids")
+        position_weights = teacher_inputs.get("teacher_position_weights")
+        if any(x is None for x in (teacher_token_ids, teacher_logprobs, teacher_target_logprobs, teacher_assistant_token_ids, position_weights)):
+            return None
+
+        shifted_logits = logits[:, :-1, :]
+        shifted_labels = labels[:, 1:]
+        total = shifted_logits.new_zeros(())
+        total_weight = shifted_logits.new_zeros(())
+
+        for batch_idx in range(shifted_logits.shape[0]):
+            assistant_positions = torch.nonzero(shifted_labels[batch_idx] != -100, as_tuple=False).squeeze(-1)
+            if assistant_positions.numel() == 0:
+                continue
+            usable = min(
+                assistant_positions.numel(),
+                teacher_assistant_token_ids.shape[1],
+                position_weights.shape[1],
+            )
+            if usable == 0:
+                continue
+            student_logits = shifted_logits[batch_idx, assistant_positions[:usable], :]
+            for pos_idx in range(usable):
+                weight = position_weights[batch_idx, pos_idx]
+                if weight <= 0:
+                    continue
+                token_row = teacher_token_ids[batch_idx, pos_idx]
+                logprob_row = teacher_logprobs[batch_idx, pos_idx]
+                valid = token_row >= 0
+                if not torch.any(valid):
+                    continue
+
+                ids = token_row[valid]
+                teacher_lps = logprob_row[valid]
+                target_id = teacher_assistant_token_ids[batch_idx, pos_idx]
+                target_lp = teacher_target_logprobs[batch_idx, pos_idx]
+                label_token = shifted_labels[batch_idx, assistant_positions[pos_idx]]
+                if target_id >= 0 and label_token >= 0 and int(target_id.item()) != int(label_token.item()):
+                    continue
+                if target_id >= 0 and not torch.any(ids == target_id):
+                    ids = torch.cat([ids, target_id.view(1)])
+                    teacher_lps = torch.cat([teacher_lps, target_lp.view(1)])
+
+                teacher_probs = torch.softmax(teacher_lps, dim=-1)
+                student_log_probs = torch.log_softmax(student_logits[pos_idx, ids], dim=-1)
+                teacher_log_probs = torch.log(teacher_probs.clamp_min(1e-12))
+                kl = torch.sum(teacher_probs * (teacher_log_probs - student_log_probs))
+                total = total + weight * kl
+                total_weight = total_weight + weight
+
+        if total_weight.item() <= 0:
+            return None
+        return total / total_weight
 
 
 def run_sft(config_path: str):
     """Run Meta-CoT SFT training."""
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
     model_name = config["model_name_or_path"]
     data_path = config["dataset_path"]
     output_dir = config["output_dir"]
+    teacher_kl = _load_teacher_kl_config(config)
     # Let HuggingFace Trainer handle wandb init via report_to="wandb"
     os.environ["WANDB_PROJECT"] = config.get("wandb_project", "metacot-math")
     os.environ["WANDB_NAME"] = config.get("run_name", "metacot-sft")
@@ -101,12 +344,23 @@ def run_sft(config_path: str):
         model.resize_token_embeddings(len(tokenizer))
         print(f"Resized embeddings to {len(tokenizer)}")
 
-    full_dataset = prepare_sft_dataset(data_path, tokenizer, max_length=config.get("max_length", 4096))
-    split = full_dataset.train_test_split(test_size=0.05, seed=42)
-    train_dataset = split["train"]
-    eval_dataset = split["test"]
+    full_dataset = prepare_sft_dataset(
+        data_path,
+        tokenizer,
+        max_length=config.get("max_length", 4096),
+        teacher_kl=teacher_kl,
+    )
+    if len(full_dataset) < 2:
+        train_dataset = full_dataset
+        eval_dataset = full_dataset
+    else:
+        n_eval = max(1, int(round(len(full_dataset) * 0.05)))
+        n_eval = min(n_eval, len(full_dataset) - 1)
+        split = full_dataset.train_test_split(test_size=n_eval, seed=42)
+        train_dataset = split["train"]
+        eval_dataset = split["test"]
 
-    from transformers import TrainingArguments, Trainer, DataCollatorForSeq2Seq
+    from transformers import Trainer, TrainingArguments
 
     training_args = TrainingArguments(
         output_dir=output_dir,
@@ -118,18 +372,17 @@ def run_sft(config_path: str):
         warmup_ratio=0.1,
         bf16=True,
         logging_steps=10,
+        save_strategy=config.get("save_strategy", "steps"),
         save_steps=config.get("save_steps", 500),
         save_total_limit=3,
         report_to="wandb",
-        eval_strategy="no",  # Disable eval to prevent OOM on long Meta-CoT chains
+        eval_strategy=config.get("eval_strategy", "no"),
         deepspeed=config.get("deepspeed", None),
         gradient_checkpointing=True,
         remove_unused_columns=False,
     )
 
-    data_collator = DataCollatorForSeq2Seq(
-        tokenizer=tokenizer, padding=True, return_tensors="pt"
-    )
+    data_collator = DistillDataCollator(tokenizer=tokenizer)
 
     trainer_kwargs = {
         "model": model,
@@ -138,13 +391,22 @@ def run_sft(config_path: str):
         "eval_dataset": eval_dataset,
         "data_collator": data_collator,
     }
-    trainer_signature = inspect.signature(Trainer.__init__)
+
+    TrainerClass = Trainer
+    if teacher_kl.get("enabled", False) and float(teacher_kl.get("coef", 0.0)) > 0.0:
+        class DistillTrainer(DistillTrainerMixin, Trainer):
+            pass
+        TrainerClass = DistillTrainer
+
+    trainer_signature = inspect.signature(TrainerClass.__init__)
     if "processing_class" in trainer_signature.parameters:
         trainer_kwargs["processing_class"] = tokenizer
     else:
         trainer_kwargs["tokenizer"] = tokenizer
+    if issubclass(TrainerClass, DistillTrainerMixin):
+        trainer_kwargs["teacher_kl_coef"] = float(teacher_kl.get("coef", 0.0))
 
-    trainer = Trainer(**trainer_kwargs)
+    trainer = TrainerClass(**trainer_kwargs)
 
     trainer.train()
     trainer.save_model(output_dir)

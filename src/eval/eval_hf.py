@@ -17,15 +17,15 @@ import torch
 import pandas as pd
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from peft import PeftModel
 
-from src.metacot.prompt import parse_meta_blocks
+from src.metacot.prompt import META_END, META_START, parse_meta_blocks
 from src.curriculum.control_rag import (
     TfidfExampleRetriever,
     build_model_inputs,
     load_example_bank,
     run_redirect_rag_pass,
 )
+from src.training.tokenizer_utils import ensure_meta_tokens_not_special
 
 
 from src.training.rewards import _check_correctness, _extract_answer_fallback
@@ -44,6 +44,8 @@ def load_benchmarks(names, max_problems=30):
         "gsm8k": ("openai/gsm8k", "main", "test", "question", "answer"),
         "math500": ("HuggingFaceH4/MATH-500", None, "test", "problem", "answer"),
         "aime2024": ("HuggingFaceH4/aime_2024", None, "train", "problem", "answer"),
+        "omni_math": ("KbsdJames/Omni-MATH", None, "test", "problem", "answer"),
+        "openmath_cot": ("nvidia/OpenMathReasoning", "cot", "train", "problem", "expected_answer"),
     }
     all_problems = []
     for name in names:
@@ -77,7 +79,19 @@ def load_benchmarks(names, max_problems=30):
     return all_problems
 
 
-def evaluate(model, tokenizer, problems, num_samples=1, max_tokens=4096, retriever=None, rag_top_k=1):
+def evaluate(
+    model,
+    tokenizer,
+    problems,
+    num_samples=1,
+    max_tokens=4096,
+    retriever=None,
+    rag_top_k=1,
+    *,
+    do_sample=True,
+    temperature=0.7,
+    top_p=0.95,
+):
     results = []
     for idx, prob in enumerate(problems):
         messages = [{"role": "user", "content": prob["question"]}]
@@ -93,7 +107,9 @@ def evaluate(model, tokenizer, problems, num_samples=1, max_tokens=4096, retriev
             with torch.no_grad():
                 output = model.generate(
                     **inputs, max_new_tokens=max_tokens,
-                    do_sample=True, temperature=0.7, top_p=0.95,
+                    do_sample=do_sample,
+                    temperature=temperature,
+                    top_p=top_p,
                     pad_token_id=tokenizer.pad_token_id,
                 )
             prompt_len_tokens = int(inputs["input_ids"].shape[1])
@@ -181,7 +197,8 @@ def print_results(model_name, results):
     return df
 
 
-def build_run_metadata(args, model_name, problems, tokenizer):
+def build_run_metadata(args, model_name, problems, tokenizer, *, resolved_do_sample: bool):
+    additional_special = getattr(tokenizer, "additional_special_tokens", None)
     return {
         "model": model_name,
         "model_path": args.model_path,
@@ -190,10 +207,22 @@ def build_run_metadata(args, model_name, problems, tokenizer):
         "benchmarks": args.benchmarks,
         "max_problems_per_benchmark": args.max_problems,
         "num_samples": args.num_samples,
+        "max_new_tokens": args.max_new_tokens,
+        "do_sample_requested": args.do_sample,
+        "do_sample_resolved": resolved_do_sample,
+        "temperature": args.temperature,
+        "top_p": args.top_p,
+        "seed": args.seed,
+        "device_map": args.device_map,
         "total_problems": len(problems),
         "hostname": socket.gethostname(),
         "utc_timestamp": dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
         "tokenizer_name_or_path": getattr(tokenizer, "name_or_path", None),
+        "meta_token_ids": {
+            META_START: tokenizer.convert_tokens_to_ids(META_START),
+            META_END: tokenizer.convert_tokens_to_ids(META_END),
+        },
+        "additional_special_tokens": list(additional_special or []),
     }
 
 
@@ -234,6 +263,12 @@ def main():
     parser.add_argument("--benchmarks", nargs="+", default=["gsm8k", "math500"])
     parser.add_argument("--max_problems", type=int, default=30)
     parser.add_argument("--num_samples", type=int, default=1)
+    parser.add_argument("--max_new_tokens", type=int, default=4096)
+    parser.add_argument("--do_sample", action="store_true")
+    parser.add_argument("--temperature", type=float, default=0.7)
+    parser.add_argument("--top_p", type=float, default=0.95)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--device_map", default="single", choices=["single", "auto"])
     parser.add_argument("--output_dir", default="results")
     parser.add_argument("--model_name", default=None, help="Override model name for output file")
     parser.add_argument("--rag_example_bank", nargs="*", default=None,
@@ -244,13 +279,29 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     use_cuda = torch.cuda.is_available()
     load_dtype = torch.bfloat16 if use_cuda else torch.float32
+    torch.manual_seed(args.seed)
+    if use_cuda:
+        torch.cuda.manual_seed_all(args.seed)
+
+    do_sample = bool(args.do_sample)
+    if args.temperature <= 0.0:
+        do_sample = False
+
+    model_load_kwargs = {
+        "torch_dtype": load_dtype,
+        "trust_remote_code": True,
+    }
+    if use_cuda and args.device_map == "auto":
+        model_load_kwargs["device_map"] = "auto"
 
     # Load model
     if args.is_lora:
+        from peft import PeftModel
+
         base_path = args.base_model or "checkpoints/qwen3_meta_sft"
         print(f"Loading base: {base_path}")
         model = AutoModelForCausalLM.from_pretrained(
-            base_path, torch_dtype=load_dtype, trust_remote_code=True,
+            base_path, **model_load_kwargs,
         )
         print(f"Loading LoRA: {args.model_path}")
         model = PeftModel.from_pretrained(model, args.model_path)
@@ -259,13 +310,17 @@ def main():
     else:
         print(f"Loading: {args.model_path}")
         model = AutoModelForCausalLM.from_pretrained(
-            args.model_path, torch_dtype=load_dtype, trust_remote_code=True,
+            args.model_path, **model_load_kwargs,
         )
         tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
 
+    ensure_meta_tokens_not_special(tokenizer, [META_START, META_END])
+
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    model = model.to("cuda" if use_cuda else "cpu").eval()
+    if not (use_cuda and args.device_map == "auto"):
+        model = model.to("cuda" if use_cuda else "cpu")
+    model = model.eval()
 
     if args.model_name:
         model_name = args.model_name
@@ -289,9 +344,26 @@ def main():
             print("Warning: retrieval bank paths were provided but no examples were loaded")
 
     # Evaluate
-    results = evaluate(model, tokenizer, problems, args.num_samples, retriever=retriever, rag_top_k=args.rag_top_k)
+    results = evaluate(
+        model,
+        tokenizer,
+        problems,
+        args.num_samples,
+        args.max_new_tokens,
+        retriever=retriever,
+        rag_top_k=args.rag_top_k,
+        do_sample=do_sample,
+        temperature=args.temperature,
+        top_p=args.top_p,
+    )
     df = print_results(model_name, results)
-    run_metadata = build_run_metadata(args, model_name, problems, tokenizer)
+    run_metadata = build_run_metadata(
+        args,
+        model_name,
+        problems,
+        tokenizer,
+        resolved_do_sample=do_sample,
+    )
 
     # Save
     save_results_bundle(args.output_dir, model_name, run_metadata, results)

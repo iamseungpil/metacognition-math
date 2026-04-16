@@ -212,6 +212,7 @@ from src.training.rewards import (
     confidence_trajectory_reward,
     # V8 E21 rewards: soft switch v2 + verify v2
     structural_switch_reward_v2, verify_outcome_v2,
+    confidence_revision_reward_v2, redirect_execution_reward_v2, verify_execution_reward_v2,
 )
 from src.training.tokenizer_utils import ensure_meta_tokens_not_special
 
@@ -416,7 +417,7 @@ class SampleSaver:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "E9b", "E9c", "E10", "E9v2", "E9bv2", "E10v2", "E12", "E13", "E14", "E21"], default="E1")
+    parser.add_argument("--mode", choices=["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "E9b", "E9c", "E10", "E9v2", "E9bv2", "E10v2", "E12", "E13", "E14", "E21", "E21R"], default="E1")
     parser.add_argument("--model_path", default="checkpoints/qwen3_meta_sft")
     parser.add_argument("--data", choices=["gsm8k", "filtered", "mixed", "mixed_train"], default="mixed")
     parser.add_argument("--data_path", default="verl_train_filtered.parquet")
@@ -433,7 +434,7 @@ def main():
     if args.output_dir is None:
         args.output_dir = f"checkpoints/grpo_v2_{args.mode}"
 
-    os.environ["WANDB_PROJECT"] = "metacot-math"
+    os.environ["WANDB_PROJECT"] = os.environ.get("WANDB_PROJECT", "metacot-math")
 
     # Reward functions that need model/tokenizer context are wired after model load.
     reward_configs = {
@@ -534,6 +535,10 @@ def main():
                  verify_outcome_v2, confidence_trajectory_reward,
                  confidence_omission_floor],
                 [1.0, 0.15, 0.3, 0.15, 0.5]),
+        "E21R": ([correctness_reward, confidence_revision_reward_v2,
+                  redirect_execution_reward_v2, verify_execution_reward_v2,
+                  confidence_omission_floor],
+                 [1.0, 0.35, 0.30, 0.15, 0.5]),
     }
     # ─── Model (Full FT, NO LoRA) ───
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
@@ -580,7 +585,7 @@ def main():
                 contextual_reward_funcs.append(fn)
         reward_funcs = contextual_reward_funcs
 
-    use_gdpo = args.mode in ("E3", "E4", "E5", "E6", "E7", "E8", "E9", "E9b", "E9c", "E10", "E9v2", "E9bv2", "E10v2", "E12", "E13", "E14", "E21")  # GDPO when 2+ rewards
+    use_gdpo = args.mode in ("E3", "E4", "E5", "E6", "E7", "E8", "E9", "E9b", "E9c", "E10", "E9v2", "E9bv2", "E10v2", "E12", "E13", "E14", "E21", "E21R")  # GDPO when 2+ rewards
 
     if use_gdpo:
         _apply_gdpo_patch()
@@ -597,7 +602,7 @@ def main():
         dataset = load_filtered(args.data_path)
 
     # ─── Config ───
-    run_name = f"grpo-v2-{args.mode}-{args.max_steps}s"
+    run_name = os.environ.get("METACOG_RUN_NAME") or os.environ.get("WANDB_NAME") or f"grpo-v2-{args.mode}-{args.max_steps}s"
     print(f"=== GRPO v2: {args.mode} ===")
     print(f"Rewards: {[f.__name__ for f in reward_funcs]} × {reward_weights}")
     print(f"GDPO: {use_gdpo}")

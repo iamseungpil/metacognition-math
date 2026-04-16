@@ -1,0 +1,100 @@
+updated: "2026-04-13"
+plan_id: "metacot_v8_active_2026_04_09"
+plan_doc: "results/plan_metacot_v8_active_2026_04_09.md"
+node_policy: "NODE_POLICY.md"
+evidence_classes:
+  - mainline
+  - side_evidence
+  - historical
+  - invalid_for_claim
+
+sft:
+  raw_base_model: "Qwen/Qwen3-8B"
+  shared:
+    num_train_epochs: 3
+    per_device_train_batch_size: 1
+    gradient_accumulation_steps: 4
+    learning_rate: 2.0e-6
+    max_length: 4096
+    save_strategy: "epoch"
+    eval_strategy: "no"
+  meta:
+    config: "configs/sft_v8_meta_inside_strict.yaml"
+    dataset: "data/v8_meta_inside_strict.parquet"
+    output_dir: "checkpoints/v8_meta_inside_strict_sft"
+    run_name: "v8-meta-inside-strict-sft"
+  base:
+    config: "configs/sft_v8_base_matched_strict.yaml"
+    dataset: "data/v8_base_matched_strict.parquet"
+    output_dir: "checkpoints/v8_base_matched_strict_sft"
+    run_name: "v8-base-matched-strict-sft"
+
+data:
+  source_pair:
+    meta: "data/v8_meta_inside_think.parquet"
+    base: "data/v8_base_matched_clean.parquet"
+    rows: 6329
+  strict_pair:
+    meta: "data/v8_meta_inside_strict.parquet"
+    base: "data/v8_base_matched_strict.parquet"
+    rows: 4264
+    validation_summary: "results/strict_data/v8_strict_validation_summary.json"
+    build_summary: "results/strict_data/v8_strict_build_summary.json"
+  rl_pair:
+    meta_train: "data/verl_train_redirect.parquet"
+    meta_val: "data/verl_val_redirect.parquet"
+    base_train: "data/verl_train_redirect_base.parquet"
+    base_val: "data/verl_val_redirect_base.parquet"
+    train_rows: 2935
+    val_rows: 326
+
+rl:
+  canonical_launcher: "scripts/launch_e21_vs_base_matched_0410.sh"
+  meta:
+    mode: "meta"
+    model_path: "checkpoints/v8_meta_inside_strict_sft"
+    train_data: "data/verl_train_redirect.parquet"
+    val_data: "data/verl_val_redirect.parquet"
+    algorithm: "gdpo"
+    reward_name: "compute_score_e21r_v2"
+    reward_keys:
+      - correctness
+      - outcome_calibration
+    experiment_name: "verl_e21r_v2_0413"
+  base:
+    mode: "base"
+    model_path: "checkpoints/v8_base_matched_strict_sft"
+    train_data: "data/verl_train_redirect_base.parquet"
+    val_data: "data/verl_val_redirect_base.parquet"
+    algorithm: "grpo"
+    reward_name: "compute_score_base"
+    experiment_name: "verl_base_matched_0410"
+  shared:
+    prompt_length: 2048
+    response_length: 4096
+    train_batch_size: 64
+    actor_ppo_mini_batch_size: 16
+    actor_ppo_micro_batch_size_per_gpu: 1
+    actor_ppo_max_token_len_per_gpu: 16384
+    critic_ppo_mini_batch_size: 16
+    critic_ppo_micro_batch_size_per_gpu: 1
+    critic_ppo_max_token_len_per_gpu: 32768
+    rollout_n: 4
+    learning_rate: 1.0e-6
+    kl_coef: 0.001
+    temperature: 0.7
+    top_p: 0.95
+    rollout_tensor_model_parallel_size: 2
+    rollout_gpu_memory_utilization: 0.4
+    rollout_log_prob_micro_batch_size_per_gpu: 16
+    ref_log_prob_micro_batch_size_per_gpu: 16
+    total_training_steps: 300
+    save_freq: 10
+    test_freq: 10
+    remove_previous_ckpt: false
+
+analysis:
+  paired_eval:
+    meta: "results/eval_v8_meta_inside_strict_sft/eval_v8_meta_inside_strict_sft.remote.parquet"
+    base: "results/eval_v8_base_matched_strict_sft/eval_v8_base_matched_strict_sft.remote.parquet"
+  paired_behavior_report: "results/strict_pair_analysis_repro_2026_04_12/paired_strict_behavior.json"

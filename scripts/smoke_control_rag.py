@@ -72,6 +72,7 @@ def main():
         "question": question,
         "rag_run": {
             "rag_used": True,
+            "analysis": analysis,
             "retrieved": [{"question": item["record"].question, "score": item["score"]} for item in hits],
             "rag_prompt": rag_prompt,
         },

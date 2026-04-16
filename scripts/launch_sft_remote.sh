@@ -15,5 +15,12 @@ cd /scratch/metacognition
 export PYTHONPATH=/scratch/metacognition
 export WANDB_API_KEY="$(cat ~/.wandb_key 2>/dev/null || echo '2f4e627868f1f9dad10bcb1a14fbf96817e6baa9')"
 
-accelerate launch --config_file "${ACCELERATE_CONFIG:-configs/accelerate_sft.yaml}" \
+PYTHON_BIN="${PYTHON_BIN:-$(command -v python)}"
+if pgrep -fa "src/training/sft.py --config $CONFIG_PATH" >/dev/null; then
+  echo "Refusing duplicate SFT launch for $CONFIG_PATH" >&2
+  pgrep -fa "src/training/sft.py --config $CONFIG_PATH" >&2 || true
+  exit 2
+fi
+"$PYTHON_BIN" -m accelerate.commands.launch --config_file "${ACCELERATE_CONFIG:-configs/accelerate_sft.yaml}" \
+  --main_process_port 0 \
   src/training/sft.py --config "$CONFIG_PATH"

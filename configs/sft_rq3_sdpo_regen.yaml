@@ -1,0 +1,19 @@
+# SFT over on-policy SDPO-style regenerated traces.
+#
+# Expected input:
+#   scripts/run_online_sdpo_regen.py -> <output_dir>/online_sdpo_regen.parquet
+#
+# Update dataset_path/output_dir/run_name before launching.
+model_name_or_path: Qwen/Qwen3-8B
+dataset_path: results/rq3_online_sdpo_regen/online_sdpo_regen.parquet
+output_dir: checkpoints/rq3_sdpo_regen_sft
+run_name: rq3-sdpo-regen-sft
+wandb_project: metacot-math
+
+num_train_epochs: 2
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 4
+learning_rate: 1.0e-6
+max_length: 4096
+save_strategy: epoch
+eval_strategy: "no"

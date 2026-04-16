@@ -107,7 +107,7 @@ def _format_profile(profile: dict) -> str:
     return "\n".join(lines)
 
 
-def parse_meta_blocks(text: str) -> dict:
+def parse_meta_blocks(text: str, allow_free_text_fallback: bool = True) -> dict:
     """Parse <|meta|> blocks from model output for RL reward computation."""
     import re
 
@@ -150,6 +150,23 @@ def parse_meta_blocks(text: str) -> dict:
             result["has_mid_check"] = True
         if any(kw in block_lower for kw in ["what did i learn", "practice", "improve"]):
             result["has_post_reflection"] = True
+
+    # Fallback: detect free-text confidence when <|meta|> wrapping is absent
+    # (RL-trained models may drop structural tokens while keeping semantic content)
+    if allow_free_text_fallback and not blocks:
+        conf_matches = re.findall(
+            r'(?:probability|confidence|확률|확신)[:\s\w]*?(\d+\.\d+|\d+)\s*%?',
+            text, re.IGNORECASE
+        )
+        for m in conf_matches:
+            val = float(m)
+            if val > 1.0:
+                val /= 100.0
+            val = min(1.0, max(0.0, val))
+            if val > 0.001:
+                result["confidences"].append(val)
+        if result["confidences"]:
+            result["num_blocks"] = 1  # synthetic block from free-text
 
     result["valid"] = (
         result["num_blocks"] >= 2
