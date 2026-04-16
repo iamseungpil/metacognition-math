@@ -52,8 +52,8 @@ RQ3의 의도는 `OOD에서 self-distill을 성공시킬 수 있는가`이다.
 1. `H1`: naive self-distill은 in-domain gain이 있어도 `meta emission`, `wrong-high-confidence`, OOD accuracy를 망가뜨릴 수 있다
 2. `H2`: meta SFT에서 `question_only_best_of_n` 기반 claim-bearing epistemic self-distill을 하면,
    naive baseline보다 controller retention과 OOD retention이 낫다
-3. `H3`: correctness-only selection은 prompt confounding 없이 claim-bearing teacher를 만들고,
-   controller-aware reranking은 side evidence로만 추가 가치를 가진다
+3. `H3`: correctness-only selection은 clean anchor이고, 그 다음 단계의 `correct_then_meta`는
+   같은 정답 후보 집합 내부에서 더 나은 controller transition teacher를 고를 수 있다
 4. `H4`: RL은 immediate mainline이 아니라 side branch다.
    reward redesign은 self-distill 비교와 섞지 않고 별도 smoke track에서만 검증한다
 5. `H5`: retrieval은 현재 mainline의 필요조건이 아니다. retrieval claim은 `example_bank loaded + retrieval_nonempty_rate > 0`가 동시에 만족될 때만 허용한다
@@ -63,9 +63,10 @@ RQ3의 의도는 `OOD에서 self-distill을 성공시킬 수 있는가`이다.
 1. `E1`: `strict_base_sft -> question_only_best_of_n -> naive self-distill`
 2. `E2`: `strict_meta_sft -> question_only_best_of_n -> claim-bearing epistemic self-distill`
 3. `E3`: `E1 vs E2` collapse / OOD / controller retention 비교
-4. `E4`: `selected_completion`에 대해 teacher top-k를 질의하고, `strict meta-only KL` readout을 붙인 meta self-distill 확장 점검
-5. `E5`: 별도 node에서 RL reward redesign smoke (`E21R-v3-smoke`) 진행
-6. `E6`: `fixed_k_repair` / retrieval-conditioned lane는 side-evidence로만 보고 main table과 분리
+4. `E4`: `selected_completion`에 대해 `correct_then_meta` teacher scoring 확장 비교
+5. `E5`: `selected_completion`에 대해 teacher top-k를 질의하고, `strict meta-only KL` readout을 붙인 meta self-distill 확장 점검
+6. `E6`: RLSD-lite extension 설계/구현 검증
+7. `E7`: `fixed_k_repair` / retrieval-conditioned lane는 side-evidence로만 보고 main table과 분리
 
 **이번 단계의 성공 기준**
 
@@ -85,8 +86,10 @@ claim-bearing contract는 본 섹션이 우선한다.
 1. **Mainline**
    - artifact generation: `question_only_best_of_n`
    - selector: `correctness_only`
+   - score extension: `correct_then_meta`
    - base lane: CE-only naive self-distill
    - meta lane: CE-only epistemic self-distill, then strict `meta_only` KL extension
+   - RLSD-lite: deferred after the above three are stable
 2. **Side evidence**
    - `fixed_k_repair`
    - retrieval-conditioned repair
@@ -105,7 +108,10 @@ claim-bearing contract는 본 섹션이 우선한다.
 3. Build teacher top-k targets only for the meta lane that already passed claim-bearing checks
 4. Train:
    - base lane: CE/SFT only
-   - meta lane: CE/SFT first, then CE/SFT + strict `meta_only` KL on wrapped meta spans only
+   - meta lane stage-0: CE/SFT with `correctness_only` teacher selection
+   - meta lane stage-1: CE/SFT with `correct_then_meta` teacher selection
+   - meta lane stage-2: CE/SFT + strict `meta_only` KL on wrapped meta spans only
+   - meta lane stage-3: RLSD-lite only after stage-0/1/2 comparisons are saved
 5. Evaluate with `analyze_self_distill_eval.py` for collapse / OOD / controller-retention metrics
 6. Record retrieval contract in every artifact:
    - `retriever_active`
@@ -1288,4 +1294,3 @@ Four concrete interventions, each with change / code location / success metric:
 3. Land I3 (eval instrumentation) — independent of I1/I2, testable via dry-run on existing eval JSON
 4. Land I4 (analyze_self_distill_eval report fields) — depends on I3 schema
 5. Only after I1–I4 land: attempt `E21R-v3-smoke` training run on a side-evidence node
-

@@ -236,6 +236,37 @@ def test_question_only_selector_prefers_correctness_only(tmp_path: Path):
     assert rows[0]["selector"]["selected_candidate_id"] == "sample_1"
 
 
+def test_question_only_selector_prefers_meta_transition_within_correct_set(tmp_path: Path):
+    def canned(prompt, n):
+        return [
+            ("plain correct \\boxed{0}", [1]),
+            (
+                "<|meta|>\nconfidence: 0.41\nThe earlier route is weak.\n"
+                "study_need: direct isolation\n<|/meta|>\nSolve cleanly and conclude \\boxed{0}",
+                [1],
+            ),
+        ][:n]
+
+    problems = [OnlineSdpoProblem(question="Solve: 2x = 0, find x.", gold_answer="0", benchmark="test")]
+    llm = FakeLLM(canned)
+    rows = run_online_question_only_best_of_n_rollouts(
+        llm=llm,
+        tokenizer=llm.get_tokenizer(),
+        problems=problems,
+        output_dir=tmp_path,
+        num_candidates=2,
+        selector_mode="correct_then_meta",
+        chunk_size=1,
+        resume=False,
+    )
+
+    selector = rows[0]["selector"]
+    assert selector["selected_candidate_id"] == "sample_1"
+    assert selector["selector_mode"] == "correct_then_meta"
+    assert selector["selected_breakdown"]["meta_transition"] > 0.0
+    assert selector["selected_breakdown"]["meta_transition_boxed_after_meta"] == 1.0
+
+
 def test_resume_skips_processed(tmp_path: Path):
     problems = make_problems(4)
     traces_path = tmp_path / "online_sdpo_traces.jsonl"

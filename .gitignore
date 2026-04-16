@@ -24,3 +24,6 @@ wandb/
 # OS
 .DS_Store
 Thumbs.db
+
+# 2026-04-16 additions
+checkpoints_recovered/
