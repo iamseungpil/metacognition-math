@@ -1,5 +1,0 @@
-# metric_direction: lower_is_better_for_plan_mismatch_count
-iteration	commit	metric	delta	guard	status	description
-0	HEAD	3	0	pass	baseline	baseline mismatch count: multiple active plans, SlotB base mismatch, launcher ambiguity
-1	WORKTREE	2	-1	pass	keep	active plan unified to v6.4, launcher ambiguity reduced, SlotB marked exploratory
-2	WORKTREE	1	-1	pass	keep	active plan now includes RQ/evidence/implementation contract, stale legacy eval/launcher paths require explicit opt-in, pytest-compatible smoke restored; remaining open item is unresolved SlotC gate
