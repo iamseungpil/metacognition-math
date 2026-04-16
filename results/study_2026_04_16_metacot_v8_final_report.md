@@ -5,9 +5,11 @@
 | Model | Split | 4k cap | 16k cap | Delta |
 |---|---|---|---|---|
 | Base GRPO step300 | Overall (1030) | 75.92% | 77.00% | +1.08pp |
-| Base GRPO step300 | MATH500 | 75.2% | 75.6% | +0.4pp |
+| Base GRPO step300 | GSM8K | 92.6% | 93.4% | +0.8pp |
+| Base GRPO step300 | MATH500 | 61.8% | 63.0% | +1.2pp |
 | Base GRPO step300 | AIME-24/25 (n=30) | 33.3% | 36.7% | +3.4pp |
 | Meta GRPO E21R-v2 step300 | Overall (1030) | 79.81% | 81.65% | +1.84pp |
+| Meta GRPO E21R-v2 step300 | GSM8K | 92.0% | 92.6% | +0.6pp |
 | Meta GRPO E21R-v2 step300 | MATH500 | 71.6% | 74.8% | +3.2pp |
 | Meta GRPO E21R-v2 step300 | AIME-24/25 (n=30) | 13.3% | 13.3% | 0pp |
 
@@ -40,13 +42,15 @@ Entropy methodology: token-level H(p) = −Σ p·log p over the full vocab at ea
 | Model | Split | 4k | 16k | Delta |
 |---|---|---|---|---|
 | Base GRPO | Overall | 75.92% | 77.00% | +1.08pp |
-| Base GRPO | MATH500 | 75.2% | 75.6% | +0.4pp |
+| Base GRPO | GSM8K | 92.6% | 93.4% | +0.8pp |
+| Base GRPO | MATH500 | 61.8% | 63.0% | +1.2pp |
 | Base GRPO | AIME | 33.3% | 36.7% | +3.4pp |
 | Meta GRPO E21R-v2 | Overall | 79.81% | 81.65% | +1.84pp |
+| Meta GRPO E21R-v2 | GSM8K | 92.0% | 92.6% | +0.6pp |
 | Meta GRPO E21R-v2 | MATH500 | 71.6% | 74.8% | +3.2pp |
 | Meta GRPO E21R-v2 | AIME | 13.3% | 13.3% | 0pp |
 
-Compare-contrast: 16k에서 truncation을 풀자 Meta MATH500은 +3.2pp 회복 (71.6→74.8). 동일 조건에서 Meta AIME는 0pp. Base AIME는 +3.4pp 회복. 따라서 AIME에서 Meta의 정체는 "token budget 부족" 이상의 구조적 문제.
+Compare-contrast: 16k에서 truncation을 풀자 Meta MATH500은 +3.2pp 회복 (71.6→74.8), Base MATH500은 +1.2pp (61.8→63.0). Meta AIME는 0pp, Base AIME는 +3.4pp 회복. MATH500에서 meta는 base보다 +11.8pp 우위 (74.8 vs 63.0), AIME에서는 −23.4pp 열위 (13.3 vs 36.7). AIME에서 Meta의 정체는 "token budget 부족" 이상의 구조적 문제.
 
 ### 3.2 Entropy dynamics (4-way comparison)
 
