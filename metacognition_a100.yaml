@@ -32,7 +32,7 @@ jobs:
     priority: high
     identity: managed
     submit_args:
-      max_run_duration_seconds: 2592000
+      max_run_duration_seconds: 1209600
       env:
         _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
     command:

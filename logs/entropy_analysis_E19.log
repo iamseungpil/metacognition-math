@@ -1,52 +1,0 @@
-Loading eval parquet: results/eval_v6_E19/eval_v6_clean_10k_E19.parquet
-Samples with <|meta|>: 244 / 1530
-Capped to 100 samples
-Loading tokenizer from checkpoints/v6_clean_10k_E19 ...
-Loading model from checkpoints/v6_clean_10k_E19 (dtype=bfloat16, device_map=auto) ...
-`torch_dtype` is deprecated! Use `dtype` instead!
-Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights:   0%|          | 1/399 [00:00<00:44,  8.93it/s]Loading weights:   1%|          | 2/399 [00:00<00:50,  7.85it/s]Loading weights:   7%|▋         | 27/399 [00:00<00:03, 101.21it/s]Loading weights:  14%|█▎        | 54/399 [00:00<00:02, 160.66it/s]Loading weights:  20%|██        | 81/399 [00:00<00:01, 195.33it/s]Loading weights:  26%|██▋       | 105/399 [00:00<00:01, 202.54it/s]Loading weights:  34%|███▍      | 135/399 [00:00<00:01, 232.47it/s]Loading weights:  40%|███▉      | 159/399 [00:00<00:01, 228.79it/s]Loading weights:  47%|████▋     | 186/399 [00:00<00:00, 240.61it/s]Loading weights:  53%|█████▎    | 213/399 [00:01<00:00, 245.74it/s]Loading weights:  60%|█████▉    | 238/399 [00:01<00:00, 240.19it/s]Loading weights:  67%|██████▋   | 268/399 [00:01<00:00, 250.91it/s]Loading weights:  74%|███████▎  | 294/399 [00:01<00:00, 247.60it/s]Loading weights:  81%|████████  | 323/399 [00:01<00:00, 256.10it/s]Loading weights:  87%|████████▋ | 349/399 [00:01<00:00, 248.35it/s]Loading weights:  95%|█████████▍| 378/399 [00:01<00:00, 253.36it/s]Loading weights: 100%|██████████| 399/399 [00:01<00:00, 219.07it/s]
-Model loaded. Parameters: 8,188,564,480
-<|meta|>  encodes to: [151669] -> ['<|meta|>']
-<|/meta|> encodes to: [151670] -> ['<|/meta|>']
-Forward pass:   0%|          | 0/100 [00:00<?, ?it/s]Forward pass:   1%|          | 1/100 [00:00<00:57,  1.72it/s]Forward pass:   2%|▏         | 2/100 [00:00<00:30,  3.21it/s]Forward pass:   4%|▍         | 4/100 [00:00<00:16,  5.94it/s]Forward pass:   6%|▌         | 6/100 [00:01<00:12,  7.42it/s]Forward pass:   8%|▊         | 8/100 [00:01<00:11,  8.32it/s]Forward pass:  10%|█         | 10/100 [00:01<00:09,  9.32it/s]Forward pass:  12%|█▏        | 12/100 [00:01<00:09,  9.28it/s]Forward pass:  13%|█▎        | 13/100 [00:01<00:10,  8.62it/s]Forward pass:  15%|█▌        | 15/100 [00:02<00:10,  8.18it/s]Forward pass:  17%|█▋        | 17/100 [00:02<00:09,  8.49it/s]Forward pass:  18%|█▊        | 18/100 [00:02<00:11,  7.33it/s]Forward pass:  19%|█▉        | 19/100 [00:02<00:11,  7.16it/s]Forward pass:  20%|██        | 20/100 [00:02<00:11,  6.81it/s]Forward pass:  21%|██        | 21/100 [00:02<00:11,  6.71it/s]Forward pass:  22%|██▏       | 22/100 [00:03<00:11,  6.59it/s]Forward pass:  23%|██▎       | 23/100 [00:03<00:11,  6.45it/s]Forward pass:  24%|██▍       | 24/100 [00:03<00:11,  6.90it/s]Forward pass:  25%|██▌       | 25/100 [00:03<00:09,  7.52it/s]Forward pass:  26%|██▌       | 26/100 [00:03<00:09,  8.06it/s]Forward pass:  27%|██▋       | 27/100 [00:03<00:08,  8.16it/s]Forward pass:  28%|██▊       | 28/100 [00:03<00:08,  8.32it/s]Forward pass:  29%|██▉       | 29/100 [00:03<00:08,  8.47it/s]Forward pass:  30%|███       | 30/100 [00:04<00:07,  8.86it/s]Forward pass:  31%|███       | 31/100 [00:04<00:08,  7.82it/s]Forward pass:  32%|███▏      | 32/100 [00:04<00:12,  5.31it/s]Forward pass:  33%|███▎      | 33/100 [00:04<00:11,  5.65it/s]Forward pass:  34%|███▍      | 34/100 [00:04<00:10,  6.44it/s]Forward pass:  35%|███▌      | 35/100 [00:04<00:09,  7.11it/s]Forward pass:  36%|███▌      | 36/100 [00:05<00:08,  7.54it/s]Forward pass:  38%|███▊      | 38/100 [00:05<00:07,  8.60it/s]Forward pass:  39%|███▉      | 39/100 [00:05<00:06,  8.87it/s]Forward pass:  40%|████      | 40/100 [00:05<00:08,  7.36it/s]Forward pass:  41%|████      | 41/100 [00:05<00:09,  6.44it/s]Forward pass:  42%|████▏     | 42/100 [00:05<00:09,  6.36it/s]Forward pass:  44%|████▍     | 44/100 [00:06<00:08,  6.47it/s]Forward pass:  46%|████▌     | 46/100 [00:06<00:07,  7.54it/s]Forward pass:  47%|████▋     | 47/100 [00:06<00:06,  7.79it/s]Forward pass:  48%|████▊     | 48/100 [00:06<00:06,  8.21it/s]  [50/100] blocks=51, samples=50, skipped=0, no_spans=0, elapsed=6.8s
-Forward pass:  50%|█████     | 50/100 [00:06<00:05,  8.62it/s]Forward pass:  51%|█████     | 51/100 [00:06<00:06,  7.91it/s]Forward pass:  52%|█████▏    | 52/100 [00:07<00:06,  7.63it/s]Forward pass:  53%|█████▎    | 53/100 [00:07<00:05,  8.07it/s]Forward pass:  54%|█████▍    | 54/100 [00:07<00:08,  5.62it/s]Forward pass:  56%|█████▌    | 56/100 [00:07<00:06,  7.21it/s]Forward pass:  57%|█████▋    | 57/100 [00:08<00:08,  4.88it/s]Forward pass:  58%|█████▊    | 58/100 [00:08<00:08,  4.82it/s]Forward pass:  59%|█████▉    | 59/100 [00:08<00:10,  3.85it/s]Forward pass:  60%|██████    | 60/100 [00:09<00:12,  3.12it/s]Forward pass:  61%|██████    | 61/100 [00:09<00:13,  2.82it/s]Forward pass:  62%|██████▏   | 62/100 [00:09<00:10,  3.51it/s]Forward pass:  63%|██████▎   | 63/100 [00:10<00:11,  3.29it/s]Forward pass:  64%|██████▍   | 64/100 [00:10<00:11,  3.20it/s]Forward pass:  65%|██████▌   | 65/100 [00:11<00:14,  2.50it/s]Forward pass:  66%|██████▌   | 66/100 [00:11<00:10,  3.16it/s]Forward pass:  67%|██████▋   | 67/100 [00:11<00:08,  3.96it/s]Forward pass:  68%|██████▊   | 68/100 [00:11<00:07,  4.08it/s]Forward pass:  70%|███████   | 70/100 [00:11<00:06,  4.96it/s]Forward pass:  71%|███████   | 71/100 [00:11<00:05,  5.48it/s]Forward pass:  72%|███████▏  | 72/100 [00:12<00:06,  4.06it/s]Forward pass:  73%|███████▎  | 73/100 [00:12<00:05,  4.52it/s]Forward pass:  74%|███████▍  | 74/100 [00:12<00:04,  5.31it/s]Forward pass:  75%|███████▌  | 75/100 [00:12<00:04,  6.09it/s]Forward pass:  76%|███████▌  | 76/100 [00:12<00:03,  6.81it/s]Forward pass:  77%|███████▋  | 77/100 [00:12<00:03,  7.21it/s]Forward pass:  78%|███████▊  | 78/100 [00:13<00:05,  4.29it/s]Forward pass:  80%|████████  | 80/100 [00:13<00:03,  5.40it/s]Forward pass:  81%|████████  | 81/100 [00:13<00:03,  5.65it/s]Forward pass:  82%|████████▏ | 82/100 [00:13<00:02,  6.12it/s]Forward pass:  83%|████████▎ | 83/100 [00:14<00:02,  6.58it/s]Forward pass:  84%|████████▍ | 84/100 [00:14<00:03,  5.31it/s]Forward pass:  85%|████████▌ | 85/100 [00:14<00:02,  5.51it/s]Forward pass:  86%|████████▌ | 86/100 [00:14<00:02,  4.77it/s]Forward pass:  87%|████████▋ | 87/100 [00:14<00:02,  5.22it/s]Forward pass:  88%|████████▊ | 88/100 [00:15<00:02,  5.55it/s]Forward pass:  89%|████████▉ | 89/100 [00:15<00:02,  4.97it/s]Forward pass:  90%|█████████ | 90/100 [00:15<00:02,  3.80it/s]Forward pass:  91%|█████████ | 91/100 [00:15<00:01,  4.63it/s]Forward pass:  92%|█████████▏| 92/100 [00:16<00:01,  4.59it/s]Forward pass:  94%|█████████▍| 94/100 [00:16<00:01,  5.28it/s]Forward pass:  95%|█████████▌| 95/100 [00:16<00:00,  5.52it/s]Forward pass:  97%|█████████▋| 97/100 [00:16<00:00,  5.66it/s]Forward pass:  99%|█████████▉| 99/100 [00:17<00:00,  7.03it/s]  [100/100] blocks=101, samples=100, skipped=0, no_spans=0, elapsed=17.3s
-Forward pass: 100%|██████████| 100/100 [00:17<00:00,  6.33it/s]Forward pass: 100%|██████████| 100/100 [00:17<00:00,  5.78it/s]
-
-Processing complete: 17.3s
-  Measured samples: 100
-  Measured blocks:  101
-  Skipped (too long): 0
-  No spans found:    0
-Saved aggregate JSON: results/entropy_analysis/entropy_stats.json
-Saved per-sample CSV: results/entropy_analysis/entropy_per_sample.csv
-Saved per-block CSV: results/entropy_analysis/entropy_per_block.csv
-
-================================================================================
-  META-COT ENTROPY ANALYSIS SUMMARY
-================================================================================
-  Total samples analyzed: 100
-  Total meta blocks:      101
-  Correct samples:        40
-  Incorrect samples:      60
-
-  --- Per-Block Entropy (nats) ---
-  Group                    N     Before       Meta      After      Delta  Delta_std
-  ---------------------------------------------------------------------------
-  All                    101     1.0233     0.7278     0.6171    -0.4062     0.4338
-  Correct                 41     1.0420     0.7062     0.5387    -0.5033     0.4599
-  Incorrect               60     1.0105     0.7425     0.6707    -0.3398     0.4017
-
-  --- Per-Block Surprisal (nats) ---
-  Group                    N     Before       Meta      After      Delta  Delta_std
-  ---------------------------------------------------------------------------
-  All                    101     0.6143     0.4396     0.3174    -0.2969     0.7129
-  Correct                 41     0.6439     0.4290     0.2740    -0.3699     0.7294
-  Incorrect               60     0.5940     0.4468     0.3471    -0.2470     0.6970
-
-  --- Interpretation ---
-  Overall: entropy DECREASES by 0.4062 nats after meta blocks
-  Correct:   delta = -0.5033 nats  (resolved)
-  Incorrect: delta = -0.3398 nats  (resolved)
-  --> Correct samples show MORE entropy reduction (meta helps)
-================================================================================
-

@@ -27,3 +27,13 @@ Thumbs.db
 
 # 2026-04-16 additions
 checkpoints_recovered/
+
+# Local runtime logs / node polling artifacts
+/logs/*.log
+/logs/*.sh
+/logs/*.tsv
+/results/node_poll_log.tsv
+
+# Local AMLT submit manifests / node-specific launch files
+/run_c_*.yaml
+/h200_*_auto_*.yaml

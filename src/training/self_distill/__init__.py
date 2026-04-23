@@ -3,6 +3,12 @@
 Layout:
 1. `trace.py`: normalize raw artifacts into a stable teacher-trace IR
 2. `builders.py`: project traces into naive / epistemic / SDPO-style datasets
+
+Design note:
+The veRL SDC path only needs a narrow subset of this package
+(`kl`, `trace`, parts of `builders`). Keep heavier online / curriculum-backed
+helpers optional so importing lightweight training utilities does not fail on
+nodes where the full research stack has not been staged.
 """
 from src.training.self_distill.builders import (
     MODE_EPISTEMIC,
@@ -39,22 +45,6 @@ from src.training.self_distill.trace import (
     parse_study_need,
     read_table,
 )
-from src.training.self_distill.online import (
-    OnlineSdpoProblem,
-    load_online_problems,
-    load_retriever,
-    run_online_question_only_best_of_n_rollouts,
-    run_online_fixed_k_repair_rollouts,
-    run_online_sdpo_rollouts,
-    write_online_sdpo_outputs,
-)
-from src.training.self_distill.teacher_query import (
-    build_teacher_query_dataframe,
-    build_teacher_query_dataset,
-    extract_topk_targets,
-    query_teacher_topk_for_messages,
-    tokenize_chat_messages,
-)
 from src.training.self_distill.kl import (
     TeacherTopKPayload,
     build_control_span_weights,
@@ -62,13 +52,38 @@ from src.training.self_distill.kl import (
     trim_teacher_payload,
 )
 
+try:
+    from src.training.self_distill.teacher_query import (
+        build_teacher_query_dataframe,
+        build_teacher_query_dataset,
+        extract_topk_targets,
+        query_teacher_topk_for_messages,
+        tokenize_chat_messages,
+    )
+    _TEACHER_QUERY_AVAILABLE = True
+except Exception:  # pragma: no cover - optional research stack
+    _TEACHER_QUERY_AVAILABLE = False
+
+try:
+    from src.training.self_distill.online import (
+        OnlineSdpoProblem,
+        load_online_problems,
+        load_retriever,
+        run_online_question_only_best_of_n_rollouts,
+        run_online_fixed_k_repair_rollouts,
+        run_online_sdpo_rollouts,
+        write_online_sdpo_outputs,
+    )
+    _ONLINE_AVAILABLE = True
+except Exception:  # pragma: no cover - optional research stack
+    _ONLINE_AVAILABLE = False
+
 __all__ = [
     "MODE_EPISTEMIC",
     "MODE_FEEDBACK_CONDITIONED",
     "MODE_NAIVE",
     "MODE_SDPO_REGEN",
     "NormalizedTeacherTrace",
-    "OnlineSdpoProblem",
     "HARD_BENCHMARKS",
     "OOD_BENCHMARKS",
     "SELF_DISTILL_COLUMNS",
@@ -83,29 +98,38 @@ __all__ = [
     "build_self_distill_dataframe",
     "build_self_distill_dataset",
     "build_teacher_feedback_payload",
-    "build_teacher_query_dataframe",
-    "build_teacher_query_dataset",
     "canonical_mode",
-    "extract_topk_targets",
     "extract_last_boxed",
     "first_text",
     "load_messages",
-    "load_online_problems",
     "load_teacher_topk_payload",
-    "load_retriever",
     "load_eval_table",
     "normalize_summary",
     "normalize_teacher_row",
     "parse_study_need",
     "read_table",
     "record_teacher_metrics",
-    "run_online_question_only_best_of_n_rollouts",
-    "run_online_fixed_k_repair_rollouts",
-    "run_online_sdpo_rollouts",
     "summarize_eval_table",
     "summarize_self_distill_dataframe",
-    "query_teacher_topk_for_messages",
-    "tokenize_chat_messages",
     "trim_teacher_payload",
-    "write_online_sdpo_outputs",
 ]
+
+if _TEACHER_QUERY_AVAILABLE:
+    __all__.extend([
+        "build_teacher_query_dataframe",
+        "build_teacher_query_dataset",
+        "extract_topk_targets",
+        "query_teacher_topk_for_messages",
+        "tokenize_chat_messages",
+    ])
+
+if _ONLINE_AVAILABLE:
+    __all__.extend([
+        "OnlineSdpoProblem",
+        "load_online_problems",
+        "load_retriever",
+        "run_online_question_only_best_of_n_rollouts",
+        "run_online_fixed_k_repair_rollouts",
+        "run_online_sdpo_rollouts",
+        "write_online_sdpo_outputs",
+    ])

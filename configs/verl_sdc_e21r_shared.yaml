@@ -1,0 +1,306 @@
+# veRL-native shared-preserve SDC
+mode: SDC_SHARED
+num_examine: 1
+
+data:
+  tokenizer: null
+  train_files: data/verl_train_redirect.parquet
+  val_files: data/verl_val_redirect.parquet
+  prompt_key: prompt
+  max_prompt_length: 512
+  max_response_length: 4096
+  train_batch_size: 32
+  val_batch_size: 64
+  return_raw_input_ids: False
+  return_raw_chat: False
+  shuffle: True
+  dataloader_num_workers: 4
+  filter_overlong_prompts: True
+  truncation: error
+  # verl 0.7.1 requires a sampler block; null values = use default random/sequential sampler.
+  sampler:
+    class_path: null
+    class_name: null
+
+actor_rollout_ref:
+  hybrid_engine: True
+  model:
+    _target_: verl.workers.config.HFModelConfig
+    path: checkpoints/v8_meta_inside_strict_sft
+    external_lib: null
+    override_config:
+      attn_implementation: sdpa
+    enable_gradient_checkpointing: True
+    use_remove_padding: False
+  actor:
+    _target_: verl.workers.config.FSDPActorConfig
+    strategy: fsdp
+    rollout_n: ${actor_rollout_ref.rollout.n}
+    loss_agg_mode: token-mean
+    checkpoint:
+      save_contents: [model, optimizer, extra]
+      load_contents: [model, optimizer, extra]
+      async_save: false
+    ppo_mini_batch_size: 8
+    ppo_micro_batch_size: null
+    ppo_micro_batch_size_per_gpu: 1
+    use_dynamic_bsz: False
+    ppo_max_token_len_per_gpu: 16384
+    grad_clip: 1.0
+    clip_ratio: 0.2
+    entropy_coeff: 0.001
+    use_kl_loss: True
+    kl_loss_coef: 0.002
+    kl_loss_type: low_var_kl
+    ppo_epochs: 1
+    shuffle: False
+    ulysses_sequence_parallel_size: 1
+    # verl 0.7.1 dp_actor requires these on actor config
+    entropy_from_logits_with_chunking: false
+    entropy_checkpointing: false
+    use_torch_compile: false
+    use_fused_kernels: false
+    use_remove_padding: ${actor_rollout_ref.model.use_remove_padding}
+    optim:
+      _target_: verl.workers.config.FSDPOptimizerConfig
+      lr: 5e-7
+      lr_warmup_steps_ratio: 0.1
+      min_lr_ratio: 0.1
+      warmup_style: cosine
+      total_training_steps: -1
+      weight_decay: 0.01
+      lr_warmup_steps: -1
+      betas: [0.9, 0.999]
+      clip_grad: 1.0
+      optimizer: AdamW
+      optimizer_impl: torch.optim
+      override_optimizer_config: null
+    fsdp_config:
+      _target_: verl.workers.config.FSDPEngineConfig
+      wrap_policy:
+        min_num_params: 0
+      param_offload: False
+      grad_offload: False
+      optimizer_offload: False
+      fsdp_size: -1
+  ref:
+    _target_: verl.workers.config.FSDPActorConfig
+    strategy: fsdp
+    rollout_n: ${actor_rollout_ref.rollout.n}
+    loss_agg_mode: token-mean
+    fsdp_config:
+      _target_: verl.workers.config.FSDPEngineConfig
+      param_offload: False
+      wrap_policy:
+        min_num_params: 0
+      fsdp_size: -1
+      forward_only: True
+    log_prob_micro_batch_size: null
+    log_prob_micro_batch_size_per_gpu: 16
+    log_prob_use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
+    log_prob_max_token_len_per_gpu: ${actor_rollout_ref.actor.ppo_max_token_len_per_gpu}
+    ulysses_sequence_parallel_size: ${actor_rollout_ref.actor.ulysses_sequence_parallel_size}
+    # verl 0.7.1 dp_actor requires these on ref config
+    entropy_from_logits_with_chunking: false
+    entropy_checkpointing: false
+    use_torch_compile: false
+    use_fused_kernels: false
+    use_remove_padding: ${actor_rollout_ref.model.use_remove_padding}
+  rollout:
+    _target_: verl.workers.config.RolloutConfig
+    mode: async
+    name: vllm
+    data_parallel_size: 1
+    expert_parallel_size: 1
+    moe_tensor_parallel_size: 1
+    pipeline_model_parallel_size: 1
+    nnodes: ${trainer.nnodes}
+    n_gpus_per_node: ${trainer.n_gpus_per_node}
+    temperature: 0.6
+    top_k: 20
+    top_p: 0.95
+    prompt_length: ${data.max_prompt_length}
+    response_length: ${data.max_response_length}
+    dtype: bfloat16
+    gpu_memory_utilization: 0.35
+    ignore_eos: False
+    enforce_eager: True
+    free_cache_engine: True
+    load_format: dummy
+    tensor_model_parallel_size: 2
+    max_model_len: 4608
+    max_num_batched_tokens: 8192
+    max_num_seqs: 128
+    log_prob_micro_batch_size: null
+    log_prob_micro_batch_size_per_gpu: 16
+    log_prob_use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
+    log_prob_max_token_len_per_gpu: ${actor_rollout_ref.actor.ppo_max_token_len_per_gpu}
+    do_sample: True
+    n: 2
+    enable_chunked_prefill: False
+    agent:
+      _target_: verl.workers.config.AgentLoopConfig
+      num_workers: 4
+      default_agent_loop: single_turn_agent
+      agent_loop_config_path: null
+      custom_async_server:
+        _target_: verl.workers.config.CustomAsyncServerConfig
+        path: null
+        name: null
+    prometheus:
+      enable: false
+    checkpoint_engine:
+      _target_: verl.workers.config.rollout.CheckpointEngineConfig
+      backend: naive
+      update_weights_bucket_megabytes: 4096
+    trace:
+      _target_: verl.workers.config.TraceConfig
+      project_name: ${trainer.project_name}
+      experiment_name: ${trainer.experiment_name}
+      backend: null
+      token2text: false
+      max_samples_per_step_per_worker: null
+    # Required by RayPPOTrainer._validate in verl 0.7.1
+    val_kwargs:
+      _target_: verl.workers.config.SamplingConfig
+      do_sample: False
+      temperature: 0.0
+      top_p: 1.0
+      top_k: -1
+      n: 1
+
+critic:
+  enable: False  # adv_estimator=gdpo does not need a critic
+  strategy: fsdp
+  optim:
+    _target_: verl.workers.config.FSDPOptimizerConfig
+    lr: 1e-5
+    lr_warmup_steps_ratio: 0.0
+    min_lr_ratio: null
+    warmup_style: constant
+    total_training_steps: -1
+    weight_decay: 0.01
+    lr_warmup_steps: -1
+    betas: [0.9, 0.999]
+    clip_grad: 1.0
+    optimizer: AdamW
+    optimizer_impl: torch.optim
+    override_optimizer_config: null
+  model:
+    path: ${actor_rollout_ref.model.path}
+    tokenizer_path: ${actor_rollout_ref.model.path}
+    override_config: {}
+    external_lib: ${actor_rollout_ref.model.external_lib}
+    enable_gradient_checkpointing: False
+    use_remove_padding: False
+    fsdp_config:
+      _target_: verl.workers.config.FSDPEngineConfig
+      param_offload: False
+      grad_offload: False
+      optimizer_offload: False
+      wrap_policy:
+        min_num_params: 0
+      fsdp_size: -1
+  ppo_mini_batch_size: ${actor_rollout_ref.actor.ppo_mini_batch_size}
+  ppo_micro_batch_size: null
+  ppo_micro_batch_size_per_gpu: 1
+  forward_micro_batch_size: null
+  forward_micro_batch_size_per_gpu: 1
+  use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
+  ppo_max_token_len_per_gpu: 32768
+  forward_max_token_len_per_gpu: ${critic.ppo_max_token_len_per_gpu}
+  ulysses_sequence_parallel_size: 1
+  ppo_epochs: ${actor_rollout_ref.actor.ppo_epochs}
+  shuffle: ${actor_rollout_ref.actor.shuffle}
+  grad_clip: 1.0
+  cliprange_value: 0.5
+
+reward_model:
+  enable: False
+  strategy: fsdp
+  model:
+    input_tokenizer: ${actor_rollout_ref.model.path}
+    path: ${actor_rollout_ref.model.path}
+    external_lib: ${actor_rollout_ref.model.external_lib}
+    use_remove_padding: False
+    fsdp_config:
+      _target_: verl.workers.config.FSDPEngineConfig
+      wrap_policy:
+        min_num_params: 0
+      param_offload: False
+  micro_batch_size: 8
+  max_length: null
+  ulysses_sequence_parallel_size: 1
+  use_dynamic_bsz: ${critic.use_dynamic_bsz}
+  forward_max_token_len_per_gpu: ${critic.forward_max_token_len_per_gpu}
+
+reward:
+  num_workers: 2
+  # verl 0.7.1 routes reward via reward.reward_model.enable.
+  # SDC pipeline uses an in-process reward manager (see SDCRayPPOTrainer), so
+  # reward_model is disabled here; our subclass intercepts _compute_reward_colocate
+  # and produces rm_scores + reward_extra_keys directly.
+  reward_model:
+    enable: False
+    enable_resource_pool: False
+    n_gpus_per_node: ${trainer.n_gpus_per_node}
+    nnodes: ${trainer.nnodes}
+    model_path: null
+  custom_reward_function:
+    path: null
+    name: null
+  reward_manager:
+    name: naive
+    source: register
+    module:
+      path: null
+      name: custom_reward_manager
+
+algorithm:
+  gamma: 1.0
+  lam: 1.0
+  adv_estimator: gdpo
+  kl_penalty: kl
+  use_kl_in_reward: False
+  norm_adv_by_std_in_grpo: True
+  sdc_clip_eps_w: 0.2
+  sdc_log_ratio_clamp: 10.0
+  sdc_shared_tau: 0.5
+  sdc_lambda_meta: 0.5
+  sdc_lambda_shared: 0.25
+  sdc_lambda_diff: 0.30
+  gdpo_reward_keys: [correctness, outcome_calibration, meta_structure, meta_commit_shape, postmeta_closure]
+  gdpo_reward_weights: [1.0, 0.7, 0.25, 0.35, 0.45]
+  sdc_enabled: true
+  kl_ctrl:
+    type: fixed
+    kl_coef: 0.002
+
+trainer:
+  total_epochs: 20
+  total_training_steps: null
+  project_name: metacot-math
+  experiment_name: verl_sdc_e21r_shared
+  logger: ['console', 'wandb']
+  resume_mode: disable
+  resume_from_path: null
+  nnodes: 1
+  n_gpus_per_node: 4
+  save_freq: 100
+  test_freq: 50
+  val_before_train: false
+  critic_warmup: 0
+  default_hdfs_dir: null
+  default_local_dir: checkpoints/verl_sdc_e21r_shared
+  remove_clip: False
+  remove_previous_ckpt: False
+  device: cuda
+  use_legacy_worker_impl: auto
+
+# verl 0.7.1 requires top-level global_profiler for optional torch-profiler integration
+global_profiler:
+  tool: null
+  steps: null
+  profile_continuous_steps: false
+  save_path: null
+  global_tool_config: null

@@ -3,6 +3,39 @@
 from __future__ import annotations
 
 import inspect
+import json
+import os
+
+
+def normalize_extra_special_tokens(tokenizer_config_path: str) -> bool:
+    """Patch ``extra_special_tokens`` list→dict in a ``tokenizer_config.json``.
+
+    Older tokenizer checkpoints sometimes persist ``extra_special_tokens`` as
+    a JSON ``list`` while modern ``transformers`` expects a ``dict``. Reading
+    the legacy shape raises ``TypeError`` during ``AutoTokenizer.from_pretrained``.
+
+    Review iter1 Fix 6: lift the inline patch out of ``driver_v5_m1_n3.sh`` and
+    expose it as a callable utility so other drivers/trainers can share it.
+
+    Returns ``True`` if a patch was applied, ``False`` if no change needed.
+    Silently no-ops when the file is missing.
+    """
+    if not tokenizer_config_path or not os.path.isfile(tokenizer_config_path):
+        return False
+    try:
+        with open(tokenizer_config_path, "r") as fh:
+            tc = json.load(fh)
+    except Exception as exc:  # pragma: no cover — defensive
+        print(f"[tokenizer_utils] could not read {tokenizer_config_path}: {exc}")
+        return False
+    est = tc.get("extra_special_tokens")
+    if isinstance(est, list):
+        tc["extra_special_tokens"] = {}
+        with open(tokenizer_config_path, "w") as fh:
+            json.dump(tc, fh, ensure_ascii=False, indent=2)
+        print(f"[tokenizer_utils] PATCHED extra_special_tokens list→dict: {tokenizer_config_path}")
+        return True
+    return False
 
 
 def _get_additional_special_tokens(tokenizer) -> list[str]:

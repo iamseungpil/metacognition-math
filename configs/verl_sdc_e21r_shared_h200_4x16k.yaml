@@ -1,0 +1,48 @@
+# veRL-native shared-preserve SDC — H200 x4 16k response overlay
+defaults:
+  - verl_sdc_e21r_shared
+  - _self_
+
+data:
+  max_response_length: 16384
+  train_batch_size: 8
+  val_batch_size: 16
+
+actor_rollout_ref:
+  actor:
+    ppo_mini_batch_size: 4
+    ppo_micro_batch_size_per_gpu: 1
+    ppo_max_token_len_per_gpu: 65536
+  ref:
+    log_prob_micro_batch_size_per_gpu: 4
+    log_prob_max_token_len_per_gpu: 65536
+  rollout:
+    tensor_model_parallel_size: 2
+    temperature: 0.6
+    top_k: 20
+    top_p: 0.95
+    response_length: ${data.max_response_length}
+    gpu_memory_utilization: 0.55
+    max_model_len: 16896
+    max_num_batched_tokens: 24576
+    max_num_seqs: 16
+    log_prob_micro_batch_size_per_gpu: 4
+    n: 2
+
+critic:
+  ppo_micro_batch_size_per_gpu: 1
+  forward_micro_batch_size_per_gpu: 1
+  ppo_max_token_len_per_gpu: 65536
+  forward_max_token_len_per_gpu: 65536
+
+reward_model:
+  micro_batch_size: 2
+
+trainer:
+  nnodes: 1
+  n_gpus_per_node: 4
+  device: cuda
+  experiment_name: verl_sdc_e21r_shared_h200_4x16k
+  default_local_dir: /scratch/checkpoints/verl_sdc_e21r_shared_h200_4x16k
+  save_freq: 20
+  test_freq: 20

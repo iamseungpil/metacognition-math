@@ -1,0 +1,126 @@
+# Contrastive Meta-RLSD (N3) — extends meta_rlsd_m1 with T+/T- privileged teachers.
+# Plan reference: results/plan_contrastive_rlsd_v1_2026_04_17.md
+#
+# Usage:
+#   accelerate launch --config_file configs/accelerate_ds3.yaml \
+#       src/training/contrastive_meta_rlsd_trainer.py \
+#       --config configs/contrastive_meta_rlsd.yaml \
+#       --variant n3 --seed 42
+#
+# Variants (flip fields without YAML edit):
+#   n3            — rule_based decoy, meta_only mask (main)
+#   n3-random     — random-noise decoy (H3 ablation)
+#   n3-fullmask   — rule_based decoy + all_tokens mask (interaction)
+
+# ── Model / student & teacher init ────────────────────────────────────────
+# Note: D2 rebuilt checkpoint shard files are missing from HF (only index + config uploaded).
+# Using v8_meta_inside_strict_sft (single 16.4GB model.safetensors) as substitute.
+# Semantic change from plan: v8 meta SFT is the base; D2's best-of-N distill step is skipped.
+student_init: checkpoints/v8_meta_inside_strict_sft
+teacher_init: checkpoints/v8_meta_inside_strict_sft
+
+# ── M1 parity (plan §2.6 — same λ/clip/sync to isolate contrastive effect) ─
+privileged_answer: true
+mask_mode: meta_only
+lambda_init: 0.5                # SAME as M1 — clean A/B, no λ tuning
+lambda_final: 0.0
+lambda_decay_steps: 75
+clip_eps_w: 0.2
+clip_eps_low: 0.2
+clip_eps_high: 0.28
+teacher_sync_freq: 10
+warmup_steps: 10
+lr: 1.0e-6
+kl_coef: 0.0
+entropy_coef: 0.0
+
+# ── Rollout / batch ────────────────────────────────────────────────────────
+num_rollouts: 8                # 4→8: larger GRPO group reduces single-group σ=0 deadlock risk
+                               # (E21R reference also used 8; codex+planner both flagged this)
+# Sampling params — must match SFT generation_config (narrow tuning).
+# TRL GRPOConfig defaults (temp=1.0, no top_p/top_k) cause full-entropy sampling
+# that diverges from v8 meta SFT's narrow distribution and fails to produce
+# <|im_end|> within budget (all rollouts truncate → reward std=0 → no signal).
+# v8_meta_inside_strict_sft/generation_config.json values:
+temperature: 0.6
+top_p: 0.95
+top_k: 20
+max_response_length: 4096      # matches working E21R-v2 RL; 16384 caused OOM on H200
+prompt_length: 2048
+batch_size: 64
+total_steps: 300
+seed: 42
+
+# ── vLLM backend (OOM fix) ─────────────────────────────────────────────────
+# Without vLLM, HF generate + DeepSpeed ZeRO-3 → silent OOM at loss compute.
+# Working RL (E21R-v2) used vLLM for rollout generation; teacher logprobs
+# still computed via HF forward pass on generated completions.
+use_vllm: true
+vllm_tensor_parallel_size: 1   # 1 GPU for vLLM, 3 GPUs for policy gradient
+vllm_gpu_memory_utilization: 0.5
+
+# ── Data & output ──────────────────────────────────────────────────────────
+train_data: data/verl_train_redirect.parquet
+val_data: ""
+output_dir: checkpoints/meta_rlsd_n3
+eval_interval: 50
+save_interval: 100
+
+# ── Reward (3-level meta floor — §2.5) ─────────────────────────────────────
+# Strengthened no-penalty default prevents wrap-rate collapse (E21R post-mortem).
+reward_meta_no_penalty: -0.30
+reward_meta_no_penalty_strength: "soft"
+reward_meta_short_bonus: 0.0
+reward_meta_full_bonus: 0.20
+meta_min_length_tokens: 20
+correctness_weight: 1.0
+meta_floor_weight: 0.2
+# Continuous variance-floor weight — breaks reward ties on narrow-SFT×GRPO
+# without changing the headline claim (correctness stays dominant).
+continuous_weight: 0.05
+
+# ── Safety rails (plan §2.8 / §4.1) ────────────────────────────────────────
+log_grad_norm_clip: 1.0
+log_ratio_clamp: 10.0
+
+# ── N3-specific ────────────────────────────────────────────────────────────
+# decoy_strategy: "rule_based" (§2.1) or "random" (§H3 ablation).
+# Variant --variant n3-random overrides this at CLI time.
+decoy_strategy: rule_based
+decoy_seed: 42                  # deterministic — required by §2.5 precondition
+trainer_class: ContrastiveMetaRLSDTrainer
+
+# ── SDC-specific (plan_SDC_v2 §3.3 / §5.1) ─────────────────────────────────
+# SDC adds a post-meta repel signal with its own λ schedule, independent of
+# the existing meta attract schedule above (lambda_init/final/decay_steps —
+# which acts as λ_meta for SDC).
+#
+# λ_post ramps UP (0.1 → 0.3 over 150 steps) so M1 meta attract establishes
+# structure before the repel kicks in. Reference plan §3.3 justification:
+#   * 0.1 start: below clip_eps_high=0.28 so initial repel cannot single-
+#     handedly clip PPO
+#   * 0.3 final: roughly matches λ_meta steady-state magnitude, so attract
+#     and repel are comparable in gradient contribution by step 150
+#   * 150-step ramp: half the 300-step total budget
+#
+# Ignored unless --variant is one of {sdc-split, sdc-uniform, sdc-noise, sdc-shared}.
+lambda_post_init: 0.1
+lambda_post_final: 0.3
+lambda_post_warmup: 150
+sdc_noise_sigma: 0.3            # plan §2.6: matched to typical log-w_rep std
+sdc_shared_tau: 0.5             # teacher-consensus threshold for sdc-shared
+
+# ── Reporting ──────────────────────────────────────────────────────────────
+report_to: wandb
+run_name: null                  # null → auto "meta_rlsd_n3_s{seed}"
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 2
+# effective_batch_size (prompts) = per_device 1 × num_processes 4 × accum 2 = 8 prompts
+# num_rollouts 8 → per rank = 2 prompts × 8 gens = 16 completions → 2 groups/rank
+# 8 is divisible by num_rollouts 8 (TRL GRPOConfig constraint). Larger group
+# size also reduces reward_std=0 deadlock probability (codex+reviewer guidance).
+variant: n3
+
+# ── Teacher sync fallback (§2.4) ───────────────────────────────────────────
+teacher_sync_file_fallback: true
+teacher_sync_tmp_dir: /tmp/_contrastive_rlsd_teacher_snap

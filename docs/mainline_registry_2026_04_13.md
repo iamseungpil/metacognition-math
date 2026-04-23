@@ -5,11 +5,13 @@ It complements the active plan by indexing the exact code, data, and result path
 
 ## Source Of Truth
 
-1. `results/plan_metacot_v8_active_2026_04_09.md`
-2. `configs/mainline_contract.yaml`
-3. `NODE_POLICY.md`
-4. `docs/artifact_policy.md`
-5. `docs/pipeline_stages.md`
+1. **`results/status_2026_04_21_session.md`** — ⭐ current session status + HF audit (start here)
+2. **`results/plan_h200_2node_parallel_2026_04_21.md`** — ⭐ current SDC-shared launch plan
+3. `results/plan_metacot_v8_active_2026_04_09.md` — V8 mainline activation plan
+4. `configs/mainline_contract.yaml`
+5. `NODE_POLICY.md`
+6. `docs/artifact_policy.md`
+7. `docs/pipeline_stages.md`
 
 ## Active Data
 
