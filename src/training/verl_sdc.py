@@ -188,6 +188,9 @@ def _build_teacher_logprob_batch(
     attention_mask = torch.zeros(batch_size, total_len, dtype=torch.long)
     position_ids = torch.zeros(batch_size, total_len, dtype=torch.long)
     response_mask_full = torch.zeros(batch_size, total_len, dtype=torch.long)
+    # prompts/responses split required by verl 0.7.1 left_right_2_no_padding.
+    prompts_padded = torch.zeros(batch_size, max_prompt_len, dtype=torch.long)
+    prompts_attn = torch.zeros(batch_size, max_prompt_len, dtype=torch.long)
 
     for i in range(batch_size):
         p = prompt_ids_list[i]
@@ -202,6 +205,9 @@ def _build_teacher_logprob_batch(
             attention_mask[i, p_len : p_len + valid_r] = 1
             response_mask_full[i, p_len : p_len + response_len] = r_mask
         position_ids[i] = torch.arange(total_len, dtype=torch.long)
+        # left-pad each prompt to max_prompt_len so verl's prompt-side accessors work
+        prompts_padded[i, max_prompt_len - p_len : max_prompt_len] = p
+        prompts_attn[i, max_prompt_len - p_len : max_prompt_len] = 1
 
     return DataProto.from_dict(
         tensors={
@@ -209,6 +215,8 @@ def _build_teacher_logprob_batch(
             "attention_mask": attention_mask,
             "response_mask": response_mask_full,
             "position_ids": position_ids,
+            "prompts": prompts_padded,
+            "responses": responses.long(),
         }
     )
 
@@ -260,11 +268,48 @@ def _attach_teacher_signals(data: DataProto):
         responses=response_tensor,
         response_mask=response_mask,
     )
+    # verl 0.7.1 engine_workers infer_batch reads micro_batch["temperature"];
+    # the trainer's main fit() loop sets it on the rollout output, but our
+    # freshly-built teacher batches don't inherit meta_info, so re-attach.
+    rollout_temp = float(trainer.config.actor_rollout_ref.rollout.temperature)
+    pos_batch.meta_info["temperature"] = rollout_temp
+    neg_batch.meta_info["temperature"] = rollout_temp
     pos_out = trainer._compute_ref_log_prob(pos_batch)
     neg_out = trainer._compute_ref_log_prob(neg_batch)
     target_device = response_tensor.device
     data.batch["sdc_teacher_pos_log_probs"] = pos_out.batch["ref_log_prob"].to(target_device)
     data.batch["sdc_teacher_neg_log_probs"] = neg_out.batch["ref_log_prob"].to(target_device)
+
+    # When agent_reward_loop pre-populates rm_scores asynchronously, the SDC
+    # reward manager early-returns before computing region masks. compute_advantage
+    # downstream still expects sdc_meta_mask / sdc_postmeta_*_mask / sdc_body_mask,
+    # so populate them here from the response tokens we already have on hand.
+    if "sdc_meta_mask" not in data.batch.keys():
+        bs = response_tensor.size(0)
+        response_length = response_tensor.size(1)
+        meta_masks, post_shared, post_diff, body, fb = [], [], [], [], []
+        for i in range(bs):
+            r_ids = response_tensor[i].tolist()
+            masks = build_sdc_region_masks(
+                tokenizer,
+                r_ids,
+                tokenizer.decode(r_ids, skip_special_tokens=False),
+            )
+            def _pad(m: torch.Tensor) -> torch.Tensor:
+                out = torch.zeros(response_length, dtype=torch.float32)
+                usable = min(response_length, m.numel())
+                out[:usable] = m[:usable]
+                return out
+            meta_masks.append(_pad(masks["meta_mask"]))
+            post_shared.append(_pad(masks["postmeta_shared_mask"]))
+            post_diff.append(_pad(masks["postmeta_diff_mask"]))
+            body.append(_pad(masks["body_mask"]))
+            fb.append(masks["fallback_triggered"])
+        data.batch["sdc_meta_mask"] = torch.stack(meta_masks, dim=0).to(target_device)
+        data.batch["sdc_postmeta_shared_mask"] = torch.stack(post_shared, dim=0).to(target_device)
+        data.batch["sdc_postmeta_diff_mask"] = torch.stack(post_diff, dim=0).to(target_device)
+        data.batch["sdc_body_mask"] = torch.stack(body, dim=0).to(target_device)
+        data.non_tensor_batch["sdc_fallback_triggered"] = np.asarray(fb, dtype=np.float32)
     return data
 
 

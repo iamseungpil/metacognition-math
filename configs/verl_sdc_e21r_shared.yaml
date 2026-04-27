@@ -37,6 +37,8 @@ actor_rollout_ref:
     strategy: fsdp
     rollout_n: ${actor_rollout_ref.rollout.n}
     loss_agg_mode: token-mean
+    loss_scale_factor: null  # only used by 'seq-mean-token-sum-norm'; ray_trainer reads this attribute
+    data_loader_seed: 1      # ray_trainer._update_actor reads this; omegaconf strict mode requires explicit key
     checkpoint:
       save_contents: [model, optimizer, extra]
       load_contents: [model, optimizer, extra]
@@ -79,9 +81,12 @@ actor_rollout_ref:
       _target_: verl.workers.config.FSDPEngineConfig
       wrap_policy:
         min_num_params: 0
-      param_offload: False
-      grad_offload: False
-      optimizer_offload: False
+      # MUST be True with vLLM async rollout: engine_workers.update_weights
+      # unconditionally offloads actor → CPU after weight sync; eval_mode only
+      # reloads model to GPU when is_param_offload_enabled=True.
+      param_offload: True
+      grad_offload: True
+      optimizer_offload: True
       fsdp_size: -1
   ref:
     _target_: verl.workers.config.FSDPActorConfig
@@ -138,6 +143,8 @@ actor_rollout_ref:
     do_sample: True
     n: 2
     enable_chunked_prefill: False
+    multi_turn:
+      enable: false
     agent:
       _target_: verl.workers.config.AgentLoopConfig
       num_workers: 4
@@ -294,8 +301,12 @@ trainer:
   default_local_dir: checkpoints/verl_sdc_e21r_shared
   remove_clip: False
   remove_previous_ckpt: False
+  esi_redundant_time: 0  # elastic-shard-increase redundant wait time; 0 = no wait
+  log_val_generations: 0  # validation log sampler size (0 = disabled); ray_trainer reads this
+  del_local_ckpt_after_load: false  # resume path: don't delete local ckpt after engine loads it
   device: cuda
-  use_legacy_worker_impl: auto
+  use_legacy_worker_impl: disable  # 0.7.1: force new engine_workers path so DataProto→TensorDict conversion happens before compute_log_prob
+  balance_batch: True
 
 # verl 0.7.1 requires top-level global_profiler for optional torch-profiler integration
 global_profiler:

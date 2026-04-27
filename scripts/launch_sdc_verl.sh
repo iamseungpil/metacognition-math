@@ -32,12 +32,15 @@ cd "${CODE_DIR}"
 
 # ── GPU auto-detect → config pick ──
 NGPU=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
+GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
 VRAM_GB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1 | awk '{print int($1/1024)}')
 
 if [ -z "${CONFIG:-}" ]; then
     # Order matters: most-specific (largest VRAM) first
     if [ "${NGPU}" -eq 8 ] && [ "${VRAM_GB}" -le 45 ]; then
         CONFIG="verl_sdc_e21r_shared_40g8"
+    elif [ "${NGPU}" -eq 4 ] && echo "${GPU_NAME}" | grep -qi "H100"; then
+        CONFIG="verl_sdc_e21r_shared_h100_4x4k"
     elif [ "${NGPU}" -eq 8 ] && [ "${VRAM_GB}" -ge 140 ]; then
         CONFIG="verl_sdc_e21r_shared"  # H200 x8 can safely run the base config
     elif [ "${NGPU}" -eq 4 ] && [ "${VRAM_GB}" -ge 140 ]; then
@@ -48,7 +51,7 @@ if [ -z "${CONFIG:-}" ]; then
         echo "[launch] no matching config for ${NGPU}x ${VRAM_GB}GB — set CONFIG= manually"; exit 1
     fi
 fi
-echo "[launch] NGPU=${NGPU} VRAM=${VRAM_GB}GB → config=${CONFIG}"
+echo "[launch] GPU=${GPU_NAME} NGPU=${NGPU} VRAM=${VRAM_GB}GB → config=${CONFIG}"
 
 MODEL_OVERRIDE_ARG=""
 if [ -n "${MODEL_PATH:-}" ]; then
@@ -88,6 +91,11 @@ if [ -z "${MODEL_PATH:-}" ]; then
     fi
     MODEL_OVERRIDE_ARG="actor_rollout_ref.model.path=${DEFAULT_MODEL_PATH}"
     echo "[launch] using staged model → ${DEFAULT_MODEL_PATH}"
+
+    # v8_meta_inside_strict_sft was trained on raw text (with <|meta|> tokens),
+    # not chat-formatted. verl rl_dataset.py requires apply_chat_template to
+    # work on the prompt column. Add a passthrough template via helper script.
+    python scripts/patch_tokenizer_chat_template.py "${DEFAULT_MODEL_PATH}" || true
 fi
 
 # ── Resume-from-HF hook: pull latest global_step_N if present ──
@@ -161,6 +169,7 @@ CMD=(
     python -u -m src.training.verl_sdc
     "--config-name=${CONFIG}"
     "trainer.default_local_dir=${CKPT_DIR}/${CONFIG}"
+    "++hydra.searchpath=[pkg://verl/trainer/config]"
 )
 
 if [ -n "${RESUME_ARG}" ]; then
