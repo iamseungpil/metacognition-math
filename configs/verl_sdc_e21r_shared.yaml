@@ -40,10 +40,10 @@ actor_rollout_ref:
     loss_scale_factor: null  # only used by 'seq-mean-token-sum-norm'; ray_trainer reads this attribute
     data_loader_seed: 1      # ray_trainer._update_actor reads this; omegaconf strict mode requires explicit key
     checkpoint:
-      save_contents: [model, optimizer, extra]
-      load_contents: [model, optimizer, extra]
+      save_contents: [model, extra]
+      load_contents: [model, extra]
       async_save: false
-    ppo_mini_batch_size: 8
+    ppo_mini_batch_size: 16
     ppo_micro_batch_size: null
     ppo_micro_batch_size_per_gpu: 1
     use_dynamic_bsz: False
@@ -65,7 +65,7 @@ actor_rollout_ref:
     use_remove_padding: ${actor_rollout_ref.model.use_remove_padding}
     optim:
       _target_: verl.workers.config.FSDPOptimizerConfig
-      lr: 5e-7
+      lr: 1e-6
       lr_warmup_steps_ratio: 0.1
       min_lr_ratio: 0.1
       warmup_style: cosine
@@ -289,7 +289,7 @@ trainer:
   project_name: metacot-math
   experiment_name: verl_sdc_e21r_shared
   logger: ['console', 'wandb']
-  resume_mode: disable
+  resume_mode: auto
   resume_from_path: null
   nnodes: 1
   n_gpus_per_node: 4

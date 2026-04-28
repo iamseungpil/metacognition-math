@@ -148,12 +148,12 @@ PUSH_LOG="${LOG_DIR}/push_daemon.log"
 if [ -z "${HF_TOKEN:-}" ]; then
     echo "[launch] HF_TOKEN not set — skipping checkpoint push daemon"
 elif ! pgrep -f "push_ckpts_to_hf.py" >/dev/null 2>&1; then
-    echo "[launch] starting checkpoint push daemon (every 600s)"
+    echo "[launch] starting checkpoint push daemon (every 30s)"
     nohup python scripts/push_ckpts_to_hf.py \
         --ckpt_dir "${CKPT_DIR}/${CONFIG}" \
         --repo_id "${HF_CKPT_REPO}" \
         --token "${HF_TOKEN}" \
-        --interval 600 \
+        --interval 30 \
         --config_name "${CONFIG}" \
         >"${PUSH_LOG}" 2>&1 &
     echo "[launch] push daemon PID=$! → ${PUSH_LOG}"
