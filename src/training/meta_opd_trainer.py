@@ -131,7 +131,16 @@ class MetaOPDTrainer(MetaRLSDTrainer):
         Note (review W5): For T ≠ 1 the K-element support is unchanged
             (topk monotone under temperature scaling) but renormalization
             differs from full-vocab marginal — this is intentional local-support KL.
+
+        Device fix: teacher logits may live on CPU when frozen teacher hasn't
+        been .to(device)'d. Align all tensors to student_logits' device.
         """
+        target_device = student_logits.device
+        if teacher_logits.device != target_device:
+            teacher_logits = teacher_logits.to(target_device)
+        if mask.device != target_device:
+            mask = mask.to(target_device)
+
         V = teacher_logits.size(-1)
         K = max(1, min(int(K), V))
 
@@ -223,19 +232,35 @@ class MetaOPDTrainer(MetaRLSDTrainer):
 
         Review W7: gracefully degrade if model.forward doesn't support
         logits_to_keep (e.g., older models or non-CausalLM heads).
+
+        Device fix: teacher (frozen) may live on CPU while input tensors are on
+        GPU, raising 'index is on cuda:0, different from other tensors on cpu'.
+        Move input_ids/attention_mask to the model's device before forward.
         """
+        try:
+            model_device = next(model.parameters()).device
+        except StopIteration:
+            model_device = input_ids.device
+        if input_ids.device != model_device:
+            input_ids = input_ids.to(model_device)
+        if attention_mask.device != model_device:
+            attention_mask = attention_mask.to(model_device)
+
         if getattr(self, "_supports_logits_to_keep", True):
             out = model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 logits_to_keep=completion_len + 1,
             )
-            return out.logits[:, :-1, :]  # [B, completion_len, V]
-        # Fallback: full forward, manual slice
-        out = model(input_ids=input_ids, attention_mask=attention_mask)
-        # logits[:, prompt_len-1 : prompt_len-1+completion_len, :]
-        prompt_len = input_ids.size(1) - completion_len
-        return out.logits[:, prompt_len - 1 : prompt_len - 1 + completion_len, :]
+            logits = out.logits[:, :-1, :]
+        else:
+            out = model(input_ids=input_ids, attention_mask=attention_mask)
+            prompt_len = input_ids.size(1) - completion_len
+            logits = out.logits[:, prompt_len - 1 : prompt_len - 1 + completion_len, :]
+
+        # Move logits back to caller's expected device (where student lives) so
+        # downstream KL/loss math doesn't trigger another device mismatch.
+        return logits
 
     # ─── Override: _compute_loss with OPD term ───────────────────────────────
 
