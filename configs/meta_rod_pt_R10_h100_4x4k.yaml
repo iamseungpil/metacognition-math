@@ -1,0 +1,72 @@
+# ROD-PT (Plan v5.7): R5 SDC factor + position teacher (decoy off).
+
+student_init: "PLACEHOLDER_STUDENT_PATH"
+teacher_init: "PLACEHOLDER_TEACHER_PATH"
+
+privileged_answer: true
+mask_mode: "meta_only"
+
+clip_eps_w: 0.2
+clip_eps_low: 0.2
+clip_eps_high: 0.28
+
+lambda_init: 0.0
+lambda_final: 0.0
+lambda_decay_steps: 1
+teacher_sync_freq: 10000
+warmup_steps: 5
+
+lr: 5.0e-7
+kl_coef: 0.0
+entropy_coef: 0.0
+
+num_rollouts: 4
+temperature: 0.6
+top_p: 0.95
+top_k: 20
+max_response_length: 4096
+prompt_length: 2048
+
+batch_size: 64
+total_steps: 100
+seed: 42
+
+train_data: "data/verl_train_redirect.parquet"
+val_data: ""
+output_dir: "checkpoints/meta_rod_pt_R10"
+
+reward_meta_no_penalty: 0.0
+reward_meta_no_penalty_strength: "soft"
+reward_meta_short_bonus: 0.0
+reward_meta_full_bonus: 0.0
+meta_min_length_tokens: 20
+
+log_grad_norm_clip: 1.0
+log_ratio_clamp: 10.0
+eval_interval: 25
+save_interval: 25
+
+use_vllm: true
+vllm_tensor_parallel_size: 4
+vllm_gpu_memory_utilization: 0.5
+
+opd_alpha: 0.0
+opd_lambda_pos: 0.0
+opd_lambda_neg: 0.0
+opd_topk: 64
+opd_topk_fallback: 32
+opd_temperature: 1.0
+opd_meta_only: true
+opd_decoy_seed: 42
+opd_kl_neg_cap: 5.0
+opd_forced_meta_assert: false
+
+pt_position_top_k: 16
+pt_position_penalty: -1.0
+pt_factor_clip_low: 0.2
+pt_factor_clip_high: 5.0
+pt_disable_decoy: true
+
+variant: "rod_pt"
+report_to: "wandb"
+run_name: "rod_pt_R10_h100_4x4k"
