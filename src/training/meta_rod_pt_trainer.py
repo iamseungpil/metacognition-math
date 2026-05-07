@@ -87,17 +87,29 @@ class MetaRODPTTrainer(MetaOPDTrainer):
         gradient-bearing quantity in RLSD.
         """
         with torch.no_grad():
+            # Device fix: teacher_logits may live on CPU (frozen teacher).
+            # Align all tensors to student_logits' device before gather.
+            target_device = student_logits.device
             T_logits = teacher_logits.detach()
+            if T_logits.device != target_device:
+                T_logits = T_logits.to(target_device)
             S_logits = student_logits.detach()
+            tok = token_ids
+            if tok.device != target_device:
+                tok = tok.to(target_device)
+            sign_A = sign_advantage
+            if sign_A.device != target_device:
+                sign_A = sign_A.to(target_device)
+
             logp_T = (
-                T_logits.gather(-1, token_ids.unsqueeze(-1)).squeeze(-1)
+                T_logits.gather(-1, tok.unsqueeze(-1)).squeeze(-1)
                 - T_logits.logsumexp(dim=-1)
             )
             logp_S = (
-                S_logits.gather(-1, token_ids.unsqueeze(-1)).squeeze(-1)
+                S_logits.gather(-1, tok.unsqueeze(-1)).squeeze(-1)
                 - S_logits.logsumexp(dim=-1)
             )
-            sign_A_per_token = sign_advantage.unsqueeze(1).expand_as(logp_T)
+            sign_A_per_token = sign_A.unsqueeze(1).expand_as(logp_T)
             log_factor = sign_A_per_token * (logp_T - logp_S)
             factor = torch.exp(log_factor).clamp(min=clip_low, max=clip_high)
         return factor
