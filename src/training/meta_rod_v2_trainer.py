@@ -172,57 +172,34 @@ class MetaRODv2Trainer(MetaOPDTrainer):
         }
         return loss, stats
 
-    def _content_kl_at_injection_points(
+    def _content_kl_at_emitted_meta(
         self,
-        student_logits: torch.Tensor,   # [B, T_completion, V]
-        teacher_pos_pack: dict,         # gold-conditioned base teacher pack
-        positions_per_b: List[List[int]],
-        completion_len: int,
+        student_logits: torch.Tensor,    # [B, T_completion, V]
+        teacher_logits: torch.Tensor,    # [B, T_completion, V] — gold-conditioned
+        meta_mask: torch.Tensor,         # [B, T_completion] — 1.0 inside emitted meta blocks
+        completion_mask: torch.Tensor,   # [B, T_completion]
     ) -> Tuple[torch.Tensor, int]:
-        """Build T_content forward by injecting META_START at sampled position p
-        into the prompt-completion concat, then KL on the next few tokens.
+        """ALT-2 (post-codex-consensus): KL on STUDENT-EMITTED META region.
 
-        For practical efficiency we run the teacher once per (batch, position-set)
-        with all sampled positions injected as a synthetic completion suffix —
-        this approximates "predict the meta-content distribution at sampled
-        positions". To avoid per-position forward (cost prohibitive), we use a
-        single-token KL: KL(T(prompt+gold+completion[:t]+META_START) || S(...)) at
-        each sampled t, computed by indexing into the existing teacher forward
-        logits at position (t+1) — which already encodes "next given META in
-        prefix" if META was injected.
+        Cold-start emit rates already 87-97% (measured on v8_meta_inside_strict_sft),
+        so student-emitted META spans are dense from step 0. No counterfactual META
+        injection — just gold-conditioned teacher predicts where the student already
+        emitted META. Avoids BCE/KL tug-of-war (BCE pulls S(p)→META; KL only fires
+        AFTER student already emitted META, so no conflict).
 
-        For v2 launch we approximate via shared teacher forward (no per-position
-        rebuild) and gate by p_T > 0.5. This is a practical compromise; full
-        per-position injection is M5.7 ADOPD scope.
+        Reuses parent _topk_kl with `meta_mask * completion_mask`.
+        Cost: 0 extra forward (teacher logits already computed for emit BCE).
+
+        Returns (kl_scalar, n_meta_positions_supervised).
         """
-        # Practical approximation: reuse parent teacher forward, gate by sampled
-        # positions where p_emit_T was high (top half by p_T).
-        # Returns scalar KL averaged over gated positions.
-        with torch.no_grad():
-            T_logits = self._completion_logits(
-                self.teacher,
-                teacher_pos_pack["input_ids"],
-                teacher_pos_pack["attention_mask"],
-                completion_len,
-            )
         device = student_logits.device
         K = self._current_topk
-
-        kl_terms: List[torch.Tensor] = []
-        for b, positions in enumerate(positions_per_b):
-            for t in positions:
-                if t >= student_logits.size(1) or t >= T_logits.size(1):
-                    continue
-                # top-K KL at (b, t)
-                T_at = T_logits[b, t].unsqueeze(0).unsqueeze(0)   # [1,1,V]
-                S_at = student_logits[b, t].unsqueeze(0).unsqueeze(0)
-                mask = torch.ones((1, 1), device=device)
-                kl = self._topk_kl(T_at, S_at, mask, K, temperature=1.0)
-                kl_terms.append(kl)
-
-        if not kl_terms:
+        kl_mask = meta_mask * completion_mask.float()
+        n_pos = int(kl_mask.sum().item())
+        if n_pos == 0:
             return torch.zeros((), device=device, dtype=student_logits.dtype), 0
-        return torch.stack(kl_terms).mean(), len(kl_terms)
+        kl = self._topk_kl(teacher_logits, student_logits, kl_mask, K, temperature=1.0)
+        return kl, n_pos
 
     # ─── _compute_loss (override) ───────────────────────────────────────────
 
@@ -304,9 +281,11 @@ class MetaRODv2Trainer(MetaOPDTrainer):
                 student_logits, T_emit_logits, self._meta_start_id, sampled,
             )
 
-            # Content KL (single-forward approximation; M5.7 will do real per-position injection)
-            content_kl, n_kl = self._content_kl_at_injection_points(
-                student_logits, teacher_pack, sampled, completion_len,
+            # Content KL on student-emitted META region (ALT-2 post-codex consensus).
+            # Cold start emit rates 87-97% → dense supervision from step 0, no
+            # counterfactual injection needed; avoids BCE/KL tug-of-war.
+            content_kl, n_kl = self._content_kl_at_emitted_meta(
+                student_logits, T_emit_logits, meta_mask, completion_mask,
             )
 
             # Update target_rate EMA from teacher emit probs
