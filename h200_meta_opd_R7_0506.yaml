@@ -1,0 +1,220 @@
+description: M5.2 OPD-Decoy training on H200 (full-logit KL on top-K subset + decoy contrast, meta region only). Plan v5.1 §10.5 M5.2.
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: meta_opd_r7
+    sku: 80G4-H100
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 604800
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: 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
+        HUGGING_FACE_HUB_TOKEN: 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
+        WANDB_API_KEY: 2f4e627868f1f9dad10bcb1a14fbf96817e6baa9
+        WANDB_KEY: 2f4e627868f1f9dad10bcb1a14fbf96817e6baa9
+        WANDB_PROJECT: skilldiscovery2
+        WANDB_NAME: meta_opd_decoy_R7_h200_0506
+        WANDB_RUN_GROUP: meta-opd-decoy-R7-2026-05-06
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -x
+        echo "[YAML] step start"
+        mkdir -p /scratch/logs /scratch/checkpoints
+        cd /scratch
+
+        # 1. Install huggingface_hub (use ptca env since hub not in default python)
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        # 2. Pull code tarball
+        python -c "
+        from huggingface_hub import hf_hub_download
+        import os, tarfile
+        p = hf_hub_download(repo_id=\"iamseungpil/metacot\", filename=\"code_snapshots/metacognition.tar.gz\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"])
+        t = tarfile.open(p); t.extractall(\"/scratch\"); t.close()
+        print(\"code extracted\")
+        "
+
+        # 3. Bootstrap simplerl env (idempotent fast-path)
+        echo "[YAML] before bootstrap"
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+        echo "[YAML] after bootstrap rc=$$?"
+
+        # 4. Activate simplerl via PATH
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        which python && python --version
+        echo "[YAML] after activate"
+
+        # 5. (skip — tokenizer patch moved to step 6.5 after base SFT staging)
+        true
+
+        # 6. Stage parquet
+        python /scratch/metacognition/scripts/pull_parquets.py 2>&1 | tail -3
+
+        # 6.5. ★ CRITICAL: Stage base SFT model (not done by bootstrap)
+        echo "[YAML] staging base SFT"
+        mkdir -p /scratch/models
+        python -c "
+        from huggingface_hub import snapshot_download
+        import os, shutil
+        p = snapshot_download(
+            repo_id=\"iamseungpil/metacot\",
+            repo_type=\"dataset\",
+            token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/v8_meta_inside_strict_sft/checkpoint-254/*\"],
+            local_dir=\"/scratch/models_dl\",
+        )
+        src = \"/scratch/models_dl/models/v8_meta_inside_strict_sft/checkpoint-254\"
+        dst = \"/scratch/models/v8_meta_inside_strict_sft\"
+        if os.path.exists(dst): shutil.rmtree(dst)
+        shutil.copytree(src, dst)
+        print(\"base SFT staged at\", dst)
+        "
+        ls /scratch/models/v8_meta_inside_strict_sft/ | head
+        # Patch tokenizer (extra_special_tokens list issue must apply AFTER staging)
+        python -c "
+        import json
+        p = \"/scratch/models/v8_meta_inside_strict_sft/tokenizer_config.json\"
+        cfg = json.load(open(p))
+        cfg.pop(\"extra_special_tokens\", None)
+        json.dump(cfg, open(p, \"w\"), indent=2)
+        print(\"tokenizer patched\")
+        "
+
+        # 7. Stage R5 cold start ckpt + merge to HF format.
+        # Runs in simplerl env where verl is available. Writes cold start path to /tmp/opd_cold_start.txt
+        # for step 9 to read since env var does not persist across python and bash boundary.
+        which python  # sanity: should be /scratch/conda_envs/simplerl/bin/python
+        python -c "
+        from huggingface_hub import HfApi, snapshot_download
+        import os, json, subprocess, sys
+        repo = \"iamseungpil/metacot-h100-rlsd-forced-meta-R5-0504\"
+        api = HfApi()
+        files = api.list_repo_files(repo, repo_type=\"model\", token=os.environ[\"HF_TOKEN\"])
+        steps = sorted({int(f.split(\"global_step_\")[1].split(\"/\")[0]) for f in files if \"global_step_\" in f})
+        if not steps:
+            raise SystemExit(\"no R5 ckpt found — cannot run OPD without cold start\")
+        latest = max(steps)
+        print(f\"[OPD cold start] using R5 step {latest} (available: {steps})\", flush=True)
+        snapshot_download(
+            repo_id=repo, repo_type=\"model\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[f\"checkpoints/verl_rlsd_forced_meta_R5_h100_4x4k/global_step_{latest}/**\"],
+            local_dir=\"/scratch\",
+        )
+        merged = \"/scratch/eval_results/merged_R5_step\" + str(latest)
+        ckpt = f\"/scratch/checkpoints/verl_rlsd_forced_meta_R5_h100_4x4k/global_step_{latest}/actor\"
+        if not os.path.exists(merged + \"/model.safetensors.index.json\"):
+            print(f\"[OPD cold start] merging FSDP shards: {ckpt} → {merged}\", flush=True)
+            os.makedirs(merged, exist_ok=True)
+            # Use absolute path to simplerl python so env mismatch impossible. review C1.
+            py = \"/scratch/conda_envs/simplerl/bin/python\"
+            r = subprocess.run([py, \"-m\", \"verl.model_merger\", \"merge\",
+                                \"--backend\", \"fsdp\",
+                                \"--local_dir\", ckpt,
+                                \"--target_dir\", merged],
+                               capture_output=False)
+            if r.returncode != 0:
+                print(f\"[OPD cold start] merger FAILED rc={r.returncode}\", flush=True)
+                sys.exit(1)
+            tok_path = f\"{merged}/tokenizer_config.json\"
+            if os.path.exists(tok_path):
+                cfg = json.load(open(tok_path))
+                cfg.pop(\"extra_special_tokens\", None)
+                json.dump(cfg, open(tok_path, \"w\"), indent=2)
+        print(f\"[OPD cold start] merged ckpt at {merged}\", flush=True)
+        # Write cold start path to file for step 9. review C2: env var does not persist.
+        with open(\"/tmp/opd_cold_start.txt\", \"w\") as f:
+            f.write(merged)
+        print(\"[OPD cold start] wrote /tmp/opd_cold_start.txt\", flush=True)
+        "
+
+        # 8. Background daemons (HF push for OPD ckpts)
+        mkdir -p /scratch/checkpoints/meta_opd_decoy_R7
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/meta_opd_decoy_R7 --repo_id iamseungpil/metacot-h200-meta-opd-R7-0506 --token $HF_TOKEN --interval 90 --config_name meta_opd_decoy_R7 > /scratch/logs/push_OPD.log 2>&1 &
+
+        # 9. Foreground TRL OPD-Decoy training
+        echo "[YAML] before train_meta_opd launch"
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+        # Read cold start path from file (review C2)
+        if [ ! -f /tmp/opd_cold_start.txt ]; then
+            echo "[YAML] ERROR: /tmp/opd_cold_start.txt missing — step 7 likely failed"
+            exit 1
+        fi
+        COLD_START_PATH=$$(cat /tmp/opd_cold_start.txt)
+        if [ -z "$$COLD_START_PATH" ] || [ ! -d "$$COLD_START_PATH" ]; then
+            echo "[YAML] ERROR: cold start path invalid: $$COLD_START_PATH"
+            exit 1
+        fi
+        echo "[YAML] OPD cold start: $$COLD_START_PATH"
+        # Patch yaml student_init + teacher_init to actual absolute paths
+        python -c "
+        import yaml
+        cfg = yaml.safe_load(open(\"configs/meta_opd_decoy_R7_h100_4x4k.yaml\"))
+        cfg[\"student_init\"] = \"$$COLD_START_PATH\"
+        cfg[\"teacher_init\"] = \"/scratch/models/v8_meta_inside_strict_sft\"
+        cfg[\"output_dir\"] = \"/scratch/checkpoints/meta_opd_decoy_R7\"
+        yaml.safe_dump(cfg, open(\"/tmp/meta_opd_runtime.yaml\", \"w\"))
+        print(\"[YAML] runtime config written: student_init=\" + cfg[\"student_init\"] + \" teacher_init=\" + cfg[\"teacher_init\"])
+        "
+        # Use accelerate launch for 4-GPU FSDP/DDP — required for GRPO batch validation
+        # (single-process: effective_batch=1, fails num_generations divisibility check)
+        accelerate launch --num_processes=4 \
+            scripts/train_meta_opd.py --config /tmp/meta_opd_runtime.yaml --skip_preflight
+        TRAIN_RC=$$?
+        echo "[YAML] train_meta_opd rc=$$TRAIN_RC"
+
+        # 10. On-node 16k eval (review C3 — auto-trigger after training)
+        if [ "$$TRAIN_RC" = "0" ]; then
+            echo "[YAML] training succeeded — running 16k eval"
+            EVAL_DIR=/scratch/eval_results/eval_meta_opd_R7_step_final
+            mkdir -p $$EVAL_DIR
+            export VLLM_WORKER_MULTIPROC_METHOD=spawn
+            python /scratch/metacognition/scripts/eval_vllm_1030.py \
+                --model_path /scratch/checkpoints/meta_opd_decoy_R7/final \
+                --model_name meta_opd_R7_step_final \
+                --output_dir $$EVAL_DIR \
+                --max_tokens 16384 \
+                --tp_size 4
+            # Push eval results to HF
+            python -c "
+            from huggingface_hub import HfApi
+            import os
+            HfApi().upload_folder(
+                folder_path=\"$$EVAL_DIR\",
+                path_in_repo=\"eval/meta_opd_R7_2026_05_06\",
+                repo_id=\"iamseungpil/metacot\",
+                repo_type=\"dataset\",
+                token=os.environ[\"HF_TOKEN\"],
+                allow_patterns=[\"*.json\", \"*.parquet\"],
+            )
+            print(\"[OPD eval] results pushed to HF\")
+            "
+            echo "[YAML] 16k eval + HF push DONE"
+        else
+            echo "[YAML] training failed — skipping eval"
+        fi
+
+        # 10. After training, sleep so we can SSH for inspection
+        sleep 86400
+        '

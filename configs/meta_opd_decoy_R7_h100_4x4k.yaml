@@ -1,0 +1,86 @@
+# M5.2 OPD-Decoy config (plan_meta_opd_2026_05_03 v5 §10.5).
+# TRL GRPOTrainer + meta_opd_trainer.MetaOPDTrainer — full-logit KL on top-K,
+# decoy contrast, meta region only.
+#
+# Cold start: M5.1 R5 step 300 best ckpt (after BSC v6 reaches step 300).
+# Hardware: 4× H100 / H200, batch 64, max_response 4096, 200 steps.
+
+# ─── Inherited from MetaRLSDConfig ───────────────────────────────────────────
+student_init: "iamseungpil/metacot-h100-rlsd-forced-meta-R5-0504"  # TODO: replace with R5 step 300 best ckpt path after M5.1 done
+teacher_init: "models/v8_meta_inside_strict_sft/checkpoint-254"
+
+# Privileged-answer teacher (gold-conditioned T+, decoy T-)
+privileged_answer: true
+mask_mode: "meta_only"
+
+# PPO clip
+clip_eps_w: 0.2
+clip_eps_low: 0.2
+clip_eps_high: 0.28
+
+# Lambda decay (SDC factor decay — used by parent only; OPD ignores it)
+lambda_init: 0.0   # OPD replaces SDC factor; keep 0 for clean ablation
+lambda_final: 0.0
+lambda_decay_steps: 1
+
+# Teacher sync (parent — frozen for OPD; sync_freq 10000 = effectively never)
+teacher_sync_freq: 10000
+
+# Warmup
+warmup_steps: 10
+
+# Optimizer
+lr: 1.0e-6
+kl_coef: 0.0
+entropy_coef: 0.0
+
+# Generation
+num_rollouts: 4   # G=4 (matches R5 baseline)
+temperature: 0.6
+top_p: 0.95
+top_k: 20
+max_response_length: 4096
+prompt_length: 2048
+
+# Training
+batch_size: 64
+total_steps: 200
+seed: 42
+
+# Data
+train_data: "data/verl_train_redirect.parquet"
+val_data: ""
+output_dir: "checkpoints/meta_opd_decoy_R7"
+
+# Reward shaping (parent)
+reward_meta_no_penalty: -0.30
+reward_meta_no_penalty_strength: "soft"
+reward_meta_short_bonus: 0.0
+reward_meta_full_bonus: 0.20
+meta_min_length_tokens: 20
+
+# Stability
+log_grad_norm_clip: 1.0
+log_ratio_clamp: 10.0
+eval_interval: 25
+save_interval: 50
+
+# vLLM rollout (TRL inference)
+use_vllm: true
+vllm_tensor_parallel_size: 4
+vllm_gpu_memory_utilization: 0.5
+
+# ─── OPD-Decoy specific ──────────────────────────────────────────────────────
+opd_alpha: 1.0           # OPD loss weight (added to PPO loss)
+opd_lambda_pos: 0.5      # KL(T+ || S) weight
+opd_lambda_neg: 0.3      # KL(T- || S) weight (decoy contrast subtracted)
+opd_topk: 64             # top-K subset size (memory: 64 × 152k vocab = ~50MB per [B,T,K])
+opd_topk_fallback: 32    # fallback on OOM
+opd_temperature: 1.0     # softmax temperature
+opd_meta_only: true      # apply OPD only on meta region
+opd_decoy_seed: 42
+
+# Mode
+variant: "m5_2_opd_decoy"
+report_to: "wandb"
+run_name: "meta_opd_decoy_R7_h100_4x4k"

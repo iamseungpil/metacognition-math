@@ -1,0 +1,97 @@
+# M5.6.5 ROD-RLSD config (plan_meta_rod_v53_2026_05_07).
+# TRL GRPOTrainer + meta_rod_trainer.MetaRODTrainer
+# On-demand emit (BCE) + content KL on meta region (single teacher, two queries).
+# No decoy, no forced injection.
+#
+# Cold start: R5 step 300 best ckpt (HF, downloaded + merged on node).
+# Hardware: 4x H100, batch 64, max_response 4096, 100 steps (additive on R5 step 300).
+
+# --- Inherited from MetaRLSDConfig / MetaOPDConfig ---
+student_init: "PLACEHOLDER_R5_STEP_300_PATH"  # patched at runtime to /scratch/eval_results/merged_R5_step300
+teacher_init: "PLACEHOLDER_TEACHER_PATH"      # patched at runtime to /scratch/models/v8_meta_inside_strict_sft
+
+# Privileged-answer teacher (gold-conditioned; same as R5 T+)
+privileged_answer: true
+mask_mode: "meta_only"
+
+# PPO clip
+clip_eps_w: 0.2
+clip_eps_low: 0.2
+clip_eps_high: 0.28
+
+# Lambda decay (parent SDC; ROD ignores)
+lambda_init: 0.0
+lambda_final: 0.0
+lambda_decay_steps: 1
+
+# Teacher sync (frozen for ROD)
+teacher_sync_freq: 10000
+
+warmup_steps: 5
+
+# Optimizer
+lr: 5.0e-7
+kl_coef: 0.0
+entropy_coef: 0.0
+
+# Generation
+num_rollouts: 4
+temperature: 0.6
+top_p: 0.95
+top_k: 20
+max_response_length: 4096
+prompt_length: 2048
+
+# Training
+batch_size: 64
+total_steps: 100
+seed: 42
+
+# Data
+train_data: "data/verl_train_redirect.parquet"
+val_data: ""
+output_dir: "checkpoints/meta_rod_R8"
+
+# Reward shaping (parent)
+reward_meta_no_penalty: -0.30
+reward_meta_no_penalty_strength: "soft"
+reward_meta_short_bonus: 0.0
+reward_meta_full_bonus: 0.20
+meta_min_length_tokens: 20
+
+# Stability
+log_grad_norm_clip: 1.0
+log_ratio_clamp: 10.0
+eval_interval: 25
+save_interval: 25  # frequent — preempt-resume safe
+
+# vLLM rollout
+use_vllm: true
+vllm_tensor_parallel_size: 4
+vllm_gpu_memory_utilization: 0.5
+
+# --- OPD parent (disabled) ---
+opd_alpha: 0.0
+opd_lambda_pos: 0.0
+opd_lambda_neg: 0.0
+opd_topk: 64
+opd_topk_fallback: 32
+opd_temperature: 1.0
+opd_meta_only: true
+opd_decoy_seed: 42
+opd_kl_neg_cap: 5.0
+opd_forced_meta_assert: false  # ROD does not force inject
+
+# --- ROD-specific (review-tuned) ---
+rod_alpha_emit: 0.5      # emit BCE weight
+rod_beta_content: 0.3    # content KL weight (top-K on meta region)
+# review W6: τ=0.10 instead of 0.30 — 152k vocab, 0.30 peak rare on natural emit
+rod_emit_threshold: 0.10
+# review C2: window=64 instead of 8 — covers student's mid-context emit
+rod_emit_window: 64
+rod_log_emit_stats: true
+
+# Mode
+variant: "m5_6_5_rod_rlsd"
+report_to: "wandb"
+run_name: "meta_rod_R8_h100_4x4k"
