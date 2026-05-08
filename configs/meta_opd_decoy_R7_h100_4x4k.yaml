@@ -35,7 +35,7 @@ kl_coef: 0.0
 entropy_coef: 0.0
 
 # Generation
-num_rollouts: 4   # G=4 (matches R5 baseline)
+num_rollouts: 2
 temperature: 0.6
 top_p: 0.95
 top_k: 20
@@ -43,8 +43,9 @@ max_response_length: 4096
 prompt_length: 2048
 
 # Training
-batch_size: 64
+batch_size: 16
 total_steps: 200
+gradient_accumulation_steps: 4
 seed: 42
 
 # Data
@@ -68,7 +69,7 @@ save_interval: 50
 # vLLM rollout (TRL inference)
 use_vllm: true
 vllm_tensor_parallel_size: 4
-vllm_gpu_memory_utilization: 0.5
+vllm_gpu_memory_utilization: 0.25
 
 # ─── OPD-Decoy specific ──────────────────────────────────────────────────────
 opd_alpha: 1.0           # OPD loss weight (added to PPO loss)

@@ -29,6 +29,7 @@ jobs:
         WANDB_NAME: rod_pt_R10_h100_0507
         WANDB_RUN_GROUP: rod-pt-R10-2026-05-07
         SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True,max_split_size_mb:128"
     command:
       - nvidia-smi
       - |
