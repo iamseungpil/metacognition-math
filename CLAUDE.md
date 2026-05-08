@@ -18,9 +18,22 @@ enabling self-assessment, error correction, and calibrated confidence.
 - Conda env: grpo (torch 2.6, trl 0.19.1, transformers 4.52.3)
 
 ## Data (HuggingFace: datasets/iamseungpil/metacot)
-- metacot_v2_trapi.parquet: 4,996 Meta-CoT chains (gpt-5.4-mini, conf 0.745)
-- base_sft.parquet: 4,996 chains (meta stripped, same problems)
-- GRPO uses GSM8K + MATH-500 from HF directly (load_mixed())
+SFT inputs (current = v8 series):
+- data/v8_meta_inside_think.parquet → checkpoints/v8_meta_inside_E20a (Meta SFT)
+- data/v8_meta_inside_strict.parquet → v8_meta_inside_strict_sft (cold start for all RL)
+- data/v8_base_matched_clean.parquet, data/v8_base_matched_strict.parquet (Base SFT counterparts)
+- base_sft.parquet (top-level): 4,996 chains, meta stripped (legacy Base SFT)
+
+RL inputs:
+- data/verl_train_redirect.parquet (R5, OPD, ROD-PT all use this — configs/meta_*_h100_4x4k.yaml)
+- pulled via scripts/pull_parquets.py at job start
+
+Code snapshot:
+- code_snapshots/metacognition.tar.gz — all training yamls hf_hub_download + extractall('/scratch')
+  before bootstrap. Push via tarball after every code change.
+
+NOTE: Earlier draft mentioned metacot_v2_trapi.parquet — that file does NOT exist on HF.
+The v8 series replaced it.
 
 ## Current Results
 - AIME overconfidence: 97% → 14% (calibration success)
