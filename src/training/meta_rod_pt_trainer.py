@@ -203,6 +203,8 @@ class MetaRODPTTrainer(MetaOPDTrainer):
         teacher_input_ids = enc["input_ids"].to(device)
         teacher_attn = enc["attention_mask"].to(device)
 
+        # Note: teacher GPU placement managed by caller (_compute_loss Phase 1).
+        # We just run forward at whatever device teacher currently sits on.
         with torch.no_grad():
             try:
                 model_device = next(self.teacher.parameters()).device
@@ -260,22 +262,9 @@ class MetaRODPTTrainer(MetaOPDTrainer):
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
         completion_len = completion_ids.size(1)
 
-        # Student forward (with grad)
-        student_logits = self._completion_logits(model, input_ids, attention_mask, completion_len)
-        student_temp = max(getattr(self, "temperature", 1.0), 1e-6)
-        student_logits_scaled = student_logits / student_temp
-        per_token_logps = (
-            student_logits_scaled.gather(-1, completion_ids.unsqueeze(-1)).squeeze(-1)
-            - student_logits_scaled.logsumexp(dim=-1)
-        )
-
         advantages = inputs["advantages"]   # [B]
-        old_per_token_logps = inputs.get("old_per_token_logps")
-        old_per_token_logps = (
-            per_token_logps.detach() if old_per_token_logps is None else old_per_token_logps
-        )
 
-        # Get gold list
+        # Get gold list (needed for teacher forwards in Phase 1)
         gold_idx = inputs.get("_gold_idx", None)
         gold_table = getattr(self, "_batch_gold_table", None)
         if gold_idx is not None and gold_table is not None:
@@ -287,11 +276,22 @@ class MetaRODPTTrainer(MetaOPDTrainer):
                 or []
             )
 
-        sdc_factor = torch.ones_like(per_token_logps)
+        # ── PHASE 1: Teacher forwards FIRST (no_grad, teacher briefly on GPU) ──
+        # OOM fix (R13→R14): doing teacher work BEFORE student forward avoids
+        # holding student forward graph (~22GB) + teacher (16GB) simultaneously.
+        # After Phase 1, teacher returns to CPU, freeing 16GB before student forward.
+        cpu_offload = bool(getattr(self.meta_rlsd_cfg, "teacher_cpu_offload", False))
+        T_content_logits = None
         position_penalty = torch.zeros_like(advantages)
         position_stats: dict = {}
+        teacher_path_active = (
+            len(gt_list) == prompt_ids.size(0) and self._meta_start_id is not None
+        )
 
-        if len(gt_list) == prompt_ids.size(0) and self._meta_start_id is not None:
+        if teacher_path_active:
+            if cpu_offload:
+                self.teacher.to(prompt_ids.device)
+
             # T_content forward — student's actual completion + gold conditioning
             teacher_pack = self._build_teacher_inputs(
                 prompt_ids, prompt_mask, completion_ids, completion_mask, gt_list,
@@ -304,7 +304,32 @@ class MetaRODPTTrainer(MetaOPDTrainer):
                     completion_len,
                 )
 
-            # SDC factor on completion tokens (R5 form)
+            # T_position forward — same teacher, before student forward
+            position_penalty, position_stats = self._compute_position_penalty(
+                prompt_ids, prompt_mask, completion_ids, completion_mask, meta_mask, gt_list,
+            )
+
+            if cpu_offload:
+                self.teacher.to("cpu")
+                torch.cuda.empty_cache()
+
+        # ── PHASE 2: Student forward (with grad, after teacher returned to CPU) ──
+        student_logits = self._completion_logits(model, input_ids, attention_mask, completion_len)
+        student_temp = max(getattr(self, "temperature", 1.0), 1e-6)
+        student_logits_scaled = student_logits / student_temp
+        per_token_logps = (
+            student_logits_scaled.gather(-1, completion_ids.unsqueeze(-1)).squeeze(-1)
+            - student_logits_scaled.logsumexp(dim=-1)
+        )
+
+        old_per_token_logps = inputs.get("old_per_token_logps")
+        old_per_token_logps = (
+            per_token_logps.detach() if old_per_token_logps is None else old_per_token_logps
+        )
+
+        # ── PHASE 3: SDC factor (uses cached T_content_logits + fresh student_logits) ──
+        sdc_factor = torch.ones_like(per_token_logps)
+        if teacher_path_active and T_content_logits is not None:
             sign_A = torch.sign(advantages).clamp(min=-1.0, max=1.0)  # [B]
             sdc_factor_full = self._compute_sdc_factor(
                 T_content_logits, student_logits, completion_ids, sign_A,
@@ -312,11 +337,7 @@ class MetaRODPTTrainer(MetaOPDTrainer):
             )
             # Apply only on meta region (META content tokens). Outside meta = factor 1.0.
             sdc_factor = sdc_factor_full * meta_mask + 1.0 * (1.0 - meta_mask)
-
-            # Position penalty (T_position forward)
-            position_penalty, position_stats = self._compute_position_penalty(
-                prompt_ids, prompt_mask, completion_ids, completion_mask, meta_mask, gt_list,
-            )
+            del T_content_logits
 
         # Modified advantages with position penalty (rollout-level)
         modified_advantages = advantages + position_penalty

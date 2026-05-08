@@ -13,8 +13,8 @@ code:
 
 jobs:
   - name: rod_pt_r10
-    sku: 80G4-H100
-    sla_tier: Standard
+    sku: 141G4-H200
+    sla_tier: Basic
     priority: high
     identity: managed
     submit_args:
@@ -29,7 +29,8 @@ jobs:
         WANDB_NAME: rod_pt_R10_h100_0507
         WANDB_RUN_GROUP: rod-pt-R10-2026-05-07
         SIMPLERL_DIR: /scratch/conda_envs/simplerl
-        PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True,max_split_size_mb:128"
+        # PYTORCH_CUDA_ALLOC_CONF removed: expandable_segments=True breaks vLLM custom_all_reduce IPC
+        # (custom_all_reduce.cuh:455 'invalid argument' error). Default allocator handles fragmentation acceptably.
     command:
       - nvidia-smi
       - |

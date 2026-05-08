@@ -156,6 +156,7 @@ class MetaRLSDConfig:
     gradient_accumulation_steps: int = 1
     correctness_weight: float = 1.0
     meta_floor_weight: float = 0.2
+    continuous_weight: float = 0.05
     # If True, fall back to file-based teacher sync if GatheredParameters OOMs.
     teacher_sync_file_fallback: bool = True
     teacher_sync_tmp_dir: str = "/tmp/_meta_rlsd_teacher_snap"
@@ -166,6 +167,10 @@ class MetaRLSDConfig:
     use_vllm: bool = False
     vllm_tensor_parallel_size: int = 1
     vllm_gpu_memory_utilization: float = 0.5
+    # Move teacher to CPU between forwards to free ~16GB per rank for 8B bf16.
+    # Costs ~5s/step PCIe shuffle but unblocks ROD-PT/OPD on 80GB H100 where
+    # vLLM colocate + FSDP optimizer + teacher + activations OOM at 78GB.
+    teacher_cpu_offload: bool = False
 
     @classmethod
     def from_yaml(cls, path: str) -> "MetaRLSDConfig":
@@ -587,9 +592,14 @@ class MetaRLSDTrainer(GRPOTrainer):
         prompt_len: int,
     ) -> torch.Tensor:
         """Return per-token log probs of ``completion_ids`` under teacher."""
-        if self._teacher_device is None:
-            self._teacher_device = input_ids.device
-            self.teacher.to(self._teacher_device)
+        target_device = input_ids.device
+        cpu_offload = bool(getattr(self.meta_rlsd_cfg, "teacher_cpu_offload", False))
+        if cpu_offload:
+            self.teacher.to(target_device)
+            self._teacher_device = target_device
+        elif self._teacher_device is None:
+            self._teacher_device = target_device
+            self.teacher.to(target_device)
 
         logits_to_keep = completion_ids.size(1)
         outputs = self.teacher(
@@ -606,6 +616,9 @@ class MetaRLSDTrainer(GRPOTrainer):
         per_token_logps = log_probs.gather(
             dim=-1, index=completion_ids.unsqueeze(-1)
         ).squeeze(-1)
+        if cpu_offload:
+            self.teacher.to("cpu")
+            torch.cuda.empty_cache()
         return per_token_logps
 
     # ── Teacher sync (§2.4) ────────────────────────────────────────────
@@ -1141,6 +1154,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         cfg=cfg,
         correctness_weight=cfg.correctness_weight,
         meta_floor_weight=cfg.meta_floor_weight,
+        continuous_weight=cfg.continuous_weight,
     )
     reward_fn.__name__ = "correctness_plus_meta_floor_reward"  # type: ignore[attr-defined]
 

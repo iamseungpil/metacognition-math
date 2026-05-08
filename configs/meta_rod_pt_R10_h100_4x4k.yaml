@@ -49,7 +49,12 @@ save_interval: 25
 
 use_vllm: true
 vllm_tensor_parallel_size: 4
-vllm_gpu_memory_utilization: 0.25
+vllm_gpu_memory_utilization: 0.18
+
+# OOM fix (R12 → R13): teacher CPU offload between forwards.
+# Saves ~16GB/rank for 8B bf16 teacher; +5s/step PCIe shuffle overhead acceptable
+# vs. R12 OOM at 78GB (vLLM 0.25 + FSDP shard + teacher full + Adam shard + activations).
+teacher_cpu_offload: true
 
 opd_alpha: 0.0
 opd_lambda_pos: 0.0

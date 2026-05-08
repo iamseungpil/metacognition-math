@@ -13,8 +13,8 @@ code:
 
 jobs:
   - name: meta_opd_r7
-    sku: 80G4-H100
-    sla_tier: Standard
+    sku: 141G4-H200
+    sla_tier: Basic
     priority: high
     identity: managed
     submit_args:
