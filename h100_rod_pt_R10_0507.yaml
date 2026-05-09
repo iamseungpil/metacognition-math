@@ -115,7 +115,7 @@ jobs:
         "
 
         nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
-        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rod_pt_R10 --repo_id iamseungpil/metacot-h100-rod-pt-R10-0507 --token $HF_TOKEN --interval 30 --config_name rod_pt_R10 > /scratch/logs/push_rod_pt.log 2>&1 &
+        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rod_pt_R10 --repo_id iamseungpil/metacot-h100-rod-pt-R10-0507 --token $HF_TOKEN --interval 5 --config_name rod_pt_R10 > /scratch/logs/push_rod_pt.log 2>&1 &
 
         export PYTHONPATH=/scratch/metacognition
         cd /scratch/metacognition

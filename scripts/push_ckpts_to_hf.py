@@ -54,15 +54,26 @@ def main() -> None:
     while True:
         try:
             if ckpt_dir.exists():
-                for step_dir in sorted(ckpt_dir.glob("global_step_*")):
+                # Match BOTH veRL (global_step_N/) AND TRL (checkpoint-N/) save formats.
+                ckpt_candidates = sorted(
+                    list(ckpt_dir.glob("global_step_*")) + list(ckpt_dir.glob("checkpoint-*"))
+                )
+                for step_dir in ckpt_candidates:
                     if not step_dir.is_dir() or step_dir.name in done:
                         continue
-                    # Skip if still being written (no recent write for >30s)
+                    # Skip if still being written (no recent write for >5s).
+                    # Lowered from 30s to 5s — TRL atomic save means mtime stable instantly,
+                    # and BSC preempt may cut us before 30s.
                     latest_mtime = max((p.stat().st_mtime for p in step_dir.rglob("*") if p.is_file()), default=0)
-                    if latest_mtime == 0 or time.time() - latest_mtime < 30:
+                    if latest_mtime == 0 or time.time() - latest_mtime < 5:
                         continue
 
-                    path_in_repo = f"checkpoints/{args.config_name}/{step_dir.name}"
+                    # TRL ckpts → checkpoint-N/ at repo root (resume yaml expects this).
+                    # veRL ckpts → checkpoints/<config>/global_step_N/ (legacy SDC).
+                    if step_dir.name.startswith("checkpoint-"):
+                        path_in_repo = step_dir.name
+                    else:
+                        path_in_repo = f"checkpoints/{args.config_name}/{step_dir.name}"
                     print(f"[push] uploading {step_dir.name} → {args.repo_id}:{path_in_repo}")
                     api.upload_folder(
                         folder_path=str(step_dir),
