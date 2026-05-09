@@ -64,7 +64,7 @@ meta_min_length_tokens: 20
 log_grad_norm_clip: 1.0
 log_ratio_clamp: 10.0
 eval_interval: 25
-save_interval: 50
+save_interval: 5
 
 # vLLM rollout (TRL inference)
 use_vllm: true

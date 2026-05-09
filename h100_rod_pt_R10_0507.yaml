@@ -86,18 +86,52 @@ jobs:
         "
 
         mkdir -p /scratch/checkpoints/rod_pt_R10
+
+        # Resume from HF — auto-detect latest checkpoint-XX/ pushed (preempt-safe)
+        python -c "
+        from huggingface_hub import HfApi, snapshot_download
+        import os, re
+        repo = \"iamseungpil/metacot-h100-rod-pt-R10-0507\"
+        api = HfApi()
+        try:
+            files = api.list_repo_files(repo, repo_type=\"model\", token=os.environ[\"HF_TOKEN\"])
+        except Exception as exc:
+            print(f\"[resume] no HF repo yet ({exc}) — fresh start\")
+            files = []
+        steps = sorted({int(m.group(1)) for f in files for m in [re.match(r\"checkpoint-(\d+)/\", f)] if m})
+        if steps:
+            latest = max(steps)
+            print(f\"[resume] downloading checkpoint-{latest} (available: {steps})\")
+            snapshot_download(
+                repo_id=repo, repo_type=\"model\", token=os.environ[\"HF_TOKEN\"],
+                allow_patterns=[f\"checkpoint-{latest}/*\"],
+                local_dir=\"/scratch/checkpoints/rod_pt_R10\",
+            )
+            with open(\"/scratch/checkpoints/rod_pt_R10/_resume_step.txt\", \"w\") as f:
+                f.write(str(latest))
+            print(f\"[resume] OK at checkpoint-{latest}\")
+        else:
+            print(\"[resume] no ckpt on HF — fresh start\")
+        "
+
         nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
-        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rod_pt_R10 --repo_id iamseungpil/metacot-h100-rod-pt-R10-0507 --token $HF_TOKEN --interval 90 --config_name rod_pt_R10 > /scratch/logs/push_rod_pt.log 2>&1 &
+        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rod_pt_R10 --repo_id iamseungpil/metacot-h100-rod-pt-R10-0507 --token $HF_TOKEN --interval 30 --config_name rod_pt_R10 > /scratch/logs/push_rod_pt.log 2>&1 &
 
         export PYTHONPATH=/scratch/metacognition
         cd /scratch/metacognition
 
         python -c "
-        import yaml
+        import yaml, os
         cfg = yaml.safe_load(open(\"configs/meta_rod_pt_R10_h100_4x4k.yaml\"))
         cfg[\"student_init\"] = \"/scratch/models/v8_meta_inside_strict_sft\"
         cfg[\"teacher_init\"] = \"/scratch/models/v8_meta_inside_strict_sft\"
         cfg[\"output_dir\"] = \"/scratch/checkpoints/rod_pt_R10\"
+        # Resume from latest downloaded ckpt (if any)
+        rs = \"/scratch/checkpoints/rod_pt_R10/_resume_step.txt\"
+        if os.path.exists(rs):
+            with open(rs) as f: step = f.read().strip()
+            cfg[\"resume_from_checkpoint\"] = f\"/scratch/checkpoints/rod_pt_R10/checkpoint-{step}\"
+            print(f\"[runtime] resume_from_checkpoint = {cfg['resume_from_checkpoint']}\")
         yaml.safe_dump(cfg, open(\"/tmp/rod_pt_runtime.yaml\", \"w\"))
         print(\"runtime config OK\")
         "

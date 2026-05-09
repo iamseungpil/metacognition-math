@@ -156,7 +156,12 @@ def main():
         json.dump(dataclasses.asdict(cfg), f, indent=2, default=str)
 
     log.info("[OPD] Starting training: max_steps=%d", grpo_config.max_steps)
-    trainer.train()
+    resume_path = getattr(cfg, "resume_from_checkpoint", None)
+    if resume_path and os.path.isdir(resume_path):
+        log.info("[OPD] Resuming from checkpoint: %s", resume_path)
+        trainer.train(resume_from_checkpoint=resume_path)
+    else:
+        trainer.train()
 
     # Save final ckpt + tokenizer (review C4 fix)
     final_dir = os.path.join(cfg.output_dir, "final")

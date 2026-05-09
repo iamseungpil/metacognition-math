@@ -147,10 +147,38 @@ jobs:
         print(\"[OPD cold start] wrote /tmp/opd_cold_start.txt\", flush=True)
         "
 
-        # 8. Background daemons (HF push for OPD ckpts)
+        # 8. Background daemons (HF push for OPD ckpts) + resume from HF
         mkdir -p /scratch/checkpoints/meta_opd_decoy_R7
+
+        # Resume from HF — auto-detect latest checkpoint-XX/ pushed (preempt-safe)
+        python -c "
+        from huggingface_hub import HfApi, snapshot_download
+        import os, re
+        repo = \"iamseungpil/metacot-h200-meta-opd-R7-0506\"
+        api = HfApi()
+        try:
+            files = api.list_repo_files(repo, repo_type=\"model\", token=os.environ[\"HF_TOKEN\"])
+        except Exception as exc:
+            print(f\"[resume] no HF repo yet ({exc}) — fresh start\")
+            files = []
+        steps = sorted({int(m.group(1)) for f in files for m in [re.match(r\"checkpoint-(\d+)/\", f)] if m})
+        if steps:
+            latest = max(steps)
+            print(f\"[resume] downloading checkpoint-{latest} (available: {steps})\")
+            snapshot_download(
+                repo_id=repo, repo_type=\"model\", token=os.environ[\"HF_TOKEN\"],
+                allow_patterns=[f\"checkpoint-{latest}/*\"],
+                local_dir=\"/scratch/checkpoints/meta_opd_decoy_R7\",
+            )
+            with open(\"/scratch/checkpoints/meta_opd_decoy_R7/_resume_step.txt\", \"w\") as f:
+                f.write(str(latest))
+            print(f\"[resume] OK at checkpoint-{latest}\")
+        else:
+            print(\"[resume] no ckpt on HF — fresh start\")
+        "
+
         nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
-        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/meta_opd_decoy_R7 --repo_id iamseungpil/metacot-h200-meta-opd-R7-0506 --token $HF_TOKEN --interval 90 --config_name meta_opd_decoy_R7 > /scratch/logs/push_OPD.log 2>&1 &
+        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/meta_opd_decoy_R7 --repo_id iamseungpil/metacot-h200-meta-opd-R7-0506 --token $HF_TOKEN --interval 30 --config_name meta_opd_decoy_R7 > /scratch/logs/push_OPD.log 2>&1 &
 
         # 9. Foreground TRL OPD-Decoy training
         echo "[YAML] before train_meta_opd launch"
@@ -169,11 +197,16 @@ jobs:
         echo "[YAML] OPD cold start: $$COLD_START_PATH"
         # Patch yaml student_init + teacher_init to actual absolute paths
         python -c "
-        import yaml
+        import yaml, os
         cfg = yaml.safe_load(open(\"configs/meta_opd_decoy_R7_h100_4x4k.yaml\"))
         cfg[\"student_init\"] = \"$$COLD_START_PATH\"
         cfg[\"teacher_init\"] = \"/scratch/models/v8_meta_inside_strict_sft\"
         cfg[\"output_dir\"] = \"/scratch/checkpoints/meta_opd_decoy_R7\"
+        rs = \"/scratch/checkpoints/meta_opd_decoy_R7/_resume_step.txt\"
+        if os.path.exists(rs):
+            with open(rs) as f: step = f.read().strip()
+            cfg[\"resume_from_checkpoint\"] = f\"/scratch/checkpoints/meta_opd_decoy_R7/checkpoint-{step}\"
+            print(f\"[runtime] resume_from_checkpoint = {cfg['resume_from_checkpoint']}\")
         yaml.safe_dump(cfg, open(\"/tmp/meta_opd_runtime.yaml\", \"w\"))
         print(\"[YAML] runtime config written: student_init=\" + cfg[\"student_init\"] + \" teacher_init=\" + cfg[\"teacher_init\"])
         "

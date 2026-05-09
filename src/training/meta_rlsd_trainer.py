@@ -171,6 +171,9 @@ class MetaRLSDConfig:
     # Costs ~5s/step PCIe shuffle but unblocks ROD-PT/OPD on 80GB H100 where
     # vLLM colocate + FSDP optimizer + teacher + activations OOM at 78GB.
     teacher_cpu_offload: bool = False
+    # HF resume — yaml runtime sets this to local path of downloaded ckpt.
+    # train script forwards to trainer.train(resume_from_checkpoint=...).
+    resume_from_checkpoint: Optional[str] = None
 
     @classmethod
     def from_yaml(cls, path: str) -> "MetaRLSDConfig":

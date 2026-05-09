@@ -104,7 +104,12 @@ def main():
         json.dump(dataclasses.asdict(cfg), f, indent=2, default=str)
 
     log.info("[ROD-PT] Starting training: max_steps=%d", grpo_config.max_steps)
-    trainer.train()
+    resume_path = getattr(cfg, "resume_from_checkpoint", None)
+    if resume_path and os.path.isdir(resume_path):
+        log.info("[ROD-PT] Resuming from checkpoint: %s", resume_path)
+        trainer.train(resume_from_checkpoint=resume_path)
+    else:
+        trainer.train()
 
     final_dir = os.path.join(cfg.output_dir, "final")
     trainer.save_model(final_dir)
