@@ -1,0 +1,100 @@
+# R5 — RLSD with FORCED <|meta|> opener on student rollout AND teacher
+# conditioning. Resolves the "meta empty 95%" pathology of the meta-SFT
+# model under gold-conditioned RL (paper 2603.24472).
+#
+# Purpose: validate H4 (does *guaranteeing* meta-region presence at every
+# rollout fix the floor that R1/R2 hit at λ_meta=0.5)?
+#
+# Mechanism (faithful extension of R2):
+#   1. Custom agent loop (forced_meta_agent) appends <|meta|> token id to
+#      prompt_ids before vLLM generation → student rollout begins inside meta.
+#   2. _attach_teacher_signals augments teacher prompt with V0 student prefix
+#      (currently "(no prior attempt)" placeholder; real V0 wired later) +
+#      "(The correct answer is X.)\n<|meta|>" → teacher conditioned identically.
+#   3. SDC region masks use `started_inside_meta=True` so the response's
+#      leading tokens count as meta even though the opener is in the prompt.
+#   4. Advantage uses combined formula (same as R2):
+#        factor on meta = (1-λ) + λ × clip(exp(sign × (α × Δ+ + β × δ)), 1-ε, 1+ε)
+#      where Δ+ = T+ − student, δ = T+ − T−.
+#
+# Compared against:
+#   • R0 (VANILLA_GRPO) — does forced meta + teacher contrast help over plain RL?
+#   • R2 (RLSD_META_CONTRAST) — does forcing meta beat random meta opening?
+#
+# Verification before launch (S3): inspect_forced_meta.py showed
+#   71.4% gold commit, 33.3% AIME accuracy, valid meta + body + boxed.
+defaults:
+  - verl_sdc_e21r_shared
+  - _self_
+
+mode: ROD_PT
+
+data:
+  max_prompt_length: 2048   # ★ bump from base 512 — V0 prefix + answer hint can push prompt past 512
+  max_response_length: 4096
+  train_batch_size: 64
+  val_batch_size: 16
+
+actor_rollout_ref:
+  model:
+    path: /scratch/models/v8_meta_inside_strict_sft
+  actor:
+    ppo_mini_batch_size: 8
+    ppo_micro_batch_size_per_gpu: 1
+    ppo_max_token_len_per_gpu: 24576
+  ref:
+    log_prob_micro_batch_size_per_gpu: 4
+    log_prob_max_token_len_per_gpu: 24576
+  rollout:
+    tensor_model_parallel_size: 4
+    temperature: 0.6
+    top_k: 20
+    top_p: 0.95
+    response_length: ${data.max_response_length}
+    gpu_memory_utilization: 0.45
+    max_model_len: 4608
+    max_num_batched_tokens: 8192
+    max_num_seqs: 32
+    log_prob_micro_batch_size_per_gpu: 4
+    n: 4
+    # ── ROD-PT: natural emit (NOT forced meta) ─────────────────────────────
+    # Plan v5.17 FINAL: position teacher amplifies whatever positions student
+    # naturally chooses to emit META. Default rollout (no agent loop override).
+
+critic:
+  ppo_micro_batch_size_per_gpu: 1
+  forward_micro_batch_size_per_gpu: 1
+  ppo_max_token_len_per_gpu: 24576
+  forward_max_token_len_per_gpu: 24576
+
+reward_model:
+  micro_batch_size: 4
+
+algorithm:
+  gdpo_reward_keys: [correctness, meta_penalty]
+  gdpo_reward_weights: [1.0, 1.0]
+  kl_ctrl:
+    type: fixed
+    kl_coef: 0.005
+  # ── ROD-PT (Plan v5.17 FINAL): R5 attribution × position factor ─────────────
+  # w_meta = w_attr × w_position (PRODUCT, RLSD invariant 보존)
+  # decoy off (single teacher path), natural emit (no V0 prefix)
+  sdc_mode: ROD_PT         # NEW: ROD-PT mode dispatch
+  sdc_enabled: true        # SDC factor computation active
+  sdc_lambda_meta: 0.5     # weight on the (1-λ) + λ × w_meta combiner
+  sdc_lambda_shared: 0.0   # OFF — shared region untouched by SDC
+  sdc_lambda_diff: 0.0     # OFF — diff region untouched by SDC
+  sdc_alpha_attr: 1.0      # α — attractive (T+ − student); ROD_PT는 single teacher라 β=0
+  sdc_beta_contrast: 0.0   # β — contrastive OFF (decoy 없음)
+  sdc_clip_eps_w: 0.2      # w_attr, w_position 둘 다 [0.8, 1.2]로 clip
+
+trainer:
+  nnodes: 1
+  n_gpus_per_node: 4
+  device: cuda
+  experiment_name: verl_rod_pt_R10_h200_4x4k
+  default_local_dir: /scratch/checkpoints/verl_rod_pt_R10_h200_4x4k
+  save_freq: 25
+  test_freq: 25
+  total_epochs: 20
+  total_training_steps: 100   # ROD-PT total steps (Plan v5.17 FINAL)

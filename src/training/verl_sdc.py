@@ -20,6 +20,7 @@ Refactor notes (2026-04-20):
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import traceback
 from typing import Callable, List
@@ -31,9 +32,11 @@ from tensordict import TensorDict
 from verl import DataProto
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer, ResourcePoolManager, Role
 
+from src.metacot.prompt import META_START
 from src.training.rewards import (
     correctness_reward,
     meta_commit_shape_reward,
+    meta_penalty_reward,
     meta_structure_reward,
     outcome_calibration_reward,
 )
@@ -63,67 +66,152 @@ REWARD_CONFIGS = {
             "postmeta_closure",
         ],
     },
+    # E21R-v2 + SDC contrastive: only correctness as the GDPO reward head.
+    # Meta-format heads (saturated to ~95% by step 100, providing reward floor)
+    # are removed because they push the policy toward "clean wrong" on hard tasks.
+    # SDC teacher / anti-teacher contrastive (lambda_meta/shared/diff) remain as
+    # auxiliary actor losses — they replace outcome_calibration as the second
+    # signal source.
+    "SDC_CORR_ONLY": {
+        "funcs": [correctness_reward],
+        "weights": [1.0],
+        "keys": ["correctness"],
+    },
+    # Meta-only SDC RLSD: correctness + asymmetric meta penalty.
+    # Penalty-only meta head (0 if meta present, -0.20 if missing) prevents
+    # meta-scaffold collapse during RL without creating the +0.9 saturation
+    # floor that the symmetric ±0.10 head caused. Pair with
+    # sdc_lambda_shared/diff = 0 in the YAML to restrict contrastive teacher
+    # to meta tokens only.
+    "SDC_CORR_META_PEN": {
+        "funcs": [correctness_reward, meta_penalty_reward],
+        "weights": [1.0, 1.0],
+        "keys": ["correctness", "meta_penalty"],
+    },
+    # ── RLSD ablation modes (arxiv 2604.03128) ───────────────────────────────
+    # R0: vanilla GRPO baseline — no SDC teacher signal at all. Used to isolate
+    # the contribution of meta-region teacher guidance over plain RLVR.
+    "VANILLA_GRPO": {
+        "funcs": [correctness_reward],
+        "weights": [1.0],
+        "keys": ["correctness"],
+    },
+    # R1: RLSD with single (gold-conditioned) teacher T+ on meta region only.
+    # Matches the paper's RLSD formulation: factor = exp(sign × (T+ − student))
+    # clipped to [1−ε, 1+ε], applied as multiplicative magnitude evaluator.
+    # Decoy forward pass is SKIPPED at runtime (saves the 1 of ~3-4 forwards
+    # used by the contrastive variants — roughly 25-33% wall-time saving).
+    "RLSD_META_ATTR": {
+        "funcs": [correctness_reward, meta_penalty_reward],
+        "weights": [1.0, 1.0],
+        "keys": ["correctness", "meta_penalty"],
+    },
+    # R2: RLSD extended with contrastive component. Combined log-ratio
+    #   combined = α × (T+ − student) + β × (T+ − T−)
+    # On meta region, factor = clip(exp(sign × combined), 1−ε, 1+ε).
+    # α (sdc_alpha_attr, default 0.5) weights attractive component.
+    # β (sdc_beta_contrast, default 0.5) weights gold-vs-decoy contrast.
+    # Both T+ and T− forward passes required.
+    "RLSD_META_CONTRAST": {
+        "funcs": [correctness_reward, meta_penalty_reward],
+        "weights": [1.0, 1.0],
+        "keys": ["correctness", "meta_penalty"],
+    },
+    # R3: OPSD baseline — full distribution distillation KL(T+ ‖ student) on
+    # meta tokens. Distillation loss path is NOT YET IMPLEMENTED (deferred);
+    # this mode currently behaves like RLSD_META_ATTR with a marker for the
+    # advantage path. Trainer must add an auxiliary KL loss term to fully
+    # realize OPSD; tracked as phase-2 work.
+    "OPSD_META": {
+        "funcs": [correctness_reward, meta_penalty_reward],
+        "weights": [1.0, 1.0],
+        "keys": ["correctness", "meta_penalty"],
+    },
+    # R5: RLSD with FORCED <|meta|> token on both student rollout and teacher
+    # conditioning. Resolves the "meta empty 95%" pathology by guaranteeing
+    # meta region presence (paper 2603.24472 epistemic suppression mitigation).
+    # Verified S3 (inspect_forced_meta.py): V0_prefix + gold + force <|meta|>
+    # → 71.4% gold commit, 33.3% AIME accuracy, valid meta + body + boxed.
+    "RLSD_FORCED_META": {
+        "funcs": [correctness_reward, meta_penalty_reward],
+        "weights": [1.0, 1.0],
+        "keys": ["correctness", "meta_penalty"],
+    },
+    # ROD-PT: R5 RLSD framework + position teacher amplify (Plan v5.17 FINAL).
+    # Decoy T- replaced by T_position which measures log_prob(META | prompt+gold+response[:p])
+    # at first META_START emit position p. Multiplicative on R5's w_meta:
+    #   w_combined = w_attr * w_position (RLSD invariant 보존, sign 절대 안 바꿈).
+    # Natural emit (forced_meta=False, V0_prefix unused).
+    "ROD_PT": {
+        "funcs": [correctness_reward, meta_penalty_reward],
+        "weights": [1.0, 1.0],
+        "keys": ["correctness", "meta_penalty"],
+    },
 }
 
-_ACTIVE_SDC_CONTEXT = {"trainer": None, "tokenizer": None}
+# Modes that do NOT compute teacher forward (env reward only).
+_VANILLA_MODES = {"VANILLA_GRPO"}
+# Modes that compute T+ forward only (single-teacher RLSD).
+# ROD_PT: R5 + position teacher (decoy off, natural emit, multiplicative w_position)
+_SINGLE_TEACHER_MODES = {"RLSD_META_ATTR", "OPSD_META", "ROD_PT"}
+# Modes that compute T+ AND T− forward (contrastive RLSD).
+_CONTRASTIVE_MODES = {"SDC_SHARED", "SDC_CORR_ONLY", "SDC_CORR_META_PEN", "RLSD_META_CONTRAST"}
+# Modes that prepend V0 student prefix + forced <|meta|> to teacher conditioning,
+# AND require student rollout to start inside meta (via custom agent loop).
+# These also do BOTH T+ and T− forwards (same as contrastive). See verl_sdc_utils
+# build_sdc_region_masks for the started_inside_meta plumbing this enables.
+_FORCED_META_MODES = {"RLSD_FORCED_META"}
+
+_ACTIVE_SDC_CONTEXT = {"trainer": None, "tokenizer": None, "mode": "SDC_SHARED"}
 
 
 def reward_loop_score(data_source=None, solution_str="", ground_truth="", extra_info=None, **kwargs):
     """Fallback scalar score for veRL agent-loop reward workers.
 
-    veRL 0.7.1's async agent loop tries to stream a per-sample reward during
-    generation whenever reward_loop workers exist. SDC training does not use
-    that path for optimization; the actual training reward is computed later by
-    `MetaCotSDCRewardManager` inside `_compute_reward_colocate`.
+    Mode-aware: emits the GDPO reward keys appropriate to the active mode.
+      • VANILLA_GRPO, SDC_CORR_ONLY  → correctness only
+      • RLSD_META_ATTR / RLSD_META_CONTRAST / OPSD_META / SDC_CORR_META_PEN
+                                     → correctness + meta_penalty
+      • SDC_SHARED                   → all 5 legacy heads
+                                       (correctness, outcome_calibration,
+                                        meta_structure, meta_commit_shape,
+                                        postmeta_closure)
 
-    We still provide a lightweight score here so the async generation path does
-    not fall back to `default_compute_score`, which does not recognize our
-    mixed `hendrycks_math/*` sources and crashes before PPO can start.
+    Always populates `correctness` and `meta_penalty` for backward compat with
+    callers that read those keys directly; mode-specific extra heads are added
+    for SDC_SHARED to avoid breaking the legacy 5-head config when async
+    rollout is enabled.
     """
     completion = [[{"content": solution_str}]]
     gt = [ground_truth]
 
-    try:
-        correctness = float(correctness_reward(completion, gt)[0])
-    except Exception:
-        correctness = 0.0
+    def _safe_call(fn, with_gt=True):
+        try:
+            return float(fn(completion, gt)[0]) if with_gt else float(fn(completion)[0])
+        except Exception:
+            return 0.0
 
-    try:
-        calibration = float(outcome_calibration_reward(completion, gt)[0])
-    except Exception:
-        calibration = 0.0
+    correctness = _safe_call(correctness_reward, with_gt=True)
+    meta_pen = _safe_call(meta_penalty_reward, with_gt=False)
 
-    try:
-        meta_structure = float(meta_structure_reward(completion, gt)[0])
-    except Exception:
-        meta_structure = 0.0
-
-    try:
-        meta_commit = float(meta_commit_shape_reward(completion, gt)[0])
-    except Exception:
-        meta_commit = 0.0
-
-    try:
-        closure = float(postmeta_closure_reward(completion, gt)[0])
-    except Exception:
-        closure = 0.0
-
-    score = (
-        correctness * 1.0
-        + calibration * 0.7
-        + meta_structure * 0.25
-        + meta_commit * 0.35
-        + closure * 0.45
-    )
-    return {
-        "score": float(score),
+    out = {
+        "score": float(correctness + meta_pen),
         "correctness": correctness,
-        "outcome_calibration": calibration,
-        "meta_structure": meta_structure,
-        "meta_commit_shape": meta_commit,
-        "postmeta_closure": closure,
+        "meta_penalty": meta_pen,
         "data_source": data_source or "",
     }
+
+    mode = _ACTIVE_SDC_CONTEXT.get("mode", "SDC_SHARED")
+    if mode == "SDC_SHARED":
+        # Restore the 5-head legacy contract so multi_turn / async rollout
+        # paths don't crash on missing GDPO reward keys.
+        out["outcome_calibration"] = _safe_call(outcome_calibration_reward, with_gt=True)
+        out["meta_structure"] = _safe_call(meta_structure_reward, with_gt=False)
+        out["meta_commit_shape"] = _safe_call(meta_commit_shape_reward, with_gt=False)
+        from src.training.verl_sdc_utils import postmeta_closure_reward as _pcr
+        out["postmeta_closure"] = _safe_call(_pcr, with_gt=False)
+
+    return out
 
 
 def _is_gdpo_estimator(adv_estimator) -> bool:
@@ -157,6 +245,104 @@ def _decode_prompt_only(tokenizer, prompt_ids, attention_mask, prompt_length: in
     return tokenizer.decode(valid_prompt_ids, skip_special_tokens=False)
 
 
+# ─── V0 prefix cache (RLSD_FORCED_META) ─────────────────────────────────────
+# Why a module-level cache: every batch in a step calls _attach_teacher_signals
+# once, but each unique prompt may appear under multiple uids. Caching by
+# (global_steps, prompt_hash) means we generate V0 prefixes at most once per
+# unique prompt per step. Cache is cleared whenever ``global_steps`` advances
+# so we never serve a stale prefix from a previous policy.
+_V0_PREFIX_CACHE: dict[tuple[int, str], str] = {}
+_V0_PREFIX_LAST_STEP: list[int] = [-1]  # mutable holder, avoids `global` decl
+
+
+def _generate_v0_prefixes(
+    trainer,
+    tokenizer,
+    prompt_texts: list[str],
+    global_steps: int,
+    max_new_tokens: int = 256,
+    max_chars: int = 1500,
+) -> dict[str, str]:
+    """Generate (or retrieve cached) V0 student-prefix strings for forced-meta mode.
+
+    For RLSD_FORCED_META the teacher conditioning is augmented with the V0
+    student's first attempt followed by the gold answer + ``<|meta|>``. This
+    grounds the teacher distribution on a contextualized "rethink-after-attempt"
+    rather than a synthetic continuation from prompt+answer alone.
+
+    TODO(v0): The actual V0 generation path requires invoking the rollout
+        manager mid-step (e.g., ``trainer.async_rollout_manager.generate_sequences``
+        with ``meta_info["validate"]=True``). That is non-trivial because the
+        rollout workers may be busy with the current generate call. To keep
+        this plug-and-play and avoid deadlocks, this initial implementation
+        falls back to a constant ``"(no prior attempt)"`` prefix for every
+        prompt — which still validates the core hypothesis (force <|meta|> +
+        gold context) without V0. Wire real V0 generation later as a follow-up
+        after smoke-testing the forced <|meta|> + gold path end-to-end.
+
+    Args:
+        trainer: SDCRayPPOTrainer instance (used by future V0 generation).
+        tokenizer: Tokenizer (currently unused; reserved for future stripping).
+        prompt_texts: List of unique prompt strings to generate prefixes for.
+        global_steps: Current trainer step. Cache is invalidated on step change
+            so we don't reuse last-step prefixes after the policy has shifted.
+        max_new_tokens: Future V0 generation cap (unused in fallback path).
+        max_chars: Future cap on stripped prefix length (unused in fallback path).
+
+    Returns:
+        dict mapping each input prompt_text → its V0 prefix string. Always
+        returns one entry per input.
+    """
+    # Step transition: drop stale entries to bound memory + avoid reusing
+    # prefixes that no longer reflect the current policy's V0 behavior.
+    if _V0_PREFIX_LAST_STEP[0] != global_steps:
+        _V0_PREFIX_CACHE.clear()
+        _V0_PREFIX_LAST_STEP[0] = global_steps
+
+    out: dict[str, str] = {}
+    missing: list[str] = []
+    for pt in prompt_texts:
+        # Hash by prompt prefix-16 of MD5 — collisions are vanishingly unlikely
+        # within a single training step's unique prompt set.
+        h = hashlib.md5(pt.encode("utf-8", errors="replace")).hexdigest()[:16]
+        cache_key = (global_steps, h)
+        if cache_key in _V0_PREFIX_CACHE:
+            out[pt] = _V0_PREFIX_CACHE[cache_key]
+        else:
+            missing.append(pt)
+
+    # ── Fallback path (TODO(v0)): no real generation; populate placeholder. ──
+    # See module docstring above for rationale. This is intentional and safe:
+    # the meta_info "(no prior attempt)" is non-empty, contains no <|meta|>
+    # token, and is short — so downstream stripping/capping logic is a no-op
+    # for it but still exercises the same code path that real V0 prefixes will.
+    fallback_str = "(no prior attempt)"
+    for pt in missing:
+        h = hashlib.md5(pt.encode("utf-8", errors="replace")).hexdigest()[:16]
+        cache_key = (global_steps, h)
+        prefix = fallback_str
+
+        # Apply the same hygiene we'll need once real V0 is wired up:
+        # 1. Strip chat-template markers (in case generation includes them).
+        for marker in ("<|im_end|>", "<|im_start|>", "<|endoftext|>"):
+            if marker in prefix:
+                prefix = prefix.split(marker, 1)[0]
+        # 2. Slice at first <|meta|> if present (real V0 may emit one).
+        if META_START in prefix:
+            prefix = prefix.split(META_START, 1)[0]
+        # 3. Cap length from the END (most recent reasoning is most informative).
+        if len(prefix) > max_chars:
+            prefix = prefix[-max_chars:]
+        prefix = prefix.strip()
+        if not prefix:
+            prefix = fallback_str
+
+        _V0_PREFIX_CACHE[cache_key] = prefix
+        out[pt] = prefix
+
+    return out
+
+
 def _build_teacher_logprob_batch(
     *,
     tokenizer,
@@ -164,17 +350,41 @@ def _build_teacher_logprob_batch(
     answer_texts: list[str],
     responses: torch.Tensor,
     response_mask: torch.Tensor,
+    v0_prefixes: dict[str, str] | None = None,
+    forced_meta: bool = False,
 ):
     prompt_ids_list = []
     seq_lens = []
     for prompt_text, answer_text in zip(prompt_texts, answer_texts):
-        # Align teacher conditioning with what the actor actually sees:
-        # prompt_text is already the chat-templated prompt (ending in the
-        # assistant role marker), so we append the gold/decoy answer directly
-        # instead of injecting a synthetic " Answer: " separator the actor
-        # never produces. This keeps teacher log-prob on the same conditional
-        # distribution the policy is optimizing against.
-        teacher_prompt = f"{prompt_text}{answer_text}"
+        if forced_meta:
+            # RLSD_FORCED_META teacher conditioning: prepend the V0 student
+            # prefix (when available) and a "(The correct answer is X.)" hint,
+            # then force a <|meta|> opening so teacher log-prob is conditioned
+            # on the same "start inside meta" state the student rollout sees.
+            # Layout: <prompt> <V0_prefix>?\n(The correct answer is <gold>.)\n<|meta|>
+            #
+            # CRITICAL: prompt_text comes from _decode_prompt_only() of the
+            # rollout's input_ids. The agent loop (ForcedMetaAgentLoop) has
+            # already appended <|meta|> token id to prompt_ids → prompt_text
+            # ends with META_START. Strip it before re-appending the suffix
+            # so the final teacher prompt has EXACTLY ONE <|meta|> at the end
+            # (matches inspect_forced_meta.py S3 verified format byte-for-byte).
+            base = prompt_text
+            if base.endswith(META_START):
+                base = base[: -len(META_START)]
+            v0 = (v0_prefixes.get(prompt_text, "") if v0_prefixes else "").rstrip()
+            sep = "\n" if v0 else ""
+            teacher_prompt = (
+                f"{base}{v0}{sep}(The correct answer is {answer_text}.)\n{META_START}"
+            )
+        else:
+            # Align teacher conditioning with what the actor actually sees:
+            # prompt_text is already the chat-templated prompt (ending in the
+            # assistant role marker), so we append the gold/decoy answer directly
+            # instead of injecting a synthetic " Answer: " separator the actor
+            # never produces. This keeps teacher log-prob on the same conditional
+            # distribution the policy is optimizing against.
+            teacher_prompt = f"{prompt_text}{answer_text}"
         ids = tokenizer(teacher_prompt, add_special_tokens=False)["input_ids"]
         prompt_ids_list.append(torch.tensor(ids, dtype=torch.long))
         seq_lens.append(len(ids))
@@ -224,9 +434,19 @@ def _build_teacher_logprob_batch(
 def _attach_teacher_signals(data: DataProto):
     trainer = _ACTIVE_SDC_CONTEXT.get("trainer")
     tokenizer = _ACTIVE_SDC_CONTEXT.get("tokenizer")
+    mode = _ACTIVE_SDC_CONTEXT.get("mode", "SDC_SHARED")
     if trainer is None or tokenizer is None:
         raise RuntimeError("SDC teacher context is not initialized")
-    if "sdc_teacher_pos_log_probs" in data.batch.keys():
+    # R0 (VANILLA_GRPO): no teacher signal at all. Skip all forward passes
+    # and return data unmodified — base GDPO advantage path takes over.
+    if mode in _VANILLA_MODES:
+        return data
+    # Both keys must exist for downstream compute_sdc_gdpo_advantage; an
+    # interrupted attach (only one key set) must be recomputed, not cached.
+    if (
+        "sdc_teacher_pos_log_probs" in data.batch.keys()
+        and "sdc_teacher_neg_log_probs" in data.batch.keys()
+    ):
         return data
 
     prompt_tensor = data.batch["prompts"]
@@ -254,31 +474,124 @@ def _attach_teacher_signals(data: DataProto):
         gold_answers.append(gold)
         decoy_answers.append(_rule_based_decoy(gold, seed=42))
 
+    # ── R5 (RLSD_FORCED_META) prep ─────────────────────────────────────────
+    # Generate (or fetch cached) V0 student prefixes for unique prompts in this
+    # batch. The forced-meta path threads these through to both T+ and T-
+    # teacher conditioning so the teacher distribution is grounded on the same
+    # "rethink-after-attempt" context the student sees post-rollout.
+    v0_prefixes: dict[str, str] | None = None
+    forced_meta_flag = mode in _FORCED_META_MODES
+    if forced_meta_flag:
+        global_steps = int(getattr(trainer, "global_steps", 0) or 0)
+        unique_prompts = sorted(set(prompt_texts))
+        v0_prefixes = _generate_v0_prefixes(
+            trainer, tokenizer, unique_prompts, global_steps
+        )
+
     pos_batch = _build_teacher_logprob_batch(
         tokenizer=tokenizer,
         prompt_texts=prompt_texts,
         answer_texts=gold_answers,
         responses=response_tensor,
         response_mask=response_mask,
-    )
-    neg_batch = _build_teacher_logprob_batch(
-        tokenizer=tokenizer,
-        prompt_texts=prompt_texts,
-        answer_texts=decoy_answers,
-        responses=response_tensor,
-        response_mask=response_mask,
+        v0_prefixes=v0_prefixes,
+        forced_meta=forced_meta_flag,
     )
     # verl 0.7.1 engine_workers infer_batch reads micro_batch["temperature"];
     # the trainer's main fit() loop sets it on the rollout output, but our
     # freshly-built teacher batches don't inherit meta_info, so re-attach.
     rollout_temp = float(trainer.config.actor_rollout_ref.rollout.temperature)
     pos_batch.meta_info["temperature"] = rollout_temp
-    neg_batch.meta_info["temperature"] = rollout_temp
     pos_out = trainer._compute_ref_log_prob(pos_batch)
-    neg_out = trainer._compute_ref_log_prob(neg_batch)
     target_device = response_tensor.device
     data.batch["sdc_teacher_pos_log_probs"] = pos_out.batch["ref_log_prob"].to(target_device)
-    data.batch["sdc_teacher_neg_log_probs"] = neg_out.batch["ref_log_prob"].to(target_device)
+
+    # R1 (RLSD_META_ATTR), OPSD_META, ROD_PT: skip decoy forward — saves the one
+    # teacher pass dedicated to T- (roughly 25-33% wall-time vs full SDC).
+    # Set teacher_neg = teacher_pos so any downstream contrastive computation
+    # (delta = T+ − T−, w_shared) becomes a no-op (delta=0 → w_diff=1,
+    # w_shared=w_attr). With λ_shared=λ_diff=0 in the yaml this is fully
+    # equivalent to "no decoy".
+    if mode in _SINGLE_TEACHER_MODES:
+        data.batch["sdc_teacher_neg_log_probs"] = data.batch["sdc_teacher_pos_log_probs"].clone()
+
+        # ROD_PT (Plan v5.17 FINAL): position teacher forward.
+        # T_position input = prompt + gold + response[:p] where p = first META_START position.
+        # Returns log_prob(META | prompt + gold + response[:p]) = position factor signal.
+        # We reuse R5 _build_teacher_logprob_batch with truncated response_mask (valid only up to p).
+        if mode == "ROD_PT":
+            try:
+                meta_start_id = int(tokenizer.convert_tokens_to_ids("<|meta|>"))
+            except Exception:
+                meta_start_id = -1
+            target_device = response_tensor.device
+            full_log_prob_meta = torch.zeros(response_tensor.size(0), device=target_device)
+
+            if meta_start_id > 0:
+                # Find first META_START position p per rollout
+                rollout_ps: list[tuple[int, int]] = []
+                for b in range(response_tensor.size(0)):
+                    valid = (response_tensor[b] == meta_start_id) & response_mask[b].bool()
+                    nz = valid.nonzero(as_tuple=True)[0]
+                    if nz.numel() > 0:
+                        rollout_ps.append((b, int(nz[0].item())))
+
+                if rollout_ps:
+                    N = len(rollout_ps)
+                    T_resp = response_tensor.size(1)
+                    # Build subset batch with truncated mask (valid only up to position p inclusive)
+                    truncated_mask_subset = torch.zeros(
+                        (N, T_resp), dtype=response_mask.dtype, device=response_mask.device
+                    )
+                    truncated_responses_subset = []
+                    prompt_texts_subset = []
+                    gold_subset = []
+                    for i, (b, p) in enumerate(rollout_ps):
+                        truncated_mask_subset[i, : p + 1] = 1.0
+                        truncated_responses_subset.append(response_tensor[b])
+                        prompt_texts_subset.append(prompt_texts[b])
+                        gold_subset.append(gold_answers[b])
+                    truncated_responses = torch.stack(truncated_responses_subset, dim=0)
+
+                    position_batch = _build_teacher_logprob_batch(
+                        tokenizer=tokenizer,
+                        prompt_texts=prompt_texts_subset,
+                        answer_texts=gold_subset,
+                        responses=truncated_responses,
+                        response_mask=truncated_mask_subset,
+                        v0_prefixes=None,
+                        forced_meta=False,
+                    )
+                    position_batch.meta_info["temperature"] = rollout_temp
+                    pos_position_out = trainer._compute_ref_log_prob(position_batch)
+                    # ref_log_prob[i, t] = log_prob of responses[i, t] given preceding context
+                    # → ref_log_prob[i, p] = log_prob(META | prompt + gold + response[:p])
+                    ref_log_probs_position = pos_position_out.batch["ref_log_prob"].to(target_device)
+
+                    for i, (b, p) in enumerate(rollout_ps):
+                        # Bound check (in case T_resp_dim mismatch from padding)
+                        if p < ref_log_probs_position.size(1):
+                            full_log_prob_meta[b] = ref_log_probs_position[i, p]
+
+            data.batch["sdc_position_log_prob_meta"] = full_log_prob_meta
+    else:
+        # Both contrastive (R2/SDC_*) and forced-meta (R5) modes run T- here.
+        # Forced-meta passes the same v0_prefixes + forced_meta=True so the
+        # decoy teacher conditioning matches the gold teacher format (only the
+        # answer slot differs), preserving the contrast-on-answer-only
+        # invariant the SDC contrastive math depends on.
+        neg_batch = _build_teacher_logprob_batch(
+            tokenizer=tokenizer,
+            prompt_texts=prompt_texts,
+            answer_texts=decoy_answers,
+            responses=response_tensor,
+            response_mask=response_mask,
+            v0_prefixes=v0_prefixes,
+            forced_meta=forced_meta_flag,
+        )
+        neg_batch.meta_info["temperature"] = rollout_temp
+        neg_out = trainer._compute_ref_log_prob(neg_batch)
+        data.batch["sdc_teacher_neg_log_probs"] = neg_out.batch["ref_log_prob"].to(target_device)
 
     # When agent_reward_loop pre-populates rm_scores asynchronously, the SDC
     # reward manager early-returns before computing region masks. compute_advantage
@@ -604,7 +917,39 @@ def main_task(config):
     processor = hf_processor(local_path, trust_remote_code=trust_remote_code, use_fast=True)
 
     mode = config.get("mode", "SDC_SHARED")
+    if mode not in REWARD_CONFIGS:
+        raise ValueError(
+            f"Unknown mode='{mode}'. Available: {sorted(REWARD_CONFIGS.keys())}"
+        )
+    if mode == "OPSD_META":
+        # KL distillation auxiliary loss is NOT implemented yet. The advantage
+        # path falls back to RLSD_META_ATTR (T+ only, attractive). Refusing to
+        # silently run a half-implemented mode prevents accidental wasted runs.
+        raise NotImplementedError(
+            "mode=OPSD_META requires KL distillation loss in the actor — "
+            "phase-2 work, not yet wired. Use RLSD_META_ATTR or "
+            "RLSD_META_CONTRAST for now."
+        )
     reward_cfg = REWARD_CONFIGS[mode]
+    # Make mode visible to runtime hooks (advantage compute & teacher attach).
+    _ACTIVE_SDC_CONTEXT["mode"] = mode
+    # Mirror mode into algorithm config so verl_sdc_utils.compute_sdc_gdpo_advantage
+    # (which only receives algorithm config) can dispatch on it. Disable struct
+    # mode locally so we can write a key that may not exist in legacy yamls.
+    if "algorithm" in config:
+        try:
+            from omegaconf import OmegaConf as _OC
+            _was_struct = _OC.is_struct(config.algorithm)
+            _OC.set_struct(config.algorithm, False)
+            config.algorithm.sdc_mode = mode
+            if _was_struct:
+                _OC.set_struct(config.algorithm, True)
+        except Exception:
+            # Last-resort dict-style assignment.
+            try:
+                config["algorithm"]["sdc_mode"] = mode
+            except Exception:
+                pass  # cannot inject; compute_sdc_gdpo_advantage will use default
     # Single source of truth: prefer config.algorithm.gdpo_reward_weights / gdpo_reward_keys.
     # REWARD_CONFIGS supplies the functions (which cannot live in YAML) and the
     # default weights/keys used when the YAML omits them.

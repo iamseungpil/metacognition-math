@@ -123,7 +123,22 @@ def _shared_char_spans(text: str, post_start: int) -> list[tuple[int, int]]:
 
 def build_sdc_region_masks(tokenizer, completion_ids, completion_text: str):
     """Build meta/shared/diff/body masks for a decoded completion."""
-    meta_mask = _build_meta_mask(tokenizer, completion_ids, completion_text)
+    # Lazy import to avoid circular import: verl_sdc imports from this module
+    # at top-level. Reading the active mode here (set by verl_sdc.main_task)
+    # lets us flag ``started_inside_meta`` for forced-meta modes so the
+    # response's leading tokens count as meta even though the <|meta|> opener
+    # is in the prompt, not the response.
+    try:
+        from src.training.verl_sdc import _ACTIVE_SDC_CONTEXT, _FORCED_META_MODES
+        mode = _ACTIVE_SDC_CONTEXT.get("mode", "SDC_SHARED")
+        started_inside_meta = mode in _FORCED_META_MODES
+    except Exception:
+        # Fall back to legacy behavior if context module isn't importable
+        # (e.g., unit tests that import verl_sdc_utils in isolation).
+        started_inside_meta = False
+    meta_mask = _build_meta_mask(
+        tokenizer, completion_ids, completion_text, started_inside_meta=started_inside_meta
+    )
     postmeta_mask, fallback = _build_postmeta_mask(
         tokenizer, completion_ids, completion_text, meta_mask
     )
@@ -196,9 +211,21 @@ def compute_sdc_gdpo_advantage(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """veRL-native SDC: build a scalar GDPO advantage then shape it per token.
 
-    This is the veRL analog of the original SDC idea:
-      1. get a scalar/group advantage from reward heads (GDPO)
-      2. modulate token-level credit by teacher-guided factors in different regions
+    Mode dispatch (algorithm.sdc_mode, mirrored from top-level mode at init):
+      VANILLA_GRPO         — skip SDC factor; return base GDPO advantage directly.
+      RLSD_META_ATTR       — meta region uses w_attr = exp(sign × (T+ − student));
+                             shared/diff regions controlled by their lambdas.
+      RLSD_META_CONTRAST   — meta region uses w_meta = exp(sign × (α × Δ+ + β × δ))
+                             where Δ+ = T+ − student, δ = T+ − T−.
+      RLSD_FORCED_META     — same combined formula as RLSD_META_CONTRAST; rollout
+                             prompt is augmented to start inside <|meta|>, so
+                             the meta_mask is guaranteed non-empty (resolves the
+                             "meta empty 95%" pathology of meta-SFT under gold
+                             conditioning, paper 2603.24472).
+      OPSD_META            — same advantage path as RLSD_META_ATTR; the auxiliary
+                             KL distillation loss is applied in the actor (TBD).
+      SDC_SHARED / SDC_CORR_ONLY / SDC_CORR_META_PEN — legacy behavior (w_attr on
+                             meta, w_shared on shared, w_diff on diff).
     """
     reward_keys = [str(k) for k in config.get("gdpo_reward_keys", [])]
     assert reward_keys, "sdc_gdpo requires algorithm.gdpo_reward_keys"
@@ -213,6 +240,15 @@ def compute_sdc_gdpo_advantage(
         non_tensor_batch=non_tensor_batch,
         batch=batch,
     )
+
+    sdc_mode = str(config.get("sdc_mode", "SDC_SHARED"))
+
+    # R0: vanilla GRPO. Bypass all SDC factor computation — just whiten the
+    # base GDPO advantage, exactly like a non-SDC trainer would.
+    if sdc_mode == "VANILLA_GRPO":
+        advantages = base_advantages * response_mask
+        advantages = verl_F.masked_whiten(advantages, response_mask) * response_mask
+        return advantages, advantages
 
     teacher_pos = batch["sdc_teacher_pos_log_probs"].to(device)
     teacher_neg = batch["sdc_teacher_neg_log_probs"].to(device)
@@ -239,6 +275,58 @@ def compute_sdc_gdpo_advantage(
     w_shared = torch.clamp(torch.exp(sign * shared_anchor), 1.0 - clip_eps, 1.0 + clip_eps)
     w_diff = torch.clamp(torch.exp(sign * delta), 1.0 - clip_eps, 1.0 + clip_eps)
 
+    # Meta-region weight: mode-specific.
+    # R2 combined form keeps RLSD's multiplicative-magnitude principle intact —
+    # we never flip the sign of advantage, only modulate magnitude. The teacher
+    # signal mixes attractive (Δ+) and contrastive (δ = T+ − T−) terms.
+    # R5 (RLSD_FORCED_META) reuses the same combined α·Δ+ + β·δ formula —
+    # the only difference vs R2 is that the rollout starts inside <|meta|> so
+    # the meta_mask is non-empty for every sample (resolves the meta-empty 95%
+    # pathology); the advantage shaping math itself is identical.
+    if sdc_mode in {"RLSD_META_CONTRAST", "RLSD_FORCED_META"}:
+        alpha_attr = float(config.get("sdc_alpha_attr", 0.5))
+        beta_contrast = float(config.get("sdc_beta_contrast", 0.5))
+        if alpha_attr < 0 or beta_contrast < 0:
+            raise ValueError(
+                f"sdc_alpha_attr={alpha_attr}, sdc_beta_contrast={beta_contrast}: "
+                "both must be non-negative"
+            )
+        if (alpha_attr + beta_contrast) <= 0:
+            raise ValueError(
+                f"sdc_alpha_attr + sdc_beta_contrast = {alpha_attr + beta_contrast}: "
+                "must be > 0 (else combined log-ratio is identically zero, "
+                "use RLSD_META_ATTR with sdc_lambda_meta=0 instead)"
+            )
+        combined_log = torch.clamp(
+            alpha_attr * attr_log + beta_contrast * delta,
+            -clamp,
+            clamp,
+        )
+        w_meta = torch.clamp(
+            torch.exp(sign * combined_log), 1.0 - clip_eps, 1.0 + clip_eps
+        )
+    elif sdc_mode == "ROD_PT":
+        # ROD-PT (Plan v5.17 FINAL): R5 attribution × position factor (PRODUCT).
+        # Position factor multiplicatively amplifies w_attr based on teacher's prob
+        # of META at first emit position p:
+        #   w_position = clip(exp(sign × log_prob_meta), 1-ε, 1+ε)
+        #   w_combined = w_attr × w_position
+        # RLSD invariant 보존: sign는 sign 변수로 보존, magnitude만 modulate.
+        log_prob_meta = batch.get(
+            "sdc_position_log_prob_meta",
+            torch.zeros(student_logp.size(0), device=device),
+        ).to(device)
+        if log_prob_meta.dim() == 1:
+            log_prob_meta = log_prob_meta.unsqueeze(1)  # [B, 1]
+        w_position = torch.clamp(
+            torch.exp(sign * log_prob_meta), 1.0 - clip_eps, 1.0 + clip_eps
+        )  # [B, 1]
+        w_meta = w_attr * w_position  # [B, T] × [B, 1] → [B, T] PRODUCT
+    else:
+        # Existing modes (SDC_SHARED, SDC_CORR_ONLY, SDC_CORR_META_PEN,
+        # RLSD_META_ATTR, OPSD_META): meta uses pure attractive.
+        w_meta = w_attr
+
     orig_shared_mask = shared_mask
     teacher_shared_gate = (delta.abs() <= shared_tau).float()
     shared_mask = torch.clamp(orig_shared_mask * teacher_shared_gate, 0.0, 1.0)
@@ -249,7 +337,7 @@ def compute_sdc_gdpo_advantage(
     lam_diff = float(config.get("sdc_lambda_diff", 0.30))
 
     factor = (
-        meta_mask * ((1.0 - lam_meta) + lam_meta * w_attr)
+        meta_mask * ((1.0 - lam_meta) + lam_meta * w_meta)
         + shared_mask * ((1.0 - lam_shared) + lam_shared * w_shared)
         + diff_mask * ((1.0 - lam_diff) + lam_diff * w_diff)
         + body_mask
