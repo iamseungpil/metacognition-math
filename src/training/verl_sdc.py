@@ -537,7 +537,34 @@ def _attach_teacher_signals(data: DataProto):
                         rollout_ps.append((b, int(nz[0].item())))
 
                 if rollout_ps:
-                    N = len(rollout_ps)
+                    real_N = len(rollout_ps)
+                    # veRL dispatch requires N divisible by:
+                    #   1. dp_size (chunk_tensordict in tensordict_utils.py:315)
+                    #   2. force_group_size * micro_batch_size_per_gpu (ref_compute_ref_log_prob)
+                    # dp_size is the data-parallel world size = nnodes * n_gpus_per_node
+                    # (codex Round 3: previously used n_gpus_per_node only, broke on multi-node).
+                    try:
+                        nnodes = int(trainer.config.trainer.nnodes)
+                    except Exception:
+                        nnodes = 1
+                    try:
+                        n_gpus_per_node = int(trainer.config.trainer.n_gpus_per_node)
+                    except Exception:
+                        n_gpus_per_node = 4
+                    dp_size = nnodes * n_gpus_per_node
+                    try:
+                        micro_bs = int(trainer.config.actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu)
+                    except Exception:
+                        try:
+                            micro_bs = int(trainer.config.actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu)
+                        except Exception:
+                            micro_bs = 4
+                    pad_unit = dp_size * micro_bs  # safe LCM upper bound
+                    pad_n = (-real_N) % pad_unit
+                    rollout_ps_padded = list(rollout_ps)
+                    for _ in range(pad_n):
+                        rollout_ps_padded.append(rollout_ps[0])  # duplicate for padding
+                    N = len(rollout_ps_padded)
                     T_resp = response_tensor.size(1)
                     # Build subset batch with truncated mask (valid only up to position p inclusive)
                     truncated_mask_subset = torch.zeros(
@@ -546,7 +573,7 @@ def _attach_teacher_signals(data: DataProto):
                     truncated_responses_subset = []
                     prompt_texts_subset = []
                     gold_subset = []
-                    for i, (b, p) in enumerate(rollout_ps):
+                    for i, (b, p) in enumerate(rollout_ps_padded):
                         truncated_mask_subset[i, : p + 1] = 1.0
                         truncated_responses_subset.append(response_tensor[b])
                         prompt_texts_subset.append(prompt_texts[b])
@@ -568,7 +595,8 @@ def _attach_teacher_signals(data: DataProto):
                     # → ref_log_prob[i, p] = log_prob(META | prompt + gold + response[:p])
                     ref_log_probs_position = pos_position_out.batch["ref_log_prob"].to(target_device)
 
-                    for i, (b, p) in enumerate(rollout_ps):
+                    # IMPORTANT: only iterate up to real_N (skip padded duplicates)
+                    for i, (b, p) in enumerate(rollout_ps[:real_N]):
                         # Bound check (in case T_resp_dim mismatch from padding)
                         if p < ref_log_probs_position.size(1):
                             full_log_prob_meta[b] = ref_log_probs_position[i, p]
