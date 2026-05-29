@@ -1,0 +1,89 @@
+# CTSD Phase C — ROD_MQ_CONTRAST_INJECT (PLAN.md v5).
+#
+# Intent: the contrastive RL of R18b FAILED (70.9% < 72.3% baseline) because the
+# model's natural meta is decorative (A.1) — the T+ vs T- contrast reward had no
+# good/bad variance to shape. This arm adds the ONE missing piece: force-inject
+# <|meta|> at the max-entropy pre-answer position during rollout, creating the
+# meta region the contrastive reward then shapes. Everything else == R18b.
+#
+# Hypothesis: with force-inject, contrastive RL beats baseline on AIME (the gate).
+# Gated by A.3 PASS (force-inject shown causally helpful offline) before launch.
+# Inject core: src/training/meta_inject.py (unit-tested). Rollout wiring:
+# SDCRayPPOTrainer._force_inject_rollout (NODE-SMOKE-REQUIRED, 1-step first).
+
+defaults:
+  - verl_sdc_e21r_shared
+  - _self_
+
+mode: ROD_MQ_CONTRAST_INJECT
+
+data:
+  max_prompt_length: 2048
+  max_response_length: 4096
+  train_batch_size: 64
+  val_batch_size: 16
+
+actor_rollout_ref:
+  model:
+    path: /scratch/models/v8_meta_inside_strict_sft
+  actor:
+    ppo_mini_batch_size: 8
+    ppo_micro_batch_size_per_gpu: 1
+    ppo_max_token_len_per_gpu: 24576
+  ref:
+    log_prob_micro_batch_size_per_gpu: 4
+    log_prob_max_token_len_per_gpu: 24576
+  rollout:
+    tensor_model_parallel_size: 4
+    temperature: 0.6
+    top_k: 20
+    top_p: 0.95
+    response_length: ${data.max_response_length}
+    gpu_memory_utilization: 0.45
+    max_model_len: 4608
+    max_num_batched_tokens: 8192
+    max_num_seqs: 32
+    log_prob_micro_batch_size_per_gpu: 4
+    n: 4
+
+critic:
+  ppo_micro_batch_size_per_gpu: 1
+  forward_micro_batch_size_per_gpu: 1
+  ppo_max_token_len_per_gpu: 24576
+  forward_max_token_len_per_gpu: 24576
+
+reward_model:
+  micro_batch_size: 4
+
+algorithm:
+  gdpo_reward_keys: [correctness, meta_penalty]
+  gdpo_reward_weights: [1.0, 1.0]
+  kl_ctrl:
+    type: fixed
+    kl_coef: 0.005
+  # ROD_MQ_CONTRAST_INJECT: R18b contrastive reward + force-inject (the new piece)
+  sdc_mode: ROD_MQ_CONTRAST_INJECT
+  sdc_enabled: true
+  sdc_lambda_meta: 0.5
+  sdc_lambda_shared: 0.0
+  sdc_lambda_diff: 0.0
+  sdc_alpha_attr: 0.5       # α — attractive (T+ − student)
+  sdc_beta_contrast: 0.5    # β — contrast (T+ − T-), decoy enabled
+  sdc_clip_eps_w: 0.2       # conservative — avoid R10v2-on-E20a length pathology
+  sdc_meta_quality_tau: 1.0
+  sdc_meta_post_k: 10
+  sdc_log_ratio_clamp: 10.0
+  # ── force-inject (NEW, the only difference vs R18b) ──
+  sdc_force_inject: true    # enable two-phase rollout meta injection
+  sdc_inject_min_tok: 50    # do not inject in the first N response tokens
+
+trainer:
+  nnodes: 1
+  n_gpus_per_node: 4
+  device: cuda
+  experiment_name: verl_ctsd_inject_C_h200_4x4k
+  default_local_dir: /scratch/checkpoints/verl_ctsd_inject_C_h200_4x4k
+  save_freq: 5              # frequent — H200 preempt resilience (Plan §13)
+  test_freq: 25
+  total_epochs: 20
+  total_training_steps: 50  # Phase C SMOKE scale; Phase E raises to 300
