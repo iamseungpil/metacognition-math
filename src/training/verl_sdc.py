@@ -1347,6 +1347,20 @@ class SDCRayPPOTrainer(RayPPOTrainer):
     # DataProto/generate_sequences API but MUST be 1-step smoke-tested on the node
     # (per repo convention, task #123 pattern) before any real run — verl internals
     # cannot be exercised in the local CPU env where the core was unit-tested.
+    #
+    # TWO INVARIANTS the repack MUST satisfy (codex 2026-05-29), else the contrast
+    # reward silently breaks:
+    #  (1) MASK COHERENCE: the final `responses` tensor must include
+    #      response[:p] + <|meta|> + model-generated-content + <|/meta|> so the
+    #      existing find_meta_spans / meta_content_mask marks the injected block;
+    #      otherwise q_contrast (T+ − T- over meta region) is empty/zero and this
+    #      reduces to vanilla GRPO. (Marker-only mode = model writes the content;
+    #      that content must be IN the scored response.)
+    #  (2) CLOSE-RATE SAFETY: if the model fails to emit <|/meta|> the meta span
+    #      runs to end-of-response (mask covers the answer). A.3 b_close≈0.68 →
+    #      ~1/3 risk. Cap injected-meta length and log/alert close-rate (WandB
+    #      train/inject_close_rate); drop or truncate samples whose forced block
+    #      never closes within N tokens.
     def _force_inject_rollout(self, gen_batch, gen_output):
         """Return a regenerated gen_output with <|meta|> force-injected, or the
         original gen_output unchanged when force-inject is disabled."""
@@ -1354,10 +1368,15 @@ class SDCRayPPOTrainer(RayPPOTrainer):
         if not bool(getattr(algo, "sdc_force_inject", False)):
             return gen_output  # default path: no-op, identical to all other modes
 
-        from .meta_inject import plan_inject_prefixes
+        from .meta_inject import plan_inject_prefixes, MARKER_ONLY, GOOD_META
         tok = self.tokenizer
         meta_open = tok.convert_tokens_to_ids("<|meta|>")
         meta_close = tok.convert_tokens_to_ids("<|/meta|>")
+        # inject mode (A.3 finding): "marker" (b-style, DEFAULT) injects only the
+        # opening <|meta|> and lets the model fill content — the contrastive reward
+        # (ROD_MQ_CONTRAST) shapes it during RL. "content" injects a fixed block.
+        inject_mode = str(getattr(algo, "sdc_inject_mode", "marker"))
+        template = MARKER_ONLY if inject_mode == "marker" else GOOD_META
 
         # (1) extract per-sample prompt ids, response ids, per-token entropy from
         #     phase-1 gen_output; (2) plan_inject_prefixes(...) → phase-2 prompts;

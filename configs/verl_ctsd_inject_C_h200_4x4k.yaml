@@ -75,6 +75,8 @@ algorithm:
   sdc_log_ratio_clamp: 10.0
   # ── force-inject (NEW, the only difference vs R18b) ──
   sdc_force_inject: true    # enable two-phase rollout meta injection
+  sdc_inject_mode: marker   # b-style: inject <|meta|> ONLY; model fills content,
+                            # contrastive reward shapes it (A.3: b beat fixed-content c)
   sdc_inject_min_tok: 50    # do not inject in the first N response tokens
 
 trainer:

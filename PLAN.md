@@ -25,6 +25,20 @@
 >   experiment directions with user (do NOT auto-pivot to Phase D).
 > Teacher = E20a (A.6 winner). clip_eps_w = 0.2. The thing R18b lacked and CTSD
 > adds = **force-inject** the meta region so the contrastive reward has a target.
+>
+> **A.3 RESULT (2026-05-29) + the b-marker pivot.** A.3 ran (n=30 math500-hard,
+> v8_strict, k=4) and the *content-inject* gate FAILED, well-powered (boxed 0.80-
+> 0.93, real null): c good-inject 0.150 ≈ a no-inject 0.133 (c−a=+1.7pp p=0.86);
+> direction c−d=−1.7pp p=0.74. Natural substantive meta 0/15 correct = distress
+> marker. **BUT b marker-only was the best condition** (0.183, +5pp over a, 7-3
+> per-problem wins) — though underpowered (paired p=0.32, 95% CI [−2.5,+13.3]pp).
+> Reading: supplying *fixed* good content (c) does NOT beat the model's own meta,
+> but *forcing the model to emit its own meta at the uncertain point* (b) is the
+> promising-but-unproven signal. **User direction (2026-05-29):** go with b
+> (marker-only inject) and let the **contrastive reward shape the content** during
+> RL. So the training inject switched from fixed-content → **marker-only**
+> (`sdc_inject_mode=marker`), and a **high-power b-vs-a re-test** (`--select mixed`,
+> gsm8k+math500 headroom, n=48 k=6) runs before committing node compute.
 
 # PLAN — Contrastive Triggered Self-Distill (CTSD) for Meta-CoT (v4, codex-reviewed 2026-05-28)
 

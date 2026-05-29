@@ -23,8 +23,14 @@ import numpy as np
 
 MIN_TOK_DEFAULT = 50  # do not inject in the first MIN_TOK response tokens
 
-# Productive, ANSWER-FREE meta — the direction A.3 tests as causally helpful.
-# Identical text to the A.3 probe's GOOD_META so training reproduces the probe.
+# Two inject modes (A.3 finding, 2026-05-29):
+#   MARKER_ONLY (b-style) — inject ONLY the opening <|meta|>; the model fills the
+#     content itself and the contrastive reward (ROD_MQ_CONTRAST) shapes it during
+#     RL. This was the best A.3 condition (b: +5pp over no-inject, 7-3 wins; the
+#     fixed-content c-style did NOT beat the model's own meta). DEFAULT for training.
+#   GOOD_META (c-style) — inject a full fixed productive block. Used by the A.3
+#     probe as the "supplied good content" arm; kept for ablation, not the default.
+MARKER_ONLY = "\n<|meta|>\n"
 GOOD_META = (
     "\n<|meta|>\n"
     "confidence: 0.3\n"

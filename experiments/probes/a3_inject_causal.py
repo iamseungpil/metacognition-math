@@ -206,6 +206,21 @@ def stratified_wrong_hard(results, n, rng):
     return picks[:n]
 
 
+def stratified_mixed(results, n, rng):
+    """Headroom slice for the b-vs-a re-test: stratify across gsm8k+math500 with
+    NO correctness filter, so baseline accuracy is mid-range (not the all-zero
+    floor of wrong_hard) and the b-vs-a paired test has resolving power."""
+    pool = [r for r in results if r["benchmark"] in ("gsm8k", "math500")]
+    by_b = defaultdict(list)
+    for r in pool:
+        by_b[r["benchmark"]].append(r)
+    picks, per = [], max(1, n // max(1, len(by_b)))
+    for b, lst in by_b.items():
+        rng.shuffle(lst); picks.extend(lst[:per])
+    rng.shuffle(picks)
+    return picks[:n]
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -214,6 +229,8 @@ def main():
     ap.add_argument("--n", type=int, default=30)
     ap.add_argument("--k", type=int, default=4)
     ap.add_argument("--max_new", type=int, default=2048)
+    ap.add_argument("--select", choices=["wrong_hard", "mixed"], default="wrong_hard",
+                    help="wrong_hard = baseline-wrong hard (orig A.3); mixed = gsm8k+math500 headroom (b-vs-a re-test)")
     ap.add_argument("--smoke", type=int, default=0)
     ap.add_argument("--out", default=str(REPORTS_DIR / "a3_inject_causal.json"))
     args = ap.parse_args()
@@ -227,8 +244,9 @@ def main():
 
     p = hf_hub_download(repo_id=HF_DATASET, repo_type="dataset", filename=EVAL_R10V2_V8)
     data = json.load(open(p))
-    picks = stratified_wrong_hard(data["results"], args.n, rng)
-    print(f"[data] {len(picks)} baseline-wrong hard problems")
+    select_fn = stratified_mixed if args.select == "mixed" else stratified_wrong_hard
+    picks = select_fn(data["results"], args.n, rng)
+    print(f"[data] {len(picks)} problems (select={args.select})")
 
     tok = AutoTokenizer.from_pretrained(args.model)
     # P2: assert hard-coded meta token IDs match this tokenizer
@@ -337,15 +355,24 @@ def main():
     helps_d, direction_d = pdiff(gated, "c_good", "a_noinject"), pdiff(gated, "c_good", "d_bad")
     helps_p = paired_perm_p(helps_d, rng_np)
     direction_p = paired_perm_p(direction_d, rng_np)
+    # b-vs-a (marker-only force-inject) — the hypothesis for the --select mixed re-test
+    bmark_d = pdiff(gated, "b_marker", "a_noinject")
+    bmark_p = paired_perm_p(bmark_d, rng_np)
+    gate_bmark = (B - A) >= 0.05 and bmark_p < 0.05
 
     gate_helps = (C - A) >= 0.03 and helps_p < 0.05
     gate_direction = (C - D) >= 0.05 and direction_p < 0.05
+    mixed_retest = (args.select == "mixed")  # b-vs-a retest: gate on b-marker
     # Power guard: if continuations rarely reach a \boxed answer, an all-low
     # result is truncation, not a real null. Flag instead of declaring FAIL.
     boxed_rate = {c: (boxed[c][0] / boxed[c][1] if boxed[c][1] else float("nan")) for c in COND}
     low_power = (not np.isnan(boxed_rate["a_noinject"])) and boxed_rate["a_noinject"] < 0.5
     # low_power takes precedence: a truncated run must NOT declare a training PASS.
-    overall_pass = gate_helps and gate_direction and not low_power
+    # mixed = b-vs-a retest → gate on b-marker; wrong_hard = orig c-content gates.
+    if mixed_retest:
+        overall_pass = gate_bmark and not low_power
+    else:
+        overall_pass = gate_helps and gate_direction and not low_power
 
     # natural-meta variance summary
     def acc_of(cls):
@@ -360,7 +387,8 @@ def main():
 
     print(f"\n=== A.3 inject causal (gated n={n_gated}/{len(per_prob)}) ===")
     print(f"  acc(a_noinject) = {A:.3f}")
-    print(f"  acc(b_marker)   = {B:.3f}  | b-a={B-A:+.3f} (emission, descriptive)")
+    print(f"  acc(b_marker)   = {B:.3f}  | b-a={B-A:+.3f} p={bmark_p:.3f} "
+          f"{'GATE✓' if gate_bmark else 'fail'} (B-MARKER force-inject)")
     print(f"  acc(c_good)     = {C:.3f}  | c-a={C-A:+.3f} p={helps_p:.3f} "
           f"{'GATE✓' if gate_helps else 'fail'} (HELPS)")
     print(f"  acc(d_bad)      = {D:.3f}  | c-d={C-D:+.3f} p={direction_p:.3f} "
@@ -373,8 +401,12 @@ def main():
           + ("  ⚠ LOW POWER (raise --max_new)" if low_power else ""))
     if low_power:
         verdict = "INCONCLUSIVE — low boxed_rate (truncation); raise --max_new and rerun"
+    elif overall_pass and mixed_retest:
+        verdict = "PASS — b-marker force-inject beats no-inject, proceed to marker-only training"
     elif overall_pass:
         verdict = "PASS — inject is causal & helps, proceed to training"
+    elif mixed_retest:
+        verdict = "FAIL — b-marker not significant; marker-only inject unproven"
     else:
         verdict = "FAIL — inject non-causal, STOP + brainstorm"
     print(f"  >>> VERDICT: {verdict}")
@@ -389,7 +421,7 @@ def main():
         "gates": {
             "helps_c_minus_a": {"delta": C - A, "p": helps_p, "pass": bool(gate_helps)},
             "direction_c_minus_d": {"delta": C - D, "p": direction_p, "pass": bool(gate_direction)},
-            "emission_b_minus_a_descriptive": float(B - A),
+            "bmarker_b_minus_a": {"delta": B - A, "p": bmark_p, "pass": bool(gate_bmark)},
             "content_c_minus_b_descriptive": float(C - B),
             "overall_pass": bool(overall_pass),
             "verdict": verdict,
