@@ -466,11 +466,24 @@ def main():
     best_metric = max(((m, a) for m, a in disc_oriented.items() if m != "position_index"),
                       key=lambda x: x[1], default=(None, None))[0]
 
-    # W1+W2: gate the PRE-SELECTED metric's oriented-AUC on the CONFIRMATION half vs the
-    # confirmation oriented position-index baseline. Stage-2 = oriented confirm-AUC >= 0.65
-    # AND >= position-index oriented-AUC + 0.05.
-    pos_idx_auc = conf_oriented.get("position_index", 0.5)
-    confirm_auc = conf_oriented.get(best_metric) if best_metric is not None else None
+    # W1+W2 (orientation-LOCKED): the metric's DIRECTION is fixed on the discovery half
+    # and that SAME sign is applied to the confirmation half — we do NOT re-maximize
+    # max(auc,1-auc) on confirm. Re-orienting on confirm would rescue a direction-FLIPPING
+    # noise metric (auc>0.5 on disc, <0.5 on confirm) to >=0.5 oriented credit, inflating
+    # the Stage-2 false-positive rate. Locking makes confirmation a clean held-out test of
+    # the discovery-chosen hypothesis (metric AND direction). position_index is sign-locked
+    # the same way for a fair baseline comparison.
+    def _orient_locked(disc_raw_, conf_raw_):
+        out = {}
+        for m, da in disc_raw_.items():
+            ca = conf_raw_.get(m)
+            if ca is None:
+                continue
+            out[m] = ca if da >= 0.5 else (1.0 - ca)   # apply discovery-chosen sign to confirm
+        return out
+    conf_locked = _orient_locked(disc_raw, conf_raw)
+    pos_idx_auc = conf_locked.get("position_index", 0.5)
+    confirm_auc = conf_locked.get(best_metric) if best_metric is not None else None
     stage2_pass = (confirm_auc is not None and confirm_auc >= 0.65
                    and confirm_auc - pos_idx_auc >= 0.05)
 
@@ -496,9 +509,10 @@ def main():
         "stage1_headroom_mean_pp": (h_mean * 100 if h_mean is not None else None),
         "stage1_p": (float(h_p) if h_p is not None else None), "stage1_pass": bool(stage1_pass),
         "metric_aucs_confirm": conf_raw, "metric_oriented_aucs_confirm": conf_oriented,
+        "metric_dirlocked_aucs_confirm": conf_locked,   # discovery-sign applied to confirm (gating)
         "metric_oriented_aucs_discovery": disc_oriented,
         "best_metric": best_metric, "best_metric_selected_on": "discovery_half",
-        "best_metric_oriented_auc_confirm": (float(confirm_auc) if confirm_auc is not None else None),
+        "best_metric_dirlocked_auc_confirm": (float(confirm_auc) if confirm_auc is not None else None),
         "best_metric_raw_auc_confirm": (conf_raw.get(best_metric) if best_metric is not None else None),
         "position_index_oriented_auc_confirm": float(pos_idx_auc), "stage2_pass": bool(stage2_pass),
         "gradeable_rate": gradeable_rate, "boxed_str_rate": boxed_str_rate, "power_ok": bool(power_ok),
