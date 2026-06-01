@@ -211,7 +211,7 @@ def main():
     for r, pids, outs in zip(pool, pool_prompt_ids, pool_bases):
         if len(probs) >= n:
             break
-        base = outs[0][:MAX_RESP_TOK]
+        base = outs[0]            # FIX: full 16k baseline (no 4096 cap) — matches b1.
         full_resp = tok.decode(base, skip_special_tokens=False)
         if robust_grade(full_resp, str(r["gold_answer"]).strip()):
             dropped_correct += 1          # already-correct → NOT headroom, drop (logged)
