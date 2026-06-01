@@ -47,6 +47,7 @@ from common.env import (
     TEACHER_MODEL, EVAL_R10V2_E20A, HF_DATASET,
     META_OPEN_ID, META_CLOSE_ID, REPORTS_DIR, STRATIFIED_SAMPLE_SEED,
 )
+from common.vllm_gen import VllmGen, safe_tokenizer_path
 from common.probe_utils import mann_whitney_auc  # noqa: F401 (paired_perm_test is paired;
 # B.2 correct/wrong groups are DISTINCT metas → unpaired, so we use a local label-shuffle
 # two-sample permutation (_label_perm_test) which is the correct analog. See deviation note.
@@ -159,25 +160,48 @@ def main():
     dev = "cuda"
 
     # ── Phase 1: E20a base — marker-inject at argmax, generate self-meta + continuation
+    # Generation MECHANISM = vLLM (replaces a3.gen_batch). E20a force-opened with
+    # <|meta|> rarely emits EOS, so HF generate ran the full max_new every call
+    # (intractable); vLLM respects EOS + batches. ONLY generation changes — the
+    # extraction, grading, and contrastive/gate logic below are byte-for-byte the same.
+    # vLLM at modest util (0.45 ≈ 36GB) coexists with the HF entropy forward (~16GB).
+    vgen = VllmGen(args.model, tokenizer_path=safe_tokenizer_path(args.model),
+                   gpu_memory_utilization=0.45, max_model_len=4096,
+                   seed=STRATIFIED_SAMPLE_SEED)
     model = AutoModelForCausalLM.from_pretrained(
         args.model, torch_dtype=torch.bfloat16, device_map="cuda").eval()
     marker_seg = tok.encode(MARKER_ONLY, add_special_tokens=False)
     metas = []   # {question, gold, decoy, pre_meta_body, meta_block, correct}
     box_n, box_d = 0, 0
+
+    # Pass A: per-problem seeded baseline (vLLM n=1) + HF entropy → argmax p* →
+    # build the marker-inject prefix. Collect prefixes to batch the k-sample inject
+    # generation across ALL problems in ONE vLLM call (the speed win).
+    inject_prefixes, meta_info = [], []   # meta_info[i] aligns with inject_prefixes[i]
     for pi, r in enumerate(probs):
         q, gold = r["question"], str(r["gold_answer"]).strip()
         msgs = [{"role": "user", "content": q}]
         prompt_str = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
         prompt_ids = tok.encode(prompt_str, add_special_tokens=False)[:1024]
-        set_seed(STRATIFIED_SAMPLE_SEED + pi)
-        base = gen_batch(model, tok, prompt_ids, args.max_new, 1, dev)[0][:MAX_RESP_TOK]
+        # per-problem seeded baseline rollout (seed = STRATIFIED_SAMPLE_SEED+pi),
+        # replaces set_seed + gen_batch; vLLM respects EOS so no full-max_new run.
+        base = vgen.generate([prompt_ids], n=1, max_tokens=args.max_new,
+                             seed=STRATIFIED_SAMPLE_SEED + pi)[0][0][:MAX_RESP_TOK]
         H = raw_entropy(model, prompt_ids + base, len(prompt_ids), dev)
         cap = first_boxed_token_idx(tok, base)
         p_star, _, _ = body_argmax_entropy_pos(base, H, cap)
         pre_meta_body = tok.decode(base[:p_star], skip_special_tokens=False)
         # marker-inject: model generates its OWN meta + continuation from the pinned prefix
-        pref = prompt_ids + base[:p_star] + marker_seg
-        conts = gen_batch(model, tok, pref, args.max_new, args.k, dev)
+        inject_prefixes.append(prompt_ids + base[:p_star] + marker_seg)
+        meta_info.append({"pi": pi, "benchmark": r["benchmark"], "q": q, "gold": gold,
+                          "p_star": p_star, "pre_meta_body": pre_meta_body})
+
+    # Pass B: ONE batched vLLM call (n=k) for ALL problems' inject-prefixes, then the
+    # extraction/grading loop is unchanged from the per-problem version.
+    all_conts = vgen.generate(inject_prefixes, n=args.k, max_tokens=args.max_new,
+                              seed=STRATIFIED_SAMPLE_SEED)
+    for info, conts in zip(meta_info, all_conts):
+        q, gold, pre_meta_body = info["q"], info["gold"], info["pre_meta_body"]
         for c in conts:
             # full forced response text: prefix-resp + injected marker + generated tail
             tail_text = tok.decode(marker_seg + c, skip_special_tokens=False)
@@ -197,8 +221,9 @@ def main():
                           # length correlates with outcome (extraction logic unchanged).
                           "block_len": len(tok.encode(meta_block, add_special_tokens=False)),
                           "correct": correct})
-        print(f"  [{pi+1}/{len(probs)}] {r['benchmark']} p*={p_star} "
+        print(f"  [{info['pi']+1}/{len(probs)}] {info['benchmark']} p*={info['p_star']} "
               f"metas={len(metas)} ({time.time()-t0:.0f}s)")
+    vgen.free()
     del model; gc.collect(); torch.cuda.empty_cache()
 
     # ── Phase 2: E20a-teacher contrastive scoring of each self-meta (T+ gold, T- decoy)

@@ -45,6 +45,7 @@ from common.env import (
     META_OPEN_ID, META_CLOSE_ID, REPORTS_DIR, STRATIFIED_SAMPLE_SEED,
 )
 from common.probe_utils import mann_whitney_auc, paired_perm_test, build_teacher_input
+from common.vllm_gen import VllmGen, safe_tokenizer_path
 from probes.a3_inject_causal import (
     raw_entropy, gen_batch, first_boxed_token_idx, find_meta_spans,
     stratified_wrong_hard, MIN_TOK, MARKER_ONLY,
@@ -211,6 +212,13 @@ def main():
 
     all_golds = [r.get("gold_answer") for r in results if r.get("gold_answer") is not None]
     tok = load_tokenizer(args.model)
+    # Generation MECHANISM = vLLM (replaces a3.gen_batch). Modest util (0.45 ≈ 36GB)
+    # so the HF student (~16GB, needed for entropy/taken-token-logp forwards) coexists.
+    # tokenizer_path: the v8 checkpoint tokenizer fails under transformers 4.57.6, so
+    # safe_tokenizer_path falls back to the E20a tokenizer (identical vocab) when needed.
+    vgen = VllmGen(args.model, tokenizer_path=safe_tokenizer_path(args.model),
+                   gpu_memory_utilization=0.45, max_model_len=4096,
+                   seed=STRATIFIED_SAMPLE_SEED)
     model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.bfloat16, device_map="cuda")
     model.eval()
     dev = "cuda"
@@ -231,11 +239,14 @@ def main():
     # (student freed first → pause-ref → teacher). Each entry holds everything the
     # later passes need so we never reload the student.
     saved = []                      # list of {pi, prompt_ids, base, pos, gold, decoy, st_taken}
+    marker_seg = tok.encode(MARKER_ONLY, add_special_tokens=False)
     for pi, r in enumerate(probs):
         q, gold = r["question"], r["gold_answer"]
         prompt_ids = build_prompt_ids(tok, q)
-        set_seed(STRATIFIED_SAMPLE_SEED + pi)   # per-problem seeded baseline rollout (plan)
-        base = gen_batch(model, tok, prompt_ids, args.max_new, 1, dev)[0]
+        # per-problem seeded baseline rollout (plan): seed = STRATIFIED_SAMPLE_SEED+pi
+        # replaces the old set_seed + gen_batch. vLLM respects EOS (no full-max_new run).
+        base = vgen.generate([prompt_ids], n=1, max_tokens=args.max_new,
+                             seed=STRATIFIED_SAMPLE_SEED + pi)[0][0]
         # W4 power: did the BASELINE rollout itself reach a boxed answer (one value/problem)
         box_ok.append(1 if r"\boxed" in tok.decode(base, skip_special_tokens=False) else 0)
         cap = first_boxed_token_idx(tok, base)
@@ -245,12 +256,24 @@ def main():
             continue
         # metric ⑤ part 1: student logp of the actually-taken next base token, ONE forward
         st_taken = taken_token_logp(model, prompt_ids + base, len(prompt_ids), dev)
+        # Position arms: batch ALL (position × {marker, noinject}) prefixes into ONE
+        # vLLM call (n=k each) — the big speed win vs the old per-(pos,arm) loop.
+        names = list(pos.keys())
+        prefixes, slots = [], []   # slots[i] = (name, "marker"|"noinj")
+        for name in names:
+            p = pos[name]
+            prefixes.append(prompt_ids + base[:p] + marker_seg); slots.append((name, "marker"))
+            prefixes.append(prompt_ids + base[:p]);              slots.append((name, "noinj"))
+        outs = vgen.generate(prefixes, n=args.k, max_tokens=args.max_new,
+                             seed=STRATIFIED_SAMPLE_SEED + pi)
+        cont_by = {}
+        for (name, arm), conts in zip(slots, outs):
+            cont_by[(name, arm)] = conts
         per_pos = {}
-        for name, p in pos.items():
-            pref_marker = prompt_ids + base[:p] + tok.encode(MARKER_ONLY, add_special_tokens=False)
-            pref_noinj = prompt_ids + base[:p]
-            m = gen_batch(model, tok, pref_marker, args.max_new, args.k, dev)
-            a = gen_batch(model, tok, pref_noinj, args.max_new, args.k, dev)
+        for name in names:
+            p = pos[name]
+            m = cont_by[(name, "marker")]
+            a = cont_by[(name, "noinj")]
             gm = [grade(tok, prompt_ids, base[:p], c, gold) for c in m]
             ga = [grade(tok, prompt_ids, base[:p], c, gold) for c in a]
             # cross-fit: k1 to select, k2 (rest) to estimate held-out Delta
@@ -279,7 +302,10 @@ def main():
         print(f"  [{pi+1}/{len(probs)}] {r['benchmark']} positions={len(pos)} "
               f"argmax d_est={per_pos.get('argmax',{}).get('d_est')}")
 
-    # free the student before loading the ref / teacher (80GB safety: sequential)
+    # free the vLLM allocation + the student before loading the ref / teacher
+    # (80GB safety: sequential). vgen.free() releases ~36GB so the HF ref/teacher
+    # (~16GB each, one at a time) have room. Statistical/teacher phases below UNCHANGED.
+    vgen.free()
     del model; gc.collect(); torch.cuda.empty_cache()
 
     # ---- metric ③ pause-propensity (meta-emitting reference SFT) ----------------
