@@ -37,3 +37,8 @@ checkpoints_recovered/
 # Local AMLT submit manifests / node-specific launch files
 /run_c_*.yaml
 /h200_*_auto_*.yaml
+
+# Secrets (NEVER commit)
+.env
+.env.*
+!.env.example
