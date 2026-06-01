@@ -212,6 +212,8 @@ def main():
     ap.add_argument("--substrate", choices=["v8", "e20a"], default="v8",
                     help="selects eval json for headroom sampling")
     ap.add_argument("--n", type=int, default=40)
+    ap.add_argument("--n_pool", type=int, default=None,
+                    help="override the n_pool = max(3*n, n+30) formula (raise to find more genuinely-wrong problems)")
     ap.add_argument("--k", type=int, default=8, help="continuations per arm (split k1/k2 for cross-fit)")
     ap.add_argument("--n_random", type=int, default=4)
     ap.add_argument("--max_new", type=int, default=16384,
@@ -234,24 +236,34 @@ def main():
     results = results if isinstance(results, list) else results.get("results") or list(results.values())[0]
     # FIX C: sample a POOL of hard problems IGNORING stored is_correct (unreliable), then
     # select headroom from FRESH robust-graded baselines below. Pool size ~max(3n, n+30).
-    n_pool = max(3 * n, n + 30)
+    n_pool = args.n_pool if args.n_pool is not None else max(3 * n, n + 30)
     pool = stratified_hard_pool(results, n_pool, rng)
     print(f"[b1] substrate={args.substrate} model={args.model} n_target={n} "
           f"pool={len(pool)} k={args.k} max_new={args.max_new} max_model_len={args.max_model_len}")
 
     all_golds = [r.get("gold_answer") for r in results if r.get("gold_answer") is not None]
     tok = load_tokenizer(args.model)
-    # Generation MECHANISM = vLLM (replaces a3.gen_batch). Modest util (0.45 ≈ 36GB)
-    # so the HF student (~16GB, needed for entropy/taken-token-logp forwards) coexists.
-    # tokenizer_path: the v8 checkpoint tokenizer fails under transformers 4.57.6, so
-    # safe_tokenizer_path falls back to the E20a tokenizer (identical vocab) when needed.
+    dev = "cuda"
+    marker_seg = tok.encode(MARKER_ONLY, add_special_tokens=False)
+
+    # ===================================================================================
+    # PHASE SEPARATION (80GB OOM fix): vLLM (~36GB EngineCore) and the HF student (~15GB)
+    # are NEVER resident together. At the 16k regime raw_entropy materializes a ~22GB
+    # transient fp32 logit tensor; vLLM + student + that transient > 80GB → OOM. So the
+    # student-side forwards (entropy / taken-logp / positions) and the vLLM generation are
+    # split into strictly sequential phases, freeing/reloading the GPU between them. NO
+    # statistic changes: the same baselines, positions, seeds, grading and cross-fit run —
+    # only the ORDER of GPU residency moves.
+    # ===================================================================================
+
+    # ---- PHASE 0 (vLLM only): pool baselines + headroom selection + splits ----------
+    # Generation MECHANISM = vLLM (replaces a3.gen_batch). The HF student is NOT loaded
+    # yet — it would coexist with vLLM and trigger the 16k OOM. tokenizer_path: the v8
+    # checkpoint tokenizer fails under transformers 4.57.6, so safe_tokenizer_path falls
+    # back to the E20a tokenizer (identical vocab) when needed.
     vgen = VllmGen(args.model, tokenizer_path=safe_tokenizer_path(args.model),
                    gpu_memory_utilization=0.45, max_model_len=args.max_model_len,
                    seed=STRATIFIED_SAMPLE_SEED)
-    model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.bfloat16, device_map="cuda")
-    model.eval()
-    dev = "cuda"
-
     # FIX C: FRESH 16k baselines for the pool → robust_grade → keep only WRONG (true
     # headroom). Reuse each kept baseline for entropy/positions (do NOT regenerate).
     pool_prompt_ids = [build_prompt_ids(tok, r["question"]) for r in pool]
@@ -294,7 +306,20 @@ def main():
     # (student freed first → pause-ref → teacher). Each entry holds everything the
     # later passes need so we never reload the student.
     saved = []                      # list of {pi, prompt_ids, base, pos, gold, decoy, st_taken}
-    marker_seg = tok.encode(MARKER_ONLY, add_special_tokens=False)
+
+    # free the vLLM allocation before loading the HF student (80GB safety: sequential —
+    # vLLM and the student never coexist). vgen is re-created in Phase 2.
+    vgen.free(); gc.collect(); torch.cuda.empty_cache()
+
+    # ---- PHASE 1 (HF student only): positions + entropy/onset_slope/st_logp ----------
+    # Load the student, and for every kept problem compute EXACTLY the pre-generation
+    # quantities the old position loop computed before its vLLM call (box_ok, cap, H, pos,
+    # st_taken, per-position H/onset_slope/st_logp). Build & STORE the inject prefixes and
+    # slot labels per problem — but do NOT call vgen here (it is freed). Then free the
+    # student so Phase 2 can re-load vLLM without coexistence.
+    model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.bfloat16, device_map="cuda")
+    model.eval()
+    phase1 = []                     # per problem: prefixes/slots/pos/partial per_pos metrics for Phase 2
     for pi, r in enumerate(probs):
         q, gold = r["question"], r["gold_answer"]
         # FIX C: REUSE the fresh 16k baseline already generated for headroom selection
@@ -309,18 +334,45 @@ def main():
             continue
         # metric ⑤ part 1: student logp of the actually-taken next base token, ONE forward
         st_taken = taken_token_logp(model, prompt_ids + base, len(prompt_ids), dev)
-        # Position arms: batch ALL (position × {marker, noinject}) prefixes into ONE
-        # vLLM call (n=k each) — the big speed win vs the old per-(pos,arm) loop.
+        # Position arms: ALL (position × {marker, noinject}) prefixes — generated in Phase 2.
         names = list(pos.keys())
         prefixes, slots = [], []   # slots[i] = (name, "marker"|"noinj")
         for name in names:
             p = pos[name]
             prefixes.append(prompt_ids + base[:p] + marker_seg); slots.append((name, "marker"))
             prefixes.append(prompt_ids + base[:p]);              slots.append((name, "noinj"))
-        outs = vgen.generate(prefixes, n=args.k, max_tokens=args.max_new,
+        # per-position metrics that depend ONLY on H / st_taken (computed now, while the
+        # student is resident); d_sel/d_est are filled from Phase-2 grading.
+        pre_metrics = {}
+        for name in names:
+            p = pos[name]
+            pre_metrics[name] = {"p": int(p), "frac": p / max(1, len(base)),
+                                 "H": float(H[p]) if p < len(H) else 0.0,
+                                 "onset_slope": float(H[p] - np.mean(H[max(0, p - ONSET_SLOPE_W):p])) if p < len(H) else 0.0,
+                                 "st_logp": float(st_taken[p]) if p < len(st_taken) else None}
+        phase1.append({"pi": pi, "benchmark": r["benchmark"], "prompt_ids": prompt_ids,
+                       "base": base, "names": names, "pos": pos, "prefixes": prefixes,
+                       "slots": slots, "pre_metrics": pre_metrics,
+                       "question": q, "gold": gold,
+                       "decoy": make_decoy(gold, all_golds, rng)})
+    del model; gc.collect(); torch.cuda.empty_cache()
+
+    # ---- PHASE 2 (vLLM only, re-created): continuations + grading + cross-fit --------
+    # Re-create vLLM (same args). No HF model is resident, so the per-problem vgen.generate
+    # calls (kept per-pi seeded) cannot OOM. Reproduce EXACTLY the old grading/cross-fit:
+    # robust_grade each continuation, power counters, d_sel/d_est, real-vs-random headroom,
+    # rows append (with confirm flag). Merges Phase-1 H/onset_slope/st_logp per position.
+    vgen = VllmGen(args.model, tokenizer_path=safe_tokenizer_path(args.model),
+                   gpu_memory_utilization=0.45, max_model_len=args.max_model_len,
+                   seed=STRATIFIED_SAMPLE_SEED)
+    for ph in phase1:
+        pi, base, gold = ph["pi"], ph["base"], ph["gold"]
+        names, pos = ph["names"], ph["pos"]
+        # per-pi seed preserved EXACTLY (old line 321: seed=STRATIFIED_SAMPLE_SEED + pi).
+        outs = vgen.generate(ph["prefixes"], n=args.k, max_tokens=args.max_new,
                              seed=STRATIFIED_SAMPLE_SEED + pi)
         cont_by = {}
-        for (name, arm), conts in zip(slots, outs):
+        for (name, arm), conts in zip(ph["slots"], outs):
             cont_by[(name, arm)] = conts
         per_pos = {}
         for name in names:
@@ -339,13 +391,13 @@ def main():
             # cross-fit: k1 to select, k2 (rest) to estimate held-out Delta
             d_sel = np.mean(gm[:k1]) - np.mean(ga[:k1])
             d_est = np.mean(gm[k1:]) - np.mean(ga[k1:])
-            per_pos[name] = {"p": int(p), "frac": p / max(1, len(base)),
+            pm = ph["pre_metrics"][name]
+            per_pos[name] = {"p": pm["p"], "frac": pm["frac"],
                              "d_sel": float(d_sel), "d_est": float(d_est),
-                             "H": float(H[p]) if p < len(H) else 0.0,
-                             "onset_slope": float(H[p] - np.mean(H[max(0, p - ONSET_SLOPE_W):p])) if p < len(H) else 0.0,
+                             "H": pm["H"], "onset_slope": pm["onset_slope"],
                              # metric placeholders filled in the ref/teacher passes
                              "pause": None, "teacher_kl": None, "student_teacher_gap": None,
-                             "st_logp": float(st_taken[p]) if p < len(st_taken) else None}
+                             "st_logp": pm["st_logp"]}
             rows.append({"prob": pi, "name": name, "confirm": pi in confirm_set,
                          "delta_est": float(d_est), **per_pos[name]})
         # winner's curse: pick best by d_sel among REAL (non-rand) vs RANDOM, score on d_est
@@ -355,18 +407,17 @@ def main():
             best_real = max(real, key=lambda v: v["d_sel"])["d_est"]
             best_rand = max(rand, key=lambda v: v["d_sel"])["d_est"]
             headroom.append(best_real - best_rand)
-        saved.append({"pi": pi, "prompt_ids": prompt_ids, "base": base,
+        saved.append({"pi": pi, "prompt_ids": ph["prompt_ids"], "base": base,
                       "pos": {nm: v["p"] for nm, v in per_pos.items()},
-                      "question": q, "gold": gold,
-                      "decoy": make_decoy(gold, all_golds, rng)})
-        print(f"  [{pi+1}/{len(probs)}] {r['benchmark']} positions={len(pos)} "
+                      "question": ph["question"], "gold": gold,
+                      "decoy": ph["decoy"]})
+        print(f"  [{pi+1}/{len(probs)}] {ph['benchmark']} positions={len(pos)} "
               f"argmax d_est={per_pos.get('argmax',{}).get('d_est')}")
 
-    # free the vLLM allocation + the student before loading the ref / teacher
-    # (80GB safety: sequential). vgen.free() releases ~36GB so the HF ref/teacher
-    # (~16GB each, one at a time) have room. Statistical/teacher phases below UNCHANGED.
-    vgen.free()
-    del model; gc.collect(); torch.cuda.empty_cache()
+    # free the vLLM allocation before loading the ref / teacher (80GB safety: sequential).
+    # vgen.free() releases ~36GB so the HF ref/teacher (~16GB each, one at a time) have
+    # room. Statistical/teacher phases below UNCHANGED.
+    vgen.free(); gc.collect(); torch.cuda.empty_cache()
 
     # ---- metric ③ pause-propensity (meta-emitting reference SFT) ----------------
     # rows are keyed by (prob index pi, name); build a lookup so the ref/teacher
