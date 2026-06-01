@@ -15,7 +15,7 @@ Design (reuses proven machinery; a3/a3b/a6/probe_utils are NOT modified):
   Candidate positions = {entropy p50,p75,p90,argmax,onset} U {R random body pos},
   each >=MIN_TOK, before first \\boxed, outside meta spans (a3b.body_candidates).
   Per position p: marker arm (prefix+<|meta|>) vs noinject arm, k continuations each,
-  Delta_p = acc(marker)-acc(noinject) graded by _check_correctness (a3 grading).
+  Delta_p = acc(marker)-acc(noinject) graded by common.grading.robust_grade.
   Winner's-curse control: k split k1(select best pos) / k2(estimate held-out), and
   best-REAL vs best-of-R-RANDOM under identical selection. Metrics ranked by AUC vs
   1[Delta_p>0] on a held-out CONFIRMATION half of problems (multiplicity control).
@@ -48,10 +48,11 @@ from common.probe_utils import mann_whitney_auc, paired_perm_test, build_teacher
 from common.vllm_gen import VllmGen, safe_tokenizer_path
 from probes.a3_inject_causal import (
     raw_entropy, gen_batch, first_boxed_token_idx, find_meta_spans,
-    stratified_wrong_hard, MIN_TOK, MARKER_ONLY,
+    MIN_TOK, MARKER_ONLY,
 )
 from probes.a3b_position_marker import body_candidates
-from src.training.rewards import _check_correctness
+from common.grading import robust_grade, is_gradeable
+from collections import defaultdict as _defaultdict
 
 # pause-propensity reference (metric ③): a meta-EMITTING SFT. E20a emits ~0% meta
 # so its P(meta) is degenerate; the v8_strict SFT is the meta-emitting reference.
@@ -59,6 +60,27 @@ PAUSE_REF_MODEL = SFT_V8_STRICT
 TEACHER_REF_MODEL = TEACHER_MODEL   # E20a teacher for metrics ④/⑤
 ONSET_Q = 75           # onset = first body pos whose entropy >= this response's pXX
 ONSET_SLOPE_W = 8      # window for onset-slope metric
+
+
+def stratified_hard_pool(results, n_pool, rng):
+    """FIX C pool sampler: n_pool hard-benchmark problems, IGNORING stored is_correct.
+
+    Sibling of a3.stratified_wrong_hard (we write our own here rather than modify a3 —
+    a3 is protected) but WITHOUT the `not r["is_correct"]` filter, because the stored
+    is_correct is unreliable (same math_verify grading bug + a stored/format mismatch:
+    robust_grade gives E20a math500 ~21% vs stored 81%). The probe then generates a
+    FRESH baseline for each pool problem and keeps only those robust_grade marks WRONG
+    (true headroom). Stratifies across the same hard benchmarks as a3."""
+    hard = [r for r in results
+            if r["benchmark"] in ("aime", "aime2024", "math500", "math")]
+    by_b = _defaultdict(list)
+    for r in hard:
+        by_b[r["benchmark"]].append(r)
+    picks, per = [], max(1, n_pool // max(1, len(by_b)))
+    for b, lst in by_b.items():
+        rng.shuffle(lst); picks.extend(lst[:per])
+    rng.shuffle(picks)
+    return picks[:n_pool]
 
 
 def load_tokenizer(path: str):
@@ -176,7 +198,7 @@ def candidate_positions(resp_ids, H, answer_cap, rng, n_random=4):
 def grade(tok, prompt_ids, prefix_resp_ids, cont_ids, gold):
     """Grade a continuation: decode the full response (prefix + continuation), check vs gold."""
     full_resp = tok.decode(prefix_resp_ids + cont_ids, skip_special_tokens=False)
-    return 1 if _check_correctness(full_resp, gold) else 0
+    return 1 if robust_grade(full_resp, gold) else 0
 
 
 def boxed_rate(tok, prefix_resp_ids, conts):
@@ -192,7 +214,10 @@ def main():
     ap.add_argument("--n", type=int, default=40)
     ap.add_argument("--k", type=int, default=8, help="continuations per arm (split k1/k2 for cross-fit)")
     ap.add_argument("--n_random", type=int, default=4)
-    ap.add_argument("--max_new", type=int, default=1280)
+    ap.add_argument("--max_new", type=int, default=16384,
+                    help="generation budget (real eval regime: max_tokens=16384)")
+    ap.add_argument("--max_model_len", type=int, default=20480,
+                    help="vLLM context window (real eval regime: 20480)")
     ap.add_argument("--smoke", type=int, default=0)
     ap.add_argument("--tag", default="v8")
     ap.add_argument("--out", default=None)
@@ -207,8 +232,12 @@ def main():
     ev = hf_hub_download(repo_id=HF_DATASET, repo_type="dataset", filename=eval_path)
     results = json.load(open(ev))
     results = results if isinstance(results, list) else results.get("results") or list(results.values())[0]
-    probs = stratified_wrong_hard(results, n, rng)
-    print(f"[b1] substrate={args.substrate} model={args.model} n={len(probs)} k={args.k}")
+    # FIX C: sample a POOL of hard problems IGNORING stored is_correct (unreliable), then
+    # select headroom from FRESH robust-graded baselines below. Pool size ~max(3n, n+30).
+    n_pool = max(3 * n, n + 30)
+    pool = stratified_hard_pool(results, n_pool, rng)
+    print(f"[b1] substrate={args.substrate} model={args.model} n_target={n} "
+          f"pool={len(pool)} k={args.k} max_new={args.max_new} max_model_len={args.max_model_len}")
 
     all_golds = [r.get("gold_answer") for r in results if r.get("gold_answer") is not None]
     tok = load_tokenizer(args.model)
@@ -217,11 +246,34 @@ def main():
     # tokenizer_path: the v8 checkpoint tokenizer fails under transformers 4.57.6, so
     # safe_tokenizer_path falls back to the E20a tokenizer (identical vocab) when needed.
     vgen = VllmGen(args.model, tokenizer_path=safe_tokenizer_path(args.model),
-                   gpu_memory_utilization=0.45, max_model_len=4096,
+                   gpu_memory_utilization=0.45, max_model_len=args.max_model_len,
                    seed=STRATIFIED_SAMPLE_SEED)
     model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.bfloat16, device_map="cuda")
     model.eval()
     dev = "cuda"
+
+    # FIX C: FRESH 16k baselines for the pool → robust_grade → keep only WRONG (true
+    # headroom). Reuse each kept baseline for entropy/positions (do NOT regenerate).
+    pool_prompt_ids = [build_prompt_ids(tok, r["question"]) for r in pool]
+    pool_bases = vgen.generate(pool_prompt_ids, n=1, max_tokens=args.max_new,
+                               seed=STRATIFIED_SAMPLE_SEED)
+    probs, base_by_pi, dropped_correct = [], {}, 0
+    for r, pids, outs in zip(pool, pool_prompt_ids, pool_bases):
+        if len(probs) >= n:
+            break
+        base = outs[0]
+        full_resp = tok.decode(base, skip_special_tokens=False)
+        if robust_grade(full_resp, r["gold_answer"]):
+            dropped_correct += 1          # already-correct → NOT headroom, drop (logged)
+            continue
+        base_by_pi[len(probs)] = (pids, base)   # reuse this baseline downstream
+        probs.append(r)
+    headroom_drop_log = (f"[b1][headroom] pool={len(pool)} kept_wrong={len(probs)} "
+                         f"dropped_already_correct={dropped_correct} target_n={n}")
+    print(headroom_drop_log)
+    if len(probs) < n:
+        print(f"[b1][headroom] WARNING: only {len(probs)} robust-wrong found in pool "
+              f"of {len(pool)} (< target {n}); proceeding with what we have")
 
     # discovery/confirmation split (multiplicity control for metric AUC, plan 88-91):
     # DISCOVERY half selects the single best metric; CONFIRMATION half gates it.
@@ -231,10 +283,13 @@ def main():
 
     rows = []                       # per (problem,position): metrics + Delta
     headroom = []                   # per problem: best-real vs best-random (held-out)
-    # W4 power statistic: ONE value per problem = does the regenerated BASELINE rollout
-    # contain \boxed (position-independent). Plan line 92 "baseline boxed_rate" = the
-    # baseline rollout, NOT the per-(problem,position) no-inject arm average.
-    box_ok = []                     # per problem: 1 if baseline rollout has \boxed
+    # Power statistic (plan CHANGE 1): the floor effect that kills resolving power is
+    # "no PARSEABLE answer", not "no \boxed". So power is now the fraction of the
+    # GENERATED CONTINUATIONS (what actually gets graded) that are is_gradeable, NOT
+    # the baseline-rollout \boxed presence. We keep the old \boxed string proxy as a
+    # descriptive boxed_str_rate (renamed for clarity) but gate status on gradeable_rate.
+    box_ok = []                     # per problem: 1 if baseline rollout has the \boxed STRING (descriptive only)
+    grade_n, grade_d = 0, 0         # gradeable continuations / total continuations (drives power)
     # Saved per-problem prefixes for the SEQUENTIAL ref/teacher scoring passes
     # (student freed first → pause-ref → teacher). Each entry holds everything the
     # later passes need so we never reload the student.
@@ -242,11 +297,9 @@ def main():
     marker_seg = tok.encode(MARKER_ONLY, add_special_tokens=False)
     for pi, r in enumerate(probs):
         q, gold = r["question"], r["gold_answer"]
-        prompt_ids = build_prompt_ids(tok, q)
-        # per-problem seeded baseline rollout (plan): seed = STRATIFIED_SAMPLE_SEED+pi
-        # replaces the old set_seed + gen_batch. vLLM respects EOS (no full-max_new run).
-        base = vgen.generate([prompt_ids], n=1, max_tokens=args.max_new,
-                             seed=STRATIFIED_SAMPLE_SEED + pi)[0][0]
+        # FIX C: REUSE the fresh 16k baseline already generated for headroom selection
+        # (do NOT regenerate) — same prompt_ids + base used for robust-wrong gating above.
+        prompt_ids, base = base_by_pi[pi]
         # W4 power: did the BASELINE rollout itself reach a boxed answer (one value/problem)
         box_ok.append(1 if r"\boxed" in tok.decode(base, skip_special_tokens=False) else 0)
         cap = first_boxed_token_idx(tok, base)
@@ -274,8 +327,15 @@ def main():
             p = pos[name]
             m = cont_by[(name, "marker")]
             a = cont_by[(name, "noinj")]
-            gm = [grade(tok, prompt_ids, base[:p], c, gold) for c in m]
-            ga = [grade(tok, prompt_ids, base[:p], c, gold) for c in a]
+            gm, ga = [], []
+            for arm_conts, store in ((m, gm), (a, ga)):
+                for c in arm_conts:
+                    full_resp = tok.decode(base[:p] + c, skip_special_tokens=False)
+                    store.append(1 if robust_grade(full_resp, gold) else 0)
+                    # power: did this graded continuation emit something answer-shaped?
+                    grade_d += 1
+                    if is_gradeable(full_resp):
+                        grade_n += 1
             # cross-fit: k1 to select, k2 (rest) to estimate held-out Delta
             d_sel = np.mean(gm[:k1]) - np.mean(ga[:k1])
             d_est = np.mean(gm[k1:]) - np.mean(ga[k1:])
@@ -414,10 +474,15 @@ def main():
     stage2_pass = (confirm_auc is not None and confirm_auc >= 0.65
                    and confirm_auc - pos_idx_auc >= 0.05)
 
-    boxed_rate_mean = (float(np.mean(box_ok)) if box_ok else None)
-    power_ok = (boxed_rate_mean is not None and boxed_rate_mean >= 0.5)
+    # Descriptive only (renamed from boxed_rate): fraction of baseline rollouts that
+    # contain the literal \boxed string. Kept for transparency, NOT used to gate.
+    boxed_str_rate = (float(np.mean(box_ok)) if box_ok else None)
+    # Power-metric fix (plan CHANGE 1): gate on the fraction of GRADED CONTINUATIONS
+    # that are is_gradeable (math_verify can parse an answer) — the real floor effect.
+    gradeable_rate = (grade_n / grade_d) if grade_d else None
+    power_ok = (gradeable_rate is not None and gradeable_rate >= 0.5)
     # W3: power guard ENFORCED in the verdict. If NOT power_ok the run is INCONCLUSIVE
-    # (plan line 92) so a low-boxed-rate run is never misread as the terminal STOP->Phase D
+    # (plan line 92) so a low-power run is never misread as the terminal STOP->Phase D
     # decision. Otherwise PASS iff both stages pass, else FAIL.
     if not power_ok:
         status = "INCONCLUSIVE"
@@ -436,8 +501,11 @@ def main():
         "best_metric_oriented_auc_confirm": (float(confirm_auc) if confirm_auc is not None else None),
         "best_metric_raw_auc_confirm": (conf_raw.get(best_metric) if best_metric is not None else None),
         "position_index_oriented_auc_confirm": float(pos_idx_auc), "stage2_pass": bool(stage2_pass),
-        "boxed_rate_mean": boxed_rate_mean, "power_ok": bool(power_ok),
+        "gradeable_rate": gradeable_rate, "boxed_str_rate": boxed_str_rate, "power_ok": bool(power_ok),
         "metrics_scored": sorted(conf_oriented.keys()),
+        # FIX C: fresh-baseline robust-grade headroom selection (no stored is_correct).
+        "headroom_pool_size": len(pool), "headroom_kept_wrong": len(probs),
+        "headroom_dropped_already_correct": dropped_correct, "headroom_target_n": n,
     }
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     payload = _json_safe({"verdict": verdict, "rows": rows, "headroom": headroom})

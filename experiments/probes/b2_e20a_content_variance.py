@@ -5,7 +5,7 @@ Intent (plan B.2; extends A.6):
   but never tested E20a's OWN self-generated meta. Here: on the E20a base, marker-inject
   at the argmax body-entropy position (B.1 deployable rule, reuse a3.body_argmax_entropy_pos),
   let E20a GENERATE its own meta + continuation (a3.gen_batch), grade the continuation
-  (src.training.rewards._check_correctness). For each generated continuation we extract
+  (common.grading.robust_grade). For each generated continuation we extract
   the self-meta block and score it with the E20a-teacher contrastive logp (A.6 winner):
       contrastive = mean_logp_{T+}(meta) − mean_logp_{T-}(meta), answer-token-masked
   using a6.build_prompt_with_meta / score_meta_logp / find_answer_token_mask. We then test
@@ -53,14 +53,35 @@ from common.probe_utils import mann_whitney_auc  # noqa: F401 (paired_perm_test 
 # two-sample permutation (_label_perm_test) which is the correct analog. See deviation note.
 from probes.a3_inject_causal import (
     raw_entropy, gen_batch, first_boxed_token_idx, body_argmax_entropy_pos,
-    stratified_wrong_hard, MARKER_ONLY, MAX_RESP_TOK,
+    MARKER_ONLY, MAX_RESP_TOK,
 )
 from probes.a6_six_cell_teacher_swap import (
     build_prompt_with_meta, score_meta_logp, find_answer_token_mask,
 )
-from src.training.rewards import _check_correctness
+from common.grading import robust_grade, is_gradeable
+from collections import defaultdict as _defaultdict
 
 NMIN = 15   # H-B2a: min metas per outcome class for "variance exists"
+
+
+def stratified_hard_pool(results, n_pool, rng):
+    """FIX C pool sampler: n_pool hard-benchmark problems IGNORING stored is_correct.
+
+    Sibling of a3.stratified_wrong_hard (written here so a3 stays unmodified) WITHOUT
+    the `not is_correct` filter — the stored is_correct is unreliable (math_verify
+    grading bug + stored/format mismatch: robust_grade gives E20a math500 ~21% vs
+    stored 81%). True headroom = pool problems whose FRESH baseline robust_grade marks
+    WRONG, selected below. Stratifies across the same hard benchmarks as a3."""
+    hard = [r for r in results
+            if r["benchmark"] in ("aime", "aime2024", "math500", "math")]
+    by_b = _defaultdict(list)
+    for r in hard:
+        by_b[r["benchmark"]].append(r)
+    picks, per = [], max(1, n_pool // max(1, len(by_b)))
+    for b, lst in by_b.items():
+        rng.shuffle(lst); picks.extend(lst[:per])
+    rng.shuffle(picks)
+    return picks[:n_pool]
 
 
 def load_tokenizer(path: str):
@@ -137,7 +158,10 @@ def main():
     ap.add_argument("--model", default=TEACHER_MODEL, help="E20a base/teacher path")
     ap.add_argument("--n", type=int, default=60)
     ap.add_argument("--k", type=int, default=8, help="self-meta+continuation samples per problem")
-    ap.add_argument("--max_new", type=int, default=1280)
+    ap.add_argument("--max_new", type=int, default=16384,
+                    help="generation budget (real eval regime: max_tokens=16384)")
+    ap.add_argument("--max_model_len", type=int, default=20480,
+                    help="vLLM context window (real eval regime: 20480)")
     ap.add_argument("--smoke", type=int, default=0)
     ap.add_argument("--tag", default="e20a")
     ap.add_argument("--out", default=None)
@@ -153,8 +177,11 @@ def main():
     results = json.load(open(ev))
     results = results if isinstance(results, list) else results.get("results") or list(results.values())[0]
     all_golds = [r.get("gold_answer") for r in results if r.get("gold_answer") is not None]
-    probs = stratified_wrong_hard(results, n, rng)
-    print(f"[b2] model={args.model} n={len(probs)} k={args.k}")
+    # FIX C: POOL ignoring stored is_correct; headroom selected from fresh baselines below.
+    n_pool = max(3 * n, n + 30)
+    pool = stratified_hard_pool(results, n_pool, rng)
+    print(f"[b2] model={args.model} n_target={n} pool={len(pool)} k={args.k} "
+          f"max_new={args.max_new} max_model_len={args.max_model_len}")
 
     tok = load_tokenizer(args.model)
     dev = "cuda"
@@ -166,13 +193,42 @@ def main():
     # extraction, grading, and contrastive/gate logic below are byte-for-byte the same.
     # vLLM at modest util (0.45 ≈ 36GB) coexists with the HF entropy forward (~16GB).
     vgen = VllmGen(args.model, tokenizer_path=safe_tokenizer_path(args.model),
-                   gpu_memory_utilization=0.45, max_model_len=4096,
+                   gpu_memory_utilization=0.45, max_model_len=args.max_model_len,
                    seed=STRATIFIED_SAMPLE_SEED)
     model = AutoModelForCausalLM.from_pretrained(
         args.model, torch_dtype=torch.bfloat16, device_map="cuda").eval()
     marker_seg = tok.encode(MARKER_ONLY, add_special_tokens=False)
+
+    # FIX C: FRESH 16k baselines for the pool → robust_grade → keep only WRONG (true
+    # headroom). Each kept baseline is REUSED for entropy/argmax below (not regenerated).
+    pool_prompt_ids = [tok.encode(
+        tok.apply_chat_template([{"role": "user", "content": r["question"]}],
+                                 tokenize=False, add_generation_prompt=True),
+        add_special_tokens=False)[:1024] for r in pool]
+    pool_bases = vgen.generate(pool_prompt_ids, n=1, max_tokens=args.max_new,
+                               seed=STRATIFIED_SAMPLE_SEED)
+    probs, base_by_pi, dropped_correct = [], {}, 0
+    for r, pids, outs in zip(pool, pool_prompt_ids, pool_bases):
+        if len(probs) >= n:
+            break
+        base = outs[0][:MAX_RESP_TOK]
+        full_resp = tok.decode(base, skip_special_tokens=False)
+        if robust_grade(full_resp, str(r["gold_answer"]).strip()):
+            dropped_correct += 1          # already-correct → NOT headroom, drop (logged)
+            continue
+        base_by_pi[len(probs)] = (pids, base)
+        probs.append(r)
+    headroom_drop_log = (f"[b2][headroom] pool={len(pool)} kept_wrong={len(probs)} "
+                         f"dropped_already_correct={dropped_correct} target_n={n}")
+    print(headroom_drop_log)
+    if len(probs) < n:
+        print(f"[b2][headroom] WARNING: only {len(probs)} robust-wrong found in pool "
+              f"of {len(pool)} (< target {n}); proceeding with what we have")
     metas = []   # {question, gold, decoy, pre_meta_body, meta_block, correct}
-    box_n, box_d = 0, 0
+    # Power-metric fix (plan CHANGE 1): gate on gradeable continuations (math_verify
+    # can parse an answer), the real floor effect — not the \boxed STRING presence.
+    box_n, box_d = 0, 0          # \boxed string count (descriptive only)
+    grade_n = 0                  # is_gradeable continuations (drives power; denom = box_d)
 
     # Pass A: per-problem seeded baseline (vLLM n=1) + HF entropy → argmax p* →
     # build the marker-inject prefix. Collect prefixes to batch the k-sample inject
@@ -180,13 +236,8 @@ def main():
     inject_prefixes, meta_info = [], []   # meta_info[i] aligns with inject_prefixes[i]
     for pi, r in enumerate(probs):
         q, gold = r["question"], str(r["gold_answer"]).strip()
-        msgs = [{"role": "user", "content": q}]
-        prompt_str = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
-        prompt_ids = tok.encode(prompt_str, add_special_tokens=False)[:1024]
-        # per-problem seeded baseline rollout (seed = STRATIFIED_SAMPLE_SEED+pi),
-        # replaces set_seed + gen_batch; vLLM respects EOS so no full-max_new run.
-        base = vgen.generate([prompt_ids], n=1, max_tokens=args.max_new,
-                             seed=STRATIFIED_SAMPLE_SEED + pi)[0][0][:MAX_RESP_TOK]
+        # FIX C: REUSE the fresh 16k baseline already generated for headroom selection.
+        prompt_ids, base = base_by_pi[pi]
         H = raw_entropy(model, prompt_ids + base, len(prompt_ids), dev)
         cap = first_boxed_token_idx(tok, base)
         p_star, _, _ = body_argmax_entropy_pos(base, H, cap)
@@ -206,10 +257,12 @@ def main():
             # full forced response text: prefix-resp + injected marker + generated tail
             tail_text = tok.decode(marker_seg + c, skip_special_tokens=False)
             full_resp_text = pre_meta_body + tail_text
-            correct = int(_check_correctness(full_resp_text, gold))
+            correct = int(robust_grade(full_resp_text, gold))
             box_d += 1
             if r"\boxed" in full_resp_text:
                 box_n += 1
+            if is_gradeable(full_resp_text):
+                grade_n += 1
             meta_block = extract_first_meta_block(tail_text)
             if meta_block is None:        # model never closed a meta → no scorable self-meta
                 continue
@@ -268,8 +321,13 @@ def main():
         perm_p = float(_label_perm_test(scored, rng_np))
     h_b2b_pass = (auc is not None and auc >= 0.65 and perm_p is not None and perm_p < 0.05)
 
-    box_rate = (box_n / box_d) if box_d else None
-    power_ok = (box_rate is not None and box_rate >= 0.5)
+    # Descriptive only (renamed from box_rate): fraction of continuations with the
+    # literal \boxed string. Kept for transparency, NOT used to gate.
+    boxed_str_rate = (box_n / box_d) if box_d else None
+    # Power-metric fix (plan CHANGE 1): gate on the fraction of continuations that are
+    # is_gradeable (math_verify can parse an answer) — the real floor effect.
+    gradeable_rate = (grade_n / box_d) if box_d else None
+    power_ok = (gradeable_rate is not None and gradeable_rate >= 0.5)
 
     # W5: meta block token-length per outcome class (length confound instrumentation).
     block_len_correct = [m["block_len"] for m in scored if m["correct"] == 1]
@@ -291,7 +349,7 @@ def main():
         verdict = (f"INCONCLUSIVE — variance absent (correct={n_correct}, wrong={n_wrong}, "
                    f"need >= {NMIN} each); A.1 'no-variance' echo on E20a")
     elif not power_ok:
-        verdict = (f"INCONCLUSIVE — power guard failed (boxed_rate={box_rate}); raise --max_new")
+        verdict = (f"INCONCLUSIVE — power guard failed (gradeable_rate={gradeable_rate}); raise --max_new")
     elif h_b2b_pass:
         verdict = f"PASS — contrastive discriminates (AUC={auc:.3f}, p={perm_p:.3f}); keep contrastive β"
     else:
@@ -306,11 +364,16 @@ def main():
         "contrastive_auc": (float(auc) if auc is not None else None),
         "perm_p": (float(perm_p) if perm_p is not None else None),
         "h_b2b_pass": bool(h_b2b_pass),
-        "boxed_rate": (float(box_rate) if box_rate is not None else None), "power_ok": bool(power_ok),
+        "gradeable_rate": (float(gradeable_rate) if gradeable_rate is not None else None),
+        "boxed_str_rate": (float(boxed_str_rate) if boxed_str_rate is not None else None),
+        "power_ok": bool(power_ok),
         "mean_contrastive_correct": (float(np.mean(correct_scores)) if correct_scores else None),
         "mean_contrastive_wrong": (float(np.mean(wrong_scores)) if wrong_scores else None),
         "mean_block_len_correct": mean_block_len_correct,
         "mean_block_len_wrong": mean_block_len_wrong,
+        # FIX C: fresh-baseline robust-grade headroom selection (no stored is_correct).
+        "headroom_pool_size": len(pool), "headroom_kept_wrong": len(probs),
+        "headroom_dropped_already_correct": dropped_correct, "headroom_target_n": n,
         "verdict": verdict, "wall_seconds": time.time() - t0,
     }
     payload = {"summary": summary,

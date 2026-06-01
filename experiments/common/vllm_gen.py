@@ -65,6 +65,13 @@ class VllmGen:
                  gpu_memory_utilization: float = 0.45, max_model_len: int = 4096,
                  seed: int = 0):
         from vllm import LLM
+        import os
+        # Optional env override (smoke/shared-GPU only): VLLM_GMU lets a SMOKE run cap
+        # the vLLM allocation below the 0.45 default when another job already holds GPU
+        # memory. The real run leaves it unset → the 0.45 default stands unchanged.
+        _env_gmu = os.environ.get("VLLM_GMU")
+        if _env_gmu:
+            gpu_memory_utilization = float(_env_gmu)
         self.model_path = model_path
         self.tokenizer_path = tokenizer_path or model_path
         self.llm = LLM(
