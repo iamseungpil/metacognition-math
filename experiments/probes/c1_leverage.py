@@ -175,13 +175,19 @@ def main():
     ap.add_argument("--max_new", type=int, default=16384, help="generation budget (real eval regime)")
     ap.add_argument("--max_model_len", type=int, default=20480, help="vLLM context window")
     ap.add_argument("--smoke", type=int, default=0, help="clamp n->N, k->4, positions->{0.5,0.75}")
+    ap.add_argument("--positions", default=None,
+                    help="comma-sep body-fracs to run (e.g. '0.75' for the line-decision gate only); "
+                         "default = full sweep. 0.75 is always force-included (gates pin to it).")
     ap.add_argument("--tag", default="e20a")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
     n = args.smoke or args.n
     k = args.k if not args.smoke else 4
-    positions = list(SMOKE_POSITIONS if args.smoke else FULL_POSITIONS)
+    if args.positions:
+        positions = [float(x) for x in args.positions.split(",")]
+    else:
+        positions = list(SMOKE_POSITIONS if args.smoke else FULL_POSITIONS)
     # Power/companion gates pin to 0.75; guarantee it is always present (even in smoke).
     if PRIMARY_POS not in positions:
         positions.append(PRIMARY_POS)
