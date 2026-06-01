@@ -433,9 +433,13 @@ def main():
                    "(companion) @0.75; meta CONTENT has causal leverage -> proceed to Step 2 "
                    "(corrected outcome-conditioned teacher vs per-meta causal Δacc)")
     else:
-        status = "FAIL"
-        verdict = ("FAIL — power OK & MDE<=thr but DIRECTION null/negative; meta content has NO "
-                   "leverage at inject time -> KILL inject-time-steering -> Phase D")
+        status = "FAIL_AT_0.75"
+        verdict = ("FAIL_AT_0.75 — power OK & MDE<=thr but DIRECTION null/negative AT POSITION 0.75. "
+                   "This does NOT license a global KILL: 0.75 is a plausible-but-UNVALIDATED position "
+                   "(B.4 gave only a BETWEEN-problem observational corr ~0.39, NOT a causal position "
+                   "sweep). A single-position null is ambiguous (no-content-leverage vs wrong-position) "
+                   "-> the {0.25,0.5,0.9} position sweep is REQUIRED to disambiguate BEFORE any "
+                   "KILL/Phase-D claim. (PASS@0.75 would be self-sufficient; FAIL@0.75 is not.)")
 
     summary = {
         "status": status,

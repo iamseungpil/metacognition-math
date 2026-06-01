@@ -18,7 +18,12 @@ perfect position+content selection, licensing (or killing) the teacher-identifia
 
 - **H-C1a-POSITION (primary, single class).** Content fixed at a3 `GOOD_META` (answer-free
   verify/recompute), inject at **body-frac 0.75** of the pre-`\boxed` span (a3
-  `first_boxed_token_idx` cap; the late-but-pre-boxed region B.4 found least harmful):
+  `first_boxed_token_idx` cap; a plausible late/pre-boxed point. PROVENANCE CORRECTION
+  2026-06-01: B.4 gave only a BETWEEN-problem OBSERVATIONAL corr(inject_frac, effect)≈0.39
+  — one argmax position per problem, NOT a causal position sweep — so 0.75 is UNVALIDATED
+  as a causal "safe" position. Implication: PASS@0.75 is self-sufficient (leverage exists),
+  but FAIL@0.75 is AMBIGUOUS (no-leverage vs wrong-position) and CANNOT license a global
+  KILL without the {0.25,0.5,0.9} position sweep):
   mean paired `Δacc = acc(inject@0.75) − acc(no_inject)` **≥ +0.05**, `paired_perm_test`
   p<0.05, on the headroom stratum. Other 5 classes {0.25, 0.5, 0.9, just-before-boxed,
   right-after-first-candidate-answer} are EXPLORATORY (curve + Holm-adjusted p; no PASS claim).
@@ -69,7 +74,9 @@ perfect position+content selection, licensing (or killing) the teacher-identifia
   identifiability = **B.4 REDONE with a clean Δacc label** (label a meta by its OWN paired
   Δacc-vs-no_inject, not by continuation outcome); if C.1a also PASS, teacher must guide BOTH
   position and content.
-- **DIRECTION FAIL** (power_ok, MDE≤thr) AND C1a null → KILL inject-time-steering → **Phase D**
+- **DIRECTION FAIL @0.75** (power_ok, MDE≤thr) → `FAIL_AT_0.75`, NOT a global KILL. Because 0.75 is
+  unvalidated (see provenance correction), a single-position null is ambiguous → run the {0.25,0.5,0.9}
+  **position sweep FIRST**; only if content shows no leverage at ANY position → KILL → **Phase D**
   (training-time meta-shaping or a different DV).
 - **C1a PASS but DIRECTION FAIL** → position-only teacher; defer content steering.
 - **Oracle (H-C1b-ANSWER) NEVER triggers KILL.** **INCONCLUSIVE never read as a substantive null.**
@@ -115,6 +122,7 @@ is DEFERRED to a later step; Step 1 ships only the answer-free leverage gate.
   - POWER HARD-GATE: realized MDE = 1.96·sd·√(2/n); if realized_MDE > threshold → INCONCLUSIVE
     (never FAIL). gradeable_rate ≥ 0.5 else INCONCLUSIVE.
   - **PASS** (leverage exists) → proceed to Step 2 (corrected outcome-conditioned teacher vs
-    per-meta causal Δacc). **FAIL** (power_ok) → meta content has no leverage → Phase D.
+    per-meta causal Δacc). **FAIL_AT_0.75** (power_ok) → run the {0.25,0.5,0.9} position sweep to
+    disambiguate (no-leverage vs wrong-position) BEFORE any KILL → Phase D.
 - **Run params**: k=24, N target ~200 headroom (pool ~2.5×), max_new=16384, max_model_len=20480.
   vLLM-only, single local A100, phase = {P0 baselines → P1 CPU positions → P2 arms → stats}.
