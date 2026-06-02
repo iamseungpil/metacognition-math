@@ -23,18 +23,27 @@ Procedure (matches the locked scope exactly):
   P0a vLLM : ONE seeded base rollout per pool problem → response token seq `base`;
              a3.first_boxed_token_idx(tok, base) cap; position classes = body-frac
              {0.25,0.5,0.75,0.9} of [0, cap).
-  P0b vLLM : per problem, k no_inject continuations from the PRIMARY prefix
-             [prompt+base[:p0.75]] → robust_grade → keep problems whose no_inject
-             acc ∈ (0,1) EXCLUSIVE (two-sided headroom). Log kept/ceiling/floor.
-  P1  CPU  : per kept problem, per position p, build the 4 arm prefixes (differ ONLY
-             in the injected segment): no_inject=[prompt+base[:p]];
+  P0b vLLM : per problem, PER POSITION p, k no_inject continuations from THAT
+             position's prefix [prompt+base[:p]] → robust_grade → keep, FOR THAT
+             position, problems whose no_inject acc ∈ (0,1) EXCLUSIVE (two-sided
+             headroom). The per-position kept sets DIFFER (a problem the 0.75 prefix
+             already solved can still have headroom at 0.25/0.5 — the earlier prefix
+             has not committed the answer). Log kept/ceiling/floor PER position. These
+             SAME no_inject continuations are REUSED as the no_inject ARM at P2 (same
+             prefix, same seed) — no_inject is NEVER regenerated.
+  P1  CPU  : per (problem, position-in-its-kept-set), build the 3 CONTENT arm prefixes
+             (differ ONLY in the injected segment, no_inject already in hand):
              neutral=[...+MARKER_ONLY]; GOOD_META=[...+marker+GOOD_META_seg];
              BAD_META=[...+marker+BAD_META_seg]. All a3 templates are ANSWER-FREE.
-  P2  vLLM : batch ALL (problem×position×arm) prefixes, k continuations each
+  P2  vLLM : batch the (problem×position×CONTENT_arm) prefixes ONLY for that
+             position's kept problems, k continuations each
              (seed=STRATIFIED_SAMPLE_SEED+pi), robust_grade. acc = fraction correct.
+             no_inject acc comes straight from the P0b headroom gen (no double-gen).
   Stats    : per-problem paired Δacc(arm,p) = acc(arm,p)−acc(no_inject,p); mean over
-             problems gradeable in BOTH arms; paired_perm_test (two-sided). Power
-             HARD-GATE: realized_MDE = 1.96·sd·√(2/n) per contrast; gradeable_rate≥0.5.
+             that position's kept set gradeable in BOTH arms; paired_perm_test
+             (two-sided). Power HARD-GATE: realized_MDE = 1.96·sd·√(2/n) per contrast;
+             gradeable_rate computed PER position; a position is INCONCLUSIVE if its
+             own realized_MDE > thr.
 
 ANSWER-FREE VERIFICATION (locked control, plan lines 13/50-53):
   a3.GOOD_META / a3.BAD_META / a3.MARKER_ONLY are STATIC strings with NO format
@@ -242,62 +251,108 @@ def main():
                      "benchmark": r.get("benchmark")})
     print(f"[c1][P0a] pool={len(pool)} usable_base={len(cand)} ({time.time()-t0:.0f}s)")
 
-    # P0b: per candidate, k no_inject continuations from the PRIMARY prefix [prompt+base[:p0.75]]
-    # -> robust_grade -> two-sided headroom keep (acc in (0,1) exclusive).
-    p075_prefixes = [c["prompt_ids"] + c["base"][:c["pos_idx"][PRIMARY_POS]] for c in cand]
-    p075_outs = vgen.generate(p075_prefixes, n=k, max_tokens=args.max_new,
-                              seed=STRATIFIED_SAMPLE_SEED)
+    # P0b: PER POSITION p, k no_inject continuations from THAT position's prefix
+    # [prompt+base[:p]] -> robust_grade -> per-position two-sided headroom keep (acc in
+    # (0,1) exclusive). The per-position kept sets DIFFER on purpose: a problem the 0.75
+    # prefix already solved (ceiling, dropped @0.75) may still have headroom at 0.25/0.5,
+    # where the earlier prefix has NOT committed the answer — filtering every position by
+    # the 0.75 set would bias the early-position test to a "hard-even-at-0.75" subset and
+    # HIDE the early-position content leverage (C.1-core: content helps where the prefix
+    # has not yet decided). Batch ALL (candidate x position) prefixes in ONE call.
+    #
+    # NO-DOUBLE-GEN: these no_inject continuations are the no_inject ARM at P2. We key them
+    # by (pi, p) into cont_by below and SKIP no_inject in P2. Same prefix [prompt+base[:p]],
+    # same seed (STRATIFIED_SAMPLE_SEED) — bit-identical reuse, not a re-roll.
+    # Power counters (global + PER position). no_inject continuations are graded HERE
+    # (once) for the headroom decision and counted into the power tallies; the P2 grading
+    # loop must NOT re-count no_inject (it only re-reads its acc), so there is no
+    # double-counting of the reused no_inject arm.
     grade_n, grade_d, box_n = 0, 0, 0                      # power counters over ALL continuations
-    kept, drop_ceiling, drop_floor = [], 0, 0
-    for c, conts in zip(cand, p075_outs):
-        pre_body = tok.decode(c["base"][:c["pos_idx"][PRIMARY_POS]], skip_special_tokens=False)
+    grade_n_pos = {p: 0 for p in positions}                # gradeable continuations per position
+    grade_d_pos = {p: 0 for p in positions}
+    ni_slots = [(ci, p) for ci, _ in enumerate(cand) for p in positions]
+    ni_prefixes = [cand[ci]["prompt_ids"] + cand[ci]["base"][:cand[ci]["pos_idx"][p]]
+                   for (ci, p) in ni_slots]
+    ni_outs = vgen.generate(ni_prefixes, n=k, max_tokens=args.max_new,
+                            seed=STRATIFIED_SAMPLE_SEED)
+    ni_conts = {}                                          # (ci, p) -> no_inject continuations (REUSED at P2)
+    ni_acc = {}                                            # (ci, p) -> no_inject acc (headroom decider)
+    for (ci, p), conts in zip(ni_slots, ni_outs):
+        c = cand[ci]
+        pre_body = tok.decode(c["base"][:c["pos_idx"][p]], skip_special_tokens=False)
         nc = 0
         for cont in conts:
             full_resp = pre_body + tok.decode(cont, skip_special_tokens=False)
             nc += int(robust_grade(full_resp, c["gold"]))
-            grade_d += 1
-            grade_n += int(is_gradeable(full_resp))
+            grade_d += 1; grade_d_pos[p] += 1
+            g = int(is_gradeable(full_resp)); grade_n += g; grade_n_pos[p] += g
             box_n += int(r"\boxed" in full_resp)
-        base_acc = (nc / len(conts)) if conts else 0.0
-        if base_acc <= 0.0:
-            drop_floor += 1
-            continue
-        if base_acc >= 1.0:
-            drop_ceiling += 1
-            continue
-        c["headroom_base_acc"] = base_acc                  # 0.75 no_inject acc, for context
-        kept.append(c)
-    # W1: keep the first n QUALIFIERS (pool is pre-shuffled by representative_pool, so this
-    # is a random n of the headroom population — NOT front-biased toward the pool head). The
-    # earlier per-iter `break` discarded already-generated headroom problems and only weakened
-    # power; baselines are already paid for, so filter-then-cap is free.
-    kept = kept[:n]
-    print(f"[c1][P0b headroom] candidates={len(cand)} kept={len(kept)} "
-          f"dropped_ceiling={drop_ceiling} dropped_floor={drop_floor} target_n={n} "
-          f"({time.time()-t0:.0f}s)")
+        ni_conts[(ci, p)] = conts
+        ni_acc[(ci, p)] = (nc / len(conts)) if conts else 0.0
 
-    # ── PHASE 1 (CPU): build per (problem, position, arm) prefixes ────────────────────
-    # Each arm differs from no_inject ONLY in the injected segment (problem difficulty
-    # cancels in the paired Δacc). assign each problem a stable pi index for seeding.
-    prefix_by_slot = {}                                    # (pi, pos, arm) -> prompt+base[:p]+seg
+    # Per-position headroom keep: FOR EACH position p, keep problems with no_inject acc in
+    # (0,1) exclusive. kept_by_pos[p] = list of candidate indices kept AT THAT position.
+    # W1: keep the first n QUALIFIERS at each position (pool pre-shuffled by representative_pool
+    # -> random n of that position's headroom population, NOT front-biased). Baselines already
+    # paid for, so filter-then-cap is free.
+    kept_by_pos, drop_ceiling_pos, drop_floor_pos = {}, {}, {}
+    for p in positions:
+        keep_ci, ceil_c, floor_c = [], 0, 0
+        for ci in range(len(cand)):
+            a = ni_acc[(ci, p)]
+            if a <= 0.0:
+                floor_c += 1
+            elif a >= 1.0:
+                ceil_c += 1
+            else:
+                keep_ci.append(ci)
+        kept_by_pos[p] = keep_ci[:n]
+        drop_ceiling_pos[p], drop_floor_pos[p] = ceil_c, floor_c
+        print(f"[c1][P0b headroom p={p}] candidates={len(cand)} kept={len(kept_by_pos[p])} "
+              f"dropped_ceiling={ceil_c} dropped_floor={floor_c} target_n={n} "
+              f"({time.time()-t0:.0f}s)")
+    # Union of candidates kept at ANY position -> these get a stable pi index and per-(pi,p)
+    # arm slots. A problem only contributes to positions where it is in that position's kept set.
+    kept_ci = sorted({ci for p in positions for ci in kept_by_pos[p]})
+    kept = [cand[ci] for ci in kept_ci]
+    pi_of_ci = {ci: pi for pi, ci in enumerate(kept_ci)}
+    # per-(pi,p) membership flag (is this problem in position p's headroom set?)
+    in_headroom = {(pi_of_ci[ci], p): True
+                   for p in positions for ci in kept_by_pos[p]}
+
+    # ── PHASE 1 (CPU): build per (problem, position, CONTENT_arm) prefixes ────────────
+    # ONLY for that position's headroom-kept problems (do NOT waste gen on ceiling/floor
+    # problems at that position). no_inject is NOT rebuilt here — its continuations are
+    # already in ni_conts (reused below). Each content arm differs from no_inject ONLY in
+    # the injected segment (problem difficulty cancels in the paired Δacc). pi is the stable
+    # union index assigned in P0b (pi_of_ci) and used for seeding.
+    cont_by = {}                                           # (pi, pos, arm) -> list[continuation ids]
+    prefix_by_slot = {}                                    # (pi, pos, CONTENT_arm) -> prompt+base[:p]+seg
     pre_body_text = {}                                     # (pi, pos) -> decoded base[:p] (for grading)
-    for pi, c in enumerate(kept):
+    for ci in kept_ci:
+        c = cand[ci]
+        pi = pi_of_ci[ci]
         c["pi"] = pi
         prompt_ids, base = c["prompt_ids"], c["base"]
         for p in positions:
+            if (pi, p) not in in_headroom:                 # not in THIS position's headroom set
+                continue
             p_idx = c["pos_idx"][p]
             base_prefix = base[:p_idx]
             pre_body_text[(pi, p)] = tok.decode(base_prefix, skip_special_tokens=False)
-            for arm in ARMS:
+            cont_by[(pi, p, "no_inject")] = ni_conts[(ci, p)]   # REUSE P0b gen as no_inject arm
+            for arm in CONTENT_ARMS:
                 seg = arm_segs[arm]
                 prefix_by_slot[(pi, p, arm)] = prompt_ids + base_prefix + seg
-    print(f"[c1][P1 CPU] kept={len(kept)} positions={len(positions)} arms={len(ARMS)} "
-          f"-> {len(prefix_by_slot)} (problem x position x arm) prefixes")
+    print(f"[c1][P1 CPU] kept_union={len(kept)} positions={len(positions)} "
+          f"content_arms={len(CONTENT_ARMS)} -> {len(prefix_by_slot)} "
+          f"(problem x position x content_arm) prefixes (no_inject reused from P0b)")
 
-    # ── PHASE 2 (vLLM, same model): k continuations per (problem, position, arm) ──────
+    # ── PHASE 2 (vLLM, same model): k continuations per (problem, position, CONTENT_arm) ─
     # Seed per problem = STRATIFIED_SAMPLE_SEED + pi (deterministic). One batched call.
     # vLLM SamplingParams takes a single seed; batch per pi so seeds vary by problem.
-    cont_by = {}                                           # (pi, pos, arm) -> list[continuation ids]
+    # cont_by already holds the no_inject arm (reused from P0b in P1); P2 only adds the
+    # CONTENT arms (neutral/GOOD_META/BAD_META) -> no_inject is NEVER regenerated.
     slots_by_pi = {}
     for slot in prefix_by_slot:
         slots_by_pi.setdefault(slot[0], []).append(slot)
@@ -313,12 +368,11 @@ def main():
     vgen.free(); gc.collect(); torch.cuda.empty_cache()    # free the ONLY model at run end
 
     # grade every continuation -> acc[(pi,pos,arm)] = fraction robust_grade-correct.
-    # W2: track gradeable counts PER POSITION so the power gate can use the 0.75
-    # line-decision arms specifically (a bad EXPLORATORY position must not be able to
-    # drag a global gradeable_rate under 0.5 and spuriously force the whole run INCONCLUSIVE).
+    # W2: per-position gradeable counts (grade_*_pos) drive the per-position power gate (a
+    # bad EXPLORATORY position cannot drag a global rate under 0.5 and spuriously flip the
+    # run INCONCLUSIVE). no_inject was already graded + power-counted in P0b — recompute its
+    # acc here for the paired Δacc but DO NOT re-increment the power counters (no double-count).
     acc = {}                                               # (pi, pos, arm) -> acc in [0,1] or None
-    grade_n_pos = {p: 0 for p in positions}                # gradeable continuations per position
-    grade_d_pos = {p: 0 for p in positions}
     for (pi, p, arm), conts in cont_by.items():
         seg = arm_segs[arm]
         seg_text = tok.decode(seg, skip_special_tokens=False) if seg else ""
@@ -327,9 +381,10 @@ def main():
         for c in conts:
             full_resp = pre_body + seg_text + tok.decode(c, skip_special_tokens=False)
             nc += int(robust_grade(full_resp, kept[pi]["gold"]))
-            grade_d += 1; grade_d_pos[p] += 1
-            g = int(is_gradeable(full_resp)); grade_n += g; grade_n_pos[p] += g
-            box_n += int(r"\boxed" in full_resp)
+            if arm != "no_inject":                         # no_inject power already tallied in P0b
+                grade_d += 1; grade_d_pos[p] += 1
+                g = int(is_gradeable(full_resp)); grade_n += g; grade_n_pos[p] += g
+                box_n += int(r"\boxed" in full_resp)
         acc[(pi, p, arm)] = (nc / len(conts)) if conts else None
 
     # ── AGGREGATE: per-position per-arm paired Δacc-vs-no_inject + perm p + MDE ────────
@@ -369,115 +424,208 @@ def main():
             ds.append(a - b)
         return ds
 
-    # per-position curve: each content arm's Δacc-vs-no_inject at every position.
+    # headroom band for a problem at position p (bin by its no_inject acc). The C.1-core
+    # result lives in the LOW band (prefix not yet decided -> content moves the answer), so
+    # we split every position by band in the JSON. ni_acc[(ci,p)] is the per-position
+    # no_inject acc; pi->ci recovered via kept_ci.
+    HEADROOM_BANDS = (("0.0-0.4", 0.0, 0.4), ("0.4-0.7", 0.4, 0.7), ("0.7-1.0", 0.7, 1.0001))
+    def band_of(pi, p):
+        a = ni_acc.get((kept_ci[pi], p))
+        if a is None:
+            return None
+        for name, lo, hi in HEADROOM_BANDS:
+            if lo <= a < hi:
+                return name
+        return None
+
+    def split_diffs(p, arm, predicate):
+        """paired Δacc(arm,p)−Δacc(no_inject,p) over problems at p (gradeable in both arms)
+        that ALSO satisfy predicate(pi) — used for per-band / per-benchmark splits."""
+        ds = []
+        for pi in range(len(kept)):
+            a_arm = acc.get((pi, p, arm)); a_ni = acc.get((pi, p, "no_inject"))
+            if a_arm is None or a_ni is None or not predicate(pi):
+                continue
+            ds.append(a_arm - a_ni)
+        return ds
+
+    def contrast_dict(mean, sd, nd, pval, mde):
+        return {"delta": mean, "sd": sd, "n_paired": nd, "p": pval, "realized_mde": mde}
+
+    # per-position curve: each content arm's Δacc-vs-no_inject at every position, PLUS the
+    # per-band and per-benchmark split for GOOD_META (so the gsm8k/math500 sign inversion
+    # and the headroom-band dependence are in the JSON, not recomputed from rows).
+    benchmarks = sorted({c["benchmark"] for c in kept if c["benchmark"] is not None})
     per_position_curve = {}
     holm_input_p, holm_input_keys = [], []                 # GOOD_META exploratory family for Holm
     for p in positions:
         per_position_curve[f"{p}"] = {}
         for arm in CONTENT_ARMS:
             mean, sd, nd, pval, mde = contrast(paired_diffs(p, arm))
-            per_position_curve[f"{p}"][arm] = {
-                "delta_vs_no_inject": mean, "sd": sd, "n_paired": nd,
-                "p": pval, "realized_mde": mde}
+            per_position_curve[f"{p}"][arm] = contrast_dict(mean, sd, nd, pval, mde)
             if arm == "GOOD_META":
                 holm_input_p.append(pval)
                 holm_input_keys.append(f"{p}")
+        # GOOD_META split by headroom band and by benchmark (paired Δ vs no_inject at p).
+        per_position_curve[f"{p}"]["GOOD_META_by_band"] = {
+            name: contrast_dict(*contrast(split_diffs(p, "GOOD_META",
+                                lambda pi, _n=name: band_of(pi, p) == _n)))
+            for name, _, _ in HEADROOM_BANDS}
+        per_position_curve[f"{p}"]["GOOD_META_by_benchmark"] = {
+            bench: contrast_dict(*contrast(split_diffs(p, "GOOD_META",
+                                 lambda pi, _b=bench: kept[pi]["benchmark"] == _b)))
+            for bench in benchmarks}
     # Holm-adjusted p over the GOOD_META position family (exploratory; no PASS claim).
     holm_adj = holm_adjust(holm_input_p)
     for key, adj in zip(holm_input_keys, holm_adj):
         per_position_curve[key]["GOOD_META"]["p_holm"] = adj
 
-    # power: gradeable_rate. Report the GLOBAL rate (P0b + all P2) for transparency, but
-    # GATE on the PRIMARY-position (0.75) rate — the gates are all at 0.75, so a bad
-    # EXPLORATORY position must not be able to drag the global rate under 0.5 and spuriously
-    # flip the whole run INCONCLUSIVE (W2). Falls back to global if 0.75 wasn't run.
+    # power: gradeable_rate. Report the GLOBAL rate (P0b + all P2) for transparency, and a
+    # PER-POSITION rate (W2) so each position is gated on ITS OWN power — a bad exploratory
+    # position cannot drag a global rate under 0.5 and spuriously flip another position.
     gradeable_rate = (grade_n / grade_d) if grade_d else None
     boxed_str_rate = (box_n / grade_d) if grade_d else None
-    gradeable_rate_primary = ((grade_n_pos[PRIMARY_POS] / grade_d_pos[PRIMARY_POS])
-                              if grade_d_pos.get(PRIMARY_POS) else gradeable_rate)
-    power_ok = (gradeable_rate_primary is not None and gradeable_rate_primary >= 0.5)
+    gradeable_rate_pos = {p: ((grade_n_pos[p] / grade_d_pos[p]) if grade_d_pos.get(p) else None)
+                          for p in positions}
+    power_ok_pos = {p: (gradeable_rate_pos[p] is not None and gradeable_rate_pos[p] >= 0.5)
+                    for p in positions}
+    _grp = gradeable_rate_pos.get(PRIMARY_POS)             # explicit None check: a real 0.0 is valid
+    gradeable_rate_primary = _grp if _grp is not None else gradeable_rate
+    power_ok = bool(power_ok_pos.get(PRIMARY_POS, False))
 
-    # ── H-C1a-POSITION (primary class 0.75): GOOD_META Δacc-vs-no_inject >= +0.05 ─────
-    c1a_mean, c1a_sd, c1a_n, c1a_p, c1a_mde = contrast(paired_diffs(PRIMARY_POS, "GOOD_META"))
-    c1a_mde_ok = (c1a_mde is not None and c1a_mde <= POSITION_THR)
-    c1a_pass = (power_ok and c1a_mde_ok and c1a_mean is not None
-                and c1a_mean >= POSITION_THR and c1a_p is not None and c1a_p < 0.05)
+    # ── PER-POSITION result + PASS test (pre-registered) ───────────────────────────────
+    # For EACH position p compute, over THAT position's headroom-kept set:
+    #   companion Δ(GOOD−no_inject)  (>= COMPANION_THR, p<0.05)
+    #   direction Δ(GOOD−BAD)        (>= DIRECTION_THR, p<0.05)
+    #   c1a       Δ(GOOD−no_inject)  (== companion; reported for H-C1a continuity)
+    # Position p PASSES iff power_ok_pos[p] AND companion>=+0.05 p<0.05 AND direction>=+0.04
+    # p<0.05 AND realized_MDE(both) <= thr. A position is INCONCLUSIVE if its own MDE>thr.
+    per_position_result = {}
+    for p in positions:
+        cm, csd, cn, cp, cmde = contrast(paired_diffs(p, "GOOD_META"))           # companion / c1a
+        dm, dsd, dn, dp, dmde = contrast(paired_pairwise(p, "GOOD_META", "BAD_META"))  # direction
+        comp_mde_ok_p = (cmde is not None and cmde <= COMPANION_THR)
+        dir_mde_ok_p = (dmde is not None and dmde <= DIRECTION_THR)
+        under_mde_p = (not comp_mde_ok_p) or (not dir_mde_ok_p)
+        comp_ok_p = (cm is not None and cm >= COMPANION_THR and cp is not None and cp < 0.05)
+        dir_ok_p = (dm is not None and dm >= DIRECTION_THR and dp is not None and dp < 0.05)
+        pass_p = bool(power_ok_pos[p] and not under_mde_p and comp_ok_p and dir_ok_p)
+        per_position_result[f"{p}"] = {
+            "n_kept": len(kept_by_pos[p]),
+            "ceiling": drop_ceiling_pos[p], "floor": drop_floor_pos[p],
+            "gradeable_rate": gradeable_rate_pos[p], "power_ok": bool(power_ok_pos[p]),
+            "companion_delta_good_minus_noinject": cm, "companion_sd": csd,
+            "companion_n_paired": cn, "companion_p": cp, "companion_realized_mde": cmde,
+            "direction_delta_good_minus_bad": dm, "direction_sd": dsd,
+            "direction_n_paired": dn, "direction_p": dp, "direction_realized_mde": dmde,
+            "c1a_good_delta_vs_no_inject": cm, "c1a_p": cp, "c1a_realized_mde": cmde,
+            "under_mde": bool(under_mde_p), "pass": pass_p,
+        }
 
-    # ── H-C1b-DIRECTION (line-decision @0.75): GOOD−BAD >= +0.04 AND companion >= +0.05 ─
-    dir_mean, dir_sd, dir_n, dir_p, dir_mde = contrast(paired_pairwise(PRIMARY_POS, "GOOD_META", "BAD_META"))
-    comp_mean, comp_sd, comp_n, comp_p, comp_mde = contrast(paired_diffs(PRIMARY_POS, "GOOD_META"))
-    dir_mde_ok = (dir_mde is not None and dir_mde <= DIRECTION_THR)
-    comp_mde_ok = (comp_mde is not None and comp_mde <= COMPANION_THR)
-    dir_effect_ok = (dir_mean is not None and dir_mean >= DIRECTION_THR
-                     and dir_p is not None and dir_p < 0.05)
-    comp_effect_ok = (comp_mean is not None and comp_mean >= COMPANION_THR
-                      and comp_p is not None and comp_p < 0.05)
-    direction_pass = (power_ok and dir_mde_ok and comp_mde_ok and dir_effect_ok and comp_effect_ok)
-    # the DIRECTION contrast is under-powered if EITHER its own or the companion MDE > thr.
-    direction_under_mde = (not dir_mde_ok) or (not comp_mde_ok)
+    # primary-position scalars kept for backward-compatible top-level summary keys.
+    pr = per_position_result[f"{PRIMARY_POS}"]
+    c1a_mean, c1a_p, c1a_mde = pr["c1a_good_delta_vs_no_inject"], pr["c1a_p"], pr["c1a_realized_mde"]
+    # H-C1a is companion-ONLY (GOOD−no_inject @0.75 >= POSITION_THR, p<0.05, power_ok, MDE<=thr).
+    # It must NOT require the GOOD−BAD direction contrast (that is H-C1b, the v["pass"] gate).
+    c1a_pass = (c1a_mean is not None and c1a_mean >= POSITION_THR
+                and c1a_p is not None and c1a_p < 0.05
+                and not pr["under_mde"] and pr["power_ok"])
+    dir_mean, dir_p, dir_mde = (pr["direction_delta_good_minus_bad"],
+                                pr["direction_p"], pr["direction_realized_mde"])
+    comp_mean, comp_p, comp_mde = (pr["companion_delta_good_minus_noinject"],
+                                   pr["companion_p"], pr["companion_realized_mde"])
 
-    # ── STATUS (locked verdict logic) ─────────────────────────────────────────────────
-    # INCONCLUSIVE if NOT power_ok OR DIRECTION under-MDE (KILL physically guarded behind
-    # realized_MDE <= threshold; oracle deferred so DIRECTION is the line gate). PASS if
-    # DIRECTION passes; else FAIL (power_ok, MDE<=thr, but null/negative).
-    if (not power_ok) or direction_under_mde:
-        status = "INCONCLUSIVE"
-        why = (f"primary-position gradeable_rate {gradeable_rate_primary} < 0.5 (truncation/floor)" if not power_ok
-               else f"DIRECTION under-powered (realized_MDE dir={dir_mde}/comp={comp_mde} "
-                    f"> thr {DIRECTION_THR}/{COMPANION_THR})")
-        verdict = (f"INCONCLUSIVE — {why}; leverage gate cannot resolve -> re-run with more "
-                   f"k/N (NEVER read as a substantive null)")
-    elif direction_pass:
+    # ── STATUS (per-position verdict logic, pre-registered) ────────────────────────────
+    # PASS  : ANY tested position passes (power_ok_pos[p] & companion>=+0.05 & direction>=+0.04,
+    #         both p<0.05, both realized_MDE<=thr) -> meta CONTENT has causal leverage at >=1
+    #         position -> proceed to Step 2.
+    # INCONCLUSIVE: no position passes AND the best (most-powered / non-under-MDE) position is
+    #         still under-MDE or under-power -> the gate cannot resolve (NEVER a substantive null).
+    # FAIL_position: only if BOTH 0.25 AND 0.5 are powered (MDE<=thr) AND each has companion<+0.02
+    #         & p>=0.05 -> the early (undecided-prefix) positions, where content SHOULD help,
+    #         show no leverage -> licenses a KILL/Phase-D claim. A single-position null at 0.75
+    #         alone is ambiguous (no-content-leverage vs wrong-position) and does NOT FAIL.
+    passing_positions = [float(kk) for kk, v in per_position_result.items() if v["pass"]]
+    EARLY = (0.25, 0.5)
+    early_present = [p for p in EARLY if p in positions]
+    def _early_null(p):
+        v = per_position_result[f"{p}"]
+        return (v["power_ok"] and not v["under_mde"]
+                and v["companion_delta_good_minus_noinject"] is not None
+                and v["companion_delta_good_minus_noinject"] < 0.02
+                and v["companion_p"] is not None and v["companion_p"] >= 0.05)
+    fail_positions = bool(early_present) and all(p in positions for p in EARLY) \
+        and all(_early_null(p) for p in EARLY)
+
+    if passing_positions:
         status = "PASS"
-        verdict = ("PASS — answer-free GOOD_META beats BAD_META (DIRECTION) AND beats no_inject "
-                   "(companion) @0.75; meta CONTENT has causal leverage -> proceed to Step 2 "
-                   "(corrected outcome-conditioned teacher vs per-meta causal Δacc)")
+        verdict = (f"PASS — answer-free GOOD_META beats BAD_META (direction) AND beats no_inject "
+                   f"(companion) at position(s) {sorted(passing_positions)} of the per-position "
+                   f"headroom sweep; meta CONTENT has causal leverage -> proceed to Step 2 "
+                   f"(corrected outcome-conditioned teacher vs per-meta causal Δacc)")
+    elif fail_positions:
+        status = "FAIL_position"
+        verdict = ("FAIL_position — both early positions {0.25,0.5} are powered (MDE<=thr) yet "
+                   "companion Δ(GOOD−no_inject)<+0.02 & p>=0.05. Content has NO leverage even where "
+                   "the prefix has NOT yet decided (the band C.1-core predicted content should help) "
+                   "-> licenses KILL / Phase-D.")
     else:
-        status = "FAIL_AT_0.75"
-        verdict = ("FAIL_AT_0.75 — power OK & MDE<=thr but DIRECTION null/negative AT POSITION 0.75. "
-                   "This does NOT license a global KILL: 0.75 is a plausible-but-UNVALIDATED position "
-                   "(B.4 gave only a BETWEEN-problem observational corr ~0.39, NOT a causal position "
-                   "sweep). A single-position null is ambiguous (no-content-leverage vs wrong-position) "
-                   "-> the {0.25,0.5,0.9} position sweep is REQUIRED to disambiguate BEFORE any "
-                   "KILL/Phase-D claim. (PASS@0.75 would be self-sufficient; FAIL@0.75 is not.)")
+        status = "INCONCLUSIVE"
+        # best position = the one with the smallest companion realized_MDE among tested.
+        mdes = [(per_position_result[f"{p}"]["companion_realized_mde"], p) for p in positions
+                if per_position_result[f"{p}"]["companion_realized_mde"] is not None]
+        best = min(mdes)[1] if mdes else None
+        verdict = (f"INCONCLUSIVE — no position passes and the best-powered position "
+                   f"(p={best}, companion_MDE={per_position_result[f'{best}']['companion_realized_mde'] if best is not None else None}) "
+                   f"is still under-MDE or under-power, or the early positions are not both powered "
+                   f"for a FAIL; leverage gate cannot resolve -> re-run with more k/N "
+                   f"(NEVER read as a substantive null)")
 
+    # primary-position (0.75) scalars for the per-position result block, surfaced top-level.
     summary = {
         "status": status,
         "model": args.model,
-        "n_target": n, "n_pool": len(pool), "n_usable_base": len(cand), "n_kept": len(kept),
-        "dropped_ceiling": drop_ceiling, "dropped_floor": drop_floor,
+        "n_target": n, "n_pool": len(pool), "n_usable_base": len(cand),
+        "n_kept_union": len(kept), "n_kept_by_position": {f"{p}": len(kept_by_pos[p]) for p in positions},
+        "dropped_ceiling_by_position": {f"{p}": drop_ceiling_pos[p] for p in positions},
+        "dropped_floor_by_position": {f"{p}": drop_floor_pos[p] for p in positions},
         "k": k, "positions": [float(p) for p in positions], "primary_position": PRIMARY_POS,
         "max_new": args.max_new, "max_model_len": args.max_model_len,
         "arms": list(ARMS), "answer_free_verified": True,
-        # H-C1b-DIRECTION (line-decision)
-        "direction_delta_good_minus_bad": dir_mean, "direction_sd": dir_sd,
-        "direction_n_paired": dir_n, "direction_p": dir_p, "direction_realized_mde": dir_mde,
-        "direction_thr": DIRECTION_THR,
-        "companion_delta_good_minus_noinject": comp_mean, "companion_p": comp_p,
-        "companion_realized_mde": comp_mde, "companion_thr": COMPANION_THR,
-        "direction_pass": bool(direction_pass), "direction_under_mde": bool(direction_under_mde),
-        # H-C1a-POSITION (primary class)
-        "c1a_good_delta_vs_no_inject@0.75": c1a_mean, "c1a_sd": c1a_sd, "c1a_n_paired": c1a_n,
-        "c1a_p": c1a_p, "c1a_realized_mde": c1a_mde, "c1a_thr": POSITION_THR,
-        "c1a_pass": bool(c1a_pass),
-        # power HARD-GATE
-        "gradeable_rate": gradeable_rate, "gradeable_rate_primary": gradeable_rate_primary,
-        "boxed_str_rate": boxed_str_rate,
-        "power_ok": bool(power_ok), "n_graded_continuations": grade_d,
+        "passing_positions": sorted(passing_positions),
+        # primary-position (0.75) summary (full per-position detail in per_position_result)
+        "direction_delta_good_minus_bad@0.75": dir_mean, "direction_p@0.75": dir_p,
+        "direction_realized_mde@0.75": dir_mde, "direction_thr": DIRECTION_THR,
+        "companion_delta_good_minus_noinject@0.75": comp_mean, "companion_p@0.75": comp_p,
+        "companion_realized_mde@0.75": comp_mde, "companion_thr": COMPANION_THR,
+        "c1a_good_delta_vs_no_inject@0.75": c1a_mean, "c1a_p@0.75": c1a_p,
+        "c1a_realized_mde@0.75": c1a_mde, "c1a_thr": POSITION_THR, "c1a_pass": bool(c1a_pass),
+        # power HARD-GATE (per-position)
+        "gradeable_rate": gradeable_rate, "gradeable_rate_by_position":
+            {f"{p}": gradeable_rate_pos[p] for p in positions},
+        "gradeable_rate_primary": gradeable_rate_primary, "boxed_str_rate": boxed_str_rate,
+        "power_ok@0.75": bool(power_ok),
+        "power_ok_by_position": {f"{p}": bool(power_ok_pos[p]) for p in positions},
+        "n_graded_continuations": grade_d,
         "verdict": verdict, "wall_seconds": time.time() - t0,
     }
 
-    # per-(problem,position,arm) rows for audit (acc + headroom base acc).
+    # per-(problem,position,arm) rows for audit. acc only present where the problem is in
+    # THAT position's headroom set; ni_acc gives the per-position no_inject acc + band.
     rows = []
     for pi, c in enumerate(kept):
+        ci = kept_ci[pi]
         rows.append({
             "pi": pi, "benchmark": c["benchmark"], "cap": c["cap"],
-            "headroom_base_acc@0.75": c.get("headroom_base_acc"),
             "pos_idx": {f"{p}": c["pos_idx"][p] for p in positions},
+            "no_inject_acc_by_position": {f"{p}": ni_acc.get((ci, p)) for p in positions},
+            "headroom_band_by_position": {f"{p}": band_of(pi, p) for p in positions},
+            "in_headroom_by_position": {f"{p}": ((pi, p) in in_headroom) for p in positions},
             "acc": {f"{p}": {arm: acc.get((pi, p, arm)) for arm in ARMS} for p in positions},
         })
 
     payload = _json_safe({"summary": summary, "rows": rows,
+                          "per_position_result": per_position_result,
                           "per_position_curve": per_position_curve})
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     json.dump(payload, open(out, "w"), indent=2)
