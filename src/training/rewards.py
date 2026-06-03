@@ -27,18 +27,29 @@ except ImportError:
 def _check_correctness(pred_text, gold):
     """Verify math answer using sympy (Open-R1 style).
 
+    IMPORTANT: math_verify silently fails in Ray RewardLoopWorker threads —
+    its grader uses signal.SIGALRM which only works in the main thread, raising
+    ValueError("signal only works in main thread") that gets swallowed inside
+    the math_verify wrapper, and verify() returns False even for correct
+    answers. Therefore: always also run the string-match fallback when
+    math_verify says False, so correct answers don't get misclassified in
+    async-rollout worker threads (verl_sdc RewardLoopManager). In the main
+    thread verify() works, so the fallback is a no-op rescue (never flips a
+    genuinely-wrong answer to correct — it only matches exact/numeric equals).
+
     Handles: fractions, decimals, LaTeX expressions, boxed answers, etc.
-    Fallback to string matching if math_verify not available.
     """
     if HAS_MATH_VERIFY:
         try:
             gold_parsed = parse(str(gold), extraction_mode="first_match")
             pred_parsed = parse(str(pred_text), extraction_mode="first_match")
-            return bool(verify(gold_parsed, pred_parsed))
+            if bool(verify(gold_parsed, pred_parsed)):
+                return True
+            # fall through to string-match (math_verify may have silent-failed)
         except Exception:
             pass  # fallback to string matching
 
-    # Fallback: string matching
+    # Always run string-match fallback (covers worker-thread silent fail)
     p = _extract_answer_fallback(pred_text)
     g = _extract_answer_fallback(str(gold))
     if not p or not g:
