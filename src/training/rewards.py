@@ -2284,3 +2284,238 @@ def no_boxed_penalty_reward(completions, ground_truth=None, penalty: float = -0.
         text = _get_text(c)
         rewards.append(compute_no_boxed_penalty(text, penalty=penalty))
     return rewards
+
+
+# ====================================================================
+# ADDITIVE RESTORE (do not modify above): missing names required by
+# src.training.verl_sdc import. Definitions copied byte-identical from
+# release snapshot metacognition_v7_2_8 (asset 419914748) rewards.py.
+# ====================================================================
+
+
+def meta_penalty_reward(completions, ground_truth=None, **kwargs):
+    """Asymmetric penalty for missing wrapped meta — no positive bonus.
+
+    Unlike `meta_structure_reward` (symmetric ±0.10) which contributed to a
+    +0.9 reward floor on the SFT base (saturated meta heads taught the policy
+    to emit clean wrong answers), this is penalty-only:
+
+      0.0    wrapped meta block exists  (no positive bias, no reward floor)
+     -0.20   no wrapped meta block      (penalty to prevent meta collapse)
+
+    Rationale:
+      • Meta region is where the SDC contrastive teacher applies
+        (lambda_meta ≠ 0). If the policy stops emitting meta tags, the
+        contrastive signal can't apply and the meta scaffold breaks down.
+      • Penalty-only avoids the saturation floor problem from prior 5-head
+        config: ~95% of SFT-base rollouts emit meta, so penalty fires only
+        on the 5% drop-outs and provides asymmetric correction without
+        reward inflation.
+    """
+    rewards = []
+    for c in completions:
+        text = _get_text(c)
+        rewards.append(0.0 if _has_structured_meta(text) else -0.20)
+    return rewards
+# ===================================================================
+# R16: Degeneration penalty (codex-locked V4 spec, 2026-05-12)
+#
+# Goal: stabilize hard-regime generation so R17 (control-field RLSD +
+# follow-through reward) can be measured cleanly. Targets three failure
+# modes observed in ROD-PT R14 AIME traces:
+#   α — pure LaTeX bracket/backslash collapse tail
+#   β — answer-line repetition after \boxed
+#   γ — single-character / unicode-fragment repetition tail
+#
+# Spec finalized via 4-round codex review + data-grounded validation
+# on 1030 R14 traces (iamseungpil/metacot:eval/rod_pt_R10_step_100_16k/).
+# Acceptance: C1 97.2%, C2 97.7%, C3 11.2%, C4 100% (PASS-PASS-borderline-PASS).
+#
+# Compose with R17: add r_followthrough on top with its own GDPO key;
+# raise λ_repeat inside R17 to penalize "ritual meta" without follow-through.
+# r_degen returns single scalar via dedicated GDPO key `degeneration`, weight 0.3.
+# ===================================================================
+
+_DEGEN_LAMBDA_REPEAT = 0.45
+_DEGEN_LAMBDA_LATEX = 0.35
+_DEGEN_LAMBDA_TAIL = 0.15
+_DEGEN_LAMBDA_LEN = 0.20
+_DEGEN_LAMBDA_REPEAT_HIGH = 0.15
+_DEGEN_THETA_TAIL = 0.18
+_DEGEN_THETA_REPEAT_HIGH = 0.60
+_DEGEN_LMAX_TOKENS = 12500
+_DEGEN_CAP = 0.70
+_DEGEN_SHORT_PENALTY = 0.25
+_DEGEN_SHORT_LEN = 200
+_DEGEN_MIN_LEN_FOR_DEGEN = 400
+_DEGEN_MATH_RATIO_LOW = 0.24
+_DEGEN_MATH_RATIO_HIGH = 0.55
+_DEGEN_MATH_TOKEN_TERMS = (
+    "\\frac", "\\binom", "\\sqrt", "\\cdot", "\\times", "\\div",
+    "\\sum", "\\prod", "\\int", "\\mod", "\\equiv", "\\pmod",
+)
+_DEGEN_ALLOWED_MATH_UNICODE = set("∀∃∈∉⊂⊃∑∏∫√≤≥≠≈±÷×αβγδεθλμπσφψω°")
+_DEGEN_BOXED_RE = re.compile(r"\\boxed\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}")
+
+
+def _degen_find_tail_window(text, total_chars):
+    """Returns (tail_text, tail_start, tail_len). Empty tail signals clean ending."""
+    m = _DEGEN_BOXED_RE.search(text)
+    if m:
+        tail_start = m.end()
+        post = text[tail_start:]
+        clean = post.strip().strip("$.,;:!?")
+        if len(clean) < 80:
+            return "", tail_start, 0
+        cap = min(4096, max(512, len(post)))
+        return post[:cap], tail_start, min(cap, len(post))
+    if total_chars >= 800:
+        return text[-800:], total_chars - 800, 800
+    return text, 0, total_chars
+
+
+def _degen_math_ratio(tail):
+    if not tail:
+        return 0.0
+    n = len(tail)
+    digits = sum(1 for c in tail if c.isdigit())
+    ops = sum(tail.count(o) for o in ("=", "+", "-", "*", "^", "_"))
+    math_terms = sum(tail.count(t) for t in _DEGEN_MATH_TOKEN_TERMS) * 4
+    return (digits + ops + math_terms) / n
+
+
+def _degen_math_gate(mr):
+    if mr <= _DEGEN_MATH_RATIO_LOW:
+        return 1.0
+    if mr >= _DEGEN_MATH_RATIO_HIGH:
+        return 0.0
+    return 1.0 - (mr - _DEGEN_MATH_RATIO_LOW) / (_DEGEN_MATH_RATIO_HIGH - _DEGEN_MATH_RATIO_LOW)
+
+
+def _degen_garbage_components(tail):
+    n = max(len(tail), 1)
+    backslash = tail.count("\\") / n
+    brackets = sum(tail.count(c) for c in "[](){}") / n
+    tokens = tail.split()
+    short_tokens = [t for t in tokens if 1 <= len(t) <= 3]
+    repeat_short = (len(short_tokens) - len(set(short_tokens))) / max(len(tokens), 1) if tokens else 0.0
+    non_alnum = sum(1 for c in tail if not c.isalnum() and not c.isspace()) / n
+    weird_unicode = 1.0 if any(
+        ord(c) > 127 and not c.isspace() and c not in _DEGEN_ALLOWED_MATH_UNICODE for c in tail
+    ) else 0.0
+    return backslash, brackets, repeat_short, non_alnum, weird_unicode
+
+
+def _degen_bigram_repeat(tail):
+    tokens = tail.split()
+    if len(tokens) < 2:
+        return 0.0
+    bigrams = [(tokens[i], tokens[i + 1]) for i in range(len(tokens) - 1)]
+    return (len(bigrams) - len(set(bigrams))) / len(bigrams)
+
+
+def compute_degeneration_penalty(completion_text, completion_len_tokens, answer_extracted):
+    """R16 degeneration penalty (single-sample, returns negative scalar in [-CAP, 0]).
+
+    Returns
+    -------
+    (penalty: float, breakdown: dict)
+        penalty <= 0; breakdown carries diagnostic fields for logging.
+
+    Spec: post-boxed tail with length-scaled cap, math-gated structural sum,
+    bigram repeat (continuous + binary bump), length penalty, short-truncation
+    guard. See module docstring above for full provenance.
+    """
+    br = {
+        "tail_garbage_score": 0.0, "math_ratio": 0.0, "math_gate": 1.0,
+        "bigram_repeat": 0.0, "p_repeat": 0.0, "p_latex": 0.0,
+        "p_tail": 0.0, "p_len": 0.0, "p_repeat_high": 0.0, "p_short": 0.0,
+        "triggered": False,
+    }
+
+    # Short-truncation: model gave up before reaching an answer. Empty string
+    # also counts as "no answer" (the fallback extractor returns '' rather
+    # than None when no \boxed match is found).
+    if completion_len_tokens < _DEGEN_SHORT_LEN and not answer_extracted:
+        br["p_short"] = _DEGEN_SHORT_PENALTY
+        br["triggered"] = True
+        return -_DEGEN_SHORT_PENALTY, br
+
+    if completion_len_tokens < _DEGEN_MIN_LEN_FOR_DEGEN:
+        return 0.0, br
+
+    total_chars = len(completion_text)
+    tail, _, tlen = _degen_find_tail_window(completion_text, total_chars)
+
+    p_len = _DEGEN_LAMBDA_LEN if completion_len_tokens > _DEGEN_LMAX_TOKENS else 0.0
+    br["p_len"] = p_len
+
+    if tlen == 0:
+        total = min(p_len, _DEGEN_CAP)
+        br["triggered"] = total > 0
+        return -total, br
+
+    mr = _degen_math_ratio(tail)
+    gate = _degen_math_gate(mr)
+    br["math_ratio"] = mr
+    br["math_gate"] = gate
+
+    bs, brc, rs, na, weird = _degen_garbage_components(tail)
+    tgs = gate * (bs + brc + rs + na) + weird
+    br["tail_garbage_score"] = tgs
+
+    bgr = _degen_bigram_repeat(tail)
+    br["bigram_repeat"] = bgr
+
+    p_repeat = _DEGEN_LAMBDA_REPEAT * bgr
+    p_latex = _DEGEN_LAMBDA_LATEX * tgs
+    p_tail = _DEGEN_LAMBDA_TAIL if tgs > _DEGEN_THETA_TAIL else 0.0
+    p_repeat_high = _DEGEN_LAMBDA_REPEAT_HIGH if bgr >= _DEGEN_THETA_REPEAT_HIGH else 0.0
+
+    br["p_repeat"] = p_repeat
+    br["p_latex"] = p_latex
+    br["p_tail"] = p_tail
+    br["p_repeat_high"] = p_repeat_high
+
+    total = min(p_repeat + p_latex + p_tail + p_repeat_high + p_len, _DEGEN_CAP)
+    br["triggered"] = total > 0
+    return -total, br
+
+
+def degeneration_penalty_reward(completions, ground_truth=None, **kwargs):
+    """Batched reward wrapper for compute_degeneration_penalty.
+
+    Matches the (completions, ground_truth=None, **kwargs) signature used by
+    the rest of this module. ``kwargs`` may contain ``completion_lengths`` and
+    ``answer_extracted`` lists; if absent, falls back to safe defaults
+    (length = len(text.split()), answer = None).
+    """
+    completion_lengths = kwargs.get("completion_lengths")
+    answers_extracted = kwargs.get("answer_extracted") or kwargs.get("answers_extracted")
+    rewards = []
+    for idx, c in enumerate(completions):
+        text = _get_text(c)
+        if completion_lengths and idx < len(completion_lengths):
+            length = int(completion_lengths[idx])
+        else:
+            length = len(text.split())
+        ans = None
+        if answers_extracted and idx < len(answers_extracted):
+            ans = answers_extracted[idx]
+        penalty, _ = compute_degeneration_penalty(text, length, ans)
+        rewards.append(penalty)
+    return rewards
+
+
+def meta_penalty_adaptive_reward(completions, ground_truth=None, **kwargs):
+    """Adaptive variant of meta_penalty_reward.
+
+    ADDITIVE RESTORE: this name is imported by src.training.verl_sdc but is
+    absent from both the committed module and the release snapshot. It is
+    defined here as a penalty-only meta head matching meta_penalty_reward's
+    contract (0.0 when a structured meta block is present, -0.20 otherwise),
+    so the import resolves and the reward semantics stay consistent with the
+    non-adaptive head. Signature mirrors the rest of this module:
+    (completions, ground_truth=None, **kwargs) -> list[float].
+    """
+    return meta_penalty_reward(completions, ground_truth=ground_truth, **kwargs)
