@@ -67,17 +67,22 @@ if [ "${ENV_OK}" -eq 0 ]; then
     # availability changes.
     PACK_URL="https://huggingface.co/datasets/${CODE_REPO}/resolve/main/env_snapshots/simplerl_v3.tar.gz"
     PACK_PATH="${SCRATCH}/simplerl_v3.tar.gz"
-    SIMPLERL_DIR="/opt/conda/envs/simplerl"
+    # E.4 fix: /opt/conda is READ-ONLY on Basic-tier nodes (mkdir Permission
+    # denied), and the amlt YAML runs ${SIMPLERL_DIR}/bin/python where the YAML
+    # sets SIMPLERL_DIR=/scratch/conda_envs/simplerl. Respect that env var and
+    # default to the WRITABLE /scratch path so the conda-pack env lands where the
+    # run command looks for it.
+    SIMPLERL_DIR="${SIMPLERL_DIR:-/scratch/conda_envs/simplerl}"
 
     if [ ! -d "${SIMPLERL_DIR}/bin" ] && [ -n "${HF_TOKEN}" ]; then
-        echo "[bootstrap] fast-path: pulling conda-pack env from HF"
+        echo "[bootstrap] fast-path: pulling conda-pack env from HF -> ${SIMPLERL_DIR}"
         if curl -sfL -H "Authorization: Bearer ${HF_TOKEN}" -o "${PACK_PATH}" "${PACK_URL}"; then
             echo "[bootstrap] extracting env (~5GB → ${SIMPLERL_DIR})"
             mkdir -p "${SIMPLERL_DIR}"
             tar -xzf "${PACK_PATH}" -C "${SIMPLERL_DIR}"
             "${SIMPLERL_DIR}/bin/conda-unpack" 2>/dev/null || true
             rm -f "${PACK_PATH}"
-            conda activate simplerl
+            conda activate "${SIMPLERL_DIR}" 2>/dev/null || true
             echo "[bootstrap] fast-path complete"
         else
             echo "[bootstrap] HF env tarball miss — falling back to pip install"
