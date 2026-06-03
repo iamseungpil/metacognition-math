@@ -20,6 +20,70 @@ import time
 from pathlib import Path
 
 
+def _step_num(name: str) -> int:
+    """Extract the integer step from a ``global_step_N`` folder name.
+
+    Returns -1 for names that don't end in an int so they sort oldest and are
+    never confused with the just-uploaded latest.
+    """
+    try:
+        return int(name.rsplit("_", 1)[-1])
+    except (ValueError, IndexError):
+        return -1
+
+
+def _prune_old_verl_ckpts(api, repo_id: str, config_name: str, keep: int, latest_name: str) -> None:
+    """Delete older ``checkpoints/<config>/global_step_*`` folders on the HF repo.
+
+    Keeps only the most-recent ``keep`` checkpoints by step number. The
+    just-uploaded ``latest_name`` is always preserved. Best-effort: any failure
+    is logged and swallowed so the daemon loop never aborts on a prune error.
+    Only veRL ``global_step_*`` dirs are considered; TRL ``checkpoint-*`` dirs
+    are left untouched.
+    """
+    if keep <= 0:
+        return
+    base = f"checkpoints/{config_name}"
+    try:
+        entries = api.list_repo_tree(
+            repo_id=repo_id,
+            repo_type="model",
+            path_in_repo=base,
+            recursive=False,
+        )
+    except Exception as exc:  # repo/path may not exist yet
+        print(f"[push] prune list skip: {exc}")
+        return
+
+    # Collect immediate subfolder names that look like global_step_*.
+    step_names: list[str] = []
+    for ent in entries:
+        path = getattr(ent, "path", None)
+        if path is None:
+            continue
+        name = path.rsplit("/", 1)[-1]
+        is_dir = getattr(ent, "tree_id", None) is not None or type(ent).__name__ == "RepoFolder"
+        if name.startswith("global_step_") and is_dir:
+            step_names.append(name)
+
+    # Sort newest-first by step number; keep the top `keep`, delete the rest.
+    step_names.sort(key=_step_num, reverse=True)
+    to_delete = step_names[keep:]
+    for name in to_delete:
+        if name == latest_name:
+            continue  # never delete the just-uploaded latest
+        try:
+            api.delete_folder(
+                path_in_repo=f"{base}/{name}",
+                repo_id=repo_id,
+                repo_type="model",
+                commit_message=f"prune {name} (keep latest {keep})",
+            )
+            print(f"[push] pruned old ckpt {name}")
+        except Exception as exc:
+            print(f"[push] prune {name} skip: {exc}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt_dir", required=True)
@@ -28,6 +92,14 @@ def main() -> None:
     ap.add_argument("--interval", type=int, default=600)
     ap.add_argument("--config_name", default="sdc")
     ap.add_argument("--include_wandb", action="store_true", default=True)
+    ap.add_argument(
+        "--keep",
+        type=int,
+        default=1,
+        help="Keep only the most-recent N veRL global_step_* checkpoints on the "
+        "HF repo; older ones are deleted after a successful upload (default 1). "
+        "Set <=0 to disable pruning (keep all). TRL checkpoint-N/ dirs are never pruned.",
+    )
     args = ap.parse_args()
 
     from huggingface_hub import HfApi, create_repo
@@ -86,6 +158,18 @@ def main() -> None:
                     done.add(step_dir.name)
                     marker.write_text(json.dumps(sorted(done)))
                     print(f"[push] done {step_dir.name}")
+
+                    # Keep-only-latest pruning: only for veRL global_step_* dirs
+                    # (TRL checkpoint-N/ resume layout must retain all). Never
+                    # touches the just-uploaded latest. Best-effort.
+                    if step_dir.name.startswith("global_step_"):
+                        _prune_old_verl_ckpts(
+                            api,
+                            repo_id=args.repo_id,
+                            config_name=args.config_name,
+                            keep=args.keep,
+                            latest_name=step_dir.name,
+                        )
 
             # Push wandb run files (best-effort, overwrites)
             if args.include_wandb and wandb_run_dir.exists():

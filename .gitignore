@@ -42,3 +42,5 @@ checkpoints_recovered/
 .env
 .env.*
 !.env.example
+.amltconfig
+*.zip

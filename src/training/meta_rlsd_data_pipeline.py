@@ -41,6 +41,197 @@ _META_BLOCK_RE = re.compile(
 )
 
 
+# ─── Token-ID-based meta scan (offset-bug-free path) ───────────────────────
+# Background: HF fast tokenizers emit (0, 0) char offsets for added-vocab
+# special tokens like <|meta|>. The downstream offset→token mapping in
+# _build_meta_mask therefore can't identify which tokens are inside meta blocks
+# for ~14% of samples even when the tokens were correctly emitted (observed in
+# the 0502 R2 run). Scanning completion_ids directly bypasses the entire
+# decode→re-encode→offset→char-range pipeline.
+
+_META_IDS_CACHE: dict[int, tuple[frozenset, frozenset]] = {}
+
+
+def _meta_token_ids_safe(tokenizer) -> tuple[frozenset, frozenset]:
+    """Return (start_ids, end_ids) for ``<|meta|>``/``<|/meta|>`` if added-vocab.
+
+    Returns empty frozensets if the tokenizer doesn't have these as single
+    tokens (e.g., legacy tokenizers that split them into bytes). Caller can
+    then fall back to the offset-based path.
+
+    Cached per tokenizer instance — id() of tokenizer is the cache key — so
+    we don't re-resolve every batch.
+    """
+    cache_key = id(tokenizer)
+    if cache_key in _META_IDS_CACHE:
+        return _META_IDS_CACHE[cache_key]
+
+    start_ids: set[int] = set()
+    end_ids: set[int] = set()
+    try:
+        unk_id = getattr(tokenizer, "unk_token_id", None)
+        for tok, target in [(META_START, start_ids), (META_END, end_ids)]:
+            tid = tokenizer.convert_tokens_to_ids(tok)
+            if tid is None:
+                continue
+            tid_int = int(tid)
+            if unk_id is not None and tid_int == int(unk_id):
+                continue  # tokenizer doesn't actually have this as single token
+            target.add(tid_int)
+    except Exception:
+        pass
+
+    result = (frozenset(start_ids), frozenset(end_ids))
+    _META_IDS_CACHE[cache_key] = result
+    return result
+
+
+def _meta_mask_from_token_ids(
+    completion_ids: Sequence[int],
+    start_ids: frozenset,
+    end_ids: frozenset,
+    started_inside_meta: bool = False,
+):
+    """Build meta_mask by direct token-ID scan. Returns None if not applicable.
+
+    None is returned when neither start nor end ids appear in completion_ids —
+    caller should fall through to offset-based scan in that case (legacy
+    tokenizer split the tags into bytes).
+
+    Mask covers BOTH the tags themselves and the inner reasoning, matching
+    `_build_meta_mask`'s convention. If a sequence has multiple meta blocks,
+    all of them are marked. An open block (start without matching end before
+    EOS) is closed at end-of-completion.
+
+    Args:
+        started_inside_meta: when True, the rollout was forced to begin INSIDE
+            a meta block (e.g., RLSD_FORCED_META mode prepends ``<|meta|>`` to
+            prompt_ids so the response starts already in meta). The first
+            response token is therefore inside meta even if no start tag appears
+            in completion_ids. With this flag set the scan returns a mask even
+            when only an end tag is present (forced-meta block closes via
+            ``<|/meta|>``), and treats tokens before the first end tag as meta.
+    """
+    if torch is None:
+        raise RuntimeError("torch is required for _meta_mask_from_token_ids")
+    if not start_ids and not end_ids:
+        return None
+
+    expected_len = len(completion_ids)
+    if expected_len == 0:
+        return torch.zeros(0, dtype=torch.float32)
+
+    mask = [0.0] * expected_len
+    # Forced-meta rollouts begin inside meta — initialize state accordingly so
+    # tokens before the first <|/meta|> are still marked.
+    in_meta = bool(started_inside_meta)
+    # If we begin inside meta, treat that as "found" so we don't fall through
+    # to the offset path even if completion_ids contains only the closing tag.
+    found_any = bool(started_inside_meta)
+    for i, tid in enumerate(completion_ids):
+        tid_int = int(tid)
+        if start_ids and tid_int in start_ids:
+            in_meta = True
+            mask[i] = 1.0
+            found_any = True
+            continue
+        if end_ids and tid_int in end_ids:
+            mask[i] = 1.0
+            in_meta = False
+            found_any = True
+            continue
+        if in_meta:
+            mask[i] = 1.0
+
+    if not found_any:
+        return None  # Tags not present as single tokens — let offset path try.
+    return torch.tensor(mask, dtype=torch.float32)
+
+
+def _postmeta_mask_from_token_ids(
+    tokenizer,
+    completion_ids: Sequence[int],
+    completion_text: str,
+    end_ids: frozenset,
+    meta_mask,
+):
+    """Build postmeta mask anchored on the LAST <|/meta|> token position.
+
+    Matches the existing `_build_postmeta_mask` semantics:
+      - region starts AFTER the last <|/meta|> token
+      - region ends at the closing '}' of the first subsequent \\boxed{...}
+        (inclusive) — or end-of-completion if no boxed found (fallback)
+      - tokens covered by meta_mask are removed (disjointness invariant)
+
+    Returns ``(mask_tensor, fallback_triggered)``, or ``None`` if no <|/meta|>
+    tokens are present in completion_ids (caller falls back to offset path).
+    """
+    if torch is None:
+        raise RuntimeError("torch is required for _postmeta_mask_from_token_ids")
+    if not end_ids:
+        return None
+
+    expected_len = len(completion_ids)
+    last_end_idx = -1
+    for i, tid in enumerate(completion_ids):
+        if int(tid) in end_ids:
+            last_end_idx = i
+    if last_end_idx < 0:
+        return None  # No <|/meta|> as single token — try offset path.
+
+    mask = [0.0] * expected_len
+    fallback_triggered = False
+
+    # Decode tokens AFTER the closing tag and search for boxed in that text.
+    # Re-tokenizing only the suffix is much smaller than the whole completion
+    # and avoids the (0,0)-on-meta-tag pollution that breaks the full-text
+    # offset map.
+    suffix_ids = list(completion_ids)[last_end_idx + 1:]
+    if not suffix_ids:
+        # Nothing after </meta> — empty postmeta region.
+        return torch.tensor(mask, dtype=torch.float32), False
+
+    try:
+        suffix_text = tokenizer.decode(suffix_ids, skip_special_tokens=False)
+    except Exception:
+        suffix_text = ""
+
+    boxed_match = _BOXED_CAPTURE_RE.search(suffix_text, 0) if suffix_text else None
+    if boxed_match is not None:
+        boxed_end_char = boxed_match.end()
+        prefix_text = suffix_text[:boxed_end_char]
+        # Re-encode the prefix to find how many tokens it consumes; tail tokens
+        # past that point are NOT in the postmeta region.
+        try:
+            prefix_ids = tokenizer(prefix_text, add_special_tokens=False)["input_ids"]
+            n_post_tokens = min(len(prefix_ids), len(suffix_ids))
+        except Exception:
+            fallback_triggered = True
+            n_post_tokens = len(suffix_ids)
+    else:
+        fallback_triggered = True
+        n_post_tokens = len(suffix_ids)
+
+    end_tok_idx = last_end_idx + 1 + n_post_tokens  # exclusive
+    end_tok_idx = min(end_tok_idx, expected_len)
+    for i in range(last_end_idx + 1, end_tok_idx):
+        mask[i] = 1.0
+
+    mask_tensor = torch.tensor(mask, dtype=torch.float32)
+
+    # Enforce disjointness with meta_mask (plan §3.1 invariant) — same as
+    # the offset-based code path.
+    if meta_mask is not None:
+        mm = meta_mask
+        if hasattr(mm, "to"):
+            mm = mm.to(mask_tensor.device).float()
+        mm = mm[: mask_tensor.size(0)]
+        mask_tensor = mask_tensor * (1.0 - mm)
+        mask_tensor = torch.clamp(mask_tensor, 0.0, 1.0)
+
+    return mask_tensor, fallback_triggered
+
+
 def _assistant_offsets(tokenizer, text: str) -> tuple[list[int], list[tuple[int, int]]]:
     """Return token ids + char offsets without depending on self-distill package init.
 
@@ -229,6 +420,7 @@ def _build_meta_mask(
     tokenizer,
     completion_ids: Sequence[int],
     completion_text: str,
+    started_inside_meta: bool = False,
 ):
     """Return a 1-D ``torch.Tensor`` of 0/1 marking tokens inside <|meta|> blocks.
 
@@ -239,6 +431,10 @@ def _build_meta_mask(
             Used only for its length — the offset map is derived from
             ``completion_text`` so it must be the decoded version of these ids.
         completion_text: ``tokenizer.decode(completion_ids, skip_special_tokens=False)``.
+        started_inside_meta: when True, the rollout was forced to begin already
+            inside a meta block (RLSD_FORCED_META — see verl_sdc.py). Forwarded
+            verbatim to ``_meta_mask_from_token_ids`` so tokens before the first
+            ``<|/meta|>`` are correctly counted as meta.
 
     Returns:
         ``torch.Tensor`` shape ``[T]`` dtype ``float32`` with values in {0., 1.}.
@@ -260,6 +456,21 @@ def _build_meta_mask(
     expected_len = len(completion_ids)
     if expected_len == 0:
         return torch.zeros(0, dtype=torch.float32)
+
+    # Prefer direct token-ID scan when tokenizer treats <|meta|> / <|/meta|>
+    # as single added-vocab tokens (the v8 SFT base does). Avoids the
+    # decode→re-encode→offset-mapping round trip that fails ~14% of the time
+    # because fast tokenizers emit (0, 0) char offsets for added-vocab tokens.
+    start_ids, end_ids = _meta_token_ids_safe(tokenizer)
+    if start_ids:
+        mask_from_ids = _meta_mask_from_token_ids(
+            completion_ids, start_ids, end_ids, started_inside_meta=started_inside_meta
+        )
+        if mask_from_ids is not None:
+            return mask_from_ids
+        # No meta tags found in the actual emitted tokens — but completion_text
+        # may still contain them as broken-up bytes (legacy tokenizer path).
+        # Continue to offset-based logic which handles that case via regex.
 
     _, offsets = _assistant_offsets(tokenizer, completion_text)
 
@@ -300,9 +511,11 @@ def _build_meta_mask(
     return mask_tensor
 
 
-def build_meta_mask(tokenizer, completion_ids, completion_text):  # public alias
+def build_meta_mask(tokenizer, completion_ids, completion_text, started_inside_meta: bool = False):  # public alias
     """Public wrapper — see :func:`_build_meta_mask`."""
-    return _build_meta_mask(tokenizer, completion_ids, completion_text)
+    return _build_meta_mask(
+        tokenizer, completion_ids, completion_text, started_inside_meta=started_inside_meta
+    )
 
 
 # ─── SDC post-meta mask — plan_SDC_v2 §3.2 ─────────────────────────────────
@@ -355,6 +568,20 @@ def _build_postmeta_mask(
     expected_len = len(completion_ids)
     if expected_len == 0:
         return torch.zeros(0, dtype=torch.float32), False
+
+    # Token-ID anchored postmeta scan: when the tokenizer has <|/meta|> as a
+    # single added-vocab token (v8 SFT base), use its token index directly
+    # instead of mapping char positions through fast-tokenizer offsets (which
+    # silently fail for added-vocab specials with (0,0) offsets).
+    _, end_ids = _meta_token_ids_safe(tokenizer)
+    if end_ids:
+        result = _postmeta_mask_from_token_ids(
+            tokenizer, completion_ids, completion_text, end_ids, meta_mask
+        )
+        if result is not None:
+            return result
+        # Falls through if no end-tag tokens appear in completion_ids — the
+        # offset-based path below handles legacy byte-split tokenizations.
 
     _, offsets = _assistant_offsets(tokenizer, completion_text)
 
