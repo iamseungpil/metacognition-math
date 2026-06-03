@@ -41,9 +41,15 @@ def _check_correctness(pred_text, gold):
     """
     if HAS_MATH_VERIFY:
         try:
-            gold_parsed = parse(str(gold), extraction_mode="first_match")
-            pred_parsed = parse(str(pred_text), extraction_mode="first_match")
-            if bool(verify(gold_parsed, pred_parsed)):
+            # parsing_timeout=None / timeout_seconds=None disable math_verify's
+            # signal.SIGALRM timeout, which only works in the main thread and
+            # raises in Ray RewardLoopWorker threads (math_verify swallows it →
+            # silent False + log flood). With the signal disabled the real
+            # symbolic comparison (1/2==0.5, radicals, fractions) runs correctly
+            # in worker threads. Main-thread behaviour is preserved.
+            gold_parsed = parse(str(gold), extraction_mode="first_match", parsing_timeout=None)
+            pred_parsed = parse(str(pred_text), extraction_mode="first_match", parsing_timeout=None)
+            if bool(verify(gold_parsed, pred_parsed, timeout_seconds=None)):
                 return True
             # fall through to string-match (math_verify may have silent-failed)
         except Exception:

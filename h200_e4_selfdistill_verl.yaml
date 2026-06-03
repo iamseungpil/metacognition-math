@@ -1,10 +1,4 @@
-description: E.4 Self-Distill RL with Contrastive Teacher — 4-arm A/B (plan_ctsd_E4_selfdistill_rl).
-  4 jobs (e4_baseline / e4_gold_decoy / e4_gold_stance / e4_gold_conf_down), identical
-  data/steps/eval, differing ONLY in the verl_sdc teacher (mode + sdc_contrast_variant + β).
-  All 4 overlay in one wandb dashboard via WANDB_RUN_GROUP=e4_self_distill.
-  BEFORE SUBMIT: (1) run scripts/package_e4_release.sh to push a GH release + get the
-  asset id; (2) paste it into every job's CODE_TAR_REVISION below. Tokens
-  (HF/GH/WANDB) come ONLY from the ${...} env — never hardcode.
+description: "E.4 Self-Distill RL Contrastive Teacher 4-arm A/B (baseline/gold_decoy/gold_stance/gold_conf_down) H200 Basic - plan_ctsd_E4_selfdistill_rl. 4 jobs differ only in verl_sdc teacher; overlay in one wandb group e4_self_distill; tokens via env only."
 
 target:
   service: sing
@@ -42,7 +36,7 @@ jobs:
         _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
         HF_TOKEN: ${HF_TOKEN}
         GH_TOKEN: ${GH_TOKEN}
-        CODE_TAR_REVISION: SET_AFTER_REPACKAGE
+        CODE_TAR_REVISION: "437594546"
         HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
         WANDB_API_KEY: ${WANDB_API_KEY}
         WANDB_KEY: ${WANDB_API_KEY}
@@ -101,6 +95,8 @@ jobs:
             algorithm.sdc_mode=VANILLA_GRPO \
             algorithm.sdc_enabled=false \
             algorithm.sdc_beta_contrast=0 \
+            algorithm.gdpo_reward_keys=[correctness] \
+            algorithm.gdpo_reward_weights=[1.0] \
             trainer.experiment_name=verl_e4_baseline \
             trainer.default_local_dir=/scratch/checkpoints/verl_e4_baseline \
             trainer.resume_mode=auto \
@@ -123,7 +119,7 @@ jobs:
         _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
         HF_TOKEN: ${HF_TOKEN}
         GH_TOKEN: ${GH_TOKEN}
-        CODE_TAR_REVISION: SET_AFTER_REPACKAGE
+        CODE_TAR_REVISION: "437594546"
         HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
         WANDB_API_KEY: ${WANDB_API_KEY}
         WANDB_KEY: ${WANDB_API_KEY}
@@ -201,7 +197,7 @@ jobs:
         _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
         HF_TOKEN: ${HF_TOKEN}
         GH_TOKEN: ${GH_TOKEN}
-        CODE_TAR_REVISION: SET_AFTER_REPACKAGE
+        CODE_TAR_REVISION: "437594546"
         HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
         WANDB_API_KEY: ${WANDB_API_KEY}
         WANDB_KEY: ${WANDB_API_KEY}
@@ -279,7 +275,7 @@ jobs:
         _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
         HF_TOKEN: ${HF_TOKEN}
         GH_TOKEN: ${GH_TOKEN}
-        CODE_TAR_REVISION: SET_AFTER_REPACKAGE
+        CODE_TAR_REVISION: "437594546"
         HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
         WANDB_API_KEY: ${WANDB_API_KEY}
         WANDB_KEY: ${WANDB_API_KEY}
