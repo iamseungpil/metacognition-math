@@ -1,0 +1,27 @@
+# E.4 baseline arm — plain RLVR / GRPO CONTROL (non-negotiable).
+# plan_ctsd_E4_selfdistill_rl_2026_06_03.
+#
+# This is the OPTIONAL standalone form of the baseline arm. The amlt launcher
+# PREFERS expressing the baseline as CLI overrides on verl_e4_selfdistill_h200_4x4k
+# (mode=VANILLA_GRPO algorithm.sdc_mode=VANILLA_GRPO algorithm.sdc_enabled=false
+# algorithm.sdc_beta_contrast=0); this file is provided so a launcher that prefers
+# a config-per-arm can `--config-name=verl_e4_baseline_h200_4x4k` instead.
+#
+# mode=VANILLA_GRPO is in _VANILLA_MODES → _attach_teacher_signals returns early
+# (no teacher forward) AND compute_sdc_gdpo_advantage early-returns → plain GRPO,
+# the cleanest control (teacher OFF entirely, β irrelevant).
+
+defaults:
+  - verl_e4_selfdistill_h200_4x4k
+  - _self_
+
+mode: VANILLA_GRPO
+
+algorithm:
+  sdc_mode: VANILLA_GRPO
+  sdc_enabled: false
+  sdc_beta_contrast: 0.0
+
+trainer:
+  experiment_name: verl_e4_baseline_h200_4x4k
+  default_local_dir: /scratch/checkpoints/verl_e4_baseline_h200_4x4k

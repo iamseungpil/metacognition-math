@@ -466,6 +466,26 @@ _TEACHER_PROMPT_SETS = (
     "content_teacher_v1",
 )
 
+# ── E.4 self-distill contrast variants (plan_ctsd_E4_selfdistill_rl) ───────────
+# `sdc_contrast_variant ∈ {decoy, stance, conf}` selects how the T+ / T- teacher
+# CONTEXTS differ in ROD_MQ_CONTRAST. The contrast q = T+ − T- (over the meta
+# region) and the β-mix are UNCHANGED (verl_sdc_utils:445-452) — only the two
+# context strings differ:
+#   decoy (DEFAULT, byte-identical to ship): T+ = prompt+gold, T- = prompt+decoy.
+#   stance: BOTH sides gold (answer cancels in T+−T−); T+ gets the CAUTIOUS
+#           suffix, T- the CONFIDENT suffix → isolates the verify-process axis.
+#   conf:   BOTH sides gold; T+ "confidence: 0.15", T- "confidence: 0.95" →
+#           isolates the verbalized-confidence axis (anti-overconfidence / ECE).
+# CAUTIOUS_INSTR / CONFIDENT_INSTR are copied BYTE-IDENTICALLY from
+# experiments/probes/e2_contrastive_steering.py:111-113 so the RL teacher uses
+# the EXACT E.3-validated steering strings (context consistency). The join
+# patterns below (" (answer is {g}) " gold marker + leading-space suffix join)
+# also mirror e2's CONTRASTS registry (e2:135-139) verbatim.
+_CONTRAST_VARIANTS = ("decoy", "stance", "conf")
+CAUTIOUS_INSTR = ("Reason cautiously: question whether your current approach is right, verify each "
+                  "step with an alternative method, avoid premature confidence.")
+CONFIDENT_INSTR = ("Reason decisively: commit to your current approach with confidence and proceed.")
+
 
 def _resolve_teacher_prompt_prefix(prompt_set: str) -> str:
     """Return the teacher-instruction PREFIX text for a prompt set.
@@ -740,6 +760,7 @@ def _build_teacher_logprob_batch(
     v0_prefixes: dict[str, str] | None = None,
     forced_meta: bool = False,
     teacher_role: str = "content",
+    contrast_side: str = "pos",
 ):
     # Arm-2 ONLY: a TRAINING-ONLY gold-conditioned teacher-prompt prefix
     # resolved from the PER-TEACHER parameterized slots (deliverable #2,
@@ -803,7 +824,27 @@ def _build_teacher_logprob_batch(
             # AND for the r10v2_baseline set, so this is the IDENTITY
             # `f"{prompt_text}{answer_text}"` everywhere except a strengthened
             # Arm-2 run — preserving byte-parity for all existing modes.
-            teacher_prompt = f"{_tp_prefix}{prompt_text}{answer_text}"
+            #
+            # E.4 self-distill contrast variants: `decoy` is the UNCHANGED
+            # f-string below (answer slot = gold for T+, decoy for T-, filled by
+            # the caller). It is taken whenever `sdc_contrast_variant` is unset
+            # or "decoy" → byte-identical for every pre-existing mode/config/test.
+            # `stance`/`conf` append a side-specific suffix to a gold-on-BOTH-
+            # sides answer marker (answer cancels in T+−T−).
+            _cv = _ACTIVE_SDC_CONTEXT.get("sdc_contrast_variant", "decoy")
+            if _cv == "decoy":
+                teacher_prompt = f"{_tp_prefix}{prompt_text}{answer_text}"
+            elif _cv == "stance":
+                # e2_contrastive_steering CONTRASTS["gold_stance"] join pattern.
+                _sfx = (" " + CAUTIOUS_INSTR) if contrast_side == "pos" else (" " + CONFIDENT_INSTR)
+                teacher_prompt = f"{_tp_prefix}{prompt_text} (answer is {answer_text}){_sfx}"
+            elif _cv == "conf":
+                _sfx = "\nconfidence: 0.15\n" if contrast_side == "pos" else "\nconfidence: 0.95\n"
+                teacher_prompt = f"{_tp_prefix}{prompt_text} (answer is {answer_text}){_sfx}"
+            else:
+                raise ValueError(
+                    f"sdc_contrast_variant={_cv!r} not in {_CONTRAST_VARIANTS}"
+                )
         ids = tokenizer(teacher_prompt, add_special_tokens=False)["input_ids"]
         prompt_ids_list.append(torch.tensor(ids, dtype=torch.long))
         seq_lens.append(len(ids))
@@ -907,6 +948,13 @@ def _attach_teacher_signals(data: DataProto):
             trainer, tokenizer, unique_prompts, global_steps
         )
 
+    # E.4 self-distill: for stance/conf the T- side conditions on GOLD (not the
+    # decoy) so the answer CANCELS in T+−T− and the contrast isolates the
+    # stance/confidence axis only. For `decoy` (default) neg_answers IS the
+    # _rule_based_decoy output and contrast_side is ignored by the decoy branch
+    # → the decoy teacher forward stays BYTE-IDENTICAL.
+    contrast_variant = _ACTIVE_SDC_CONTEXT.get("sdc_contrast_variant", "decoy")
+
     pos_batch = _build_teacher_logprob_batch(
         tokenizer=tokenizer,
         prompt_texts=prompt_texts,
@@ -916,6 +964,7 @@ def _attach_teacher_signals(data: DataProto):
         v0_prefixes=v0_prefixes,
         forced_meta=forced_meta_flag,
         teacher_role="content",  # gold-conditioned T+ (content teacher)
+        contrast_side="pos",
     )
     # verl 0.7.1 engine_workers infer_batch reads micro_batch["temperature"];
     # the trainer's main fit() loop sets it on the rollout output, but our
@@ -1040,15 +1089,19 @@ def _attach_teacher_signals(data: DataProto):
         # every mode that DOES run this (contrastive / forced-meta), because
         # the per-teacher prefix guard only fires for ROD_PT2_E21CTRL, which
         # by construction cannot enter this branch -> _tp_prefix stays "".
+        neg_answers = (
+            gold_answers if contrast_variant in ("stance", "conf") else decoy_answers
+        )
         neg_batch = _build_teacher_logprob_batch(
             tokenizer=tokenizer,
             prompt_texts=prompt_texts,
-            answer_texts=decoy_answers,
+            answer_texts=neg_answers,
             responses=response_tensor,
             response_mask=response_mask,
             v0_prefixes=v0_prefixes,
             forced_meta=forced_meta_flag,
             teacher_role="content",
+            contrast_side="neg",
         )
         neg_batch.meta_info["temperature"] = rollout_temp
         neg_out = trainer._compute_ref_log_prob(neg_batch)
@@ -1986,6 +2039,17 @@ def main_task(config):
     _ACTIVE_SDC_CONTEXT["sdc_reward_temperature"] = float(
         alg_cfg.get("sdc_reward_temperature", 1.0)
     )
+    # E.4 self-distill contrast variant (plan_ctsd_E4_selfdistill_rl). Same
+    # deterministic transport as sdc_gfn_objective: the teacher-attach hook runs
+    # in a worker that does not receive the hydra config, so read it via
+    # _ACTIVE_SDC_CONTEXT. Default "decoy" → byte-identical for every existing
+    # mode/config/test (none of which set this key).
+    _cv = str(alg_cfg.get("sdc_contrast_variant", "decoy"))
+    if _cv not in _CONTRAST_VARIANTS:
+        raise ValueError(
+            f"algorithm.sdc_contrast_variant={_cv!r} not in {_CONTRAST_VARIANTS}"
+        )
+    _ACTIVE_SDC_CONTEXT["sdc_contrast_variant"] = _cv
     # Arm-2 parameterized teacher-prompt slot (deliverable #2). Resolved ONCE
     # at launch and stashed via the SAME deterministic transport. Default
     # "r10v2_baseline" -> "" prefix => byte-identical teacher conditioning for

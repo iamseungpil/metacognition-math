@@ -261,3 +261,192 @@ def test_reward_loop_score_handles_unrecognized_verl_data_source():
     assert "score" in out
     assert out["correctness"] == 1.0
     assert out["data_source"] == "hendrycks_math/algebra"
+
+
+# ── E.4 self-distill contrast-variant tests (plan_ctsd_E4_selfdistill_rl) ──────
+# These validate the T+/T- CONTEXT strings produced by the variant knob, on the
+# fake char tokenizer + fake batch — CPU only, zero RL/Ray/GPU. The β-mix math in
+# verl_sdc_utils is unchanged and is NOT re-tested here.
+
+
+def _decode_teacher_prompt(batch, idx=0):
+    """Decode the (un-left-padded) teacher prompt the builder placed in `prompts`."""
+    p = batch.batch["prompts"][idx]
+    attn = batch.batch["attention_mask"][idx][: p.numel()]
+    valid = p[attn.bool()].tolist()
+    return "".join(chr(int(i)) for i in valid)
+
+
+def _build_one(answer, contrast_side="pos"):
+    tok = DummyCharTokenizer()
+    return verl_sdc_mod._build_teacher_logprob_batch(
+        tokenizer=tok,
+        prompt_texts=["Q: 1+1=? A: "],
+        answer_texts=[answer],
+        responses=torch.zeros(1, 1, dtype=torch.long),
+        response_mask=torch.zeros(1, 1, dtype=torch.long),
+        contrast_side=contrast_side,
+    )
+
+
+def _with_variant(variant):
+    """Context manager-ish helper: set the module variant, restore after."""
+    old = dict(verl_sdc_mod._ACTIVE_SDC_CONTEXT)
+    if variant is None:
+        verl_sdc_mod._ACTIVE_SDC_CONTEXT.pop("sdc_contrast_variant", None)
+    else:
+        verl_sdc_mod._ACTIVE_SDC_CONTEXT["sdc_contrast_variant"] = variant
+    return old
+
+
+def test_contrast_variant_default_decoy_byte_identical():
+    # Unset variant → the .get(..., "decoy") default → the UNCHANGED f-string.
+    old = _with_variant(None)
+    try:
+        pos = _decode_teacher_prompt(_build_one("2", contrast_side="pos"))
+        neg = _decode_teacher_prompt(_build_one("3", contrast_side="neg"))  # caller's decoy
+        assert pos.endswith("2") and pos == "Q: 1+1=? A: 2"
+        assert neg.endswith("3") and neg == "Q: 1+1=? A: 3"
+        for s in (pos, neg):
+            assert verl_sdc_mod.CAUTIOUS_INSTR not in s
+            assert verl_sdc_mod.CONFIDENT_INSTR not in s
+            assert "confidence:" not in s
+            assert "(answer is" not in s
+    finally:
+        verl_sdc_mod._ACTIVE_SDC_CONTEXT.clear()
+        verl_sdc_mod._ACTIVE_SDC_CONTEXT.update(old)
+
+
+def test_contrast_variant_stance_contexts():
+    old = _with_variant("stance")
+    try:
+        # BOTH sides gold → answer cancels in T+ − T-.
+        pos = _decode_teacher_prompt(_build_one("2", contrast_side="pos"))
+        neg = _decode_teacher_prompt(_build_one("2", contrast_side="neg"))
+        assert "(answer is 2)" in pos and "(answer is 2)" in neg
+        assert pos.endswith(verl_sdc_mod.CAUTIOUS_INSTR)
+        assert neg.endswith(verl_sdc_mod.CONFIDENT_INSTR)
+        assert verl_sdc_mod.CONFIDENT_INSTR not in pos
+        assert verl_sdc_mod.CAUTIOUS_INSTR not in neg
+        # no decoy on either side (gold appears on both, "3" never injected).
+        assert "3" not in pos and "3" not in neg
+    finally:
+        verl_sdc_mod._ACTIVE_SDC_CONTEXT.clear()
+        verl_sdc_mod._ACTIVE_SDC_CONTEXT.update(old)
+
+
+def test_contrast_variant_conf_contexts():
+    old = _with_variant("conf")
+    try:
+        pos = _decode_teacher_prompt(_build_one("2", contrast_side="pos"))
+        neg = _decode_teacher_prompt(_build_one("2", contrast_side="neg"))
+        assert pos.endswith("\nconfidence: 0.15\n")
+        assert neg.endswith("\nconfidence: 0.95\n")
+        assert "(answer is 2)" in pos and "(answer is 2)" in neg
+    finally:
+        verl_sdc_mod._ACTIVE_SDC_CONTEXT.clear()
+        verl_sdc_mod._ACTIVE_SDC_CONTEXT.update(old)
+
+
+def test_contrast_variant_strings_verbatim_from_e3():
+    # Guard against drift: the RL teacher's stance strings MUST equal the
+    # E.3 probe's CAUTIOUS/CONFIDENT instructions byte-for-byte.
+    import importlib.util
+
+    e3_path = os.path.join(
+        ROOT, "experiments", "probes", "e2_contrastive_steering.py"
+    )
+    # The module imports heavy deps at top level (torch/transformers/vllm); to
+    # avoid that, parse the two literal assignments out of the source directly.
+    src = open(e3_path, "r", encoding="utf-8").read()
+    ns: dict = {}
+    import re as _re
+
+    for name in ("CAUTIOUS_INSTR", "CONFIDENT_INSTR"):
+        m = _re.search(rf"^{name} = (\(.*?\))\n", src, _re.S | _re.M)
+        assert m is not None, f"could not locate {name} literal in e2 source"
+        ns[name] = eval(m.group(1))  # noqa: S307 - test-only eval of a string literal
+    assert verl_sdc_mod.CAUTIOUS_INSTR == ns["CAUTIOUS_INSTR"]
+    assert verl_sdc_mod.CONFIDENT_INSTR == ns["CONFIDENT_INSTR"]
+
+
+def _attach_capture(variant):
+    """Run _attach_teacher_signals under a variant with a FakeTrainer that records
+    the decoded teacher `prompts` for every ref-log-prob call. Returns the list of
+    decoded prompt strings (call 1 = T+, call 2 = T-)."""
+    tok = DummyCharTokenizer()
+    captured: list = []
+
+    class FakeTrainer:
+        def __init__(self):
+            self.calls = 0
+
+        def _compute_ref_log_prob(self, batch):
+            self.calls += 1
+            p = batch.batch["prompts"][0]
+            attn = batch.batch["attention_mask"][0][: p.numel()]
+            captured.append("".join(chr(int(i)) for i in p[attn.bool()].tolist()))
+            bsz = batch.batch["response_mask"].shape[0]
+            resp_len = batch.batch["response_mask"].shape[1] - int(
+                (batch.batch["attention_mask"][0] - batch.batch["response_mask"][0]).sum().item()
+            )
+            vals = torch.full((bsz, resp_len), -0.5 * self.calls, dtype=torch.float32)
+            return DataProto.from_dict(tensors={"ref_log_prob": vals})
+
+    old_ctx = dict(verl_sdc_mod._ACTIVE_SDC_CONTEXT)
+    verl_sdc_mod._ACTIVE_SDC_CONTEXT["trainer"] = FakeTrainer()
+    verl_sdc_mod._ACTIVE_SDC_CONTEXT["tokenizer"] = tok
+    verl_sdc_mod._ACTIVE_SDC_CONTEXT["mode"] = "ROD_MQ_CONTRAST"
+    verl_sdc_mod._ACTIVE_SDC_CONTEXT["sdc_contrast_variant"] = variant
+    try:
+        data = DataProto.from_dict(
+            tensors={
+                "prompts": torch.tensor([[ord("Q"), ord("?")]], dtype=torch.long),
+                "responses": torch.tensor([[ord("a"), ord("b"), ord("c"), ord("d")]], dtype=torch.long),
+                "attention_mask": torch.tensor([[1, 1, 1, 1, 1, 1]], dtype=torch.long),
+                "response_mask": torch.tensor([[1, 1, 1, 1]], dtype=torch.long),
+            },
+            non_tensors={
+                "reward_model": np.asarray([{"ground_truth": "42"}], dtype=object),
+            },
+        )
+        verl_sdc_mod._attach_teacher_signals(data)
+    finally:
+        verl_sdc_mod._ACTIVE_SDC_CONTEXT.clear()
+        verl_sdc_mod._ACTIVE_SDC_CONTEXT.update(old_ctx)
+    return captured
+
+
+def test_attach_teacher_signals_stance_uses_gold_both_sides():
+    # stance: the T- (2nd) teacher prompt must carry GOLD (42), proving the
+    # answer-cancel invariant — NOT the rule-based decoy of 42.
+    from src.training._decoy_utils import _rule_based_decoy
+
+    decoy42 = _rule_based_decoy("42", seed=42)
+    stance = _attach_capture("stance")
+    assert len(stance) == 2
+    t_pos, t_neg = stance
+    assert "(answer is 42)" in t_pos and t_pos.endswith(verl_sdc_mod.CAUTIOUS_INSTR)
+    assert "(answer is 42)" in t_neg and t_neg.endswith(verl_sdc_mod.CONFIDENT_INSTR)
+    assert decoy42 not in t_neg  # gold on both sides, no decoy
+
+    # decoy: the T- prompt must carry the EXACT _rule_based_decoy(gold, seed=42)
+    # output → the decoy path is byte-identical.
+    dec = _attach_capture("decoy")
+    assert len(dec) == 2
+    t_pos_d, t_neg_d = dec
+    assert t_pos_d.endswith("42")
+    assert t_neg_d.endswith(decoy42)
+    assert "(answer is" not in t_pos_d and "(answer is" not in t_neg_d
+
+
+def test_contrast_variant_invalid_raises():
+    import pytest
+
+    old = _with_variant("bogus")
+    try:
+        with pytest.raises(ValueError):
+            _build_one("2", contrast_side="pos")
+    finally:
+        verl_sdc_mod._ACTIVE_SDC_CONTEXT.clear()
+        verl_sdc_mod._ACTIVE_SDC_CONTEXT.update(old)

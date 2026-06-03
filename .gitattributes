@@ -1,0 +1,33 @@
+# Keep token-bearing tracked files out of `git archive` exports (GH release
+# tarballs built by scripts/package_e4_release.sh). `git archive` ignores
+# .gitignore, so excluding here is the only way to stop CLAUDE.md (which carries
+# live hf_/ghp_/wandb tokens) from shipping inside the asset and self-tripping
+# the leak scan. Best long-term fix: stop tracking live tokens in CLAUDE.md.
+CLAUDE.md export-ignore
+
+# E.4 (2026-06-03): a leak scan found live tokens in 53 OTHER tracked files —
+# all NON-ESSENTIAL to the E.4 code tarball (the actual code src/ configs/
+# experiments/ and the node-needed scripts bootstrap_sdc_node.sh / gpu_keeper.py
+# / pull_parquets.py are token-CLEAN). Drop the token-bearing non-essential ones
+# from the archive so the GH release ships clean. (Tokens still live in the repo
+# history → ROTATE + scrub tracked files as the real fix.)
+archive/ export-ignore
+results/ export-ignore
+# old root amlt YAMLs (not needed in the code tar; amlt submits the yaml separately).
+# ROOT-ONLY (/*.yaml) so configs/*.yaml — incl. the needed verl_e4 Hydra config — is KEPT.
+/*.yaml export-ignore
+# old launcher scripts that hardcode tokens (NOT used by the E.4 run)
+scripts/run_verl_gdpo.sh export-ignore
+scripts/run_grpo_v2.sh export-ignore
+scripts/run_base_sft.sh export-ignore
+scripts/launch_sft_remote.sh export-ignore
+scripts/relaunch_verl_base_redirect_0410.sh export-ignore
+scripts/relaunch_verl_e21r_0410.sh export-ignore
+scripts/relaunch_verl_e21_0410.sh export-ignore
+scripts/push_models_hf.py export-ignore
+scripts/rebuild_eval_node.sh export-ignore
+scripts/launch_e21_vs_base_matched_0410.sh export-ignore
+scripts/setup_node.sh export-ignore
+scripts/launch_e21r_v4_commit_shape_0416.sh export-ignore
+scripts/relaunch_verl_e21_mainline_0410.sh export-ignore
+scripts/hf_checkpoint_sync.sh export-ignore
