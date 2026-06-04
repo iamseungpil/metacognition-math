@@ -38,6 +38,9 @@ jobs:
         WANDB_NAME: e5_v8_strict
         WANDB_TAGS: CTSD,E5,goldfree,steering
         SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        # vLLM EngineCore forks a subprocess; without spawn it hits 'Cannot
+        # re-initialize CUDA in forked subprocess' (the probe's VllmGen path).
+        VLLM_WORKER_MULTIPROC_METHOD: spawn
         # CTSD_SFT_V8_STRICT points env.py at the staged checkpoint copy (matches e4 staging dest).
         CTSD_SFT_V8_STRICT: /scratch/models/v8_meta_inside_strict_sft
         # env.py REPORTS_DIR override — /home/v-seungplee is not writable on the node.
