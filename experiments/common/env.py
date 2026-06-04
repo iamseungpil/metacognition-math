@@ -28,8 +28,10 @@ EVAL_R10V2_E20A = "eval/r10v2_e20a_step275_16k_node/r10v2_e20a_step275_16k.json"
 META_OPEN_ID = 151669      # <|meta|>
 META_CLOSE_ID = 151670     # <|/meta|>
 
-# Output paths
-REPORTS_DIR = Path("/home/v-seungplee/metacognition/reports")
+# Output paths. Default is the local-A100 host path (unchanged); override via
+# CTSD_REPORTS_DIR on cluster nodes where /home/v-seungplee is not writable
+# (e.g. amlt H200 → /scratch/reports). Behaviour-preserving: same default locally.
+REPORTS_DIR = Path(os.environ.get("CTSD_REPORTS_DIR", "/home/v-seungplee/metacognition/reports"))
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Reproducibility

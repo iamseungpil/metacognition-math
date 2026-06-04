@@ -40,11 +40,14 @@ jobs:
         SIMPLERL_DIR: /scratch/conda_envs/simplerl
         # CTSD_SFT_V8_STRICT points env.py at the staged checkpoint copy (matches e4 staging dest).
         CTSD_SFT_V8_STRICT: /scratch/models/v8_meta_inside_strict_sft
+        # env.py REPORTS_DIR override — /home/v-seungplee is not writable on the node.
+        CTSD_REPORTS_DIR: /scratch/reports
     command:
       - nvidia-smi
       - |
         bash -c '
         set +e
+        set -o pipefail   # so `python ... | tee` rc reflects python, not tee (else crashes show as pass)
         set -x
         mkdir -p /scratch/logs /scratch/reports
         cd /scratch
