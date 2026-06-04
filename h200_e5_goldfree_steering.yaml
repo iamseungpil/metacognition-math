@@ -30,7 +30,7 @@ jobs:
         GH_TOKEN: ${GH_TOKEN}
         # CODE_TAR_REVISION = the GH release asset id from scripts/package_e4_release.sh (must
         # include experiments/probes/e5_goldfree_steering.py). Update before submit.
-        CODE_TAR_REVISION: "REPLACE_WITH_NEW_ASSET_ID"
+        CODE_TAR_REVISION: "437791785"
         WANDB_API_KEY: ${WANDB_API_KEY}
         WANDB_KEY: ${WANDB_API_KEY}
         WANDB_PROJECT: skilldiscovery2
