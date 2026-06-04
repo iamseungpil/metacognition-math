@@ -616,8 +616,9 @@ def run_model(model_key: str, args, rng, rng_np, t0):
     meta_cap = META_CAP if not args.smoke else 64
     alpha = args.alpha
     arms = args.arms_list                          # set in main() per --arms / phase default
-    out_jsonl = Path(args.out_dir) / f"e2_steering_{model_key}_{args.tag}.jsonl"
-    out_json = Path(args.out_dir) / f"e2_steering_{model_key}_{args.tag}.json"
+    shard_sfx = f"_shard{args.shard}" if getattr(args, "n_shards", 1) > 1 else ""
+    out_jsonl = Path(args.out_dir) / f"e2_steering_{model_key}_{args.tag}{shard_sfx}.jsonl"
+    out_json = Path(args.out_dir) / f"e2_steering_{model_key}_{args.tag}{shard_sfx}.json"
     out_jsonl.parent.mkdir(parents=True, exist_ok=True)
     if out_jsonl.exists():
         out_jsonl.unlink()                         # fresh append-log per run
@@ -638,7 +639,15 @@ def run_model(model_key: str, args, rng, rng_np, t0):
     # discovery/confirmation separation, NOT in-run alpha selection). --phase {1,2} picks the seed.
     pool_seed = args.pool_seed
     pool = representative_pool(results, n_pool, rng)
+    if getattr(args, "n_shards", 1) > 1:
+        # data-parallel sharding across GPUs: each rank takes a disjoint stride of the
+        # deterministically-built pool (same pool_seed ⇒ identical pool in every process),
+        # so the n_shards ranks union to the full pool with zero overlap. The launcher pins
+        # each rank to one GPU via CUDA_VISIBLE_DEVICES, so vllm_gen/HF (single-device) are
+        # untouched; merge the per-shard JSONLs afterward.
+        pool = pool[args.shard :: args.n_shards]
     print(f"[e3:{model_key}] model={model_path} phase={args.phase} n_target={n} pool={len(pool)} "
+          f"shard={getattr(args,'shard',0)}/{getattr(args,'n_shards',1)} "
           f"k={k} alpha={alpha} arms={arms} max_new={max_new} meta_cap={meta_cap} "
           f"pool_seed={pool_seed} max_model_len={args.max_model_len}")
 
@@ -1025,6 +1034,9 @@ def main():
     ap.add_argument("--k", type=int, default=8, help="continuations per (problem,arm) (self-consistency)")
     ap.add_argument("--max_new", type=int, default=16384, help="continuation budget (vLLM)")
     ap.add_argument("--max_model_len", type=int, default=20480, help="vLLM context window")
+    ap.add_argument("--shard", type=int, default=0, help="data-parallel shard rank (0..n_shards-1)")
+    ap.add_argument("--n_shards", type=int, default=1,
+                    help="number of GPU shards (1 = no sharding; launcher pins each rank to one GPU)")
     ap.add_argument("--answer_entropy", action="store_true",
                     help="best-effort HF answer-span entropy (Change 3; non-blocking, off by default "
                          "for speed)")

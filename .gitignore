@@ -44,3 +44,4 @@ checkpoints_recovered/
 !.env.example
 .amltconfig
 *.zip
+.understand-anything/
