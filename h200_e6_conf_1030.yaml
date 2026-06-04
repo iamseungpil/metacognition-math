@@ -52,7 +52,7 @@ jobs:
 
         mkdir -p /scratch/logs
         nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper_early.log 2>&1 &
-        GPU_KEEPER_PID=$!
+        GPU_KEEPER_PID=$$!
         bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
 
         export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
@@ -83,7 +83,7 @@ jobs:
         CUDA_VISIBLE_DEVICES=0 $${PYBIN} -u experiments/probes/e2_contrastive_steering.py \
             --model v8_strict --smoke 4 --arms self,conf_down --alpha 0.6 --out_dir /scratch/reports --tag smoke \
             2>&1 | tee /scratch/logs/e6_conf1030_smoke.log
-        SMOKE_RC=$?
+        SMOKE_RC=$$?
         if [ "$${SMOKE_RC}" -ne 0 ]; then echo "[YAML] e6_conf1030 smoke FAILED rc=$${SMOKE_RC}"; exit 1; fi
         echo "[YAML] smoke OK — launching 4-GPU full-1030 shards"
 
@@ -110,7 +110,7 @@ jobs:
             --out /scratch/reports/e2_steering_v8_strict_conf1030_merged.json \
             --merged_jsonl /scratch/reports/e2_steering_v8_strict_conf1030_merged.jsonl \
             2>&1 | tee /scratch/logs/e6_conf1030_merge.log
-        MERGE_RC=$?
+        MERGE_RC=$$?
 
         # (4) upload merged report + raw shards to HF dataset.
         python -c "
