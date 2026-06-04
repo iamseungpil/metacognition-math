@@ -1,0 +1,104 @@
+description: "E.6 CONTRASTIVE META-LOGIT STEERING (gold-free) on v8_strict — the PROPER contrastive meta steering (e2 probe): at each self-emitted meta token, scores += alpha*(logit|ctx_A - logit|ctx_B) on the META span only, then vLLM continuation. Gold-free arms: self(baseline) + cautious(stance) + conf_down(confidence). ONE H200 Basic, inference-only. Tokens via env."
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+
+code:
+  local_dir: $CONFIG_DIR/
+
+# inference-only (no checkpoints to mount). e2 loads BOTH an HF model (steered meta span via
+# LogitsProcessor) AND vLLM (unsteered continuation) on the one H200 — 141GB fits 2x 8B.
+
+jobs:
+  - name: e6_steer
+    sku: 141G4-H200
+    sla_tier: Basic
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 28800   # 8h — finite eval (HF steering is slower than pure vLLM)
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        CODE_TAR_REVISION: "REPLACE_WITH_NEW_ASSET_ID"
+        WANDB_API_KEY: ${WANDB_API_KEY}
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        CTSD_SFT_V8_STRICT: /scratch/models/v8_meta_inside_strict_sft
+        CTSD_REPORTS_DIR: /scratch/reports
+        VLLM_WORKER_MULTIPROC_METHOD: spawn
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -o pipefail
+        set -x
+        mkdir -p /scratch/logs /scratch/reports
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+        echo "$${CODE_TAR_REVISION}" > /scratch/metacognition/.bootstrap_version
+
+        mkdir -p /scratch/logs
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper_early.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+
+        # stage v8_strict + pop extra_special_tokens so the tokenizer loads (avoids E20a local fallback).
+        mkdir -p /scratch/models
+        python -c "
+        from huggingface_hub import snapshot_download
+        import os, shutil
+        snapshot_download(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/v8_meta_inside_strict_sft/checkpoint-254/*\"], local_dir=\"/scratch/models_dl\")
+        src=\"/scratch/models_dl/models/v8_meta_inside_strict_sft/checkpoint-254\"; dst=\"/scratch/models/v8_meta_inside_strict_sft\"
+        shutil.rmtree(dst, ignore_errors=True); shutil.copytree(src, dst); print(\"v8_strict staged\")
+        "
+        python -c "
+        import json; p=\"/scratch/models/v8_meta_inside_strict_sft/tokenizer_config.json\"
+        cfg=json.load(open(p)); cfg.pop(\"extra_special_tokens\", None); json.dump(cfg, open(p,\"w\"), indent=2); print(\"tokenizer patched\")
+        "
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+        # (1) node smoke — validates HF steering fires on meta + vLLM continuation handoff works.
+        $${SIMPLERL_DIR}/bin/python -u experiments/probes/e2_contrastive_steering.py \
+            --model v8_strict --smoke 4 --arms self,cautious,conf_down --alpha 0.6 --out_dir /scratch/reports --tag smoke \
+            2>&1 | tee /scratch/logs/e6_smoke.log
+        SMOKE_RC=$$?
+        if [ "$${SMOKE_RC}" -ne 0 ]; then echo "[YAML] e6 smoke FAILED rc=$${SMOKE_RC}"; exit 1; fi
+        echo "[YAML] e6 smoke OK — starting full phase-2"
+        # (2) full phase-2 — gold-free contrastive meta steering, adequate power.
+        $${SIMPLERL_DIR}/bin/python -u experiments/probes/e2_contrastive_steering.py \
+            --model v8_strict --phase 2 --arms self,cautious,conf_down --alpha 0.6 --n 110 --k 8 --out_dir /scratch/reports --tag node \
+            2>&1 | tee /scratch/logs/e6_steer.log
+        RC=$$?
+        echo "[YAML] e6_steer rc=$${RC}"
+
+        # upload report to HF dataset
+        python -c "
+        from huggingface_hub import upload_file
+        import os, glob
+        for f in glob.glob(\"/scratch/reports/e2_steering_*node*\"):
+            upload_file(path_or_fileobj=f, path_in_repo=f\"reports/{os.path.basename(f)}\",
+                        repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"])
+            print(\"uploaded\", f)
+        " || echo "[YAML] upload skipped"
+
+        if [ "$${RC}" -ne 0 ]; then echo "[YAML] e6 failed, exit 1"; exit 1; fi
+        '

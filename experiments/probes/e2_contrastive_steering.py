@@ -1042,7 +1042,13 @@ def main():
     if args.tag is None:
         args.tag = f"p{args.phase}"
     # arms resolution.
-    if args.smoke:
+    if args.smoke and args.arms:
+        # honor --arms in smoke so the node pre-flight exercises exactly the arms the
+        # real run uses (e.g. self,cautious,conf_down) — keeps the smoke faithful and
+        # routes the nonzero_inside steer-fired assert onto a GOLD-FREE arm.
+        sel = [a for a in args.arms.split(",") if a in ARMS]
+        args.arms_list = (["self"] + [a for a in sel if a != "self"]) if sel else list(ARMS)
+    elif args.smoke:
         args.arms_list = list(ARMS)                 # smoke = all arms
     elif args.arms:
         sel = [a for a in args.arms.split(",") if a in ARMS]
