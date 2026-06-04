@@ -1171,7 +1171,19 @@ class MetaCotSDCRewardManager:
         self.num_examine = num_examine
         assert len(reward_funcs) == len(reward_weights) == len(reward_keys)
 
-    def __call__(self, data: DataProto) -> DataProto:
+    def __call__(self, data: DataProto, return_dict: bool = False):
+        # return_dict (E.4 #2b, 2026-06-03): the base verl _validate path calls
+        # reward_fn(batch, return_dict=True) and reads result['reward_tensor'] /
+        # result['reward_extra_info'] (ray_trainer.py _compute_or_extract_reward).
+        # Val batches come from generate_sequences with NO rm_scores pre-filled, so
+        # they fall through to the main reward-compute body below (which already
+        # computes `combined` unconditionally — there is NO NameError risk in this
+        # file: the rm_scores branch returns early). When return_dict=True we return
+        # the {'reward_tensor','reward_extra_info'} dict so reward_extra_info carries
+        # `correctness` → process_validation_metrics emits
+        # val-aux/<data_source>/correctness/mean@1 per benchmark. The default
+        # return_dict=False (training) path stays BYTE-IDENTICAL (DataProto with
+        # rm_scores + reward_extra_keys). Pairs with #2a.
         if "rm_scores" in data.batch.keys():
             # Already computed (e.g., agent_reward_loop path). 2026-05-22 fix:
             # the old pass-through returned `non_tensor_batch={}`, which dropped
@@ -1238,6 +1250,15 @@ class MetaCotSDCRewardManager:
                 for k in self.reward_keys
                 if k in data.non_tensor_batch
             }
+            if return_dict:
+                # Defensive: the base val path extracts rm_scores directly before
+                # ever calling reward_fn, so this branch is normally training-only;
+                # honor the dict contract anyway for any caller that passes a
+                # pre-scored batch with return_dict=True.
+                return {
+                    "reward_tensor": data.batch["rm_scores"],
+                    "reward_extra_info": {k: np.asarray(v) for k, v in non_tensor.items()},
+                }
             return DataProto(
                 batch=rm_td,
                 non_tensor_batch=non_tensor,
@@ -1335,6 +1356,18 @@ class MetaCotSDCRewardManager:
         rm_td = TensorDict({"rm_scores": combined}, batch_size=bs)
         extra_keys = list(self.reward_keys) + ["sdc_fallback_triggered"]
         non_tensor = {k: data.non_tensor_batch[k] for k in extra_keys if k in data.non_tensor_batch}
+        if return_dict:
+            # Val path (#2b): return the dict the base _validate expects. Carry the
+            # reward keys (notably `correctness`) so process_validation_metrics emits
+            # val-aux/<data_source>/correctness/mean@1 per benchmark (gsm8k/math/aime).
+            return {
+                "reward_tensor": combined,
+                "reward_extra_info": {
+                    k: np.asarray(data.non_tensor_batch[k])
+                    for k in self.reward_keys
+                    if k in data.non_tensor_batch
+                },
+            }
         return DataProto(
             batch=rm_td,
             non_tensor_batch=non_tensor,
@@ -1359,6 +1392,20 @@ class SDCRayPPOTrainer(RayPPOTrainer):
         super().__init__(*args, **kwargs)
         self._sdc_reward_fn = reward_fn
         self._sdc_val_reward_fn = val_reward_fn if val_reward_fn is not None else reward_fn
+        # LOGGING FIX (E.4 #2a, 2026-06-03): the base RayPPOTrainer gates BOTH the
+        # initial validate (`if self.val_reward_fn is not None and ...val_before_train`)
+        # and the periodic test_freq validate on self.val_reward_fn. This subclass
+        # strips reward_fn/val_reward_fn out of kwargs (they are NOT forwarded to
+        # super), so base self.val_reward_fn stays None → _validate() NEVER runs →
+        # val-aux/<data_source>/correctness/mean@1 is produced for NO arm →
+        # test_freq=25 is a silent no-op → the accuracy A/B (the verdict decider) is
+        # unreadable for ALL 4 arms. Attach the managers onto the base attrs so eval
+        # runs. INSEPARABLE from #2b (MetaCotSDCRewardManager.__call__ must honor
+        # return_dict=True on the val path) — without #2b this would convert a silent
+        # skip into a crash. Robust whether or not the deployed verl already accepts
+        # these kwargs (idempotent re-assignment).
+        self.reward_fn = self._sdc_reward_fn
+        self.val_reward_fn = self._sdc_val_reward_fn
         # Fail-fast: sdc_force_inject is requested but the two-phase rollout repack
         # (_force_inject_rollout) is NODE-SMOKE-REQUIRED and not yet wired. Refuse
         # to launch rather than silently run a NON-inject experiment mislabeled as

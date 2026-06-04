@@ -15,14 +15,27 @@
 #   e4_gold_conf_down: algorithm.sdc_contrast_variant=conf    (gold both sides + confidence 0.15/0.95)
 #
 # This mirrors verl_ctsd_inject_C_h200_4x4k.yaml but WITHOUT force-inject — E.4
-# uses ROD_MQ_CONTRAST on v8_strict's self-emitted meta (~32%), NOT the
-# NotImplemented force-inject path.
+# uses RLSD_META_CONTRAST (faithful per-token; see `mode` below) on v8_strict's
+# self-emitted meta (~32%), NOT the NotImplemented force-inject path.
 
 defaults:
   - verl_sdc_e21r_shared
   - _self_
 
-mode: ROD_MQ_CONTRAST
+# E.4 ROOT-CAUSE FIX (2026-06-03): was ROD_MQ_CONTRAST, which MEAN-POOLS the
+# per-token teacher gains to a single [B,1] per-SEQUENCE scalar applied uniformly
+# over the whole meta region — diluting the discriminative meta tokens (signal
+# lives in the p95, mean≈0) so the teacher gap collapsed to ~e-5 across ALL arms
+# (incl decoy) → w_meta≈1 → teacher modulation negligible → contrastive thesis
+# untestable. RLSD_META_CONTRAST is the FAITHFUL per-token mode: w_meta is a
+# [B,T] PER-TOKEN factor with ZERO mean/sum aggregation (verl_sdc_utils.py
+# L355-362). Same reward heads [correctness, meta_penalty] [1.0,1.0], same
+# alpha/beta keys (sdc_alpha_attr=1.0 / sdc_beta_contrast=0.5). This single line
+# (the single source of truth — verl_sdc.py L2014 overwrites algorithm.sdc_mode
+# with this `mode` at runtime) flips all 3 teacher arms (decoy/stance/conf) to
+# faithful per-token RLSD at once; the baseline arm overrides mode=VANILLA_GRPO
+# in the launcher so is UNAFFECTED.
+mode: RLSD_META_CONTRAST
 
 data:
   max_prompt_length: 2048
@@ -68,9 +81,13 @@ algorithm:
   kl_ctrl:
     type: fixed
     kl_coef: 0.005
-  # ROD_MQ_CONTRAST: R18b meta-quality reward (α attractive + β contrast),
+  # RLSD_META_CONTRAST: faithful per-token RLSD (α attractive + β contrast),
   # NO force-inject (force-inject stays NotImplemented; we use self-emitted meta).
-  sdc_mode: ROD_MQ_CONTRAST
+  # NOTE: this value is FUNCTIONALLY A NO-OP — verl_sdc.py L2014 overwrites
+  # algorithm.sdc_mode at runtime with the top-level `mode` (the single source of
+  # truth). Kept in sync so a future config audit does not mis-read the run as the
+  # diluted ROD_MQ_CONTRAST mode.
+  sdc_mode: RLSD_META_CONTRAST
   sdc_enabled: true
   sdc_lambda_meta: 0.5
   sdc_lambda_shared: 0.0
