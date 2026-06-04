@@ -1,0 +1,116 @@
+description: "E.5 GOLD-FREE pure-prompt contrastive STEERING test (inference-only) on v8_strict - plan_ctsd_E5_goldfree_steering. ONE H200 Basic job, finite eval. Stance (cautious/confident instr) + Conf (0.15/0.95) suffix-steer, paired per-problem on GSM8K/MATH500/AIME. Tokens via env only; no checkpoints, no external mount."
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+
+code:
+  local_dir: $CONFIG_DIR/
+
+# NO storage:external — E.5 is inference-only (no checkpoints to mount/persist; e4's
+# xufluo/zhangquanchen mount is dropped). Eval input is read via hf_hub_download; outputs
+# are uploaded back to the iamseungpil/metacot dataset + logged to wandb.
+
+jobs:
+  - name: e5_goldfree
+    sku: 141G4-H200
+    sla_tier: Basic
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 21600   # 6h — finite eval, NOT the 7d RL window
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        # CODE_TAR_REVISION = the GH release asset id from scripts/package_e4_release.sh (must
+        # include experiments/probes/e5_goldfree_steering.py). Update before submit.
+        CODE_TAR_REVISION: "REPLACE_WITH_NEW_ASSET_ID"
+        WANDB_API_KEY: ${WANDB_API_KEY}
+        WANDB_KEY: ${WANDB_API_KEY}
+        WANDB_PROJECT: skilldiscovery2
+        WANDB_RUN_GROUP: e5_goldfree
+        WANDB_NAME: e5_v8_strict
+        WANDB_TAGS: CTSD,E5,goldfree,steering
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        # CTSD_SFT_V8_STRICT points env.py at the staged checkpoint copy (matches e4 staging dest).
+        CTSD_SFT_V8_STRICT: /scratch/models/v8_meta_inside_strict_sft
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -x
+        mkdir -p /scratch/logs /scratch/reports
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        # ── code: curl the GH release tarball -> /scratch (built by scripts/package_e4_release.sh) ──
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+        echo "$${CODE_TAR_REVISION}" > /scratch/metacognition/.bootstrap_version
+
+        # ── gpu_keeper holds the GPU while the conda-pack env pulls (KEEP). No push_ckpts daemon
+        #    (E.5 has no checkpoints). ──
+        mkdir -p /scratch/logs
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper_early.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        # NO pull_parquets.py — E.5 reads the eval JSON via hf_hub_download, not parquet.
+
+        # ── stage the v8_strict checkpoint (CTSD_SFT_V8_STRICT points env.py here). safe_tokenizer_path
+        #    falls back to E20a so the tokenizer_config extra_special_tokens pop is NOT needed. ──
+        mkdir -p /scratch/models
+        python -c "
+        from huggingface_hub import snapshot_download
+        import os, shutil
+        snapshot_download(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/v8_meta_inside_strict_sft/checkpoint-254/*\"], local_dir=\"/scratch/models_dl\")
+        src=\"/scratch/models_dl/models/v8_meta_inside_strict_sft/checkpoint-254\"; dst=\"/scratch/models/v8_meta_inside_strict_sft\"
+        shutil.rmtree(dst, ignore_errors=True); shutil.copytree(src, dst); print(\"v8_strict staged\")
+        "
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+        # ── (1) quick node smoke: validates model load + gold-free gen + grade before the long run ──
+        $${SIMPLERL_DIR}/bin/python -u experiments/probes/e5_goldfree_steering.py \
+            --model v8_strict --smoke 6 --out_dir /scratch/reports --tag smoke \
+            2>&1 | tee /scratch/logs/e5_smoke.log
+        SMOKE_RC=$$?
+        if [ "$${SMOKE_RC}" -ne 0 ]; then echo "[YAML] e5 smoke FAILED rc=$${SMOKE_RC}"; exit 1; fi
+        echo "[YAML] e5 smoke OK — starting full phase-2"
+        # ── (2) phase-2 confirmation on the fresh seed, all 5 conditions, k=8 ──
+        $${SIMPLERL_DIR}/bin/python -u experiments/probes/e5_goldfree_steering.py \
+            --model v8_strict --phase 2 --n_pool 110 --n 110 --k 8 --max_new 16384 --out_dir /scratch/reports --tag node \
+            2>&1 | tee /scratch/logs/e5_goldfree.log
+        RC=$$?
+        echo "[YAML] e5_goldfree rc=$${RC}"
+
+        # ── UPLOAD: report json/jsonl back to the dataset (canonical sink); wandb is the live view. ──
+        python -c "
+        from huggingface_hub import upload_file
+        import os
+        for ext in (\"json\", \"jsonl\"):
+            p=f\"/home/v-seungplee/metacognition/reports/e5_goldfree_v8_strict_node.{ext}\"
+            if not os.path.exists(p):
+                p=f\"/scratch/reports/e5_goldfree_v8_strict_node.{ext}\"
+            if os.path.exists(p):
+                upload_file(path_or_fileobj=p, path_in_repo=f\"reports/e5_goldfree_v8_strict_node.{ext}\",
+                            repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"])
+                print(\"uploaded\", p)
+        " || echo "[YAML] upload skipped (report missing)"
+
+        # finite eval — let the job exit on rc (NO trailing sleep 86400).
+        if [ "$${RC}" -ne 0 ]; then echo "[YAML] e5 failed, exit 1"; exit 1; fi
+        '
