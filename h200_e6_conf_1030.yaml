@@ -87,8 +87,10 @@ jobs:
         if [ "$${SMOKE_RC}" -ne 0 ]; then echo "[YAML] e6_conf1030 smoke FAILED rc=$${SMOKE_RC}"; exit 1; fi
         echo "[YAML] smoke OK — launching 4-GPU full-1030 shards"
 
-        # free the GPU-keeper so all 4 H200s are available to the shard processes.
-        kill $${GPU_KEEPER_PID} 2>/dev/null; pkill -f gpu_keeper.py 2>/dev/null; sleep 5
+        # free the GPU-keeper so all 4 H200s are available to the shard processes. Kill ONLY the
+        # saved PID — `pkill -f gpu_keeper.py` would self-match the parent bash (whose argv contains
+        # the literal "gpu_keeper.py"), killing this very script (root-caused: job died at pkill).
+        kill $${GPU_KEEPER_PID} 2>/dev/null; sleep 5
 
         # (2) FULL 1030, conf-only, 4-GPU data-parallel: shard i pinned to GPU i. --n_pool 2000 makes
         #     representative_pool return ALL 1030 (per-stratum cap >= 500); --n 1030 prevents early-break;
