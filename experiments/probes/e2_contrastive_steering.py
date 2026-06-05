@@ -99,7 +99,7 @@ EVALS = {"e20a": EVAL_R10V2_E20A, "v8_strict": EVAL_R10V2_V8}
 # ── E.3 arms (Change 2) ────────────────────────────────────────────────────────
 # Arms run per problem: `self` (baseline) + the 5 steered contrast modes. A single moderate alpha
 # (default 0.6, NOT 1.0 — E.2 saw 1.0 destabilize into off-distribution tokens) for Phase 1.
-STEERED_MODES = ("gold_decoy", "cautious", "gold_stance", "conf_down", "gold_conf_down")
+STEERED_MODES = ("gold_decoy", "cautious", "gold_stance", "conf_down", "gold_conf_down", "conf_adaptive")
 ARMS = ("self",) + STEERED_MODES
 GOLD_BEARING_MODES = ("gold_decoy", "gold_stance", "gold_conf_down")   # leakage-guarded arms
 DEFAULT_ALPHA = 0.6
@@ -579,7 +579,18 @@ def steer_meta_span(model, tok, c, mode, alpha, dev, record=None):
     assert base[p_self] == META_OPEN_ID, "p_self does not point at <|meta|>"
     pre_meta_body = tok.decode(base[:p_self], skip_special_tokens=False)
 
-    sfx_A, sfx_B = CONTRASTS[mode](gold, decoy)
+    if mode == "conf_adaptive":
+        # E.7 adaptive self-referential steering: teacher = the student's OWN verbalized confidence
+        # INVERTED (1-c) vs its actual c, so steer = alpha*(logit|conf:1-c - logit|conf:c) moves the
+        # meta FROM where the student is TOWARD 1-c. Both contexts differ only in the confidence value
+        # (same prefix) -> the confidence axis is isolated, gold-free. c is parsed from the harvested
+        # baseline meta (c["_self_meta_text"], set just above in the PHASE 1-HF loop). If the student
+        # stated no confidence, c defaults to 0.5 -> (0.5,0.5) -> zero steer (honest no-op).
+        sc = parse_verbalized_conf(c.get("_self_meta_text", "") or "")
+        sc = 0.5 if sc is None else min(max(float(sc), 0.0), 1.0)
+        sfx_A, sfx_B = (f" confidence: {1.0 - sc:.2f}", f" confidence: {sc:.2f}")
+    else:
+        sfx_A, sfx_B = CONTRASTS[mode](gold, decoy)
     A_ids = build_reveal_ids(tok, q, sfx_A, pre_meta_body)
     B_ids = build_reveal_ids(tok, q, sfx_B, pre_meta_body)
     proc = ContrastiveMetaSteerProcessor(
