@@ -27,7 +27,7 @@ jobs:
         HF_TOKEN: ${HF_TOKEN}
         HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
         GH_TOKEN: ${GH_TOKEN}
-        CODE_TAR_REVISION: "REPLACE_WITH_NEW_ASSET_ID"
+        CODE_TAR_REVISION: "439234854"
         SIMPLERL_DIR: /scratch/conda_envs/simplerl
         VLLM_WORKER_MULTIPROC_METHOD: spawn
         ARM: baseline
