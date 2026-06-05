@@ -74,10 +74,17 @@ algorithm:
   sdc_mode: BCI_RLVR
   # NO SDC self-distill teacher. BCI_RLVR ∈ _VANILLA_MODES → teacher-free path.
   sdc_enabled: false
-  # NEW E.9 flag — installs the binned-confidence rollout wrap (gated, additive).
-  sdc_force_inject_conf: true
-  # bin centers default to default_conf_bins(rollout.n) = [0.2,0.4,0.6,0.8] when
-  # omitted; set explicitly for auditability.
+  # E.9 flag — binned-confidence rollout injection wrap. SET FALSE: verl 0.7.1
+  # uses the agent-loop rollout, which re-tokenizes the prompt from `messages`
+  # via the chat template (no input_ids tensor to append a seed to), so the
+  # prompt-side token-injection wrap cannot run through it without deeper
+  # messages-surgery. With this FALSE the wrap is NOT installed and BCI_RLVR runs
+  # as plain RLVR with [correctness, outcome_calibration] on the model's
+  # SELF-EMITTED confidence — the robust core of the calibration hypothesis. True
+  # binned-injection is deferred to a future agent-loop-aware implementation.
+  sdc_force_inject_conf: false
+  # bin centers (unused while sdc_force_inject_conf=false; kept for the future
+  # injection path).
   sdc_conf_bins: [0.2, 0.4, 0.6, 0.8]
   # Legacy force-inject stays OFF (its NotImplemented hard-block is for
   # ROD_MQ_CONTRAST_INJECT only and must not fire here).
