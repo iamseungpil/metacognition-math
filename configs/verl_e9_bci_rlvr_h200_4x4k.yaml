@@ -53,6 +53,13 @@ actor_rollout_ref:
     max_num_seqs: 32
     log_prob_micro_batch_size_per_gpu: 4
     n: 4                                  # 4 GRPO rollouts == 4 conf bins
+    agent:
+      # E.9 binned-confidence injection runs through a custom agent loop
+      # (BCIConfAgentLoop) registered ADDITIVELY here. ABSOLUTE node path so it
+      # resolves in the Ray rollout workers. Only ACTIVE when
+      # sdc_force_inject_conf=true (the wrap tags samples agent_name=bci_conf_agent);
+      # validation no-ops back to single_turn_agent.
+      agent_loop_config_path: /scratch/metacognition/configs/bci_agent_loop.yaml
 
 critic:
   ppo_micro_batch_size_per_gpu: 1
@@ -74,17 +81,15 @@ algorithm:
   sdc_mode: BCI_RLVR
   # NO SDC self-distill teacher. BCI_RLVR ∈ _VANILLA_MODES → teacher-free path.
   sdc_enabled: false
-  # E.9 flag — binned-confidence rollout injection wrap. SET FALSE: verl 0.7.1
-  # uses the agent-loop rollout, which re-tokenizes the prompt from `messages`
-  # via the chat template (no input_ids tensor to append a seed to), so the
-  # prompt-side token-injection wrap cannot run through it without deeper
-  # messages-surgery. With this FALSE the wrap is NOT installed and BCI_RLVR runs
-  # as plain RLVR with [correctness, outcome_calibration] on the model's
-  # SELF-EMITTED confidence — the robust core of the calibration hypothesis. True
-  # binned-injection is deferred to a future agent-loop-aware implementation.
-  sdc_force_inject_conf: false
-  # bin centers (unused while sdc_force_inject_conf=false; kept for the future
-  # injection path).
+  # E.9 binned-confidence injection — TRUE. The gated wrap tags each rollout
+  # sample agent_name=bci_conf_agent and hands it its bin seed; the custom
+  # BCIConfAgentLoop (agent_loop_config_path above) prepends the seed
+  # (<|meta|>confidence: c_i<|/meta|>) to the trained response. Agent-loop-native
+  # (token-id lists, no tensor repack — the approach that crashed earlier). The
+  # wrap no-ops on validation, so the acc/ECE gates are measured on free-running
+  # rollouts.
+  sdc_force_inject_conf: true
+  # confidence bin centers, one per GRPO rollout (n=4). bin index = row % n.
   sdc_conf_bins: [0.2, 0.4, 0.6, 0.8]
   # Legacy force-inject stays OFF (its NotImplemented hard-block is for
   # ROD_MQ_CONTRAST_INJECT only and must not fire here).

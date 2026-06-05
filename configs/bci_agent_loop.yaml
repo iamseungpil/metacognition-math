@@ -1,0 +1,9 @@
+# E.9 BCI-RLVR custom agent-loop registry (verl agent_loop_config_path).
+# Loaded by AgentLoopManager: _agent_loop_registry["bci_conf_agent"] = this entry,
+# then hydra.utils.instantiate(config=entry, ...) builds it by _target_ in the Ray
+# rollout workers. ADDITIVE — the default single_turn_agent loop (registered via
+# @register) is untouched. Selected per-sample by non_tensor_batch["agent_name"]
+# = "bci_conf_agent", set by the gated wrap in verl_sdc only when
+# sdc_force_inject_conf=true (validation no-ops back to single_turn_agent).
+- name: bci_conf_agent
+  _target_: src.training.bci_agent_loop.BCIConfAgentLoop
