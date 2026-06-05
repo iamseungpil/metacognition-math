@@ -1,0 +1,97 @@
+# E.9 Binned-Confidence-Injection RLVR (BCI-RLVR) — base config.
+# docs/superpowers/specs/2026-06-05-e9-binned-confidence-injection-rlvr-design.md
+#
+# COPIED from configs/verl_e4_selfdistill_h200_4x4k.yaml (same v8_strict cold
+# start, 4×H200, rollout.n=4, train_batch/steps identical) with ONLY the E.9
+# deltas applied:
+#   - mode / algorithm.sdc_mode = BCI_RLVR (correctness + outcome_calibration)
+#   - algorithm.sdc_enabled = false  (NO SDC self-distill teacher — env reward
+#     only; BCI_RLVR is in _VANILLA_MODES so _attach_teacher_signals returns
+#     early and the advantage path takes the teacher-free whiten branch)
+#   - algorithm.sdc_force_inject_conf = true  (NEW flag — installs the gated
+#     binned-confidence rollout wrap; DISTINCT from the legacy sdc_force_inject)
+#   - algorithm.sdc_force_inject = false  (legacy flag stays OFF — its
+#     NotImplemented hard-block is untouched / not triggered)
+#
+# Control arm = e4_baseline (VANILLA_GRPO, correctness-only, no inject):
+#   0.786 / ECE 0.557. Treatment success: ECE < 0.35 AND acc >= 0.786 - 1.5pp.
+
+defaults:
+  - verl_sdc_e21r_shared
+  - _self_
+
+# Single source of truth for the reward heads (verl_sdc.py overwrites
+# algorithm.sdc_mode with this `mode` at launch). BCI_RLVR =
+# [correctness 1.0, outcome_calibration 0.5].
+mode: BCI_RLVR
+
+data:
+  max_prompt_length: 2048
+  max_response_length: 4096
+  train_batch_size: 64
+  val_batch_size: 16
+
+actor_rollout_ref:
+  model:
+    path: /scratch/models/v8_meta_inside_strict_sft   # SFT_V8_STRICT cold start
+  actor:
+    ppo_mini_batch_size: 8
+    ppo_micro_batch_size_per_gpu: 1
+    ppo_max_token_len_per_gpu: 24576
+  ref:
+    log_prob_micro_batch_size_per_gpu: 4
+    log_prob_max_token_len_per_gpu: 24576
+  rollout:
+    tensor_model_parallel_size: 4
+    temperature: 0.6
+    top_k: 20
+    top_p: 0.95
+    response_length: ${data.max_response_length}
+    gpu_memory_utilization: 0.45
+    max_model_len: 4608
+    max_num_batched_tokens: 8192
+    max_num_seqs: 32
+    log_prob_micro_batch_size_per_gpu: 4
+    n: 4                                  # 4 GRPO rollouts == 4 conf bins
+
+critic:
+  ppo_micro_batch_size_per_gpu: 1
+  forward_micro_batch_size_per_gpu: 1
+  ppo_max_token_len_per_gpu: 24576
+  forward_max_token_len_per_gpu: 24576
+
+reward_model:
+  micro_batch_size: 4
+
+algorithm:
+  # GDPO heads mirror REWARD_CONFIGS["BCI_RLVR"]: correctness (dominant) +
+  # outcome_calibration (proper-scoring Brier on the seeded confidence).
+  gdpo_reward_keys: [correctness, outcome_calibration]
+  gdpo_reward_weights: [1.0, 0.5]
+  kl_ctrl:
+    type: fixed
+    kl_coef: 0.005
+  sdc_mode: BCI_RLVR
+  # NO SDC self-distill teacher. BCI_RLVR ∈ _VANILLA_MODES → teacher-free path.
+  sdc_enabled: false
+  # NEW E.9 flag — installs the binned-confidence rollout wrap (gated, additive).
+  sdc_force_inject_conf: true
+  # bin centers default to default_conf_bins(rollout.n) = [0.2,0.4,0.6,0.8] when
+  # omitted; set explicitly for auditability.
+  sdc_conf_bins: [0.2, 0.4, 0.6, 0.8]
+  # Legacy force-inject stays OFF (its NotImplemented hard-block is for
+  # ROD_MQ_CONTRAST_INJECT only and must not fire here).
+  sdc_force_inject: false
+
+trainer:
+  nnodes: 1
+  n_gpus_per_node: 4
+  device: cuda
+  project_name: skilldiscovery2          # match the amlt WANDB_PROJECT
+  experiment_name: verl_e9_bci_rlvr
+  default_local_dir: /scratch/checkpoints/verl_e9_bci_rlvr
+  logger: ['console', 'wandb']
+  save_freq: 5               # frequent — H200 preempt resilience
+  test_freq: 25              # eval GSM8K/MATH/AIME + ECE to wandb
+  total_epochs: 20
+  total_training_steps: 300  # Phase E scale

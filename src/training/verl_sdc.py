@@ -371,6 +371,21 @@ REWARD_CONFIGS = {
             "meta_count_bonus",
         ],
     },
+    # ── E.9 BCI_RLVR (Binned-Confidence-Injection RLVR, 2026-06-05) ───────────
+    # NEW + ADDITIVE: no entry above is touched. correctness (dominant head) +
+    # outcome_calibration (proper-scoring Brier on the SEEDED confidence). The
+    # binned conf seed is force-placed at response-start by the gated rollout
+    # wrap (SDCRayPPOTrainer._bci_generate_sequences, flag
+    # algorithm.sdc_force_inject_conf) so every problem is attempted across the
+    # full confidence range and the proper-score always has signal to select.
+    # GDPO per-reward normalization keeps correctness dominant (accuracy
+    # preserved). Both funcs are already imported at the top of this file.
+    # See docs/superpowers/specs/2026-06-05-e9-...-design.md.
+    "BCI_RLVR": {
+        "funcs": [correctness_reward, outcome_calibration_reward],
+        "weights": [1.0, 0.5],
+        "keys": ["correctness", "outcome_calibration"],
+    },
 }
 
 # Modes that do NOT compute teacher forward (env reward only).
@@ -379,7 +394,13 @@ REWARD_CONFIGS = {
 # (no T+/T-/position forward), exactly like VANILLA_GRPO. The advantage path
 # early-return in verl_sdc_utils was extended with a matching OR-clause.
 # VANILLA_GRPO membership/behaviour is unchanged (set still contains it).
-_VANILLA_MODES = {"VANILLA_GRPO", "MATCHED_E21RV2"}
+_VANILLA_MODES = {"VANILLA_GRPO", "MATCHED_E21RV2", "BCI_RLVR"}
+# BCI_RLVR (E.9, ADDITIVE): a NO-teacher env-reward-only mode (correctness +
+# outcome_calibration; sdc_enabled=false). It joins the teacher-free set so
+# _attach_teacher_signals returns early (no T+/T-/position forward) exactly like
+# VANILLA_GRPO. Membership of every pre-existing mode is unchanged. The matching
+# advantage-path early-return (verl_sdc_utils.compute_sdc_gdpo_advantage) carries
+# the same additive OR-clause for sdc_mode=="BCI_RLVR".
 # Modes that compute T+ forward only (single-teacher RLSD).
 # ROD_PT: R5 + position teacher (decoy off, natural emit, multiplicative w_position)
 # ROD_PT_DEGEN: ROD_PT + degeneration_penalty reward head (R16, 2026-05-12)
@@ -1437,6 +1458,255 @@ class SDCRayPPOTrainer(RayPPOTrainer):
                 "wired/node-smoke-tested. Implement the DataProto repack against the "
                 "live verl runtime (1-step smoke) before launching ROD_MQ_CONTRAST_INJECT."
             )
+
+        # ─── E.9 BCI-RLVR gated binned-confidence-injection setup ─────────────
+        # NEW flag `sdc_force_inject_conf` — DISTINCT from the legacy
+        # `sdc_force_inject` hard-block above (which stays intact for
+        # ROD_MQ_CONTRAST_INJECT). When this flag is FALSE (every existing mode)
+        # nothing below installs a wrap → the rollout path is byte-identical.
+        self._bci_inject_conf = bool(getattr(_algo, "sdc_force_inject_conf", False))
+        self._bci_orig_generate = None
+        self._bci_seed_ids = None  # list[list[int]] per bin, built lazily on tokenizer
+        if self._bci_inject_conf:
+            from .meta_inject import default_conf_bins
+            _n = int(self.config.actor_rollout_ref.rollout.n)
+            _bins = getattr(_algo, "sdc_conf_bins", None)
+            if _bins is None:
+                self._bci_conf_bins = default_conf_bins(_n)
+            else:
+                self._bci_conf_bins = [float(x) for x in list(_bins)]
+            if len(self._bci_conf_bins) != _n:
+                raise ValueError(
+                    f"sdc_conf_bins length {len(self._bci_conf_bins)} != rollout.n {_n}; "
+                    "one confidence bin center is required per GRPO rollout."
+                )
+            print(
+                f"[BCI-RLVR] binned-confidence-injection ENABLED: n={_n} "
+                f"bins={self._bci_conf_bins} (wrap installed lazily in init_workers)"
+            )
+
+    def init_workers(self):
+        """verl 0.7.1 creates `self.async_rollout_manager` inside the base
+        init_workers (AgentLoopManager.create). The BCI wrap must replace its
+        bound `generate_sequences` AFTER it exists, so we install the wrap here
+        — ONLY under `algorithm.sdc_force_inject_conf` (else this override is a
+        pure pass-through and the rollout path stays byte-identical)."""
+        super().init_workers()
+        if not getattr(self, "_bci_inject_conf", False):
+            return  # default path: no wrap, byte-identical to every other mode
+        mgr = getattr(self, "async_rollout_manager", None)
+        if mgr is None:
+            raise RuntimeError(
+                "BCI-RLVR: async_rollout_manager is None after init_workers — "
+                "cannot install the binned-confidence-injection wrap."
+            )
+        # Build per-bin seed token-ids now that the tokenizer is available, and
+        # pad every bin's seed to a COMMON length so the prompt-tail slice and the
+        # response-head splice are a single fixed width across the group.
+        self._bci_build_seed_ids()
+        self._bci_orig_generate = mgr.generate_sequences
+        mgr.generate_sequences = self._bci_generate_sequences
+        print("[BCI-RLVR] generate_sequences wrap INSTALLED on async_rollout_manager.")
+
+    def _bci_build_seed_ids(self):
+        """Tokenize each bin's conf seed; assert (and if needed pad) to equal
+        length so the prompt-tail strip / response-head splice is one fixed
+        width L_seed for the whole interleaved group."""
+        from .meta_inject import build_conf_seed_ids
+        pad_id = self.tokenizer.pad_token_id
+        if pad_id is None:
+            pad_id = self.tokenizer.eos_token_id
+        seeds = [build_conf_seed_ids(self.tokenizer, c) for c in self._bci_conf_bins]
+        lens = [len(s) for s in seeds]
+        L = max(lens)
+        # 2-decimal formatting makes all bins equal-length on the v8_strict base
+        # tokenizer (verified: 13 tokens each). REFUSE to run on unequal lengths
+        # rather than right-pad: padding with pad_id can collide with eos_token_id
+        # (no distinct pad token) → get_response_mask would EOS-truncate the
+        # response at the padded seed and SILENTLY zero the whole continuation's
+        # advantage (code-review I1). A loud failure here is correct; if it ever
+        # fires, fix the bin formatting so all seeds tokenize to one length.
+        if len(set(lens)) != 1:
+            raise ValueError(
+                f"[BCI-RLVR] conf seeds tokenized to unequal lengths {lens} for bins "
+                f"{self._bci_conf_bins}; the fixed-width prompt-tail strip / response-head "
+                "splice requires one common seed length. Adjust bin formatting so every "
+                "seed shares a token length."
+            )
+        self._bci_seed_ids = seeds
+        self._bci_seed_len = L
+        self._bci_pad_id = pad_id
+        # close-id used to measure inject_close_rate (did <|/meta|> survive?)
+        self._bci_close_id = self.tokenizer.convert_tokens_to_ids("<|/meta|>")
+
+    def _bci_generate_sequences(self, gen_batch: "DataProto"):
+        """Gated wrap of async_rollout_manager.generate_sequences (E.9).
+
+        Layout: fit() passes a gen_batch already repeated n× with
+        interleave=True, so row r belongs to bin (r % n). For each row we
+        (a) append that bin's conf-seed ids to the prompt's REAL tail (input is
+        LEFT-padded → real prompt is right-aligned), re-left-pad to prompt_len;
+        (b) call the original generate to get continuations conditioned on the
+        seed; (c) REPACK so the seed moves from the prompt tail into the RESPONSE
+        head: final prompt = original prompt (seed stripped), final response =
+        seed ⊕ continuation, with attention_mask/position_ids/response_mask
+        rebuilt and re-padded to the ORIGINAL prompt_len / response_len.
+
+        Invariants asserted: (I1) the seeded <|meta|>…<|/meta|> lives inside
+        `responses` (so outcome_calibration_reward parses it); (I2) it appears
+        exactly once; (I3) tensor shapes/padding match what old_log_prob/advantage
+        expect (prompt_len, response_len preserved). NODE-SMOKE-ONLY.
+        """
+        # E.9 CRITICAL (code-review C1): the wrap MUST be a no-op on validation.
+        # _validate() calls this same generate_sequences but does NOT do
+        # gen_batch.repeat(n, interleave=True) — each eval problem appears once —
+        # so the row%n binning would inject an arbitrary confidence into EVERY
+        # eval rollout and corrupt the very acc/ECE gates that decide the
+        # experiment. Pass validation batches straight to the original generate.
+        if gen_batch.meta_info.get("validate", False):
+            return self._bci_orig_generate(gen_batch)
+        import torch as _torch
+        from verl import DataProto as _DataProto
+        from verl.utils.torch_functional import get_response_mask as _grm
+        from tensordict import TensorDict as _TensorDict
+
+        tok = self.tokenizer
+        pad_id = self._bci_pad_id
+        n = int(self.config.actor_rollout_ref.rollout.n)
+        seeds = self._bci_seed_ids
+        L_seed = self._bci_seed_len
+
+        in_ids = gen_batch.batch["input_ids"]            # (B, P) LEFT-padded
+        in_attn = gen_batch.batch["attention_mask"]      # (B, P)
+        B, P = in_ids.shape
+        device = in_ids.device
+
+        # ── (a) build seeded, re-left-padded prompts of width P (unchanged) ──
+        # We DROP the P leftmost columns we no longer need: appending L_seed real
+        # tokens means we must evict L_seed left-pad columns to keep width P. The
+        # real prompt length is attn.sum(); if a prompt is so long that evicting
+        # left pads is insufficient (real_len + L_seed > P) we truncate the
+        # prompt HEAD (oldest tokens) — acceptable: max_prompt_length leaves
+        # headroom and seeds are tiny. We record the per-row seed so the repack
+        # can strip exactly it back out.
+        seeded_ids = in_ids.new_full((B, P), pad_id)
+        seeded_attn = _torch.zeros((B, P), dtype=in_attn.dtype, device=device)
+        for r in range(B):
+            seed = _torch.tensor(seeds[r % n], dtype=in_ids.dtype, device=device)
+            real_len = int(in_attn[r].sum().item())
+            real = in_ids[r, P - real_len:] if real_len > 0 else in_ids[r, P:P]
+            combined = _torch.cat([real, seed], dim=0)
+            if combined.shape[0] > P:                      # truncate prompt HEAD
+                combined = combined[combined.shape[0] - P:]
+            w = combined.shape[0]
+            seeded_ids[r, P - w:] = combined
+            seeded_attn[r, P - w:] = 1
+        # position_ids rebuilt left-padded: 0 for pads then 0..(w-1) cumulatively.
+        seeded_pos = (seeded_attn.cumsum(dim=-1) - 1).clamp(min=0) * seeded_attn
+
+        seeded_batch = _TensorDict(
+            {
+                "input_ids": seeded_ids,
+                "attention_mask": seeded_attn,
+                "position_ids": seeded_pos,
+            },
+            batch_size=B,
+        )
+        seeded_dp = _DataProto(
+            batch=seeded_batch,
+            non_tensor_batch=dict(gen_batch.non_tensor_batch),
+            meta_info=dict(gen_batch.meta_info),
+        )
+
+        # ── (b) original generate on the seeded prompts ──
+        out = self._bci_orig_generate(seeded_dp)
+
+        # out.batch: prompts (B,P) == seeded prompt, responses (B,R) continuation,
+        # input_ids (B,P+R), attention_mask (B,P+R), position_ids, response_mask.
+        out_prompts = out.batch["prompts"]               # (B, P) seeded
+        out_resp = out.batch["responses"]                # (B, R) continuation
+        out_attn = out.batch["attention_mask"]           # (B, P+R)
+        R = out_resp.shape[1]
+        assert out_prompts.shape[1] == P, (
+            f"BCI repack: post-gen prompt_len {out_prompts.shape[1]} != input prompt_len {P}"
+        )
+
+        # ── (c) repack: strip seed from prompt tail, prepend to response head ──
+        eos_id = out.meta_info.get("eos_token_id", gen_batch.meta_info.get("eos_token_id"))
+        if eos_id is None:
+            eos_id = tok.eos_token_id
+
+        new_prompts = out_prompts.new_full((B, P), pad_id)
+        new_resp = out_resp.new_full((B, R), pad_id)
+        close_survived = 0
+        for r in range(B):
+            seed = _torch.tensor(seeds[r % n], dtype=out_resp.dtype, device=device)
+            # the seeded prompt row tail = [ ...orig_prompt..., seed ] right-aligned
+            row_real_len = int(out_attn[r, :P].sum().item())  # seeded real width w
+            real_block = out_prompts[r, P - row_real_len:] if row_real_len > 0 else out_prompts[r, P:P]
+            # strip the trailing L_seed tokens → original prompt content
+            assert row_real_len >= L_seed, (
+                f"BCI repack row {r}: seeded width {row_real_len} < seed_len {L_seed}"
+            )
+            orig_prompt = real_block[: row_real_len - L_seed]
+            op = orig_prompt.shape[0]
+            new_prompts[r, P - op:] = orig_prompt           # re-LEFT-pad prompt
+            # response = seed ⊕ continuation, RIGHT-padded, truncated to R
+            cont = out_resp[r]
+            cont_real = int(out_attn[r, P:].sum().item())
+            cont = cont[:cont_real] if cont_real > 0 else cont[:0]
+            spliced = _torch.cat([seed, cont], dim=0)[:R]   # truncate tail if overflow
+            new_resp[r, : spliced.shape[0]] = spliced
+            # (I2) seed appears exactly once: it is at response head and was
+            # stripped from the prompt; assert no <|/meta|> in the orig_prompt tail
+            # region would double-count — close-id presence is counted for logging.
+            if int((spliced == self._bci_close_id).sum().item()) >= 1:
+                close_survived += 1
+
+        # rebuild prompt attention/position (left-padded)
+        new_p_attn = (new_prompts != pad_id).to(out_attn.dtype)
+        # NOTE: pad_id may legitimately appear inside a seed if we right-padded
+        # unequal seeds; that only affects the response, not the prompt. For the
+        # prompt, the real content has no pad_id (left-pad only), so mask is exact.
+        new_r_attn = _grm(response_id=new_resp, eos_token=eos_id, dtype=out_attn.dtype)
+        new_input_ids = _torch.cat([new_prompts, new_resp], dim=-1)
+        new_attn = _torch.cat([new_p_attn, new_r_attn], dim=-1)
+        # position_ids: prompt cumsum then continue into response
+        p_pos = (new_p_attn.cumsum(dim=-1) - 1).clamp(min=0) * new_p_attn
+        last = p_pos[:, -1:].clone()
+        delta = _torch.arange(1, R + 1, device=device).unsqueeze(0).expand(B, R)
+        r_pos = last + delta
+        new_pos = _torch.cat([p_pos, r_pos * new_r_attn], dim=-1)
+
+        # (I1) the seed block is inside `responses` (head); (I3) widths preserved.
+        assert new_prompts.shape == (B, P) and new_resp.shape == (B, R)
+        assert new_input_ids.shape == (B, P + R)
+
+        repacked = _TensorDict(
+            {
+                "prompts": new_prompts,
+                "responses": new_resp,
+                "input_ids": new_input_ids,
+                "attention_mask": new_attn,
+                "position_ids": new_pos,
+                "response_mask": new_r_attn,
+            },
+            batch_size=B,
+        )
+        new_out = _DataProto(
+            batch=repacked,
+            non_tensor_batch=dict(out.non_tensor_batch),
+            meta_info=dict(out.meta_info),
+        )
+        # logging: inject_close_rate + seed-conf histogram (best-effort; never
+        # raise on logging). Stash into meta_info so a downstream logger picks it
+        # up; the trainer's Tracking logger is not cleanly reachable from here.
+        try:
+            new_out.meta_info["bci_inject_close_rate"] = float(close_survived) / float(B)
+            new_out.meta_info["bci_seed_conf_hist"] = list(self._bci_conf_bins)
+        except Exception:
+            pass
+        return new_out
 
     def _compute_reward_colocate(self, batch: DataProto) -> DataProto:
         fn = self._sdc_reward_fn

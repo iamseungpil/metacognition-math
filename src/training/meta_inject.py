@@ -100,6 +100,44 @@ def splice_prefix(prompt_ids, response_ids, pos: int, segment_ids) -> list[int]:
     return list(prompt_ids) + list(response_ids[:pos]) + list(segment_ids)
 
 
+# ─── E.9 Binned-Confidence-Injection (BCI-RLVR) ────────────────────────────────
+# ADDITIVE: the three helpers below are used ONLY by the BCI_RLVR rollout wrap
+# (SDCRayPPOTrainer._bci_generate_sequences, installed only under the new flag
+# algorithm.sdc_force_inject_conf). They do NOT touch any function above and are
+# pure (numpy/str only), so they unit-test without torch/transformers/verl.
+#
+# Mechanism (see docs/.../e9-...-design.md §2): for a GRPO group of rollout.n
+# samples (verl layout gen_batch.repeat(n, interleave=True) → within-group bin
+# index = row_index % n), sample i is SEEDED with a fixed confidence statement
+# `<|meta|>\nconfidence: c_i\n<|/meta|>\n`, c_i a bin center. The seed lands in the
+# trained RESPONSE region so outcome_calibration_reward (rewards.py, unmodified)
+# proper-scores it and REINFORCE raises the calibrated confidence.
+
+
+def default_conf_bins(n: int) -> list[float]:
+    """Evenly spaced confidence bin centers for n GRPO rollouts.
+
+    Center i (0-based) = (i + 1) / (n + 1), so the n centers tile (0, 1) with
+    equal spacing and equal margins at both ends. n=4 → [0.2, 0.4, 0.6, 0.8].
+    """
+    if n <= 0:
+        raise ValueError(f"default_conf_bins needs n >= 1, got {n}")
+    return [(i + 1) / (n + 1) for i in range(n)]
+
+
+def conf_seed_template(c: float) -> str:
+    """The seeded meta block for confidence ``c`` (2-decimal, parseable by
+    rewards.outcome_calibration_reward's ``<|meta|>...confidence: X...<|/meta|>``
+    regex). 2 decimals so all bins tokenize to equal length (see assert in wrap)."""
+    return f"\n<|meta|>\nconfidence: {c:.2f}\n<|/meta|>\n"
+
+
+def build_conf_seed_ids(tokenizer, c: float) -> list[int]:
+    """Token ids for the confidence seed block (no special tokens added — the
+    `<|meta|>`/`<|/meta|>` strings are themselves added-vocab tokens)."""
+    return tokenizer.encode(conf_seed_template(c), add_special_tokens=False)
+
+
 def plan_inject_prefixes(prompt_ids_list, response_ids_list, entropy_list,
                          tokenizer, meta_open_id: int, meta_close_id: int,
                          template: str = GOOD_META, min_tok: int = MIN_TOK_DEFAULT):

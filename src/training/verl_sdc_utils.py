@@ -300,7 +300,13 @@ def compute_sdc_gdpo_advantage(
     # ADDS a new mode to the early-return; the `== "VANILLA_GRPO"` predicate is
     # still independently true for VANILLA_GRPO, so VANILLA_GRPO behaviour is
     # byte-identical. No new mode was given the SDC factor path.
-    if sdc_mode == "VANILLA_GRPO" or sdc_mode == "MATCHED_E21RV2":
+    # BCI_RLVR (E.9, ADDITIVE): env-reward-only mode (correctness +
+    # outcome_calibration, no SDC teacher). Takes the SAME teacher-free advantage
+    # path as VANILLA_GRPO/MATCHED_E21RV2 — whiten the multi-head GDPO advantage,
+    # no SDC factor, no teacher-tensor reads. This OR-clause only ADDS a mode;
+    # the existing `== "VANILLA_GRPO"`/`== "MATCHED_E21RV2"` predicates stay
+    # independently true, so those modes are byte-identical.
+    if sdc_mode == "VANILLA_GRPO" or sdc_mode == "MATCHED_E21RV2" or sdc_mode == "BCI_RLVR":
         advantages = base_advantages * response_mask
         advantages = verl_F.masked_whiten(advantages, response_mask) * response_mask
         return advantages, advantages
