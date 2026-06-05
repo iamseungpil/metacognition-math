@@ -481,7 +481,7 @@ _TEACHER_PROMPT_SETS = (
 # the EXACT E.3-validated steering strings (context consistency). The join
 # patterns below (" (answer is {g}) " gold marker + leading-space suffix join)
 # also mirror e2's CONTRASTS registry (e2:135-139) verbatim.
-_CONTRAST_VARIANTS = ("decoy", "stance", "conf")
+_CONTRAST_VARIANTS = ("decoy", "stance", "conf", "conf_free")
 CAUTIOUS_INSTR = ("Reason cautiously: question whether your current approach is right, verify each "
                   "step with an alternative method, avoid premature confidence.")
 CONFIDENT_INSTR = ("Reason decisively: commit to your current approach with confidence and proceed.")
@@ -841,6 +841,16 @@ def _build_teacher_logprob_batch(
             elif _cv == "conf":
                 _sfx = "\nconfidence: 0.15\n" if contrast_side == "pos" else "\nconfidence: 0.95\n"
                 teacher_prompt = f"{_tp_prefix}{prompt_text} (answer is {answer_text}){_sfx}"
+            elif _cv == "conf_free":
+                # E.8 GOLD-FREE conf-down: confidence suffix ONLY, NO answer injected (T+/T-
+                # differ only in the confidence level, both gold-free). Combined with
+                # mode=GFN_OPSD_CONTRAST this makes the teacher a DISTRIBUTION-MATCHING (listwise
+                # KL) target pulling the policy's meta toward the low-conf-conditioned self —
+                # genuinely != E.4 (RLSD_META_CONTRAST + conf = gold-conditioned MAGNITUDE
+                # reshaping). Gold-free avoids the leakage that kills distribution-matching for
+                # gold-conditioned teachers (Self-Distilled RLVR, arXiv 2604.03128).
+                _sfx = "\nconfidence: 0.15\n" if contrast_side == "pos" else "\nconfidence: 0.95\n"
+                teacher_prompt = f"{_tp_prefix}{prompt_text}{_sfx}"
             else:
                 raise ValueError(
                     f"sdc_contrast_variant={_cv!r} not in {_CONTRAST_VARIANTS}"
