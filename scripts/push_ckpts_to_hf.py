@@ -84,6 +84,21 @@ def _prune_old_verl_ckpts(api, repo_id: str, config_name: str, keep: int, latest
             print(f"[push] prune {name} skip: {exc}")
 
 
+def _squash_history(api, repo_id: str) -> None:
+    """Collapse the repo's commit history into a single commit (history 정리).
+
+    Each checkpoint upload adds a ~16GB commit; with keep=1 the old refs are
+    pruned but the LFS blobs linger in history, bloating usedStorage. super_squash
+    rewrites history to one commit referencing only current files. Best-effort:
+    any failure is logged and swallowed so the daemon never aborts.
+    """
+    try:
+        api.super_squash_history(repo_id=repo_id, repo_type="model")
+        print(f"[push] squashed history for {repo_id}")
+    except Exception as exc:
+        print(f"[push] squash skip: {exc}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt_dir", required=True)
@@ -99,6 +114,14 @@ def main() -> None:
         help="Keep only the most-recent N veRL global_step_* checkpoints on the "
         "HF repo; older ones are deleted after a successful upload (default 1). "
         "Set <=0 to disable pruning (keep all). TRL checkpoint-N/ dirs are never pruned.",
+    )
+    ap.add_argument(
+        "--squash_every",
+        type=int,
+        default=20,
+        help="After every N successful uploads, super_squash_history to collapse the "
+        "bloated commit history (each ~16GB checkpoint commit otherwise lingers in LFS "
+        "history). Keeps current files intact. Best-effort. Set <=0 to disable.",
     )
     args = ap.parse_args()
 
@@ -123,13 +146,29 @@ def main() -> None:
 
     print(f"[push] daemon start ckpt_dir={ckpt_dir} repo={args.repo_id} interval={args.interval}s done={len(done)}")
 
+    uploads_since_squash = 0
     while True:
         try:
             if ckpt_dir.exists():
                 # Match BOTH veRL (global_step_N/) AND TRL (checkpoint-N/) save formats.
-                ckpt_candidates = sorted(
-                    list(ckpt_dir.glob("global_step_*")) + list(ckpt_dir.glob("checkpoint-*"))
+                _all = list(ckpt_dir.glob("global_step_*")) + list(ckpt_dir.glob("checkpoint-*"))
+                _gs = sorted(
+                    [d for d in _all if d.is_dir() and d.name.startswith("global_step_")],
+                    key=lambda x: _step_num(x.name),
                 )
+                _trl = [d for d in _all if d.is_dir() and d.name.startswith("checkpoint-")]
+                # DURABILITY (E.8/E.9 cross-node preempt): upload ONLY the newest veRL
+                # global_step_* dir (skip the backlog) so HF always holds a recent
+                # checkpoint for resume — a ~16GB sequential upload can NEVER keep up
+                # with save_freq under preemption, leaving HF stuck far behind. Mark all
+                # older global_step dirs done so they are never uploaded. TRL
+                # checkpoint-*/ keeps full per-dir upload (its resume layout needs all).
+                if _gs:
+                    for _old in _gs[:-1]:
+                        done.add(_old.name)
+                    ckpt_candidates = ([_gs[-1]] if _gs[-1].name not in done else []) + _trl
+                else:
+                    ckpt_candidates = _trl
                 for step_dir in ckpt_candidates:
                     if not step_dir.is_dir() or step_dir.name in done:
                         continue
@@ -158,6 +197,12 @@ def main() -> None:
                     done.add(step_dir.name)
                     marker.write_text(json.dumps(sorted(done)))
                     print(f"[push] done {step_dir.name}")
+
+                    # History 정리: periodically collapse bloated LFS commit history.
+                    uploads_since_squash += 1
+                    if args.squash_every > 0 and uploads_since_squash >= args.squash_every:
+                        _squash_history(api, args.repo_id)
+                        uploads_since_squash = 0
 
                     # Keep-only-latest pruning: only for veRL global_step_* dirs
                     # (TRL checkpoint-N/ resume layout must retain all). Never

@@ -75,15 +75,59 @@ jobs:
 
         export PYTHONPATH=/scratch/metacognition
         cd /scratch/metacognition
+        # RESUME-FROM-HF (durability): pull latest global_step from HF into the local
+        # ckpt dir + write the iteration pointer so resume_mode=auto resumes after a
+        # cross-node preempt wiped /scratch (else training restarts from step 0).
+        python /scratch/metacognition/scripts/pull_resume_ckpt.py --repo iamseungpil/metacot-h200-e9-bci-rlvr --config_name verl_e9_bci_rlvr --local_dir /scratch/checkpoints/verl_e9_bci_rlvr --token $${HF_TOKEN} 2>&1 | tail -5
         # E.9 = BCI_RLVR (correctness + outcome_calibration) + binned-confidence
         # injection (sdc_force_inject_conf=true). All BCI settings are baked into
         # the config; STEP 1 IS THE NODE-SMOKE for the gated rollout repack.
+        # E.9-v2 = SELF-EMIT contrast to inject: sdc_force_inject_conf=false →
+        # NO binned injection; outcome_calibration rewards the model's OWN emitted
+        # confidence (vs inject which force-seeds 0.2/0.4/0.6/0.8). Same BCI_RLVR reward.
         /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
             --config-name=verl_e9_bci_rlvr_h200_4x4k \
+            algorithm.sdc_force_inject_conf=false \
             trainer.resume_mode=auto \
             ++hydra.searchpath=[pkg://verl/trainer/config]
         VERL_RC=$$?
         echo "[YAML] verl_sdc rc=$${VERL_RC}"
         if [ "$${VERL_RC}" -ne 0 ]; then echo "[YAML] verl_sdc failed, exit 1"; exit 1; fi
+
+        # ===== AUTO-EVAL after training (train -> eval -> push pipeline) =====
+        pkill -9 -f gpu_keeper.py 2>/dev/null; ray stop --force 2>/dev/null; sleep 15
+        PYBIN=/scratch/conda_envs/simplerl/bin/python
+        CKROOT=/scratch/checkpoints/verl_e9_bci_rlvr
+        GS=$$(ls -d $${CKROOT}/global_step_* 2>/dev/null | sed "s#.*global_step_##" | sort -n | tail -1)
+        echo "[YAML] auto-eval: final global_step=$${GS}"
+        CKPT=$${CKROOT}/global_step_$${GS}/actor
+        MERGED=/scratch/eval_results/merged_e9selfemit
+        EVAL_DIR=/scratch/eval_results/eval_e9_selfemit_1030_16k_k8
+        mkdir -p $${MERGED} $${EVAL_DIR}
+        $${PYBIN} -m verl.model_merger merge --backend fsdp --local_dir $${CKPT} --target_dir $${MERGED}
+        $${PYBIN} -c "
+        import json, os
+        p=\"$${MERGED}/tokenizer_config.json\"
+        if os.path.exists(p):
+            c=json.load(open(p)); c.pop(\"extra_special_tokens\", None); json.dump(c, open(p,\"w\"), indent=2); print(\"tok patched\")
+        "
+        $${PYBIN} scripts/eval_vllm_1030.py \
+          --model_path $${MERGED} --model_name e9_selfemit_1030_16k_k8 --output_dir $${EVAL_DIR} \
+          --max_problems 500 --num_samples 8 --max_tokens 16384 --temperature 0.7 --top_p 0.95 --tp_size 4 \
+          2>&1 | tee $${EVAL_DIR}/eval.log
+        $${PYBIN} scripts/aggregate_e4_eval.py \
+          --parquet $${EVAL_DIR}/e9_selfemit_1030_16k_k8.parquet \
+          --out $${EVAL_DIR}/e9_selfemit_1030_16k_k8.e4summary.json --arm e9_selfemit \
+          2>&1 | tee $${EVAL_DIR}/aggregate.log
+        $${PYBIN} -c "
+        from huggingface_hub import HfApi
+        import os
+        HfApi().upload_folder(folder_path=\"$${EVAL_DIR}\",
+            path_in_repo=\"eval/e9_selfemit_1030_16k_k8\",
+            repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"*.json\", \"*.parquet\", \"*.log\"])
+        print(\"eval pushed\")
+        " || echo "[YAML] eval upload skipped"
+        echo "[YAML] e9 self-emit train->eval->push DONE"
         sleep 86400
         '

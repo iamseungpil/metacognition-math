@@ -75,15 +75,28 @@ jobs:
 
         export PYTHONPATH=/scratch/metacognition
         cd /scratch/metacognition
+        # RESUME-FROM-HF (durability): pull latest global_step from HF into the local
+        # ckpt dir + write the iteration pointer so resume_mode=auto resumes after a
+        # cross-node preempt wiped /scratch (else training restarts from step 0).
+        python /scratch/metacognition/scripts/pull_resume_ckpt.py --repo iamseungpil/metacot-h200-e9-bci-inject --config_name verl_e9_bci_rlvr --local_dir /scratch/checkpoints/verl_e9_bci_rlvr --token $${HF_TOKEN} 2>&1 | tail -5
         # E.9 = BCI_RLVR (correctness + outcome_calibration) + binned-confidence
         # injection (sdc_force_inject_conf=true). All BCI settings are baked into
         # the config; STEP 1 IS THE NODE-SMOKE for the gated rollout repack.
         /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
             --config-name=verl_e9_bci_rlvr_h200_4x4k \
             trainer.resume_mode=auto \
-            ++hydra.searchpath=[pkg://verl/trainer/config]
-        VERL_RC=$$?
+            ++hydra.searchpath=[pkg://verl/trainer/config] 2>&1 | tee /scratch/logs/verl_e9.log
+        VERL_RC=$${PIPESTATUS[0]}
         echo "[YAML] verl_sdc rc=$${VERL_RC}"
-        if [ "$${VERL_RC}" -ne 0 ]; then echo "[YAML] verl_sdc failed, exit 1"; exit 1; fi
+        if [ "$${VERL_RC}" -ne 0 ]; then
+          echo "[YAML] verl_sdc failed — uploading crash tail to HF for diagnosis"
+          tail -400 /scratch/logs/verl_e9.log > /scratch/logs/e9_crash_tail.log
+          python -c "
+        from huggingface_hub import upload_file
+        import os
+        upload_file(path_or_fileobj=\"/scratch/logs/e9_crash_tail.log\", path_in_repo=\"reports/e9_inject_crash_tail.log\", repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"]); print(\"crash tail uploaded to reports/e9_inject_crash_tail.log\")
+        " || echo "[YAML] crash-log upload failed"
+          exit 1
+        fi
         sleep 86400
         '
