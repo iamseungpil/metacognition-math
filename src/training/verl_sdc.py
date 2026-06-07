@@ -632,6 +632,13 @@ def reward_loop_score(data_source=None, solution_str="", ground_truth="", extra_
     except Exception:
         out["degeneration_penalty"] = 0.0
 
+    # TRIOBJ_META_V1 (always-emit, same R16 robustness pattern as degeneration_penalty):
+    # Ray RewardLoopWorker actors don't inherit the trainer's mode, so emit the
+    # meta_revision_utility key unconditionally. Its GDPO weight is 0 for every other
+    # mode (it's absent from their REWARD_CONFIGS keys), so this is a safe no-op there
+    # and provides the signal for TRIOBJ_META_V1.
+    out["meta_revision_utility"] = _safe_call(meta_revision_utility_reward, with_gt=True)
+
     if mode == "SDC_SHARED":
         # Restore the 5-head legacy contract so multi_turn / async rollout
         # paths don't crash on missing GDPO reward keys.
