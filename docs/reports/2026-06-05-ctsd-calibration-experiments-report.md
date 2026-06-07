@@ -150,3 +150,52 @@ North-star를 명문화: **"메타인지 행동을 강화해 정확도를 올린
   `latest_checkpointed_iteration.txt` 작성 → resume_mode=auto가 그 step부터 재개.
   e8/e9 학습 YAML 3종에 verl 실행 직전 삽입. 검출 로직 스모크 4/4 통과(300/10/15/no-op).
   **적용하려면 해당 학습 잡 relaunch 필요**(현재 러닝 잡은 frozen command라 무영향).
+
+---
+
+## E.9 inject EVAL 결과 + 근본원인 진단 (2026-06-07)
+
+### 결과 (1030@16k k=8, vs e4_baseline 0.786/ECE0.557/conf0.29)
+| 지표 | baseline | **inject** | 판정 |
+|---|---|---|---|
+| accuracy | 0.786 | **0.609** | ❌ −18pp |
+| ECE | 0.557 | **0.083** | ✅(착시 포함) |
+| mean_conf | 0.29 | 0.602 | 과소확신 해소 |
+| meta_emission | 0.92 | **0.41** | ❌ 발화 붕괴 |
+| 벤치 | — | gsm8k .736 / math500 .514 / aime .096 | |
+
+### AIME 240개 전수조사 — decoherence(붕괴)가 진짜 원인
+- **75%(181/240)가 16k에서 truncate**, 그것도 **반복 LaTeX 조각 스팸**(`\frac\n\]\n\boxed\n\end...`)으로 **박스 답 미커밋**. meta_blocks=0.
+- 정답 응답 median **1030 tok**(쉬운 문제 빠르게 해결) vs 오답 median **16384 tok(꽉 참)**.
+- baseline 대비 악화: acc 0.163→0.096, truncate 0.67→0.75, meta 0.39→0.30.
+
+### 학습 추세 — underfitting 아님, 점진적 붕괴
+- output.log 288 step: response_length **mean ~650→~1450**, **clip_ratio 0.10→0.25** (둘 다 학습 중 ~2배 증가).
+- val에서 **outcome_calibration 보상 전 카테고리 0** (meta 발화 죽어 신호 소멸) → 실효 신호는 correctness뿐.
+  hard 카테고리 val reward 음수(geometry −0.13, number_theory −0.13, omni-math −0.73).
+- → **더 학습하면 상한이 오르는 게 아니라 붕괴가 심해짐.** 목적함수가 유도한 실패.
+
+### ECE 개선의 착시
+ECE가 준 건 일부만 진짜(easy conf 0.71↑). 나머지는 **"안정적으로 틀리고(붕괴)+낮은 conf"가 Brier상 잘 보정된 것으로 채점**된 artifact — 모델이 *더 못해진 덕에* 낮은 confidence가 정당해짐.
+
+### 선행연구로 본 근본원인 (3-agent 조사, 2024–2026)
+1. **DCPO [Ma et al., ICML2026, arXiv:2603.09117] — 직격탄.** correctness에 Brier를 **결합**하면 정확도-gradient와 calibration-gradient가 **충돌**(Fisher 내적 음수). RLCR의 결합 Brier가 **AIME 40%→32.8%로 정확도 하락**을 그대로 관측. 처방: **gradient 분리** — correctness는 reasoning 토큰, calibration은 conf 토큰에만, advantage 마스킹.
+2. **RLCR [Damani et al., 2025, 2507.16806]** = 우리 설정(correctness+Brier). "정확도 손실 없음" 주장했으나 DCPO가 hard reasoning에서 반박.
+3. **Dr.GRPO [2503.20783]** — GRPO의 per-response length 정규화가 **특히 오답에서 길이를 부풀림** = 우리 "hard 문제 스팸" 시그니처. 처방: length/std 정규화 제거.
+4. **DAPO [2503.14476]** — clip-higher / dynamic sampling / token-level loss / **soft overlong punishment + truncated 샘플 마스킹**(0 보상 금지) / format(box) 보상.
+5. **Entropy collapse [2505.22617]** — clip_ratio 2배 = 엔트로피 붕괴 지문. 처방 KL-Cov/Clip-Cov.
+6. **Yue et al. [2504.13837]** — RLVR은 쉬운 mode를 sharpen하고 **hard 문제 reasoning 경계는 축소**(easy↑/hard↓).
+7. **Taming Overconfidence (PPO-M/C) [2410.09724]** — calibration 보상은 reward-hacking 당하기 쉬움.
+8. 메타인지 RL: **SCoRe [2409.12917]**(Δ-correctness/진전 보상, warmup 없으면 붕괴), **Reflect-Retry-Reward [2505.24726]**(retry가 fail→success 뒤집을 때만 reflection 토큰 보상 = 우리 utility-gating과 동일, 검증됨), **Huang et al. [2310.01798]**(oracle 없는 intrinsic self-correction은 실패), **Self-Verification Dilemma [2602.03485]**(검증 과보상은 정확도 ↓), **Metacognitive Harness [2605.14186]**(모델은 calibrated FoK를 갖지만 *행동*을 못함 → 행동화하면 low-conf 16%→42%).
+
+### 진단 방법(다음에 적용)
+- ECE 단독 금지 → **AUROC(conf vs correct, discrimination)**, **accuracy-stratified ECE**, **selective-accuracy/coverage** 동시 보고(착시 차단).
+- **Pass@k + 난이도층화 정확도**(easy↑/hard↓ = diversity collapse 확인).
+- 학습 중 **response_length/clip_ratio·엔트로피** 추적, **truncated-no-box 비율**을 1급 지표로.
+
+### 처방 방향 (의도 = 유용한 메타인지로 정확도↑)
+A. **anti-decoherence/commit**: soft-overlong + box format 보상, truncated 마스킹, Dr.GRPO loss.
+B. **gradient 분리(DCPO)**: correctness는 답 토큰, calibration은 conf 토큰에만.
+C. **utility-gated meta(SCoRe/Reflect-Retry)**: meta-action이 **wrong→right 뒤집을 때만 +, right→wrong엔 −**, emission 자체엔 보상 금지.
+D. **self-consistency를 conf 타깃**으로(그룹 정답률) — 신호가 죽지 않고 정확도와 상관.
+E. correctness dominant 유지 + KL anchor로 붕괴 방지(warmup 후 shaping).

@@ -1,0 +1,66 @@
+# TRIOBJ_META_V1 — tri-objective meta-revision RL (SAFE v1: reward + config only).
+# plan: TRIOBJ_META_V1 (first, intent-aligned). CLONE of the VANILLA_GRPO baseline
+# (verl_e4_baseline_h200_4x4k) so it is DIRECTLY comparable to base GRPO: same E.4
+# base, same v8_strict cold start, same rollout.n, same 300 steps / 4k train.
+#
+# The ONLY behavioural change vs the baseline is mode=TRIOBJ_META_V1, which selects
+# the new GDPO multi-head reward config in verl_sdc.py:
+#   correctness (1.0) + meta_revision_utility (0.5) + meta_commit_shape (0.3).
+# TRIOBJ_META_V1 ∈ _VANILLA_MODES → teacher OFF (no T+/T-/position forward) and
+# compute_sdc_gdpo_advantage early-returns (env-reward-only, no SDC factor). It is
+# additive: every existing mode/config/test is byte-identical when this mode is off.
+#
+# v1 is SAFE = NO verl-internal advantage/token-mask surgery (that is v2). NO
+# sequence-level calibration head (it caused the inject gradient-conflict).
+
+defaults:
+  - verl_e4_selfdistill_h200_4x4k
+  - _self_
+
+mode: TRIOBJ_META_V1
+
+data:
+  # ABSOLUTE data paths — AVOID the cwd bug that crashed e9-selfemit (it ran from
+  # /scratch/amlt_code and the relative `data/...` path was not found). pull_parquets.py
+  # writes the redirect parquets to /scratch/metacognition/data/. The amlt yaml then
+  # rewrites a two-pass-instructed copy (verl_triobj_{train,val}.parquet) in that same
+  # dir; these absolute paths point at the rewritten copies.
+  train_files: /scratch/metacognition/data/verl_triobj_train.parquet
+  val_files: /scratch/metacognition/data/verl_triobj_val.parquet
+  # eval is run by the amlt auto-eval step at 16k (eval_vllm_1030 --max_tokens 16384);
+  # train rollout/response stays at 4k (inherited from the E.4 base) for comparability.
+  max_response_length: 4096
+
+algorithm:
+  sdc_mode: TRIOBJ_META_V1
+  sdc_enabled: false          # teacher OFF — env-reward-only multi-head GDPO
+  sdc_beta_contrast: 0.0
+  # GDPO heads/weights come from REWARD_CONFIGS['TRIOBJ_META_V1'] (funcs cannot live
+  # in YAML). gdpo_reward_keys/weights below are kept in sync for audit clarity; the
+  # 3 keys/weights match the registered config exactly.
+  gdpo_reward_keys: [correctness, meta_revision_utility, meta_commit_shape]
+  gdpo_reward_weights: [1.0, 0.5, 0.3]
+
+trainer:
+  experiment_name: verl_triobj_meta_v1_h200_4x4k
+  default_local_dir: /scratch/checkpoints/verl_triobj_meta_v1_h200_4x4k
+  total_training_steps: 300   # same scale as the baseline (E.4)
+
+# ============================================================================
+# TWO-PASS PROMPT INSTRUCTION (rendered into every train prompt by the amlt yaml's
+# parquet-rewrite step; the chat template is passthrough so this text is prepended
+# verbatim to the user question). Grading scores the LAST \boxed{} = the FINAL answer.
+#
+#   Solve the problem in two passes.
+#   PASS 1 — Give a PRELIMINARY answer in \boxed{...}.
+#   PASS 2 — Then write a <|meta|> ... <|/meta|> block that verifies/critiques your
+#            preliminary answer and states your confidence (0.0-1.0). If the check
+#            reveals an error, revise. Finally give your FINAL answer in \boxed{...}.
+#   Only the LAST \boxed{...} is graded as your final answer.
+# ============================================================================
+triobj_meta:
+  two_pass_instruction: |
+    Solve the problem in two passes.
+    PASS 1 — Give a PRELIMINARY answer in \boxed{...}.
+    PASS 2 — Then write a <|meta|> ... <|/meta|> block that verifies/critiques your preliminary answer and states your confidence (0.0-1.0). If the check reveals an error, revise. Finally give your FINAL answer in \boxed{...}.
+    Only the LAST \boxed{...} is graded as your final answer.

@@ -306,7 +306,12 @@ def compute_sdc_gdpo_advantage(
     # no SDC factor, no teacher-tensor reads. This OR-clause only ADDS a mode;
     # the existing `== "VANILLA_GRPO"`/`== "MATCHED_E21RV2"` predicates stay
     # independently true, so those modes are byte-identical.
-    if sdc_mode == "VANILLA_GRPO" or sdc_mode == "MATCHED_E21RV2" or sdc_mode == "BCI_RLVR":
+    # TRIOBJ_META_V1 (ADDITIVE): env-reward-only tri-objective GDPO mode (no SDC
+    # teacher). Takes the SAME teacher-free advantage path as VANILLA_GRPO/BCI_RLVR
+    # — whiten the multi-head GDPO advantage, no SDC factor, no teacher-tensor reads.
+    # This OR-clause only ADDS a mode; the existing predicates stay independently
+    # true, so all pre-existing modes are byte-identical.
+    if sdc_mode == "VANILLA_GRPO" or sdc_mode == "MATCHED_E21RV2" or sdc_mode == "BCI_RLVR" or sdc_mode == "TRIOBJ_META_V1":
         advantages = base_advantages * response_mask
         advantages = verl_F.masked_whiten(advantages, response_mask) * response_mask
         return advantages, advantages

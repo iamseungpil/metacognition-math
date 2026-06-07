@@ -53,6 +53,10 @@ from src.training.rewards import (
     redirect_execution_reward,
     verify_execution_reward,
 )
+# TRIOBJ_META_V1 (ADDITIVE): the NEW meta-revision-utility head lives in its own
+# module and is referenced ONLY by the new REWARD_CONFIGS['TRIOBJ_META_V1'] entry.
+# No existing import/head changes.
+from src.training.meta_revision_rewards import meta_revision_utility_reward
 from src.training._decoy_utils import _rule_based_decoy
 from src.training.verl_sdc_utils import (
     build_sdc_region_masks,
@@ -386,6 +390,24 @@ REWARD_CONFIGS = {
         "weights": [1.0, 0.5],
         "keys": ["correctness", "outcome_calibration"],
     },
+    # TRIOBJ_META_V1 (ADDITIVE, env-reward-only): tri-objective GDPO multi-head,
+    # sequence-level, mirrors the proven BCI_RLVR template (correctness dominant +
+    # auxiliary heads, no teacher forward). Heads:
+    #   1) correctness_reward (w=1.0) — final (last-boxed) answer; protects accuracy.
+    #   2) meta_revision_utility_reward (w=0.5) — NEW; two-sided, OUTCOME-GATED
+    #      credit for the CAUSAL effect of the preliminary->final revision
+    #      (wrong->right +1, right->wrong -1, right->right+genuine-meta +0.15,
+    #      over-check -0.1, both-wrong/one-box 0); clipped to [-1,1].
+    #   3) meta_commit_shape_reward (w=0.3) — existing anti-decoherence (box/commit +
+    #      decoherence penalty) to prevent the 16k LaTeX-spam truncation seen in inject.
+    # NO sequence-level calibration head in v1 (it caused the inject gradient-conflict;
+    # calibration-done-right = DCPO token-mask = v2). All three funcs are imported at
+    # the top of this file. GDPO per-head normalization keeps correctness dominant.
+    "TRIOBJ_META_V1": {
+        "funcs": [correctness_reward, meta_revision_utility_reward, meta_commit_shape_reward],
+        "weights": [1.0, 0.5, 0.3],
+        "keys": ["correctness", "meta_revision_utility", "meta_commit_shape"],
+    },
 }
 
 # Modes that do NOT compute teacher forward (env reward only).
@@ -394,7 +416,7 @@ REWARD_CONFIGS = {
 # (no T+/T-/position forward), exactly like VANILLA_GRPO. The advantage path
 # early-return in verl_sdc_utils was extended with a matching OR-clause.
 # VANILLA_GRPO membership/behaviour is unchanged (set still contains it).
-_VANILLA_MODES = {"VANILLA_GRPO", "MATCHED_E21RV2", "BCI_RLVR"}
+_VANILLA_MODES = {"VANILLA_GRPO", "MATCHED_E21RV2", "BCI_RLVR", "TRIOBJ_META_V1"}
 # BCI_RLVR (E.9, ADDITIVE): a NO-teacher env-reward-only mode (correctness +
 # outcome_calibration; sdc_enabled=false). It joins the teacher-free set so
 # _attach_teacher_signals returns early (no T+/T-/position forward) exactly like
