@@ -1,0 +1,9 @@
+# TRIOBJ_DCPO_V3 counterfactual custom agent-loop registry (verl agent_loop_config_path).
+# Loaded by AgentLoopManager: _agent_loop_registry["cf_prefix_agent"] = this entry,
+# then hydra.utils.instantiate(config=entry, ...) builds it by _target_ in the Ray
+# rollout workers. ADDITIVE — the default single_turn_agent loop (registered via
+# @register) is untouched. Selected per-sample by non_tensor_batch["agent_name"]
+# = "cf_prefix_agent", set by the gated CF wrap in verl_sdc only when
+# sdc_counterfactual=true (the CF 2nd-gen batch; the MAIN gen stays single_turn).
+- name: cf_prefix_agent
+  _target_: src.training.cf_prefix_agent.CFPrefixAgentLoop

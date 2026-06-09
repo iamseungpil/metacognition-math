@@ -48,18 +48,9 @@ def test_r_corr_fallback():
     assert run([_single("7")], [GT])["R_corr"][0] == -1.0   # final wrong
 
 
-# ── format enforcement ─────────────────────────────────────────────────────
-def test_single_pass_format_penalty():
-    # no preliminary answer before the meta -> single-pass -> -format_penalty*warmup
-    r = run([_single("4")], [GT], step=200, warmup_steps=200, format_penalty=0.05)
-    assert abs(r["R_meta"][0] - (-0.05)) < 1e-9
-
-
-def test_two_pass_no_revision_format_credit():
-    # group p_hat = 0.5 (one final right, one wrong) = warranted; rollout0 prelim==final.
-    comps = [_mk(4, 4), _mk(7, 7)]
-    r = run(comps, [GT, GT], step=200, warmup_steps=200, format_credit=0.05)
-    assert abs(r["R_meta"][0] - 0.05) < 1e-9   # 2-pass structure, no revision
+# NOTE: the v2 format_penalty/format_credit/warrant-eps/sandbag tests were REMOVED —
+# that reward design was superseded by the v3 causal counterfactual (R_meta =
+# c_with - c_without). v3 reward tests live in tests/test_dcpo_v3.py.
 
 
 # ── transition reward ───────────────────────────────────────────────────────
@@ -69,25 +60,11 @@ def test_flip_wrong_to_right_warranted():
     assert run(comps, [GT, GT], step=300)["R_meta"][0] == 1.0
 
 
-def test_flip_unwarranted_easy_denied():
-    # all finals right -> p_hat=1.0 unwarranted -> staged flip earns 0 (anti-sandbag).
-    comps = [_mk(7, 4)] + [_mk(4, 4)] * 5
-    assert run(comps, [GT] * 6, step=300)["R_meta"][0] == 0.0
-
-
 def test_destructive_right_to_wrong():
     # finals 7(wrong),4(right) -> p_hat=0.5; r0 prelim4(right)->final7(wrong) -> -warmup.
     comps = [_mk(4, 7), _mk(4, 4)]
     r = run(comps, [GT, GT], step=200, warmup_steps=200)
     assert r["R_meta"][0] == -1.0
-
-
-def test_revised_other_warranted_eps():
-    # warranted, revised but not a clean wrong->right or right->wrong: both wrong, changed.
-    # finals 7(wrong),4(right) -> p_hat=0.5; r0 prelim 8(wrong)->final 7(wrong), revised.
-    comps = [_mk(8, 7), _mk(9, 4)]
-    r = run(comps, [GT, GT], step=300, eps=0.1)
-    assert abs(r["R_meta"][0] - 0.1) < 1e-9
 
 
 # ── R_cal Brier on FINAL (revives now that final is extractable) ───────────
@@ -104,13 +81,6 @@ def test_conf_paren_format_now_parses():
     assert _parse_confidence("Confidence: 0.7") == 0.7
 
 
-# ── sandbagging circuit-breaker ─────────────────────────────────────────────
-def test_sandbag_clamp_zeros_meta_on_prelim_collapse():
-    # all two-pass rollouts have WRONG prelims -> canary=0 < floor, after warmup -> clamp 0.
-    comps = [_mk(7, 4), _mk(7, 4)]   # both prelim 7 wrong; finals 4 right -> p_hat=1.0 anyway
-    r = run(comps, [GT, GT], step=300, warmup_steps=200, sandbag_clamp=True, sandbag_floor=0.05)
-    assert r["sandbag_clamp"][0] == 0.0
-    assert r["R_meta"][0] == 0.0
 
 
 def test_clamp_inactive_before_warmup():

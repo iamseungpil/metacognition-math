@@ -1,0 +1,110 @@
+description: "E.8 gold-free conf-down RLSD eval (gs300) — standalone re-run after the inline auto-eval was OOM-killed. Training finished (gs300 on HF iamseungpil/metacot-h200-e8-goldfree-rlsd-confdown). CLONE of the WORKING e9-inject-eval structure (clean process, VLLM spawn -> avoids the inline OOM). Pulls global_step_300 -> verl.model_merger FSDP->HF -> eval_vllm_1030.py (FULL 1030 = gsm8k500+math500+aime30 via --max_problems 500, k=8, 16k) -> aggregate -> upload to eval/e8_goldfree_1030_16k_k8. The E.4-vs-E.8 gold-free comparison: E.4 gold_conf_down 0.714 vs E.8 gold-FREE conf_down -> answers 'was E.4's <baseline failure due to gold-conditioning?'. vs base 0.786. Tokens via env only."
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: e8_eval
+    sku: 141G4-H200
+    sla_tier: Basic
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 43200
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        CODE_TAR_REVISION: "442364954"
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        VLLM_WORKER_MULTIPROC_METHOD: spawn
+        ARM: e8_goldfree
+        GS: "300"
+        CONFIG_NAME: verl_e8_goldfree_rlsd_confdown
+        REPO: iamseungpil/metacot-h200-e8-goldfree-rlsd-confdown
+        EVAL_DIR_UP: /scratch/eval_results/eval_e8_goldfree_1030_16k_k8
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -o pipefail
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints /scratch/eval_results
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        PYBIN=$${SIMPLERL_DIR}/bin/python
+
+        # 1. download the e8 checkpoint (global_step_$${GS}) from its HF repo.
+        $${PYBIN} -c "
+        from huggingface_hub import snapshot_download
+        import os
+        cfg=os.environ[\"CONFIG_NAME\"]; gs=os.environ[\"GS\"]
+        snapshot_download(repo_id=os.environ[\"REPO\"], repo_type=\"model\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"checkpoints/\"+cfg+\"/global_step_\"+gs+\"/**\"], local_dir=\"/scratch\")
+        print(\"gs\"+gs+\" downloaded\")
+        "
+        CKPT=/scratch/checkpoints/$${CONFIG_NAME}/global_step_$${GS}/actor
+        MERGED=/scratch/eval_results/merged_$${ARM}
+        EVAL_DIR=/scratch/eval_results/eval_e8_goldfree_1030_16k_k8
+        mkdir -p $${MERGED} $${EVAL_DIR}
+
+        # 2. merge FSDP shards -> HF format.
+        $${PYBIN} -m verl.model_merger merge --backend fsdp --local_dir $${CKPT} --target_dir $${MERGED}
+        MERGE_RC=$$?
+        if [ "$${MERGE_RC}" -ne 0 ]; then echo "[YAML] merge FAILED rc=$${MERGE_RC}"; exit 1; fi
+
+        # 3. patch tokenizer.
+        $${PYBIN} -c "
+        import json, os
+        p=\"$${MERGED}/tokenizer_config.json\"
+        if os.path.exists(p):
+            c=json.load(open(p)); c.pop(\"extra_special_tokens\", None); json.dump(c, open(p,\"w\"), indent=2); print(\"tok patched\")
+        "
+
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+        # 4. eval: FULL 1030 (max_problems 500), k=8, 16k.
+        $${PYBIN} scripts/eval_vllm_1030.py \
+          --model_path $${MERGED} --model_name e8_goldfree_1030_16k_k8 --output_dir $${EVAL_DIR} \
+          --max_problems 500 --num_samples 8 --max_tokens 16384 --temperature 0.7 --top_p 0.95 --tp_size 4 \
+          2>&1 | tee $${EVAL_DIR}/eval.log
+        EVAL_RC=$$?
+        if [ "$${EVAL_RC}" -ne 0 ]; then echo "[YAML] eval FAILED rc=$${EVAL_RC}"; exit 1; fi
+
+        # 5. aggregate.
+        $${PYBIN} scripts/aggregate_e4_eval.py \
+          --parquet $${EVAL_DIR}/e8_goldfree_1030_16k_k8.parquet \
+          --out $${EVAL_DIR}/e8_goldfree_1030_16k_k8.e4summary.json --arm $${ARM} \
+          2>&1 | tee $${EVAL_DIR}/aggregate.log
+
+        # 6. upload to the metacot dataset.
+        $${PYBIN} -c "
+        from huggingface_hub import HfApi
+        import os
+        HfApi().upload_folder(folder_path=os.environ[\"EVAL_DIR_UP\"],
+            path_in_repo=\"eval/e8_goldfree_1030_16k_k8\",
+            repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"*.json\", \"*.parquet\", \"*.log\"])
+        print(\"eval pushed\")
+        " || echo "[YAML] upload skipped"
+        echo "[YAML] e8_eval $${ARM} (gs$${GS}) DONE"
+        '

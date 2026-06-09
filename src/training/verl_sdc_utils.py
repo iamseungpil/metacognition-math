@@ -361,7 +361,11 @@ def compute_sdc_gdpo_advantage(
     # existing OR-clause so every existing branch is byte-identical; fires ONLY
     # for this mode. Does NOT use base_advantages (the summed GDPO scalar is
     # logging-only for this mode) — composes the 3 head advantages directly.
-    if sdc_mode == "TRIOBJ_DCPO_V2":
+    # TRIOBJ_DCPO_V3 (ADDITIVE): SAME per-region routing as V2 (only R_meta's
+    # DEFINITION changed in dcpo_region_rewards, not the advantage composition).
+    # This OR-clause only ADDS a mode; the `== "TRIOBJ_DCPO_V2"` predicate stays
+    # independently true, so V2 behaviour is byte-identical.
+    if sdc_mode == "TRIOBJ_DCPO_V2" or sdc_mode == "TRIOBJ_DCPO_V3":
         return _compute_dcpo_region_advantage(
             response_mask=response_mask,
             index=index,

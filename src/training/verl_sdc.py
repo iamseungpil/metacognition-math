@@ -64,6 +64,8 @@ from src.training.meta_revision_rewards import meta_revision_utility_reward
 from src.training.dcpo_region import (
     build_dcpo_region_masks,
     dcpo_region_rewards,
+    first_meta_token_index,
+    cf_answer_from_prefix,
 )
 from src.training._decoy_utils import _rule_based_decoy
 from src.training.verl_sdc_utils import (
@@ -85,7 +87,10 @@ _DCPO_HEAD_STASH: dict = {"R_corr": None, "R_meta": None, "R_cal": None,
                          "canary_pass1_acc": None, "sandbag_clamp": None}
 
 
-def _compute_dcpo_heads_stash(completions, ground_truth, group_index, step, config):
+def _compute_dcpo_heads_stash(
+    completions, ground_truth, group_index, step, config,
+    cf_completions=None, cf_correct=None,
+):
     algo = getattr(config, "algorithm", None) if config is not None else None
     # Robust knob read (OmegaConf DictConfig supports .get; plain object uses getattr).
     def _read(name, default):
@@ -100,6 +105,8 @@ def _compute_dcpo_heads_stash(completions, ground_truth, group_index, step, conf
         ground_truth=ground_truth,
         group_index=group_index,
         step=step,
+        cf_completions=cf_completions,   # v3: regenerated counterfactual texts (or None)
+        cf_correct=cf_correct,           # v3: pre-graded CF correctness (producer) or None
         eps=float(_read("dcpo_eps", 0.1)),
         eps_right_right=bool(_read("dcpo_eps_right_right", False)),
         p_lo=float(_read("dcpo_p_lo", 0.2)),
@@ -186,8 +193,24 @@ def _populate_dcpo_region_keys(data) -> None:
     _uid = data.non_tensor_batch.get("uid", None)
     _step = int(getattr(trainer, "global_steps", 0) or 0)
     _config = getattr(trainer, "config", None)
+
+    # TRIOBJ_DCPO_V3 (ADDITIVE): consume the counterfactual correctness the PRODUCER
+    # (_force_inject_rollout, §3) stashed onto the batch BEFORE sleep_replicas(). We do
+    # NOT trigger the CF generation here — the engine is asleep at this consume site
+    # (the _generate_v0_prefixes busy-rollout deadlock warning applies). If absent
+    # (producer off / all rows skipped / v2 mode), cf_correct stays None and
+    # dcpo_region_rewards falls back to the text path (cf_answer_from_prefix), so the
+    # step never crashes (spec §5.2 fail-safe). Map NaN sentinels -> None (skipped rows).
+    _cf_correct = data.non_tensor_batch.get("cf_correct", None)
+    if _cf_correct is not None:
+        _cf_correct = [
+            None if (v is None or (isinstance(v, float) and v != v)) else float(v)
+            for v in list(_cf_correct)
+        ]
+
     _heads = _compute_dcpo_heads_stash(
-        completions, ground_truths, _uid, _step, _config
+        completions, ground_truths, _uid, _step, _config,
+        cf_correct=_cf_correct,
     )
 
     # AUTHORITATIVE group-aware GDPO reward keys (overwrite any async placeholder).
@@ -580,6 +603,17 @@ REWARD_CONFIGS = {
         "weights": [1.0, 0.5, 0.3],
         "keys": ["correctness", "meta_region_utility", "cal_region_reward"],
     },
+    # TRIOBJ_DCPO_V3 (ADDITIVE, env-reward-only, region-routed): IDENTICAL wiring to
+    # TRIOBJ_DCPO_V2 (same 3 region heads / same advantage routing). The ONLY change
+    # is the DEFINITION of R_meta inside dcpo_region_rewards (transition-table proxy ->
+    # causal counterfactual c_with-c_without) plus the `sdc_counterfactual` producer
+    # that supplies cf_correct. The reward-head wrappers + masks are shared verbatim.
+    # See docs/superpowers/specs/2026-06-09-dcpo-v3-counterfactual-design.md.
+    "TRIOBJ_DCPO_V3": {
+        "funcs": [correctness_region_reward, meta_region_utility_reward, cal_region_reward],
+        "weights": [1.0, 0.5, 0.3],
+        "keys": ["correctness", "meta_region_utility", "cal_region_reward"],
+    },
 }
 
 # Modes that do NOT compute teacher forward (env reward only).
@@ -595,7 +629,7 @@ _VANILLA_MODES = {"VANILLA_GRPO", "MATCHED_E21RV2", "BCI_RLVR", "TRIOBJ_META_V1"
 # both gate on this set, so no T+/T-/position forward runs and the per-region
 # advantage path (_compute_dcpo_region_advantage) is used instead of the summed
 # GDPO whiten. Membership of every pre-existing mode is unchanged.
-_REGION_ROUTED_MODES = {"TRIOBJ_DCPO_V2"}
+_REGION_ROUTED_MODES = {"TRIOBJ_DCPO_V2", "TRIOBJ_DCPO_V3"}
 # BCI_RLVR (E.9, ADDITIVE): a NO-teacher env-reward-only mode (correctness +
 # outcome_calibration; sdc_enabled=false). It joins the teacher-free set so
 # _attach_teacher_signals returns early (no T+/T-/position forward) exactly like
@@ -1624,8 +1658,16 @@ class MetaCotSDCRewardManager:
             _uid = data.non_tensor_batch.get("uid", None)
             _trainer = _ACTIVE_SDC_CONTEXT.get("trainer", None)
             _step = int(getattr(_trainer, "global_steps", 0) or 0)
+            # TRIOBJ_DCPO_V3: consume producer cf_correct if present (text fallback else).
+            _cf_correct = data.non_tensor_batch.get("cf_correct", None)
+            if _cf_correct is not None:
+                _cf_correct = [
+                    None if (v is None or (isinstance(v, float) and v != v)) else float(v)
+                    for v in list(_cf_correct)
+                ]
             _heads = _compute_dcpo_heads_stash(
-                completions, ground_truths, _uid, _step, self.config
+                completions, ground_truths, _uid, _step, self.config,
+                cf_correct=_cf_correct,
             )
             data.non_tensor_batch["dcpo_phat"] = np.asarray(_heads["p_hat"], dtype=np.float32)
             data.non_tensor_batch["dcpo_group_acc"] = np.asarray(_heads["group_acc"], dtype=np.float32)
@@ -1751,6 +1793,16 @@ class SDCRayPPOTrainer(RayPPOTrainer):
         self._bci_inject_conf = bool(getattr(_algo, "sdc_force_inject_conf", False))
         self._bci_orig_generate = None
         self._bci_seed_ids = None  # list[list[int]] per bin, built lazily on tokenizer
+
+        # ─── TRIOBJ_DCPO_V3 gated counterfactual 2nd-generation setup ─────────
+        # NEW flag `sdc_counterfactual`. When FALSE (every existing mode) nothing
+        # below installs a wrap → the rollout path is byte-identical. When TRUE we
+        # install a generate_sequences wrap (init_workers) that, after the MAIN gen,
+        # cuts each rollout at its first <|meta|>, regenerates a counterfactual with
+        # <|meta|> SUPPRESSED, grades it, and stashes cf_correct onto the gen_output
+        # BEFORE sleep_replicas() (spec §3.3-§3.5).
+        self._dcpo_cf = bool(getattr(_algo, "sdc_counterfactual", False))
+        self._dcpo_cf_orig_generate = None
         if self._bci_inject_conf:
             from .meta_inject import default_conf_bins
             _n = int(self.config.actor_rollout_ref.rollout.n)
@@ -1776,21 +1828,43 @@ class SDCRayPPOTrainer(RayPPOTrainer):
         — ONLY under `algorithm.sdc_force_inject_conf` (else this override is a
         pure pass-through and the rollout path stays byte-identical)."""
         super().init_workers()
-        if not getattr(self, "_bci_inject_conf", False):
-            return  # default path: no wrap, byte-identical to every other mode
-        mgr = getattr(self, "async_rollout_manager", None)
-        if mgr is None:
-            raise RuntimeError(
-                "BCI-RLVR: async_rollout_manager is None after init_workers — "
-                "cannot install the binned-confidence-injection wrap."
-            )
-        # Build per-bin seed token-ids now that the tokenizer is available, and
-        # pad every bin's seed to a COMMON length so the prompt-tail slice and the
-        # response-head splice are a single fixed width across the group.
-        self._bci_build_seed_ids()
-        self._bci_orig_generate = mgr.generate_sequences
-        mgr.generate_sequences = self._bci_generate_sequences
-        print("[BCI-RLVR] generate_sequences wrap INSTALLED on async_rollout_manager.")
+        if getattr(self, "_bci_inject_conf", False):
+            mgr = getattr(self, "async_rollout_manager", None)
+            if mgr is None:
+                raise RuntimeError(
+                    "BCI-RLVR: async_rollout_manager is None after init_workers — "
+                    "cannot install the binned-confidence-injection wrap."
+                )
+            # Build per-bin seed token-ids now that the tokenizer is available, and
+            # pad every bin's seed to a COMMON length so the prompt-tail slice and the
+            # response-head splice are a single fixed width across the group.
+            self._bci_build_seed_ids()
+            self._bci_orig_generate = mgr.generate_sequences
+            mgr.generate_sequences = self._bci_generate_sequences
+            print("[BCI-RLVR] generate_sequences wrap INSTALLED on async_rollout_manager.")
+
+        # ─── TRIOBJ_DCPO_V3 counterfactual wrap (ADDITIVE, gated) ─────────────
+        # Install the CF 2nd-gen wrap ONLY under sdc_counterfactual. Wrapping the
+        # SAME bound generate_sequences (after any BCI wrap) keeps both additive:
+        # the CF wrap calls the (possibly BCI-wrapped) main gen, then regenerates
+        # the meta-suppressed counterfactual. Byte-identical when the flag is off.
+        if getattr(self, "_dcpo_cf", False):
+            mgr = getattr(self, "async_rollout_manager", None)
+            if mgr is None:
+                raise RuntimeError(
+                    "TRIOBJ_DCPO_V3: async_rollout_manager is None after init_workers — "
+                    "cannot install the counterfactual generate_sequences wrap."
+                )
+            # Import the CF agent loop so its @register fires in this process too
+            # (belt-and-suspenders; the Ray rollout workers resolve cf_prefix_agent via
+            # configs/cf_prefix_agent.yaml on actor_rollout_ref.rollout.agent.agent_loop_config_path).
+            try:
+                import src.training.cf_prefix_agent  # noqa: F401  (registers cf_prefix_agent)
+            except Exception as _e:  # pragma: no cover
+                print(f"[DCPO-V3] cf_prefix_agent import warning: {_e}", flush=True)
+            self._dcpo_cf_orig_generate = mgr.generate_sequences
+            mgr.generate_sequences = self._dcpo_cf_generate_sequences
+            print("[DCPO-V3] counterfactual generate_sequences wrap INSTALLED.")
 
     def _bci_build_seed_ids(self):
         """Tokenize each bin's confidence seed into a list of token-id lists (one
@@ -1833,6 +1907,244 @@ class SDCRayPPOTrainer(RayPPOTrainer):
             seed_arr[i] = list(seeds[i % n])
         gen_batch.non_tensor_batch["bci_conf_seed_ids"] = seed_arr
         return self._bci_orig_generate(gen_batch)
+
+    # ─── TRIOBJ_DCPO_V3 counterfactual 2nd-generation (spec §3) ────────────────
+    def _dcpo_cf_generate_sequences(self, gen_batch: "DataProto"):
+        """Gated wrap of generate_sequences (TRIOBJ_DCPO_V3, spec §3.3).
+
+        After the MAIN gen returns (replicas STILL awake; sleep_replicas() runs in
+        ray_trainer only after this returns), build the counterfactual prefixes (cut
+        at first <|meta|>), regenerate with <|meta|> id 151669 SUPPRESSED via
+        logit_bias, grade the CF answers, and stash `cf_correct` (float32, length B,
+        NaN for skipped/no-meta rows) onto gen_output.non_tensor_batch. The 4 CF
+        rollouts are inference-only — never placed in the GRPO group, never scored
+        for advantage; they contribute exactly one scalar each to R_meta.
+
+        No-op on validation (no GRPO, no reward routing) and on absent meta.
+        """
+        import numpy as _np
+
+        gen_output = self._dcpo_cf_orig_generate(gen_batch)
+        # Validation passes the same generate_sequences but does not train; skip CF.
+        if gen_batch.meta_info.get("validate", False):
+            return gen_output
+        if not bool(getattr(self, "_dcpo_cf", False)):
+            return gen_output
+
+        meta_open = int(getattr(self.config.algorithm, "dcpo_meta_open", 151669) or 151669)
+        B = len(gen_output)
+        try:
+            resp = gen_output.batch["responses"]
+            resp_mask = gen_output.batch.get("response_mask", None)
+        except Exception as e:  # pragma: no cover — defensive
+            print(f"[DCPO-V3] CF skipped: cannot read responses ({e}); cf_correct=NaN")
+            gen_output.non_tensor_batch["cf_correct"] = _np.full(B, _np.nan, dtype=_np.float32)
+            return gen_output
+
+        # 1) Cut each rollout at its first <|meta|> → prefix ids (no-meta rows skipped).
+        prefix_ids, skip = self._dcpo_cf_build_prefixes(gen_output, meta_open)
+
+        # 2) Regenerate the counterfactuals with <|meta|> suppressed, grade them.
+        cf_correct = self._dcpo_cf_generate_and_grade(
+            gen_batch, gen_output, prefix_ids, skip, meta_open
+        )
+
+        gen_output.non_tensor_batch["cf_correct"] = _np.asarray(cf_correct, dtype=_np.float32)
+        if os.environ.get("DCPO_DEBUG", "1") == "1":
+            _vals = cf_correct
+            _n_cf = sum(1 for v in _vals if v == v)  # non-NaN
+            print(f"[DCPO-V3] CF gen done: B={B} graded={_n_cf} skipped(no-meta)={int(sum(skip))}",
+                  flush=True)
+        return gen_output
+
+    def _dcpo_cf_build_prefixes(self, gen_output, meta_open):
+        """Per main rollout i: prefix_ids_i = prompt_ids_i + response_ids_i[:firstMeta]
+        (left-pad stripped from prompt_ids). skip[i]=True when the rollout has no
+        <|meta|> (cf_i ≈ r_i ⇒ R_meta 0). Returns (list[list[int]] | None, list[bool])."""
+        import numpy as _np
+
+        B = len(gen_output)
+        resp = gen_output.batch["responses"]
+        resp_mask = gen_output.batch.get("response_mask", None)
+        prompts = gen_output.batch["prompts"]
+        attn = gen_output.batch.get("attention_mask", None)
+        prompt_len = prompts.shape[-1]
+
+        prefix_ids = [None] * B
+        skip = [False] * B
+        for i in range(B):
+            rids = resp[i]
+            rmask = None if resp_mask is None else resp_mask[i]
+            j = first_meta_token_index(rids, rmask, meta_open)
+            if j is None:
+                skip[i] = True
+                continue
+            # strip left-pad from the prompt (attention_mask over the prompt block).
+            p_ids = prompts[i].tolist()
+            if attn is not None:
+                p_attn = attn[i][:prompt_len].tolist()
+                p_ids = [tid for tid, a in zip(p_ids, p_attn) if a]
+            r_ids = [int(t) for t in rids.tolist()[:j]]
+            prefix_ids[i] = list(p_ids) + r_ids
+        return prefix_ids, skip
+
+    def _dcpo_cf_generate_and_grade(self, gen_batch, gen_output, prefix_ids, skip, meta_open):
+        """Run the 2nd generate_sequences on the cut prefixes with <|meta|> suppressed,
+        decode + grade the CF answers. Returns a length-B list of {1.0, 0.0, NaN}
+        (NaN = skipped/no-meta → R_meta 0 in the reward).
+
+        The verl 2nd-gen call is wired in `_dcpo_cf_call_engine` (cf_prefix_agent loop
+        + per-call logit_bias suppression). CRASH-SAFE: any failure → all-NaN cf_correct
+        so R_meta gracefully degrades to 0 (dcpo_region_rewards text-fallback still
+        supplies a conservative signal). The REWARD side consumes cf_correct as-is.
+        """
+        from src.training.rewards import _extract_answer_fallback, _check_correctness
+
+        B = len(gen_output)
+        gts = self._dcpo_cf_ground_truths(gen_output)
+
+        # Filter to the rows that actually need a CF gen (have meta).
+        active = [i for i in range(B) if not skip[i] and prefix_ids[i] is not None]
+        cf_correct = [float("nan")] * B
+        if not active:
+            return cf_correct
+
+        # The 2nd-gen call (spec §3.4/§3.5) is implemented in _dcpo_cf_call_engine:
+        #   cf_batch = gen_batch.select_idxs(active)            # carry raw_prompt + meta_info
+        #   route to cf_prefix_agent, attach prefix_ids + cf_logit_bias={meta_open:-100.0}
+        #   cf_out = self._dcpo_cf_orig_generate(cf_batch)      # SAME engine, replicas awake
+        #   decode cf_out.responses, assert 0 occurrences of meta_open, grade vs gts[active].
+        # Fallbacks (spec §3.6) if cf_prefix_agent is unavailable: (1) chat-message prefix
+        # via stock single_turn loop, (2) separate generate_sequences pass on a fresh batch.
+        #
+        # CRASH-SAFE: any failure in the verl 2nd-gen call → all-NaN cf_correct so
+        # R_meta gracefully degrades to 0 (dcpo_region_rewards text-fallback still
+        # supplies a conservative signal). Only the sdc_counterfactual-gated path runs
+        # here; this whole method is unreachable when the flag is off.
+        try:
+            cf_texts = self._dcpo_cf_call_engine(gen_batch, prefix_ids, active, meta_open)
+        except Exception as e:  # pragma: no cover — verl/GPU only path
+            print(f"[DCPO-V3] CF engine call FAILED ({type(e).__name__}: {e}); "
+                  f"cf_correct=NaN (R_meta→0/text-fallback).", flush=True)
+            if os.environ.get("DCPO_DEBUG", "1") == "1":
+                traceback.print_exc()
+            return [float("nan")] * B
+
+        # `_dcpo_cf_call_engine` returns a parallel list of decoded CF response TEXTS
+        # for `active` (<|meta|> suppressed). Grade each against its ground truth.
+        for k, i in enumerate(active):
+            txt = cf_texts[k] if k < len(cf_texts) else None
+            ans = _extract_answer_fallback(txt) if txt else None
+            cf_correct[i] = (1.0 if _check_correctness(ans, gts[i]) else 0.0) if ans else float("nan")
+
+        if os.environ.get("DCPO_DEBUG", "1") == "1":
+            # c_with  = main-rollout correctness (meta present, from gen_output reward)
+            # c_without = CF correctness (meta suppressed) — the R_meta contrast term.
+            _c_without = [cf_correct[i] for i in active]
+            _n_grade = sum(1 for v in _c_without if v == v)
+            _n_corr = sum(1 for v in _c_without if v == 1.0)
+            print(f"[DCPO-V3] CF graded: active={len(active)} graded={_n_grade} "
+                  f"c_without_correct={_n_corr} (c_with from main gen reward)", flush=True)
+        return cf_correct
+
+    def _dcpo_cf_call_engine(self, gen_batch, prefix_ids, active, meta_open):
+        """The verl 2nd-generation CALL (spec §3.4/§3.5). Build a DataProto of the
+        `active` prefixes, route them to the `cf_prefix_agent` custom loop (ingests
+        pre-tokenized `prefix_ids`, bypassing the chat template), suppress <|meta|>
+        (id `meta_open`) for THAT call via per-row `cf_logit_bias = {meta_open: -100.0}`,
+        run the SAME captured `generate_sequences`, decode the continuations, and
+        return a parallel list of CF response TEXTS (one per index in `active`).
+
+        verl API used (traced against verl source):
+          - captured method   : AgentLoopManager.generate_sequences(DataProto)->DataProto
+                                 (@auto_await → blocks, returns a materialized DataProto)
+          - prompt source     : non_tensor_batch (tensor batch is NOT read for the prompt;
+                                 agent_loop.py:523 splats per-row non_tensor into run() kwargs)
+          - agent selection   : non_tensor_batch["agent_name"]="cf_prefix_agent"
+                                 (agent_loop.py:491-493,552)
+          - continuation prompt: non_tensor_batch["prefix_ids"] = [prompt+resp[:firstMeta]]
+                                 → server_manager.generate(prompt_ids=...) → vLLM TokensPrompt
+                                 (NO chat template; vllm_async_server.py:557)
+          - meta suppression  : non_tensor_batch["cf_logit_bias"]={meta_open:-100.0}
+                                 → SamplingParams(**sampling_params).logit_bias
+                                 (verbatim splat, no key filtering; vllm_async_server.py:549)
+          - return tensors    : cf_out.batch["responses"] (right-padded), stripped via
+                                 attention_mask[:, prompt_len:] (agent_loop.py:808-820)
+        `raw_prompt` is carried through by select_idxs (REQUIRED — _agent_loop_postprocess
+        agent_loop.py:571 reads kwargs["raw_prompt"] unconditionally).
+        """
+        # CHUNK-DIVISIBILITY (blocker fix): AgentLoopManager.generate_sequences does
+        # prompts.chunk(num_workers, strict=True) and DataProto.chunk asserts
+        # len % num_workers == 0. The active (meta-bearing) count is arbitrary, so we
+        # PAD the CF batch up to the MAIN batch size B (= len(gen_batch)), which is
+        # divisible by the rollout-worker count by construction (the main gen of B rows
+        # already chunked cleanly). The padding rows repeat active[0]'s prefix and are
+        # DISCARDED after decode (return texts[:n_act]).
+        n_act = len(active)
+        B = len(prefix_ids)  # full main-batch size (one prefix slot per rollout, None=no-meta)
+        padded = list(active) + [active[0]] * (B - n_act)  # length B, divisible
+        cf_batch = gen_batch.select_idxs(padded)  # carries non_tensor (raw_prompt) + meta_info
+        n_pad = len(padded)
+
+        # per-row prefix ids (object array so numpy never collapses equal-length lists)
+        pref = np.empty(n_pad, dtype=object)
+        for k, i in enumerate(padded):
+            pref[k] = [int(t) for t in list(prefix_ids[i])]
+
+        cf_batch.non_tensor_batch["agent_name"] = np.array(["cf_prefix_agent"] * n_pad, dtype=object)
+        cf_batch.non_tensor_batch["prefix_ids"] = pref
+        bias = np.empty(n_pad, dtype=object)
+        for k in range(n_pad):
+            bias[k] = {int(meta_open): -100.0}
+        cf_batch.non_tensor_batch["cf_logit_bias"] = bias
+
+        # validate=False keeps it on the train sampling path (no val_kwargs override);
+        # carry global_steps (read at agent_loop.py:517).
+        base_meta = dict(getattr(gen_batch, "meta_info", {}) or {})
+        base_meta["validate"] = False
+        base_meta.setdefault("global_steps", base_meta.get("global_steps", -1))
+        cf_batch.meta_info = base_meta
+
+        cf_out = self._dcpo_cf_orig_generate(cf_batch)  # SAME engine, replicas awake
+        texts = self._dcpo_cf_decode_texts(cf_out, meta_open)
+        return texts[:n_act]  # discard padding rows; caller maps texts[k] for k in active
+
+    def _dcpo_cf_decode_texts(self, cf_out, meta_open):
+        """Decode CF continuations: strip right-pad via attention_mask[:, prompt_len:]
+        (or response_mask), decode to text. Asserts <|meta|> did NOT leak (logit_bias)."""
+        resp = cf_out.batch["responses"]
+        attn = cf_out.batch.get("attention_mask", None)
+        resp_mask = cf_out.batch.get("response_mask", None)
+        prompt_len = cf_out.batch["prompts"].shape[-1]
+        n = len(cf_out)
+        texts = []
+        for i in range(n):
+            if resp_mask is not None:
+                m = resp_mask[i].bool()
+            elif attn is not None:
+                m = attn[i][prompt_len:].bool()
+            else:
+                m = torch.ones(resp.shape[-1], dtype=torch.bool)
+            ids = resp[i][m].tolist()
+            ids = [int(t) for t in ids]
+            if int(meta_open) in ids:
+                # logit_bias should make this impossible; warn + strip rather than crash.
+                print(f"[DCPO-V3] WARNING: meta_open={meta_open} leaked in CF row {i} "
+                      f"despite logit_bias; stripping before grade.", flush=True)
+                ids = [t for t in ids if t != int(meta_open)]
+            texts.append(self.tokenizer.decode(ids, skip_special_tokens=True))
+        return texts
+
+    def _dcpo_cf_ground_truths(self, gen_output):
+        """Per-row ground-truth strings from non_tensor_batch['reward_model']."""
+        B = len(gen_output)
+        gts = []
+        for i in range(B):
+            gt = gen_output[i].non_tensor_batch.get("reward_model", {})
+            if isinstance(gt, dict):
+                gt = gt.get("ground_truth", "")
+            gts.append(str(gt))
+        return gts
 
     def _compute_reward_colocate(self, batch: DataProto) -> DataProto:
         fn = self._sdc_reward_fn

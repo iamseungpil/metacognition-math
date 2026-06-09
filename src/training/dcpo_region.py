@@ -40,6 +40,57 @@ META_CLOSE_DEFAULT = 151670
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# TRIOBJ_DCPO_V3 (ADDITIVE) — counterfactual meta-ablation helpers (spec §5.1-A).
+# These are pure-python and dependency-free so they are importable under the
+# minimal unit-test env. They do NOT change any v2 behavior.
+# ─────────────────────────────────────────────────────────────────────────────
+def first_meta_token_index(resp_ids, response_mask=None, meta_open: int = META_OPEN_DEFAULT):
+    """Token position of the FIRST <|meta|> among real response tokens, else None.
+
+    The counterfactual 'without-meta' prefix is resp_ids[:i] (strictly before the
+    tag): the producer (verl_sdc, §3.4) regenerates from this prefix with the
+    <|meta|> token suppressed. When no <|meta|> token exists -> None (the CF gen is
+    skipped and R_meta = 0, the natural no-meta case).
+
+    Args:
+        resp_ids: sequence of response token ids (list / 1-D array / tensor).
+        response_mask: optional bool/0-1 per-token mask (True = real token, not
+            pad). Masked positions are skipped. None -> all positions are real.
+        meta_open: the <|meta|> token id (default 151669).
+
+    Returns:
+        int index of the first real <|meta|> token, or None.
+    """
+    ids = [int(t) for t in (resp_ids.tolist() if hasattr(resp_ids, "tolist") else list(resp_ids))]
+    if response_mask is None:
+        rm = [True] * len(ids)
+    else:
+        rm = (response_mask.tolist() if hasattr(response_mask, "tolist") else list(response_mask))
+    for i, t in enumerate(ids):
+        if i < len(rm) and not rm[i]:
+            continue
+        if t == meta_open:
+            return i
+    return None
+
+
+# Back-compat alias: spec §6 names it first_meta_index in the producer pseudo-code.
+first_meta_index = first_meta_token_index
+
+
+def cf_answer_from_prefix(text: str):
+    """TEXT-fallback counterfactual answer = extract from the pre-(first-)meta
+    prefix only. Used by dcpo_region_rewards ONLY when no real regenerated cf
+    rollout is supplied (crash-guard for the consumer). Returns None when there is
+    no <|meta|> tag (the natural no-meta case -> R_meta 0) or no parseable answer
+    in the pre-meta prefix (conservative under-credit, spec §10 risk 6)."""
+    if not text or "<|meta|>" not in text:
+        return None
+    prefix = text.split("<|meta|>", 1)[0]
+    return _extract_answer_fallback(prefix) or None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # §2.7 / §4 — token-region mask util
 # ─────────────────────────────────────────────────────────────────────────────
 def build_dcpo_region_masks(
@@ -191,6 +242,10 @@ def dcpo_region_rewards(
     group_index=None,
     step: int = 0,
     *,
+    cf_completions=None,
+    cf_correct=None,
+    # ── v2 carry-over kwargs: accepted-but-IGNORED (spec §5.1-B.7) so existing
+    # callers (_compute_dcpo_heads_stash) stay byte-identical without edits. ──
     eps: float = 0.1,
     eps_right_right: bool = False,
     p_lo: float = 0.2,
@@ -202,65 +257,92 @@ def dcpo_region_rewards(
     format_penalty: float = 0.05,
     **cfg,
 ):
-    """Compute the three raw region reward heads per rollout (spec §2.2).
+    """Compute the three raw region reward heads per rollout (TRIOBJ_DCPO_V3, spec §4).
 
-    R_corr : +1 if last-boxed correct else -1 (routes to ANSWER span).
-    R_meta : flat-+1 transition table, group-warrant gated (routes to META_CONTENT).
-    R_cal  : per-instance Brier on parsed confidence; 0 if no conf (routes to CONF).
+    R_corr : +1 if final answer correct else -1 (routes to ANSWER span).
+    R_meta : c_with - c_without = correct(main) - correct(counterfactual) ∈ {-1,0,+1}
+             (routes to META_CONTENT). 0 when no counterfactual was supplied for a
+             rollout (cf_correct[i] is None and no <|meta|> in the text fallback).
+    R_cal  : per-instance Brier -(conf - c_with)^2 on parsed confidence; 0 if no conf
+             (routes to CONF).
 
-    Group warrant: p_hat = mean over the GROUP of correct(answer1); warranted iff
-    p_lo <= p_hat <= p_hi. The +eps no-harm bonus is paid ONLY when warranted.
+    Counterfactual ablation (the v3 causal meta-utility). For each rollout the
+    'without-meta' correctness c_without is supplied by the PRODUCER (verl_sdc,
+    §3) as either:
+      - cf_correct: a parallel array of pre-graded 1.0/0.0/None floats, OR
+      - cf_completions: a parallel list of regenerated CF rollout texts (graded here).
+    When NEITHER is supplied, a TEXT FALLBACK grades the pre-(first-)meta prefix
+    (`cf_answer_from_prefix`) so the head stays functional from a single rollout;
+    when even that yields no answer, c_without is None -> R_meta = 0 (conservative
+    under-credit, never wrong-sign — spec §10 risk 6).
 
     Args:
         completions: list of TRL-format completions (len B).
         ground_truth: list of gold strings (len B) or None.
         group_index: per-rollout group id (uid). Rollouts sharing an id form a GRPO
             group. None -> all rollouts in one group.
-        step: trainer step (for w_warmup = min(1, step/warmup_steps)).
+        step: trainer step (diagnostics only).
+        cf_completions: optional parallel list (len B) of regenerated counterfactual
+            rollout texts (meta suppressed). None -> use cf_correct or text fallback.
+        cf_correct: optional parallel array (len B) of pre-graded CF correctness
+            (1.0 / 0.0 / None). Takes precedence over cf_completions.
 
-    Returns dict of lists (len B): R_corr, R_meta, R_cal, p_hat, group_acc.
+    Returns dict of lists (len B): R_corr, R_meta, R_cal, p_hat, group_acc,
+    plus constant canary_pass1_acc / sandbag_clamp stubs (kept so the existing
+    wandb keys + _populate_dcpo_region_keys stay alive without touching verl_sdc).
     """
     B = len(completions)
     texts = [_get_text(c) for c in completions]
     gts = [ground_truth[i] if ground_truth is not None else "" for i in range(B)]
 
-    # Per-rollout primitives.
-    # B-rework: parse the PRELIMINARY answer (text before the first <|meta|>) and the
-    # FINAL answer (whole text) with the SAME lenient extractor correctness uses
-    # (_extract_answer_fallback handles "The answer is X" / last-\boxed / last-number),
-    # NOT \boxed-only — the SFT model answers as "The answer is X" (93% emit no \boxed),
-    # so the old \boxed-only path made every transition unparseable -> R_meta≡0.
-    # two_pass = the model committed a preliminary answer BEFORE its <|meta|> verify
-    # block AND a final answer -> only then is a revision (transition) measurable.
-    answer1 = [None] * B   # preliminary (pre-meta)
+    def _cf_get(arr, i):
+        if arr is None:
+            return None
+        try:
+            return arr[i]
+        except (IndexError, KeyError, TypeError):
+            return None
+
+    # Per-rollout primitives:
+    #   c2 = correctness of the FINAL (graded) answer == c_with.
+    #   conf = parsed confidence inside the meta block.
+    #   c_without = counterfactual correctness (producer / text fallback), or None.
     answer2 = [None] * B   # final (graded)
-    c1 = [False] * B
     c2 = [False] * B
-    two_pass = [False] * B
     conf = [None] * B
+    has_meta = [False] * B
+    c_without = [None] * B   # None == no counterfactual available -> R_meta 0
     for i in range(B):
         t = texts[i]
         final = _extract_answer_fallback(t)
         answer2[i] = final
         c2[i] = bool(_check_correctness(final, gts[i])) if final else False
-        if "<|meta|>" in t:
-            prelim = _extract_answer_fallback(t.split("<|meta|>", 1)[0])
-            if prelim:
-                answer1[i] = prelim
-                c1[i] = bool(_check_correctness(prelim, gts[i]))
-                two_pass[i] = final is not None
+        has_meta[i] = "<|meta|>" in (t or "")
         conf[i] = _parse_confidence(t)
 
-    # Group ids.
+        # c_without[i]: precedence cf_correct -> cf_completions -> text fallback.
+        cw = _cf_get(cf_correct, i)
+        if cw is not None:
+            c_without[i] = bool(cw)
+        else:
+            cf_txt = _cf_get(cf_completions, i)
+            if cf_txt is not None:
+                cf_txt = _get_text(cf_txt)
+                cf_ans = _extract_answer_fallback(cf_txt) if cf_txt else None
+                c_without[i] = bool(_check_correctness(cf_ans, gts[i])) if cf_ans else None
+            else:
+                cf_ans = cf_answer_from_prefix(t)   # text-level pre-meta fallback
+                c_without[i] = (
+                    bool(_check_correctness(cf_ans, gts[i])) if cf_ans is not None else None
+                )
+
+    # Group ids -> p_hat / group_acc (diagnostics only; NOT an R_meta gate in v3).
     if group_index is None:
         gid = [0] * B
     else:
         gid = list(group_index.tolist() if hasattr(group_index, "tolist") else group_index)
         gid = [str(g) for g in gid]
 
-    # Group difficulty p_hat = mean FINAL correctness (well-defined for every rollout;
-    # the preliminary answer is often absent in single-pass rollouts, so grouping on it
-    # would be skewed). group_acc == p_hat here (both on the final answer).
     groups: dict = {}
     for i in range(B):
         groups.setdefault(gid[i], []).append(i)
@@ -272,25 +354,6 @@ def dcpo_region_rewards(
             p_hat[i] = ga
             group_acc[i] = ga
 
-    w_warmup = min(1.0, float(step) / float(warmup_steps)) if warmup_steps > 0 else 1.0
-
-    # Sandbagging circuit-breaker (anti-inversion). canary = batch mean pass-1
-    # accuracy. The flip credit (+1) rewards wrong->right; if the policy learns to
-    # FAKE pass-1 errors to farm it, pass-1 accuracy collapses. When canary falls
-    # below sandbag_floor (after warmup, so honest cold-start lows don't trigger),
-    # ramp the ENTIRE meta head toward 0 -> removes the incentive to sandbag.
-    # NOTE: the primary guard is warrant-gating the flip credit below; this clamp is
-    # the backstop for COLLECTIVE sandbagging (whole group fakes pass-1 -> p_hat
-    # drifts into the warranted band). Logged as canary/sandbag_clamp for wandb.
-    # canary = mean PRELIMINARY accuracy over TWO-PASS rollouts (where a prelim answer
-    # exists). If the policy fakes wrong prelims to farm the flip credit, this collapses.
-    tp_idx = [i for i in range(B) if two_pass[i]]
-    canary = float(np.mean([1.0 if c1[i] else 0.0 for i in tp_idx])) if tp_idx else 1.0
-    if sandbag_clamp and step >= warmup_steps and canary < sandbag_floor:
-        clamp_f = max(0.0, canary / sandbag_floor) if sandbag_floor > 0 else 0.0
-    else:
-        clamp_f = 1.0
-
     R_corr = [0.0] * B
     R_meta = [0.0] * B
     R_cal = [0.0] * B
@@ -298,50 +361,35 @@ def dcpo_region_rewards(
         # R_corr — lenient final-answer correctness (same extractor as correctness head).
         R_corr[i] = 1.0 if c2[i] else -1.0
 
-        # R_meta (option B) — FORMAT enforcement + TRANSITION reward, routed to META_CONTENT.
-        # The SFT model is single-pass (one answer, meta inside <think>); to MEASURE useful
-        # metacognition we need it to commit a preliminary answer, verify in <|meta|>, then
-        # (maybe) revise. So:
-        #   single-pass (no preliminary answer)         -> small FORMAT PENALTY  (push to 2-pass)
-        #   two-pass, identical answer (no revision)    -> small FORMAT CREDIT   (did the structure)
-        #   two-pass, revised wrong->right (warranted)  -> +1.0  (useful metacognition)
-        #   two-pass, revised right->wrong              -> -1.0 * warmup (destructive)
-        #   two-pass, revised, other (warranted)        -> +eps  (genuine revision attempt)
-        # Format terms are warmup-scaled so a cold single-pass policy isn't harshly punished.
-        warranted = (p_lo <= p_hat[i] <= p_hi)
-        if two_pass[i]:
-            revised = (answer1[i] != answer2[i])
-            if revised:
-                if (not c1[i]) and c2[i]:
-                    R_meta[i] = 1.0 if warranted else 0.0   # useful flip (warrant-gated anti-sandbag)
-                elif c1[i] and (not c2[i]):
-                    R_meta[i] = -1.0 * w_warmup             # destructive revision
-                else:
-                    R_meta[i] = eps if warranted else 0.0   # genuine revision attempt
-            else:
-                R_meta[i] = format_credit * w_warmup        # 2-pass structure, no revision
+        # R_meta — CAUSAL meta-utility = c_with - c_without ∈ {-1,0,+1}.
+        #   with-right / without-wrong -> +1  (meta turned wrong right)
+        #   both-right / both-wrong     ->  0  (meta did not change the outcome)
+        #   with-wrong / without-right -> -1  (meta turned right wrong)
+        #   no counterfactual available ->  0  (no-meta / unparseable, conservative)
+        c_with = 1.0 if c2[i] else 0.0
+        if c_without[i] is None:
+            R_meta[i] = 0.0
         else:
-            R_meta[i] = -format_penalty * w_warmup          # single-pass -> push toward 2-pass format
+            R_meta[i] = c_with - (1.0 if c_without[i] else 0.0)
 
-        R_meta[i] *= clamp_f  # sandbagging circuit-breaker
-
-        # R_cal — per-instance Brier; 0 if conf missing (no floor).
+        # R_cal — per-instance Brier against c_with; 0 if conf missing (no floor).
         if conf[i] is not None:
-            tgt = 1.0 if c2[i] else 0.0
-            R_cal[i] = -((conf[i] - tgt) ** 2)
+            R_cal[i] = -((conf[i] - c_with) ** 2)
         else:
             R_cal[i] = 0.0
 
     # DIAGNOSTIC dump (guarded by DCPO_DEBUG, default on): print what the PRODUCER
-    # actually sees for sample 0 — the real RL rollout text + parsed conf/answers + R
-    # values — so the dead-head cause is visible in the amlt logs, not guessed.
+    # actually sees for sample 0 — the real RL rollout text + parsed conf/answers +
+    # the counterfactual delta — so the head behavior is visible in the amlt logs.
     import os as _os
     if _os.environ.get("DCPO_DEBUG", "1") == "1" and B:
         _t = (texts[0] or "")
+        _cw = c_without[0]
+        _cw_s = "None" if _cw is None else ("1" if _cw else "0")
         print(
-            f"[DCPO_DBG] step={step} hasMetaTag={'<|meta|>' in _t} "
-            f"conf={conf[0]} two_pass={two_pass[0]} c1={c1[0]} c2={c2[0]} "
-            f"ans1={answer1[0]!r} ans2={answer2[0]!r} "
+            f"[DCPO_DBG] step={step} hasMetaTag={has_meta[0]} "
+            f"conf={conf[0]} c_with={1 if c2[0] else 0} c_without={_cw_s} cf={'Y' if (cf_correct is not None or cf_completions is not None) else 'fallback'} "
+            f"ans2={answer2[0]!r} "
             f"R_corr={R_corr[0]:.3f} R_meta={R_meta[0]:.4f} R_cal={R_cal[0]:.4f} "
             f"p_hat={p_hat[0]:.2f} | text_tail={_t[-260:]!r}",
             flush=True,
@@ -353,8 +401,11 @@ def dcpo_region_rewards(
         "R_cal": R_cal,
         "p_hat": p_hat,
         "group_acc": group_acc,
-        "canary_pass1_acc": [canary] * B,
-        "sandbag_clamp": [clamp_f] * B,
+        # Constant stubs: kept so existing wandb keys + _populate_dcpo_region_keys
+        # stay alive without touching verl_sdc.py (spec §5.1-B.6). v3 has no canary
+        # / sandbag clamp (the counterfactual is anti-hack by construction, §8).
+        "canary_pass1_acc": [1.0] * B,
+        "sandbag_clamp": [1.0] * B,
     }
 
 

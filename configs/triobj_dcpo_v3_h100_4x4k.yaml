@@ -1,0 +1,72 @@
+# TRIOBJ_DCPO_V3 — DCPO 3-region token-masked advantage routing with a CAUSAL
+# (counterfactual) R_meta. CLONE of TRIOBJ_DCPO_V2 (triobj_dcpo_v2_h100_4x4k); the
+# only behavioural deltas (spec 2026-06-09-dcpo-v3-counterfactual-design.md):
+#   - sdc_mode=TRIOBJ_DCPO_V3 selects REWARD_CONFIGS['TRIOBJ_DCPO_V3'] (same 3 region
+#     heads: correctness + meta_region_utility + cal_region_reward).
+#   - R_meta DEFINITION changes from the v2 transition-table proxy to the causal delta
+#     R_meta = c_with - c_without (correct(main) - correct(counterfactual)). The
+#     counterfactual is produced by the sdc_counterfactual 2nd-generation (meta-suppressed).
+#   - sdc_counterfactual=true installs the CF generate_sequences wrap (gated, additive).
+#   - TRAIN ON THE PLAIN REDIRECT PROMPT (no two-pass INSTR) so the model emits its
+#     natural single-pass <think>...<|meta|>...answer (99.8% meta-emit vs 65% with INSTR).
+#   - TRIOBJ_DCPO_V3 ∈ _REGION_ROUTED_MODES → teacher OFF, per-region advantage routing
+#     (compose_dcpo_region_advantage), NOT the summed-GDPO whiten. UNCHANGED from v2.
+#   - KL / entropy DISABLED (Dr.GRPO implicit regularization). UNCHANGED from v2.
+# Additive: every existing mode/config/test is byte-identical when this mode is off.
+
+defaults:
+  - verl_e4_selfdistill_h200_4x4k
+  - _self_
+
+mode: TRIOBJ_DCPO_V3
+
+data:
+  # PLAIN redirect parquets (NO two-pass INSTR rewrite) — the SFT/e8 prompt.
+  train_files: /scratch/metacognition/data/verl_train_redirect.parquet
+  val_files: /scratch/metacognition/data/verl_val_redirect.parquet
+  max_response_length: 4096
+
+actor_rollout_ref:
+  rollout:
+    agent:
+      # TRIOBJ_DCPO_V3 counterfactual custom agent loop (CFPrefixAgentLoop) — registered
+      # ADDITIVELY here so the Ray rollout WORKERS resolve cf_prefix_agent by _target_
+      # (the @register decorator only fires in the driver). ABSOLUTE node path (mirror E.9
+      # bci_agent_loop.yaml). Only ACTIVE under sdc_counterfactual=true; MAIN gen + val use single_turn.
+      agent_loop_config_path: /scratch/metacognition/configs/cf_prefix_agent.yaml
+
+algorithm:
+  sdc_mode: TRIOBJ_DCPO_V3
+  sdc_enabled: false          # teacher OFF — env-reward-only region-routed GDPO
+  sdc_beta_contrast: 0.0
+  adv_estimator: gdpo
+  # KL/entropy off (Dr.GRPO implicit reg). Asserted at boot for this mode.
+  use_kl_loss: false
+  use_kl_in_reward: false
+  # GDPO heads/weights come from REWARD_CONFIGS['TRIOBJ_DCPO_V3'] (funcs cannot live
+  # in YAML). gdpo_reward_keys/weights below are kept in sync for audit clarity.
+  gdpo_reward_keys: [correctness, meta_region_utility, cal_region_reward]
+  gdpo_reward_weights: [1.0, 0.5, 0.3]
+  # ── DCPO routing knobs (KEEP — region routing unchanged from v2) ──────────
+  dcpo_w_corr: 1.0
+  dcpo_w_meta: 0.5
+  dcpo_w_cal: 0.3
+  # ── v3 counterfactual meta-ablation ───────────────────────────────────────
+  # Installs the CF 2nd-generation wrap (gated, additive). After the main gen, each
+  # rollout is cut at its first <|meta|> and regenerated with token 151669 suppressed
+  # (logit_bias); cf_correct (c_without) is graded and consumed by R_meta = c_with - c_without.
+  sdc_counterfactual: true
+  dcpo_meta_open: 151669      # <|meta|> token id (cut point + suppression target)
+  # DROPPED from v2 (no longer used by R_meta; left here as comments for audit):
+  #   dcpo_eps / dcpo_eps_right_right / dcpo_p_lo / dcpo_p_hi  (warrant gate removed)
+  #   dcpo_warmup_steps / dcpo_format_credit / dcpo_format_penalty (format/transition removed)
+  #   dcpo_sandbag_clamp / dcpo_sandbag_floor (counterfactual is anti-hack by construction)
+  # If any are present (inherited), dcpo_region_rewards accepts-and-ignores them.
+
+trainer:
+  experiment_name: triobj_dcpo_v3_h100_4x4k
+  default_local_dir: /scratch/checkpoints/triobj_dcpo_v3_h100_4x4k
+  total_training_steps: 300
+
+# NOTE: NO `triobj_meta.two_pass_instruction` block — v3 trains on the bare redirect
+# prompt. The two-pass INSTR (v2) suppressed meta emit; dropped per spec §1/§5.3.
