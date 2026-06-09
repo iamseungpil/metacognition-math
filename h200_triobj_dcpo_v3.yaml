@@ -23,7 +23,7 @@ jobs:
         _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
         HF_TOKEN: ${HF_TOKEN}
         GH_TOKEN: ${GH_TOKEN}
-        CODE_TAR_REVISION: "443093652"
+        CODE_TAR_REVISION: "443099268"
         HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
         WANDB_API_KEY: ${WANDB_API_KEY}
         WANDB_KEY: ${WANDB_API_KEY}
@@ -31,6 +31,11 @@ jobs:
         WANDB_RUN_GROUP: triobj_dcpo_v3
         WANDB_NAME: triobj_dcpo_v3
         WANDB_TAGS: TRIOBJ,DCPO,v3,region_routed,counterfactual,TRIOBJ_DCPO_V3
+        # FULL rollout observability (user ask after the v3b silent-signal bug):
+        # every step, EVERY rollout -> wandb Table 'dcpo/rollouts' (main text tail,
+        # CF text tail, c_with/c_without, all 3 head rewards, conf, has_meta).
+        DCPO_WANDB_ROLLOUTS: "1"
+        DCPO_WANDB_ROLLOUTS_EVERY: "1"
         SIMPLERL_DIR: /scratch/conda_envs/simplerl
         DCPO_DEBUG: "1"
     command:
