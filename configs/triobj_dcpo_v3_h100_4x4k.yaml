@@ -67,6 +67,10 @@ trainer:
   experiment_name: triobj_dcpo_v3_h100_4x4k
   default_local_dir: /scratch/checkpoints/triobj_dcpo_v3_h100_4x4k
   total_training_steps: 300
+  # STEP-0 BASELINE (observability ask): run a full val pass BEFORE training so
+  # the val-aux correctness/meta_emission/cal trends have the SFT cold-start as
+  # their reference point ("did RL beat the SFT?" readable from the chart).
+  val_before_train: true
 
 # NOTE: NO `triobj_meta.two_pass_instruction` block — v3 trains on the bare redirect
 # prompt. The two-pass INSTR (v2) suppressed meta emit; dropped per spec §1/§5.3.

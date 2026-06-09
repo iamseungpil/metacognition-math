@@ -194,6 +194,27 @@ def test_rmeta_cf_completions_none_entry_falls_back():
     assert out["R_meta"][0] == 0.0
 
 
+def test_meta_emission_reward_observability_func():
+    # weight-0.0 val observability func: 1.0 iff <|meta|> present; never affects reward.
+    import tests.test_dcpo_v3_cf  # installs the auto-stub finder (verl absent locally)
+    from src.training.verl_sdc import meta_emission_reward, REWARD_CONFIGS
+    out = meta_emission_reward([_c(_meta_text("5")), _c("plain answer 4")])
+    assert out == [1.0, 0.0]
+    cfg = REWARD_CONFIGS["TRIOBJ_DCPO_V3"]
+    i = cfg["keys"].index("meta_emission")
+    assert cfg["weights"][i] == 0.0          # MUST stay observability-only
+    assert cfg["keys"][:3] == ["correctness", "meta_region_utility", "cal_region_reward"]
+
+
+def test_trend_scalar_helper_never_raises():
+    import tests.test_dcpo_v3_cf  # auto-stub
+    from src.training.verl_sdc import _log_dcpo_trend_scalars
+    heads = {"has_meta": [True, False], "R_meta": [1.0, 0.0], "c_with": [1.0, 0.0],
+             "c_without": [0.0, float("nan")]}
+    # wandb stubbed/absent -> must silently no-op, not raise.
+    _log_dcpo_trend_scalars(step=3, heads=heads, cf_texts=["cf", None])
+
+
 def test_diagnostic_keys_for_rollout_table():
     # The wandb rollout table reads c_with / c_without / conf / has_meta / answer.
     out = dcpo_region_rewards(

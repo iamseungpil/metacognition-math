@@ -230,6 +230,57 @@ def _populate_dcpo_region_keys(data) -> None:
         step=_step, uid=_uid, completions=completions, ground_truths=ground_truths,
         cf_texts=_cf_texts, heads=_heads,
     )
+    # INTENT-TREND scalars (one wandb chart each): emission rate, the R_meta
+    # decomposition over meta-bearing rows, CF pipeline health, and the batch
+    # causal effect acc_with - acc_without. These answer "is training moving
+    # toward useful metacognition?" without grepping logs or opening the table.
+    _log_dcpo_trend_scalars(step=_step, heads=_heads, cf_texts=_cf_texts)
+
+
+def _log_dcpo_trend_scalars(*, step, heads, cf_texts):
+    """Per-step intent-trend scalars under 'dcpo/' (crash-proof, never raises).
+
+    dcpo/meta_emit_rate        fraction of rollouts emitting <|meta|> (v3b collapsed 42%->23%)
+    dcpo/rmeta_pos_rate        fraction with R_meta=+1 (meta causally SAVED the answer)
+    dcpo/rmeta_neg_rate        fraction with R_meta=-1 (meta causally HURT)
+    dcpo/rmeta_mean_meta_rows  mean R_meta over meta-bearing rows ONLY (undiluted net utility)
+    dcpo/cf_text_rate          CF regeneration success rate (pipeline health)
+    dcpo/acc_with              batch accuracy of the main rollouts (c_with mean)
+    dcpo/acc_without           batch accuracy of graded counterfactuals (c_without mean)
+                               -> acc_with - acc_without = the batch-level CAUSAL effect of meta
+    dcpo/cw_graded_rate        fraction of rows with a graded c_without (non-NaN)
+    """
+    import os as _os
+    if _os.environ.get("DCPO_WANDB_ROLLOUTS", "1") != "1":
+        return
+    try:
+        import wandb  # noqa: F811
+        if wandb.run is None:
+            return
+        hm = [bool(x) for x in heads["has_meta"]]
+        rm = [float(x) for x in heads["R_meta"]]
+        cw = [float(x) for x in heads["c_with"]]
+        cwo = [float(x) for x in heads["c_without"]]   # NaN = no counterfactual
+        B = max(1, len(rm))
+        meta_rows = [i for i in range(len(rm)) if hm[i]]
+        graded = [v for v in cwo if v == v]
+        scal = {
+            "dcpo/meta_emit_rate": sum(hm) / B,
+            "dcpo/rmeta_pos_rate": sum(1 for v in rm if v > 0.5) / B,
+            "dcpo/rmeta_neg_rate": sum(1 for v in rm if v < -0.5) / B,
+            "dcpo/rmeta_mean_meta_rows": (
+                sum(rm[i] for i in meta_rows) / len(meta_rows) if meta_rows else 0.0
+            ),
+            "dcpo/cf_text_rate": (
+                sum(1 for t in (cf_texts or []) if t is not None) / B
+            ),
+            "dcpo/acc_with": sum(cw) / B,
+            "dcpo/acc_without": (sum(graded) / len(graded)) if graded else float("nan"),
+            "dcpo/cw_graded_rate": len(graded) / B,
+        }
+        wandb.log(scal, step=int(step))
+    except Exception as _e:  # pragma: no cover — observability never kills training
+        print(f"[DCPO] trend-scalar log skipped: {type(_e).__name__}: {_e}", flush=True)
 
 
 def _log_dcpo_rollout_table(*, step, uid, completions, ground_truths, cf_texts, heads):
@@ -291,6 +342,17 @@ def cal_region_reward(completions, ground_truth=None, **kwargs):
     """TRIOBJ_DCPO_V2 R_cal head (reads the per-batch DCPO stash)."""
     r = _DCPO_HEAD_STASH.get("R_cal")
     return list(r) if r is not None else [0.0] * len(completions)
+
+
+def meta_emission_reward(completions, ground_truth=None, **kwargs):
+    """OBSERVABILITY-ONLY (weight 0.0 in TRIOBJ_DCPO_V3): 1.0 iff the rollout
+    emits a <|meta|> block. Contributes NOTHING to the reward (weight 0) — it
+    rides the reward-key plumbing so val logs
+    val-aux/<dataset>/meta_emission/mean@1 = per-benchmark META EMISSION RATE
+    every test_freq steps (the v3b emission collapse 42%→23% was only visible
+    by grepping node logs)."""
+    from src.training.rewards import _get_text as _gt
+    return [1.0 if "<|meta|>" in (_gt(c) or "") else 0.0 for c in completions]
 
 
 REWARD_CONFIGS = {
@@ -656,9 +718,14 @@ REWARD_CONFIGS = {
     # that supplies cf_correct. The reward-head wrappers + masks are shared verbatim.
     # See docs/superpowers/specs/2026-06-09-dcpo-v3-counterfactual-design.md.
     "TRIOBJ_DCPO_V3": {
-        "funcs": [correctness_region_reward, meta_region_utility_reward, cal_region_reward],
-        "weights": [1.0, 0.5, 0.3],
-        "keys": ["correctness", "meta_region_utility", "cal_region_reward"],
+        # meta_emission is OBSERVABILITY-ONLY (weight 0.0): it never moves the
+        # reward; it exists so val-aux/<ds>/meta_emission/mean@1 charts the
+        # per-benchmark emission rate. It is NOT in algorithm.gdpo_reward_keys,
+        # so the advantage routing is untouched.
+        "funcs": [correctness_region_reward, meta_region_utility_reward, cal_region_reward,
+                  meta_emission_reward],
+        "weights": [1.0, 0.5, 0.3, 0.0],
+        "keys": ["correctness", "meta_region_utility", "cal_region_reward", "meta_emission"],
     },
 }
 
