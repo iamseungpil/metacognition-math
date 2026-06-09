@@ -712,6 +712,24 @@ def _parse_confidence(text):
     return None
 
 
+def _parse_confidence_charspan(text):
+    """Char-span variant of _parse_confidence (ADDITIVE, TRIOBJ_DCPO_V2).
+
+    Returns the (start, end) character offsets of the FIRST confidence NUMBER
+    literal in `text` using the SAME regex as `_parse_confidence`, or None if no
+    confidence is present. Used by build_dcpo_region_masks to map the confidence
+    char-span to a token span (spec §4 Pass B). The matched float itself is
+    identical to what _parse_confidence returns — only the offset is added.
+    """
+    m = re.search(
+        r'(?:probability|confidence|확률|확신)[:\s\w]*?(\d+\.\d+|\d+)\s*%?',
+        text, re.IGNORECASE
+    )
+    if m is None:
+        return None
+    return m.span(1)
+
+
 def meta_count_bonus(completions, ground_truth=None, max_rewarded_blocks=3, per_block_bonus=0.1, **kwargs):
     """Correctness-conditioned reward for multiple meta checkpoints.
 

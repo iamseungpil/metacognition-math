@@ -1,0 +1,71 @@
+# TRIOBJ_DCPO_V2 — DCPO-style 3-region token-masked advantage routing.
+# CLONE of TRIOBJ_META_V1 (verl_triobj_meta_v1_h200_4x4k) so it is directly
+# comparable. The behavioural deltas vs v1 (spec 2026-06-09-dcpo-3region-design.md):
+#   - sdc_mode=TRIOBJ_DCPO_V2 selects REWARD_CONFIGS['TRIOBJ_DCPO_V2'] (3 region
+#     heads: correctness + meta_region_utility + cal_region_reward).
+#   - TRIOBJ_DCPO_V2 ∈ _REGION_ROUTED_MODES → teacher OFF and the advantage path
+#     uses _compute_dcpo_region_advantage (independent per-head group-mean-subtract
+#     + per-region token routing), NOT the summed-GDPO whiten.
+#   - KL / entropy DISABLED (§2.6): use_kl_loss=false + use_kl_in_reward=false, to
+#     close the global-mask coupling channel (Dr.GRPO implicit regularization).
+# Additive: every existing mode/config/test is byte-identical when this mode is off.
+
+defaults:
+  - verl_e4_selfdistill_h200_4x4k
+  - _self_
+
+mode: TRIOBJ_DCPO_V2
+
+data:
+  train_files: /scratch/metacognition/data/verl_triobj_train.parquet
+  val_files: /scratch/metacognition/data/verl_triobj_val.parquet
+  max_response_length: 4096
+
+algorithm:
+  sdc_mode: TRIOBJ_DCPO_V2
+  sdc_enabled: false          # teacher OFF — env-reward-only region-routed GDPO
+  sdc_beta_contrast: 0.0
+  adv_estimator: gdpo
+  # §2.6 — KL/entropy off (Dr.GRPO implicit reg). Asserted at boot for this mode.
+  use_kl_loss: false
+  use_kl_in_reward: false
+  # GDPO heads/weights come from REWARD_CONFIGS['TRIOBJ_DCPO_V2'] (funcs cannot live
+  # in YAML). gdpo_reward_keys/weights below are kept in sync for audit clarity.
+  gdpo_reward_keys: [correctness, meta_region_utility, cal_region_reward]
+  gdpo_reward_weights: [1.0, 0.5, 0.3]
+  # ── DCPO knobs (spec §3.4) ──────────────────────────────────────────────
+  dcpo_w_corr: 1.0
+  dcpo_w_meta: 0.5
+  dcpo_w_cal: 0.3
+  dcpo_eps: 0.1
+  dcpo_eps_right_right: false   # no credit for no-op meta on already-correct problems
+  dcpo_p_lo: 0.2
+  dcpo_p_hi: 0.8
+  dcpo_warmup_steps: 200
+  dcpo_dr_grpo: true
+  dcpo_residual_to_answer: true
+  # Sandbagging circuit-breaker (anti-inversion). The flip credit (+1) is the primary
+  # guard via warrant-gating in dcpo_region_rewards; this clamps the WHOLE meta head
+  # toward 0 if batch pass-1 accuracy (canary) collapses below the floor after warmup
+  # (collective-sandbag backstop). Logged as dcpo_canary_pass1_acc / dcpo_sandbag_clamp.
+  dcpo_sandbag_clamp: true
+  dcpo_sandbag_floor: 0.05
+  # NOTE: counterfactual meta-ablation audit (re-decode with meta masked) is DEFERRED
+  # to an escalation pass; the transition table + warrant-gating + canary are the v2
+  # guards. cf knobs intentionally omitted until that path is implemented.
+
+trainer:
+  experiment_name: triobj_dcpo_v2_h100_4x4k
+  default_local_dir: /scratch/checkpoints/triobj_dcpo_v2_h100_4x4k
+  total_training_steps: 300
+
+# ============================================================================
+# TWO-PASS PROMPT INSTRUCTION (rendered into every train prompt by the amlt yaml's
+# parquet-rewrite step). Grading scores the LAST \boxed{} = the FINAL answer.
+# ============================================================================
+triobj_meta:
+  two_pass_instruction: |
+    Solve the problem in two passes.
+    PASS 1 — Give a PRELIMINARY answer in \boxed{...}.
+    PASS 2 — Then write a <|meta|> ... <|/meta|> block that verifies/critiques your preliminary answer and states your confidence (0.0-1.0). If the check reveals an error, revise. Finally give your FINAL answer in \boxed{...}.
+    Only the LAST \boxed{...} is graded as your final answer.

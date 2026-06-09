@@ -57,12 +57,77 @@ from src.training.rewards import (
 # module and is referenced ONLY by the new REWARD_CONFIGS['TRIOBJ_META_V1'] entry.
 # No existing import/head changes.
 from src.training.meta_revision_rewards import meta_revision_utility_reward
+# TRIOBJ_DCPO_V2 (ADDITIVE): the NEW DCPO 3-region reward/mask helpers live in
+# their own module and are referenced ONLY by REWARD_CONFIGS['TRIOBJ_DCPO_V2'],
+# the _REGION_ROUTED_MODES gate, and the mode-gated mask-stack block. No existing
+# import/head/mode changes.
+from src.training.dcpo_region import (
+    build_dcpo_region_masks,
+    dcpo_region_rewards,
+)
 from src.training._decoy_utils import _rule_based_decoy
 from src.training.verl_sdc_utils import (
     build_sdc_region_masks,
     compute_sdc_gdpo_advantage,
     postmeta_closure_reward,
 )
+
+
+# ── TRIOBJ_DCPO_V2 reward-head wiring (ADDITIVE) ───────────────────────────────
+# The three DCPO heads are GROUP-dependent (R_meta warrant uses the group p_hat),
+# but the reward manager calls each reward_fn per-key without group structure. So
+# the manager runs ONE mode-gated pre-pass (`_compute_dcpo_heads_stash`) that calls
+# dcpo_region_rewards once with uid+step and stashes the per-rollout head lists; the
+# three thin wrappers below just read the stash so REWARD_CONFIGS['TRIOBJ_DCPO_V2']
+# keeps the exact 3-func/3-key GDPO contract. Pre-existing modes never touch this.
+_DCPO_HEAD_STASH: dict = {"R_corr": None, "R_meta": None, "R_cal": None,
+                         "p_hat": None, "group_acc": None,
+                         "canary_pass1_acc": None, "sandbag_clamp": None}
+
+
+def _compute_dcpo_heads_stash(completions, ground_truth, group_index, step, config):
+    algo = getattr(config, "algorithm", None) if config is not None else None
+    # Robust knob read (OmegaConf DictConfig supports .get; plain object uses getattr).
+    def _read(name, default):
+        try:
+            if algo is not None and hasattr(algo, "get"):
+                return algo.get(name, default)
+            return getattr(algo, name, default) if algo is not None else default
+        except Exception:
+            return default
+    out = dcpo_region_rewards(
+        completions,
+        ground_truth=ground_truth,
+        group_index=group_index,
+        step=step,
+        eps=float(_read("dcpo_eps", 0.1)),
+        eps_right_right=bool(_read("dcpo_eps_right_right", False)),
+        p_lo=float(_read("dcpo_p_lo", 0.2)),
+        p_hi=float(_read("dcpo_p_hi", 0.8)),
+        warmup_steps=int(_read("dcpo_warmup_steps", 200)),
+        sandbag_clamp=bool(_read("dcpo_sandbag_clamp", True)),
+        sandbag_floor=float(_read("dcpo_sandbag_floor", 0.05)),
+    )
+    _DCPO_HEAD_STASH.update(out)
+    return out
+
+
+def correctness_region_reward(completions, ground_truth=None, **kwargs):
+    """TRIOBJ_DCPO_V2 R_corr head (reads the per-batch DCPO stash)."""
+    r = _DCPO_HEAD_STASH.get("R_corr")
+    return list(r) if r is not None else [0.0] * len(completions)
+
+
+def meta_region_utility_reward(completions, ground_truth=None, **kwargs):
+    """TRIOBJ_DCPO_V2 R_meta head (reads the per-batch DCPO stash)."""
+    r = _DCPO_HEAD_STASH.get("R_meta")
+    return list(r) if r is not None else [0.0] * len(completions)
+
+
+def cal_region_reward(completions, ground_truth=None, **kwargs):
+    """TRIOBJ_DCPO_V2 R_cal head (reads the per-batch DCPO stash)."""
+    r = _DCPO_HEAD_STASH.get("R_cal")
+    return list(r) if r is not None else [0.0] * len(completions)
 
 
 REWARD_CONFIGS = {
@@ -408,6 +473,19 @@ REWARD_CONFIGS = {
         "weights": [1.0, 0.5, 0.3],
         "keys": ["correctness", "meta_revision_utility", "meta_commit_shape"],
     },
+    # TRIOBJ_DCPO_V2 (ADDITIVE, env-reward-only, region-routed): EXACTLY 3 heads,
+    # each group-normalized INDEPENDENTLY and masked onto its OWN token span by
+    # _compute_dcpo_region_advantage (verl_sdc_utils). The "weights" here carry the
+    # w_corr/w_meta/w_cal routing weights (1.0/0.5/0.3); the advantage path applies
+    # them per-region rather than as a summed scalar. No teacher forward (joins
+    # _REGION_ROUTED_MODES). KL/entropy disabled in the yaml (§2.6). The 3 funcs are
+    # thin wrappers over dcpo_region_rewards (read the per-batch DCPO stash). See
+    # docs/superpowers/specs/2026-06-09-dcpo-3region-design.md.
+    "TRIOBJ_DCPO_V2": {
+        "funcs": [correctness_region_reward, meta_region_utility_reward, cal_region_reward],
+        "weights": [1.0, 0.5, 0.3],
+        "keys": ["correctness", "meta_region_utility", "cal_region_reward"],
+    },
 }
 
 # Modes that do NOT compute teacher forward (env reward only).
@@ -417,6 +495,13 @@ REWARD_CONFIGS = {
 # early-return in verl_sdc_utils was extended with a matching OR-clause.
 # VANILLA_GRPO membership/behaviour is unchanged (set still contains it).
 _VANILLA_MODES = {"VANILLA_GRPO", "MATCHED_E21RV2", "BCI_RLVR", "TRIOBJ_META_V1"}
+# TRIOBJ_DCPO_V2 (ADDITIVE): region-routed, env-reward-only mode. It is NOT in
+# _VANILLA_MODES (that set is left byte-identical) but it is teacher-FREE: the
+# _attach_teacher_signals short-circuit and the verl_sdc_utils advantage branch
+# both gate on this set, so no T+/T-/position forward runs and the per-region
+# advantage path (_compute_dcpo_region_advantage) is used instead of the summed
+# GDPO whiten. Membership of every pre-existing mode is unchanged.
+_REGION_ROUTED_MODES = {"TRIOBJ_DCPO_V2"}
 # BCI_RLVR (E.9, ADDITIVE): a NO-teacher env-reward-only mode (correctness +
 # outcome_calibration; sdc_enabled=false). It joins the teacher-free set so
 # _attach_teacher_signals returns early (no T+/T-/position forward) exactly like
@@ -961,6 +1046,11 @@ def _attach_teacher_signals(data: DataProto):
     # and return data unmodified — base GDPO advantage path takes over.
     if mode in _VANILLA_MODES:
         return data
+    # TRIOBJ_DCPO_V2 (region-routed, ADDITIVE): env-reward-only — no teacher forward.
+    # Short-circuit before T+/T-/position forward, exactly like _VANILLA_MODES. The
+    # per-region advantage path reads only the stacked masks + head scalars.
+    if mode in _REGION_ROUTED_MODES:
+        return data
     # Both keys must exist for downstream compute_sdc_gdpo_advantage; an
     # interrupted attach (only one key set) must be recomputed, not cached.
     if (
@@ -1379,6 +1469,52 @@ class MetaCotSDCRewardManager:
         completions = [[{"content": text}] for text in decoded_responses]
         combined = torch.zeros(bs, response_length, dtype=torch.float32)
         valid_response_length = data.batch["attention_mask"][:, prompt_length:].sum(dim=1) - 1
+
+        # ── TRIOBJ_DCPO_V2 (ADDITIVE, mode-gated) ────────────────────────────
+        # Region-routed mode: stack the 3 DCPO token masks + the 2 per-rollout
+        # group scalars, and run the ONE-SHOT head pre-pass that populates the
+        # stash the three reward-func wrappers read. Fires ONLY for the DCPO mode;
+        # every other mode's reward loop below is byte-identical.
+        _mode = _ACTIVE_SDC_CONTEXT.get("mode", "")
+        if _mode in _REGION_ROUTED_MODES:
+            dcpo_ans, dcpo_meta_c, dcpo_conf = [], [], []
+            for i in range(bs):
+                item = data[i]
+                _resp_ids = item.batch["responses"]
+                _attn = item.batch["attention_mask"]
+                _vlen = int(_attn[prompt_length:].sum().item())
+                _rids = _resp_ids[: _vlen].tolist()
+                _rmask = [True] * len(_rids)
+                _decode = lambda ids: self.tokenizer.decode(ids, skip_special_tokens=False)
+                rmasks = build_dcpo_region_masks(_rids, _rmask, _decode)
+
+                def _pad_bool(arr) -> torch.Tensor:
+                    out = torch.zeros(response_length, dtype=torch.float32)
+                    n = min(response_length, len(arr))
+                    if n > 0:
+                        out[:n] = torch.as_tensor(arr[:n], dtype=torch.float32)
+                    return out
+
+                dcpo_ans.append(_pad_bool(rmasks["ANSWER_REGION"]))
+                dcpo_meta_c.append(_pad_bool(rmasks["META_CONTENT"]))
+                dcpo_conf.append(_pad_bool(rmasks["CONF"]))
+            data.batch["dcpo_answer_mask"] = torch.stack(dcpo_ans, dim=0)
+            data.batch["dcpo_meta_content_mask"] = torch.stack(dcpo_meta_c, dim=0)
+            data.batch["dcpo_conf_mask"] = torch.stack(dcpo_conf, dim=0)
+
+            _uid = data.non_tensor_batch.get("uid", None)
+            _trainer = _ACTIVE_SDC_CONTEXT.get("trainer", None)
+            _step = int(getattr(_trainer, "global_steps", 0) or 0)
+            _heads = _compute_dcpo_heads_stash(
+                completions, ground_truths, _uid, _step, self.config
+            )
+            data.non_tensor_batch["dcpo_phat"] = np.asarray(_heads["p_hat"], dtype=np.float32)
+            data.non_tensor_batch["dcpo_group_acc"] = np.asarray(_heads["group_acc"], dtype=np.float32)
+            # Sandbagging canary (batch pass-1 accuracy) + active clamp factor -> wandb.
+            data.non_tensor_batch["dcpo_canary_pass1_acc"] = np.asarray(
+                _heads.get("canary_pass1_acc", [1.0] * len(completions)), dtype=np.float32)
+            data.non_tensor_batch["dcpo_sandbag_clamp"] = np.asarray(
+                _heads.get("sandbag_clamp", [1.0] * len(completions)), dtype=np.float32)
 
         # Plumb completion_lengths + answer_extracted for the degeneration head
         # (codex round-5 review): without these, degeneration_penalty_reward

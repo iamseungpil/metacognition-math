@@ -87,3 +87,22 @@ steering으로 통하던 효과(E.6b +5.5pp)도 RL 학습으로는 전이되지 
   레버: 정체된 학습 잡(e8 또는 둘 다) 취소 → 노드 확보. (사용자 승인 대기.)
 - **durability gap:** 학습 잡은 cross-node preempt 시 step 0부터 재시작(resume-from-HF 없음).
   → 장기적으로 bootstrap에 HF-resume 추가 필요.
+
+---
+
+## [2026-06-09 추가] TRIOBJ_META_V1 결과 + 다음 분기 = TRIOBJ_DCPO_V2
+
+### TRIOBJ_META_V1 결과 (tri-objective GDPO, env-reward-only)
+- **학습 300 step COMPLETED (rc=0)**, gs300 HF 저장 `iamseungpil/metacot-h200-triobj-meta-v1`.
+  INLINE auto-eval은 OOM/preempt로 KILL → eval 수치 미확보, 별도 클린 eval 잡 `triobj-eval-gs300` 큐 대기.
+- **결정적 실패: `gdpo/meta_revision_utility/mean`이 전 구간 0.0(std 0)** — 두-pass meta-revision 보상이 **한 번도 안 켜졌다.** response_length 924→308, entropy 0.12→0.014 → policy가 meta를 버리고 **terse single-pass**로 수렴. train-val은 easy 보존(algebra ~0.78) / hard 붕괴(geometry ~0.23, omni-math ~0.16).
+- **진단 4원인:** (a) 모든 head를 한 advantage로 SUM→전 토큰 균일 broadcast(correctness가 meta 압살), (b) warranted meta ATTEMPT 무보상→"never revise"가 안전 최적, (c) 상속된 `meta_penalty(-0.2)`/`meta_floor(-0.5)` 잔존→net meta 억압, (d) correctness가 terse low-risk 답 선호.
+- **의도 관점 판정:** §2의 "다음 분기"가 노린 *utility-gated metacognition*(confidence→행동→정답개선)을 구현하려 했으나, **보상 신호가 토큰 라우팅 없이 합산·broadcast되는 구조 자체가 meta 신호를 0으로 죽였다.** B축도 A축도 못 건드림.
+- (참고) **E.8 gold-free RLSD v2:** RUNNING gs290/300(~97%), correctness 양수(~+0.04) 도달.
+
+### 다음 분기 → TRIOBJ_DCPO_V2 (DCPO 3-region token-masked advantage routing)
+spec: `docs/superpowers/specs/2026-06-09-dcpo-3region-design.md`
+- **핵심 전환:** 세 objective(correctness / meta-utility / calibration)에 **각자의 region-별 group-normalized advantage**를 주고 **자기 토큰 span에만 마스킹** → 한 objective의 gradient가 다른 objective 토큰으로 broadcast되지 않음(DCPO block-wise decoupling을 두-pass `<|meta|>` policy에 적용).
+- **3 head:** R_corr(non-meta reasoning+answer), R_meta(meta-content, **warrant-gated flip-credit, keyword gate 없음**), R_cal(conf 토큰, per-instance Brier). KL off(`use_kl_loss=false`, Dr.GRPO 암묵 정규화). guard는 analysis-only.
+- **4원인 직접 수리:** (a)→region 라우팅, (b)→`+eps` warrant-gated no-harm bonus + flat +1.0 flip credit, (c)→`meta_penalty`/`meta_floor` DISABLED, (d)→KL/entropy global-mask 재결합 채널 차단.
+- **north-star 정합:** correctness가 answer span에서 dominant 유지, meta-utility는 **보장된 난이도에서 정답을 옮기거나 지킬 때만** 보상, calibration은 conf 토큰에 국한된 sub-signal. 어떤 objective도 공유 broadcast advantage로 다른 것을 압살 못 함 = §0 intent("유용할 때만 하는 메타인지로 정확도↑")의 구조적 구현.

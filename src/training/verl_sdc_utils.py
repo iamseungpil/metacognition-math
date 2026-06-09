@@ -229,6 +229,51 @@ def _dilate_forward(mask: torch.Tensor, post_k: int) -> torch.Tensor:
     return (out > 0).to(mask.dtype)
 
 
+def _group_mean_subtract(values: torch.Tensor, index) -> torch.Tensor:
+    """Thin re-export of dcpo_region.group_mean_subtract (test-importable)."""
+    from src.training.dcpo_region import group_mean_subtract
+    return group_mean_subtract(values, index)
+
+
+def _compute_dcpo_region_advantage(
+    *,
+    response_mask: torch.Tensor,
+    index,
+    batch: dict,
+    non_tensor_batch: dict,
+    config,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """TRIOBJ_DCPO_V2 per-region group-normalized advantage (spec §2.3).
+
+    Each of the three raw heads is group-mean-subtracted INDEPENDENTLY over its own
+    group (Dr.GRPO, no /std), then masked onto its OWN token span. TAG tokens are in
+    NEITHER ANSWER nor META_CONTENT -> advantage 0 (delimiters). No global re-whiten
+    (codex-r13 LOCK). The heavy-dependency-free compose lives in dcpo_region so the
+    unit tests run without verl/omegaconf. Returns (A, A).
+    """
+    from src.training.dcpo_region import compose_dcpo_region_advantage
+
+    device = response_mask.device
+
+    def _head(name) -> torch.Tensor:
+        arr = non_tensor_batch[name]
+        return torch.as_tensor(np.asarray(arr, dtype=np.float32), device=device)
+
+    return compose_dcpo_region_advantage(
+        response_mask=response_mask.float(),
+        index=index,
+        R_corr=_head("correctness"),
+        R_meta=_head("meta_region_utility"),
+        R_cal=_head("cal_region_reward"),
+        answer_mask=batch["dcpo_answer_mask"].to(device).float(),
+        meta_content_mask=batch["dcpo_meta_content_mask"].to(device).float(),
+        conf_mask=batch["dcpo_conf_mask"].to(device).float(),
+        w_corr=float(config.get("dcpo_w_corr", 1.0)),
+        w_meta=float(config.get("dcpo_w_meta", 0.5)),
+        w_cal=float(config.get("dcpo_w_cal", 0.3)),
+    )
+
+
 def compute_sdc_gdpo_advantage(
     *,
     token_level_rewards: torch.Tensor,
@@ -311,6 +356,20 @@ def compute_sdc_gdpo_advantage(
     # — whiten the multi-head GDPO advantage, no SDC factor, no teacher-tensor reads.
     # This OR-clause only ADDS a mode; the existing predicates stay independently
     # true, so all pre-existing modes are byte-identical.
+    # TRIOBJ_DCPO_V2 (ADDITIVE, region-routed): independent per-head group-mean
+    # subtract + per-region token routing + composition. Placed BEFORE the
+    # existing OR-clause so every existing branch is byte-identical; fires ONLY
+    # for this mode. Does NOT use base_advantages (the summed GDPO scalar is
+    # logging-only for this mode) — composes the 3 head advantages directly.
+    if sdc_mode == "TRIOBJ_DCPO_V2":
+        return _compute_dcpo_region_advantage(
+            response_mask=response_mask,
+            index=index,
+            batch=batch,
+            non_tensor_batch=non_tensor_batch,
+            config=config,
+        )
+
     if sdc_mode == "VANILLA_GRPO" or sdc_mode == "MATCHED_E21RV2" or sdc_mode == "BCI_RLVR" or sdc_mode == "TRIOBJ_META_V1":
         advantages = base_advantages * response_mask
         advantages = verl_F.masked_whiten(advantages, response_mask) * response_mask

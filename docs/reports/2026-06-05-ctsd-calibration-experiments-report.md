@@ -199,3 +199,35 @@ B. **gradient 분리(DCPO)**: correctness는 답 토큰, calibration은 conf 토
 C. **utility-gated meta(SCoRe/Reflect-Retry)**: meta-action이 **wrong→right 뒤집을 때만 +, right→wrong엔 −**, emission 자체엔 보상 금지.
 D. **self-consistency를 conf 타깃**으로(그룹 정답률) — 신호가 죽지 않고 정확도와 상관.
 E. correctness dominant 유지 + KL anchor로 붕괴 방지(warmup 후 shaping).
+
+---
+
+## [2026-06-09 추가] TRIOBJ_META_V1 학습 완료 — meta-revision 보상이 한 번도 안 켜짐 + 단일-pass 붕괴
+
+### 실행 상태
+- **triobj-meta-v1b (`TRIOBJ_META_V1`, env-reward-only tri-objective GDPO):** verl_sdc 학습 **300 step COMPLETED (rc=0)**, 최종 gs300 HF 저장 `iamseungpil/metacot-h200-triobj-meta-v1`.
+- **INLINE auto-eval은 OOM/preempt로 KILL** (`amlt_run.sh` line 148, rc=0 직후) → eval 수치 없음. 별도 클린 프로세스 eval 잡 `triobj-eval-gs300`(VLLM spawn) 재제출, 큐 대기.
+
+### KEY FINDING — 두-pass meta-revision 보상이 전 구간 0
+- **`gdpo/meta_revision_utility/mean`이 학습 내내 정확히 0.0 (std 0)** → 두-pass meta-revision 보상이 **단 한 번도 안 켜졌다.**
+- **response_length 924→308 붕괴, entropy 0.12→0.014** → policy가 meta를 **버리고** terse single-pass 답으로 수렴. (E.9 inject의 발화 붕괴와 동형이나, 여기선 보상 자체가 0이라 더 직접적.)
+- **train-val 과목별 정확도** (acc=(mean+1)/2; base 0.786 1030@16k와 직접 비교 불가): algebra ~0.78, prealgebra ~0.75, number_theory ~0.54, counting ~0.49, geometry ~0.23, precalc ~0.25, omni-math ~0.16, intermediate_algebra ~0.17. → easy 보존 / hard 붕괴(Yue et al. 지문 재확인).
+
+### DIAGNOSIS — 4 causes (다음 설계가 직접 겨냥)
+- **(a) 합산 advantage broadcast:** 모든 reward head를 **하나의 group-normalized advantage로 SUM한 뒤 전 토큰에 균일 BROADCAST** → correctness가 소수의 meta 토큰을 압살.
+- **(b) warranted meta ATTEMPT 무보상:** 보장된 난이도에서의 meta 시도/정답 유지에 보상이 없어 **"never revise"가 안전 최적** → 보상이 0으로 죽음.
+- **(c) 상속된 meta 억제 head 잔존:** `meta_penalty(-0.2)`/`meta_floor(-0.5)`가 여전히 ACTIVE → 새 meta 보상이 0을 지불하는 동안 **net meta 억압.**
+- **(d) correctness가 terse low-risk 선호:** truncation + right→wrong 회피로 짧은 답이 유리 → 길이/엔트로피 붕괴.
+
+이 4원인은 모두 위 "선행연구 근본원인" §1(DCPO gradient 분리)·§3(Dr.GRPO 길이)·§C(utility-gated meta)의 처방과 1:1로 매칭된다.
+
+### 보조 실험 상태 (2026-06-09)
+- **e8-goldfree-rlsd-v2 (E.8, gold-free conf-down RLSD, E.4의 깨끗한 1-변수 ablation):** RUNNING, HF gs290/300 (~97%), **correctness가 양수 도달 (~+0.04)**. 단, 자체 inline eval도 OOM 위험.
+- **E.9 inject (gs300, 1030@16k k8) 재확인:** acc 0.609 / ECE 0.083 / conf 0.60 / meta_emission 0.41 vs base 0.786/0.557/0.29 → **calibration은 잡았으나 정확도+meta 희생(north-star 미달).**
+
+### NEXT — TRIOBJ_DCPO_V2 (DCPO 3-region token-masked advantage routing)
+spec: `/home/v-seungplee/metacognition-math/docs/superpowers/specs/2026-06-09-dcpo-3region-design.md`
+- 3 head를 **각자의 토큰 region에 라우팅:** R_corr(non-meta reasoning+answer 토큰), R_meta(meta-content 토큰, **warrant-gated flip-credit, keyword gate 없음**), R_cal(conf 토큰, per-instance Brier).
+- advantage = **region별 masked 텐서**(합산 스칼라 아님) → 한 objective의 gradient가 다른 region 토큰에 안 닿음 → **(a) 해소**.
+- `+eps` warrant-gated no-harm bonus + flat +1.0 flip credit → **(b) 해소**. `meta_penalty`/`meta_floor` **DISABLED** → **(c) 해소**. `use_kl_loss=false`(Dr.GRPO 암묵 정규화)로 global-mask 재결합 채널 차단 → **(d) 해소**.
+- 모든 keyword/structure/floor/count guard는 **analysis-only wandb 지표**(2개 canary만 early-stop/weight-clamp 트리거).
