@@ -112,6 +112,98 @@ def _compute_dcpo_heads_stash(completions, ground_truth, group_index, step, conf
     return out
 
 
+def _populate_dcpo_region_keys(data) -> None:
+    """TRIOBJ_DCPO_V2: write the 3 GDPO reward keys + 3 token masks into `data`.
+
+    AUTHORITATIVE, GROUP-AWARE, MAIN-PROCESS population. Called from the
+    `_REGION_ROUTED_MODES` short-circuit in `_attach_teacher_signals` — i.e.
+    inside `patched_compute_advantage`, immediately BEFORE
+    `compute_sdc_gdpo_advantage` runs the GDPO assertion + reads the heads.
+
+    Why here (and not in `reward_loop_score`): the R_meta head is GROUP-dependent
+    (its warrant uses the group p_hat), so it can only be computed once per batch
+    with the full `uid` group structure + `step`. The Ray RewardLoopWorker actors
+    that run `reward_loop_score` see one rollout at a time with no group, so they
+    can only emit a 0.0 placeholder for `meta_region_utility` / `cal_region_reward`
+    (R16 robustness pattern). This main-process write OVERWRITES that placeholder
+    with the authoritative group-aware values before the assertion/advantage.
+
+    Mirrors the synchronous `MetaCotSDCRewardManager.__call__` DCPO block exactly,
+    but sources tokenizer/trainer/config from `_ACTIVE_SDC_CONTEXT` instead of
+    `self` (the async-rollout path bypasses `__call__`, so neither the masks nor
+    the keys are otherwise populated). Idempotent.
+    """
+    tokenizer = _ACTIVE_SDC_CONTEXT.get("tokenizer")
+    trainer = _ACTIVE_SDC_CONTEXT.get("trainer")
+    if tokenizer is None:
+        raise RuntimeError("TRIOBJ_DCPO_V2: tokenizer context not initialized")
+
+    bs = len(data)
+    response_length = data.batch["responses"].shape[-1]
+    prompt_length = data.batch["prompts"].shape[-1]
+
+    decoded_responses: list[str] = []
+    ground_truths: list[str] = []
+    dcpo_ans, dcpo_meta_c, dcpo_conf = [], [], []
+    for i in range(bs):
+        item = data[i]
+        text, response_ids = _decode_response(
+            tokenizer,
+            item.batch["prompts"],
+            item.batch["responses"],
+            item.batch["attention_mask"],
+            prompt_length,
+        )
+        decoded_responses.append(text)
+        gt = item.non_tensor_batch.get("reward_model", {})
+        if isinstance(gt, dict):
+            gt = gt.get("ground_truth", "")
+        ground_truths.append(str(gt))
+
+        _rids = response_ids.tolist()
+        _rmask = [True] * len(_rids)
+        _decode = lambda ids: tokenizer.decode(ids, skip_special_tokens=False)
+        rmasks = build_dcpo_region_masks(_rids, _rmask, _decode)
+
+        def _pad_bool(arr) -> torch.Tensor:
+            out = torch.zeros(response_length, dtype=torch.float32)
+            n = min(response_length, len(arr))
+            if n > 0:
+                out[:n] = torch.as_tensor(arr[:n], dtype=torch.float32)
+            return out
+
+        dcpo_ans.append(_pad_bool(rmasks["ANSWER_REGION"]))
+        dcpo_meta_c.append(_pad_bool(rmasks["META_CONTENT"]))
+        dcpo_conf.append(_pad_bool(rmasks["CONF"]))
+
+    data.batch["dcpo_answer_mask"] = torch.stack(dcpo_ans, dim=0)
+    data.batch["dcpo_meta_content_mask"] = torch.stack(dcpo_meta_c, dim=0)
+    data.batch["dcpo_conf_mask"] = torch.stack(dcpo_conf, dim=0)
+
+    completions = [[{"content": t}] for t in decoded_responses]
+    _uid = data.non_tensor_batch.get("uid", None)
+    _step = int(getattr(trainer, "global_steps", 0) or 0)
+    _config = getattr(trainer, "config", None)
+    _heads = _compute_dcpo_heads_stash(
+        completions, ground_truths, _uid, _step, _config
+    )
+
+    # AUTHORITATIVE group-aware GDPO reward keys (overwrite any async placeholder).
+    # R_corr -> 'correctness', R_meta -> 'meta_region_utility', R_cal -> 'cal_region_reward'.
+    # float32 arrays of length B, written BEFORE compute_gdpo_outcome_advantage asserts.
+    data.non_tensor_batch["correctness"] = np.asarray(_heads["R_corr"], dtype=np.float32)
+    data.non_tensor_batch["meta_region_utility"] = np.asarray(_heads["R_meta"], dtype=np.float32)
+    data.non_tensor_batch["cal_region_reward"] = np.asarray(_heads["R_cal"], dtype=np.float32)
+
+    # Diagnostics (wandb) — same as the synchronous __call__ block.
+    data.non_tensor_batch["dcpo_phat"] = np.asarray(_heads["p_hat"], dtype=np.float32)
+    data.non_tensor_batch["dcpo_group_acc"] = np.asarray(_heads["group_acc"], dtype=np.float32)
+    data.non_tensor_batch["dcpo_canary_pass1_acc"] = np.asarray(
+        _heads.get("canary_pass1_acc", [1.0] * bs), dtype=np.float32)
+    data.non_tensor_batch["dcpo_sandbag_clamp"] = np.asarray(
+        _heads.get("sandbag_clamp", [1.0] * bs), dtype=np.float32)
+
+
 def correctness_region_reward(completions, ground_truth=None, **kwargs):
     """TRIOBJ_DCPO_V2 R_corr head (reads the per-batch DCPO stash)."""
     r = _DCPO_HEAD_STASH.get("R_corr")
@@ -724,6 +816,19 @@ def reward_loop_score(data_source=None, solution_str="", ground_truth="", extra_
     # and provides the signal for TRIOBJ_META_V1.
     out["meta_revision_utility"] = _safe_call(meta_revision_utility_reward, with_gt=True)
 
+    # TRIOBJ_DCPO_V2 (always-emit placeholder, same R16 robustness pattern):
+    # `meta_region_utility` / `cal_region_reward` are the DCPO GDPO reward keys.
+    # `meta_region_utility` is GROUP-dependent (uses the group p_hat) so it CANNOT
+    # be computed here per-rollout — emit 0.0 as a safety placeholder so the key is
+    # never missing in any async path. The AUTHORITATIVE group-aware values are
+    # written in the main process by `_populate_dcpo_region_keys` (called from
+    # `_attach_teacher_signals`) and OVERWRITE these placeholders before the GDPO
+    # advantage/assertion runs. `correctness` is already emitted above (group-free).
+    # GDPO weight for these keys is 0 in every other mode (absent from their
+    # REWARD_CONFIGS keys), so emitting them is a safe no-op everywhere else.
+    out["meta_region_utility"] = 0.0
+    out["cal_region_reward"] = 0.0
+
     if mode == "SDC_SHARED":
         # Restore the 5-head legacy contract so multi_turn / async rollout
         # paths don't crash on missing GDPO reward keys.
@@ -1049,7 +1154,19 @@ def _attach_teacher_signals(data: DataProto):
     # TRIOBJ_DCPO_V2 (region-routed, ADDITIVE): env-reward-only — no teacher forward.
     # Short-circuit before T+/T-/position forward, exactly like _VANILLA_MODES. The
     # per-region advantage path reads only the stacked masks + head scalars.
+    #
+    # AUTHORITATIVE population (bugfix): `_compute_dcpo_region_advantage` reads BOTH
+    # the 3 GDPO reward keys (correctness / meta_region_utility / cal_region_reward)
+    # AND the 3 token masks (dcpo_answer_mask / dcpo_meta_content_mask /
+    # dcpo_conf_mask) from data. In the async-rollout path the synchronous
+    # `MetaCotSDCRewardManager.__call__` DCPO block is bypassed, and `reward_loop_score`
+    # (running per-rollout in Ray actors, no group) cannot compute the GROUP-aware
+    # R_meta (p_hat) — it only emits 0.0 placeholders. So write them here, in the
+    # MAIN process with the full uid group + step, BEFORE `compute_sdc_gdpo_advantage`
+    # runs the GDPO assertion (core_algos.compute_gdpo_outcome_advantage) and reads
+    # the heads. This is the only place that has group structure AND runs pre-assertion.
     if mode in _REGION_ROUTED_MODES:
+        _populate_dcpo_region_keys(data)
         return data
     # Both keys must exist for downstream compute_sdc_gdpo_advantage; an
     # interrupted attach (only one key set) must be recomputed, not cached.
