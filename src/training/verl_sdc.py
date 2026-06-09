@@ -189,23 +189,22 @@ def _populate_dcpo_region_keys(data) -> None:
     _step = int(getattr(trainer, "global_steps", 0) or 0)
     _config = getattr(trainer, "config", None)
 
-    # TRIOBJ_DCPO_V3 (ADDITIVE): consume the counterfactual correctness the PRODUCER
-    # (_force_inject_rollout, §3) stashed onto the batch BEFORE sleep_replicas(). We do
-    # NOT trigger the CF generation here — the engine is asleep at this consume site
-    # (the _generate_v0_prefixes busy-rollout deadlock warning applies). If absent
-    # (producer off / all rows skipped / v2 mode), cf_correct stays None and
+    # TRIOBJ_DCPO_V3 (ADDITIVE): consume the counterfactual TEXTS the PRODUCER
+    # (_dcpo_cf_generate_sequences, §3) stashed onto the batch BEFORE sleep_replicas().
+    # We do NOT trigger the CF generation here — the engine is asleep at this consume
+    # site. GRADING happens HERE (dcpo_region_rewards cf_completions path) because this
+    # is where the real ground_truths are available — the producer's gen_output lacks
+    # non_tensor 'reward_model' (grading there saw gt="" → c_without≡0, the v3b bug).
+    # If absent (producer off / all rows skipped / v2 mode), cf_texts stays None and
     # dcpo_region_rewards falls back to the text path (cf_answer_from_prefix), so the
-    # step never crashes (spec §5.2 fail-safe). Map NaN sentinels -> None (skipped rows).
-    _cf_correct = data.non_tensor_batch.get("cf_correct", None)
-    if _cf_correct is not None:
-        _cf_correct = [
-            None if (v is None or (isinstance(v, float) and v != v)) else float(v)
-            for v in list(_cf_correct)
-        ]
+    # step never crashes (spec §5.2 fail-safe). None elements = skipped rows.
+    _cf_texts = data.non_tensor_batch.get("cf_texts", None)
+    if _cf_texts is not None:
+        _cf_texts = [None if t is None else str(t) for t in list(_cf_texts)]
 
     _heads = _compute_dcpo_heads_stash(
         completions, ground_truths, _uid, _step, _config,
-        cf_correct=_cf_correct,
+        cf_completions=_cf_texts,
     )
 
     # AUTHORITATIVE group-aware GDPO reward keys (overwrite any async placeholder).
@@ -1225,12 +1224,31 @@ def _attach_teacher_signals(data: DataProto):
             prompt_length,
         )
         prompt_texts.append(prompt_text)
-        gt = data.non_tensor_batch.get("reward_model", [])[i]
+        # reward_model may be absent on some DataProto views (codereview IMPORTANT-1:
+        # `.get(..., [])[i]` raised IndexError when the key was missing) — per-row {}.
+        _rm = data.non_tensor_batch.get("reward_model", None)
+        gt = _rm[i] if _rm is not None else {}
         if isinstance(gt, dict):
             gt = gt.get("ground_truth", "")
         gold = str(gt)
         gold_answers.append(gold)
         decoy_answers.append(_rule_based_decoy(gold, seed=42))
+
+    # GOLD is load-bearing for every teacher variant: an empty gold silently
+    # conditions T+ on NO answer and T- on the absolute-fallback decoy " + 1",
+    # producing a plausible-looking but content-free contrast (codereview
+    # CRITICAL-1, same silent-empty class as the v3b gt="" bug). Fail fast when
+    # the whole batch is goldless; count-and-warn on partial gaps.
+    _n_empty_gold = sum(1 for g in gold_answers if not g.strip())
+    if gold_answers and _n_empty_gold == len(gold_answers):
+        raise RuntimeError(
+            "[SDC] _attach_teacher_signals: ALL ground truths are empty — "
+            "non_tensor 'reward_model'/'ground_truth' missing on this batch; "
+            "the teacher would condition on no answer (silent no-op)."
+        )
+    if _n_empty_gold:
+        print(f"[SDC] WARNING: {_n_empty_gold}/{len(gold_answers)} rows have EMPTY "
+              f"gold — teacher contrast is content-free for those rows.", flush=True)
 
     # ── R5 (RLSD_FORCED_META) prep ─────────────────────────────────────────
     # Generate (or fetch cached) V0 student prefixes for unique prompts in this
@@ -1293,6 +1311,16 @@ def _attach_teacher_signals(data: DataProto):
         if mode in ("ROD_PT", "ROD_PT_DEGEN", "ROD_PT2_E21CTRL"):  # F1 codex r2 fix: ROD_PT_DEGEN needs position forward too (utils:308 expects it); ROD_PT2_E21CTRL (Arm 2) reuses the SAME content×position 2-teacher
             try:
                 meta_start_id = int(tokenizer.convert_tokens_to_ids("<|meta|>"))
+                # UNK-GUARD (codereview IMPORTANT-2): a tokenizer without <|meta|>
+                # as a single token returns the unk id here — a positive int that
+                # would pass `> 0` and scan for UNK tokens instead of meta openers
+                # (silently misplacing/neutralizing the position teacher). Mirror
+                # _meta_token_ids_safe's rejection.
+                _unk = getattr(tokenizer, "unk_token_id", None)
+                if _unk is not None and meta_start_id == int(_unk):
+                    print("[SDC] WARNING: '<|meta|>' resolves to unk_token_id — "
+                          "position teacher DISABLED for this run.", flush=True)
+                    meta_start_id = -1
             except Exception:
                 meta_start_id = -1
             target_device = response_tensor.device
@@ -1567,17 +1595,14 @@ class MetaCotSDCRewardManager:
                 _pf_uid = data.non_tensor_batch.get("uid", None)
                 _pf_trainer = _ACTIVE_SDC_CONTEXT.get("trainer", None)
                 _pf_step = int(getattr(_pf_trainer, "global_steps", 0) or 0)
-                # TRIOBJ_DCPO_V3: consume producer cf_correct if present
-                # (NaN sentinel -> None for skipped rows); text fallback otherwise.
-                _pf_cf = data.non_tensor_batch.get("cf_correct", None)
+                # TRIOBJ_DCPO_V3: consume producer cf_texts if present (graded here,
+                # where real ground_truths exist); text fallback otherwise.
+                _pf_cf = data.non_tensor_batch.get("cf_texts", None)
                 if _pf_cf is not None:
-                    _pf_cf = [
-                        None if (v is None or (isinstance(v, float) and v != v)) else float(v)
-                        for v in list(_pf_cf)
-                    ]
+                    _pf_cf = [None if t is None else str(t) for t in list(_pf_cf)]
                 _pf_heads = _compute_dcpo_heads_stash(
                     completions, ground_truths, _pf_uid, _pf_step, self.config,
-                    cf_correct=_pf_cf,
+                    cf_completions=_pf_cf,
                 )
                 data.non_tensor_batch["dcpo_phat"] = np.asarray(_pf_heads["p_hat"], dtype=np.float32)
                 data.non_tensor_batch["dcpo_group_acc"] = np.asarray(_pf_heads["group_acc"], dtype=np.float32)
@@ -1713,16 +1738,14 @@ class MetaCotSDCRewardManager:
             _uid = data.non_tensor_batch.get("uid", None)
             _trainer = _ACTIVE_SDC_CONTEXT.get("trainer", None)
             _step = int(getattr(_trainer, "global_steps", 0) or 0)
-            # TRIOBJ_DCPO_V3: consume producer cf_correct if present (text fallback else).
-            _cf_correct = data.non_tensor_batch.get("cf_correct", None)
-            if _cf_correct is not None:
-                _cf_correct = [
-                    None if (v is None or (isinstance(v, float) and v != v)) else float(v)
-                    for v in list(_cf_correct)
-                ]
+            # TRIOBJ_DCPO_V3: consume producer cf_texts if present (graded here, where
+            # real ground_truths exist); text fallback otherwise.
+            _cf_texts = data.non_tensor_batch.get("cf_texts", None)
+            if _cf_texts is not None:
+                _cf_texts = [None if t is None else str(t) for t in list(_cf_texts)]
             _heads = _compute_dcpo_heads_stash(
                 completions, ground_truths, _uid, _step, self.config,
-                cf_correct=_cf_correct,
+                cf_completions=_cf_texts,
             )
             data.non_tensor_batch["dcpo_phat"] = np.asarray(_heads["p_hat"], dtype=np.float32)
             data.non_tensor_batch["dcpo_group_acc"] = np.asarray(_heads["group_acc"], dtype=np.float32)
@@ -1970,10 +1993,14 @@ class SDCRayPPOTrainer(RayPPOTrainer):
         After the MAIN gen returns (replicas STILL awake; sleep_replicas() runs in
         ray_trainer only after this returns), build the counterfactual prefixes (cut
         at first <|meta|>), regenerate with <|meta|> id 151669 SUPPRESSED via
-        logit_bias, grade the CF answers, and stash `cf_correct` (float32, length B,
-        NaN for skipped/no-meta rows) onto gen_output.non_tensor_batch. The 4 CF
-        rollouts are inference-only — never placed in the GRPO group, never scored
-        for advantage; they contribute exactly one scalar each to R_meta.
+        logit_bias, and stash the decoded CF TEXTS (`cf_texts`, object array, length
+        B, None for skipped/no-meta/failed rows) onto gen_output.non_tensor_batch.
+        GRADING happens at the CONSUMER (_populate_dcpo_region_keys → dcpo_region_rewards
+        cf_completions path) where the REAL ground truths are available — gen_batch/
+        gen_output do NOT carry non_tensor 'reward_model', so grading here saw gt=""
+        and judged every CF wrong (the v3b c_without≡0 bug). The 4 CF rollouts are
+        inference-only — never placed in the GRPO group, never scored for advantage;
+        they contribute exactly one scalar each to R_meta.
 
         No-op on validation (no GRPO, no reward routing) and on absent meta.
         """
@@ -1992,23 +2019,26 @@ class SDCRayPPOTrainer(RayPPOTrainer):
             resp = gen_output.batch["responses"]
             resp_mask = gen_output.batch.get("response_mask", None)
         except Exception as e:  # pragma: no cover — defensive
-            print(f"[DCPO-V3] CF skipped: cannot read responses ({e}); cf_correct=NaN")
-            gen_output.non_tensor_batch["cf_correct"] = _np.full(B, _np.nan, dtype=_np.float32)
+            print(f"[DCPO-V3] CF skipped: cannot read responses ({e}); cf_texts=None")
+            _none = _np.empty(B, dtype=object)
+            gen_output.non_tensor_batch["cf_texts"] = _none
             return gen_output
 
         # 1) Cut each rollout at its first <|meta|> → prefix ids (no-meta rows skipped).
         prefix_ids, skip = self._dcpo_cf_build_prefixes(gen_output, meta_open)
 
-        # 2) Regenerate the counterfactuals with <|meta|> suppressed, grade them.
-        cf_correct = self._dcpo_cf_generate_and_grade(
+        # 2) Regenerate the counterfactuals with <|meta|> suppressed; decode TEXTS only.
+        cf_texts = self._dcpo_cf_generate_texts(
             gen_batch, gen_output, prefix_ids, skip, meta_open
         )
 
-        gen_output.non_tensor_batch["cf_correct"] = _np.asarray(cf_correct, dtype=_np.float32)
+        _arr = _np.empty(B, dtype=object)
+        for _i in range(B):
+            _arr[_i] = cf_texts[_i]
+        gen_output.non_tensor_batch["cf_texts"] = _arr
         if os.environ.get("DCPO_DEBUG", "1") == "1":
-            _vals = cf_correct
-            _n_cf = sum(1 for v in _vals if v == v)  # non-NaN
-            print(f"[DCPO-V3] CF gen done: B={B} graded={_n_cf} skipped(no-meta)={int(sum(skip))}",
+            _n_cf = sum(1 for v in cf_texts if v is not None)
+            print(f"[DCPO-V3] CF gen done: B={B} cf_texts={_n_cf} skipped(no-meta)={int(sum(skip))}",
                   flush=True)
         return gen_output
 
@@ -2043,26 +2073,30 @@ class SDCRayPPOTrainer(RayPPOTrainer):
             prefix_ids[i] = list(p_ids) + r_ids
         return prefix_ids, skip
 
-    def _dcpo_cf_generate_and_grade(self, gen_batch, gen_output, prefix_ids, skip, meta_open):
-        """Run the 2nd generate_sequences on the cut prefixes with <|meta|> suppressed,
-        decode + grade the CF answers. Returns a length-B list of {1.0, 0.0, NaN}
-        (NaN = skipped/no-meta → R_meta 0 in the reward).
+    def _dcpo_cf_generate_texts(self, gen_batch, gen_output, prefix_ids, skip, meta_open):
+        """Run the 2nd generate_sequences on the cut prefixes with <|meta|> suppressed
+        and decode the CF continuation TEXTS. Returns a length-B list of (str | None);
+        None = skipped/no-meta/failed → consumer falls back conservatively (R_meta 0
+        for no-meta, pre-meta-prefix grade for failed rows).
+
+        NO grading here: gen_output does NOT carry non_tensor 'reward_model', so any
+        ground-truth read at this site is "" and every CF judges wrong (the v3b
+        c_without≡0 bug). Grading lives in dcpo_region_rewards (cf_completions path),
+        called from _populate_dcpo_region_keys where the full batch (with reward_model)
+        is available.
 
         The verl 2nd-gen call is wired in `_dcpo_cf_call_engine` (cf_prefix_agent loop
-        + per-call logit_bias suppression). CRASH-SAFE: any failure → all-NaN cf_correct
-        so R_meta gracefully degrades to 0 (dcpo_region_rewards text-fallback still
-        supplies a conservative signal). The REWARD side consumes cf_correct as-is.
+        + per-call logit_bias suppression). CRASH-SAFE: any failure → all-None cf_texts
+        so R_meta gracefully degrades (text fallback still supplies a conservative
+        signal).
         """
-        from src.training.rewards import _extract_answer_fallback, _check_correctness
-
         B = len(gen_output)
-        gts = self._dcpo_cf_ground_truths(gen_output)
 
         # Filter to the rows that actually need a CF gen (have meta).
         active = [i for i in range(B) if not skip[i] and prefix_ids[i] is not None]
-        cf_correct = [float("nan")] * B
+        cf_texts = [None] * B
         if not active:
-            return cf_correct
+            return cf_texts
 
         # The 2nd-gen call (spec §3.4/§3.5) is implemented in _dcpo_cf_call_engine:
         #   cf_batch = gen_batch.select_idxs(active)            # carry raw_prompt + meta_info
@@ -2072,35 +2106,31 @@ class SDCRayPPOTrainer(RayPPOTrainer):
         # Fallbacks (spec §3.6) if cf_prefix_agent is unavailable: (1) chat-message prefix
         # via stock single_turn loop, (2) separate generate_sequences pass on a fresh batch.
         #
-        # CRASH-SAFE: any failure in the verl 2nd-gen call → all-NaN cf_correct so
-        # R_meta gracefully degrades to 0 (dcpo_region_rewards text-fallback still
+        # CRASH-SAFE: any failure in the verl 2nd-gen call → all-None cf_texts so
+        # R_meta gracefully degrades (dcpo_region_rewards text-fallback still
         # supplies a conservative signal). Only the sdc_counterfactual-gated path runs
         # here; this whole method is unreachable when the flag is off.
         try:
-            cf_texts = self._dcpo_cf_call_engine(gen_batch, prefix_ids, active, meta_open)
+            act_texts = self._dcpo_cf_call_engine(gen_batch, prefix_ids, active, meta_open)
         except Exception as e:  # pragma: no cover — verl/GPU only path
             print(f"[DCPO-V3] CF engine call FAILED ({type(e).__name__}: {e}); "
-                  f"cf_correct=NaN (R_meta→0/text-fallback).", flush=True)
+                  f"cf_texts=None (R_meta→text-fallback).", flush=True)
             if os.environ.get("DCPO_DEBUG", "1") == "1":
                 traceback.print_exc()
-            return [float("nan")] * B
+            return [None] * B
 
         # `_dcpo_cf_call_engine` returns a parallel list of decoded CF response TEXTS
-        # for `active` (<|meta|> suppressed). Grade each against its ground truth.
+        # for `active` (<|meta|> suppressed). Map back to full-B slots; grading is the
+        # consumer's job (real ground truths live there).
         for k, i in enumerate(active):
-            txt = cf_texts[k] if k < len(cf_texts) else None
-            ans = _extract_answer_fallback(txt) if txt else None
-            cf_correct[i] = (1.0 if _check_correctness(ans, gts[i]) else 0.0) if ans else float("nan")
+            txt = act_texts[k] if k < len(act_texts) else None
+            cf_texts[i] = txt if (txt and txt.strip()) else None
 
         if os.environ.get("DCPO_DEBUG", "1") == "1":
-            # c_with  = main-rollout correctness (meta present, from gen_output reward)
-            # c_without = CF correctness (meta suppressed) — the R_meta contrast term.
-            _c_without = [cf_correct[i] for i in active]
-            _n_grade = sum(1 for v in _c_without if v == v)
-            _n_corr = sum(1 for v in _c_without if v == 1.0)
-            print(f"[DCPO-V3] CF graded: active={len(active)} graded={_n_grade} "
-                  f"c_without_correct={_n_corr} (c_with from main gen reward)", flush=True)
-        return cf_correct
+            _n_txt = sum(1 for i in active if cf_texts[i] is not None)
+            print(f"[DCPO-V3] CF texts: active={len(active)} non_empty={_n_txt} "
+                  f"(grading deferred to consumer with real GTs)", flush=True)
+        return cf_texts
 
     def _dcpo_cf_call_engine(self, gen_batch, prefix_ids, active, meta_open):
         """The verl 2nd-generation CALL (spec §3.4/§3.5). Build a DataProto of the
@@ -2189,17 +2219,6 @@ class SDCRayPPOTrainer(RayPPOTrainer):
                 ids = [t for t in ids if t != int(meta_open)]
             texts.append(self.tokenizer.decode(ids, skip_special_tokens=True))
         return texts
-
-    def _dcpo_cf_ground_truths(self, gen_output):
-        """Per-row ground-truth strings from non_tensor_batch['reward_model']."""
-        B = len(gen_output)
-        gts = []
-        for i in range(B):
-            gt = gen_output[i].non_tensor_batch.get("reward_model", {})
-            if isinstance(gt, dict):
-                gt = gt.get("ground_truth", "")
-            gts.append(str(gt))
-        return gts
 
     def _compute_reward_colocate(self, batch: DataProto) -> DataProto:
         fn = self._sdc_reward_fn
@@ -2842,6 +2861,22 @@ def main_task(config):
             "RLSD_META_CONTRAST for now."
         )
     reward_cfg = REWARD_CONFIGS[mode]
+
+    # FAIL-FAST gate-coherence check (codereview CRITICAL-2, the sdc_enabled-class
+    # bug): patched_compute_advantage runs the SDC branch only when sdc_enabled is
+    # truthy OR the mode is region-routed. A teacher-ON mode whose YAML omits/false
+    # sdc_enabled would otherwise SILENTLY train as plain GDPO while labeled e.g.
+    # ROD_MQ_CONTRAST — exactly how the v2/v3 region routing stayed off unnoticed.
+    _teacher_on_modes = _SINGLE_TEACHER_MODES | _CONTRASTIVE_MODES | _FORCED_META_MODES
+    _alg_for_gate = config.get("algorithm", {}) or {}
+    if mode in _teacher_on_modes and not bool(_alg_for_gate.get("sdc_enabled", False)):
+        raise ValueError(
+            f"mode='{mode}' is a teacher-ON self-distill mode but "
+            f"algorithm.sdc_enabled is not true — the teacher forward and SDC "
+            f"advantage shaping would be SILENTLY skipped (plain GDPO). Set "
+            f"algorithm.sdc_enabled: true in the YAML (or use a vanilla/region mode)."
+        )
+
     # Make mode visible to runtime hooks (advantage compute & teacher attach).
     _ACTIVE_SDC_CONTEXT["mode"] = mode
     # Mirror mode into algorithm config so verl_sdc_utils.compute_sdc_gdpo_advantage

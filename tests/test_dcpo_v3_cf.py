@@ -13,8 +13,10 @@ Covers:
     shapes + values), correct prompt-ids passed (continuation prompt), SAME captured
     generate invoked, meta_info validate=False.
   - _dcpo_cf_decode_texts: right-pad strip + meta-leak strip + decode.
-  - _dcpo_cf_generate_and_grade: NaN on empty active; crash-safe all-NaN on engine raise;
-    correct {1.0,0.0,NaN} placement on grading.
+  - _dcpo_cf_generate_texts: all-None on empty active; crash-safe all-None on engine
+    raise; texts mapped back to the right full-B slots (None for skipped/empty).
+    NO grading here (v3b BUG-1: gen_output lacks 'reward_model' → gt="" graded every
+    CF wrong); grading lives in dcpo_region_rewards via cf_completions.
   - cf_prefix_agent loop module: logit_bias injection does NOT mutate the shared dict.
 """
 import sys
@@ -168,8 +170,7 @@ def _mk_trainer():
         "_dcpo_cf_build_prefixes",
         "_dcpo_cf_call_engine",
         "_dcpo_cf_decode_texts",
-        "_dcpo_cf_generate_and_grade",
-        "_dcpo_cf_ground_truths",
+        "_dcpo_cf_generate_texts",
     ):
         setattr(t, name, getattr(cls, name).__get__(t))
     return t
@@ -294,9 +295,9 @@ def test_decode_prefers_response_mask_when_present():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# _dcpo_cf_generate_and_grade — NaN-on-empty, crash-safe, grading
+# _dcpo_cf_generate_texts — None-on-empty, crash-safe, slot placement (NO grading)
 # ═══════════════════════════════════════════════════════════════════════════
-def test_grade_nan_when_no_active():
+def test_texts_none_when_no_active():
     prompts = torch.tensor([[1, 1], [2, 2]])
     responses = torch.tensor([[1, 2, 3], [4, 5, 6]])  # no meta in either
     go = FakeGenOutput(prompts, responses, ground_truths=["1", "2"])
@@ -304,12 +305,11 @@ def test_grade_nan_when_no_active():
     t = _mk_trainer()
     skip = [True, True]
     prefix_ids = [None, None]
-    out = t._dcpo_cf_generate_and_grade(gb, go, prefix_ids, skip, META_OPEN)
-    assert len(out) == 2
-    assert all(v != v for v in out)  # all NaN
+    out = t._dcpo_cf_generate_texts(gb, go, prefix_ids, skip, META_OPEN)
+    assert out == [None, None]
 
 
-def test_grade_crash_safe_all_nan_on_engine_raise():
+def test_texts_crash_safe_all_none_on_engine_raise():
     prompts = torch.tensor([[1, 1]])
     responses = torch.tensor([[7, META_OPEN, 9]])
     go = FakeGenOutput(prompts, responses, ground_truths=["42"])
@@ -322,13 +322,13 @@ def test_grade_crash_safe_all_nan_on_engine_raise():
     t._dcpo_cf_orig_generate = boom
     prefix_ids = [[1, 1, 7]]
     skip = [False]
-    out = t._dcpo_cf_generate_and_grade(gb, go, prefix_ids, skip, META_OPEN)
-    assert len(out) == 1
-    assert out[0] != out[0]  # NaN — R_meta degrades to 0
+    out = t._dcpo_cf_generate_texts(gb, go, prefix_ids, skip, META_OPEN)
+    assert out == [None]  # R_meta degrades to text fallback
 
 
-def test_grade_places_correct_values(monkeypatch):
-    # CF gen returns text that grades correct for row0, wrong for row2; row1 skipped.
+def test_texts_placed_at_active_rows():
+    # Texts from the engine map back to their ORIGINAL row slots; skipped row stays
+    # None; empty/whitespace text becomes None. No grading happens here (BUG-1).
     prompts = torch.tensor([[1, 1], [2, 2], [3, 3]])
     responses = torch.tensor([
         [5, META_OPEN, 0],
@@ -342,24 +342,16 @@ def test_grade_places_correct_values(monkeypatch):
     # stub the engine call to return controlled texts for active=[0,2]
     def fake_call(gen_batch, prefix_ids, active, meta_open):
         assert active == [0, 2]
-        return ["ans0", "ans2"]
+        return ["cf text for row0", "   "]   # row2's text is blank → None
 
     t._dcpo_cf_call_engine = fake_call
 
-    # control grading: row0 correct, row2 wrong
-    import src.training.rewards as R
-
-    monkeypatch.setattr(R, "_extract_answer_fallback", lambda txt: txt)
-    monkeypatch.setattr(
-        R, "_check_correctness", lambda ans, gt: (ans == "ans0" and gt == "AAA")
-    )
-
     skip = [False, True, False]
     prefix_ids = [[1, 1, 5], None, [3, 3, 6]]
-    out = t._dcpo_cf_generate_and_grade(gb, go, prefix_ids, skip, META_OPEN)
-    assert out[0] == 1.0
-    assert out[1] != out[1]  # NaN (skipped)
-    assert out[2] == 0.0
+    out = t._dcpo_cf_generate_texts(gb, go, prefix_ids, skip, META_OPEN)
+    assert out[0] == "cf text for row0"
+    assert out[1] is None   # skipped (no meta)
+    assert out[2] is None   # blank text → None (consumer falls back conservatively)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

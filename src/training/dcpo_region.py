@@ -313,8 +313,12 @@ def dcpo_region_rewards(
         conf[i] = _parse_confidence(t)
 
         # c_without[i]: precedence cf_correct -> cf_completions -> text fallback.
+        # NaN-GUARD (v3b BUG-2): cf_correct may arrive as np.float32 with NaN
+        # sentinels for skipped rows; np.float32 is NOT a python-float subclass so
+        # isinstance-gated NaN checks upstream can miss it, and bool(nan) is True.
+        # `cw == cw` is False only for NaN regardless of float type.
         cw = _cf_get(cf_correct, i)
-        if cw is not None:
+        if cw is not None and cw == cw:
             c_without[i] = bool(cw)
         else:
             cf_txt = _cf_get(cf_completions, i)

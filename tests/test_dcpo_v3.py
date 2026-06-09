@@ -133,6 +133,67 @@ def test_rmeta_cf_correct_array_none_entry():
     assert out["R_meta"][0] == 0.0
 
 
+# ── v3b BUG-2 regression: np.float32 NaN sentinel must NOT read as c_without=True ──
+def test_rmeta_npfloat32_nan_is_none_not_true():
+    # The producer ships cf_correct as np.float32 with NaN for skipped rows.
+    # np.float32 is NOT a python-float subclass, so isinstance-gated NaN checks
+    # miss it and bool(nan)=True turned every skipped+wrong row into spurious -1.
+    # NaN must behave exactly like None: no meta → R_meta 0 even when main is wrong.
+    nan_arr = np.asarray([float("nan")], dtype=np.float32)
+    out = dcpo_region_rewards(
+        [_c("no meta here. The answer is \\boxed{4}")],   # wrong (gt=5), NO meta
+        ground_truth=["5"],
+        group_index=["g"],
+        cf_correct=list(nan_arr),
+    )
+    assert out["R_meta"][0] == 0.0   # pre-fix this was -1.0 (the v3b artifact)
+
+
+def test_rmeta_npfloat32_real_values_still_work():
+    arr = np.asarray([0.0], dtype=np.float32)   # CF wrong, main right → +1
+    out = dcpo_region_rewards(
+        [_c(_meta_text("5"))], ground_truth=["5"], group_index=["g"],
+        cf_correct=list(arr),
+    )
+    assert out["R_meta"][0] == 1.0
+
+
+# ── v3b BUG-1 regression: the producer→consumer cf_texts handoff (cf_completions) ──
+def test_rmeta_cf_completions_graded_with_real_gt():
+    # CF text answers 4 (wrong vs gt=5), main answers 5 (right) → R_meta +1.
+    # This is the deployed path now: producer stashes TEXTS, consumer grades here
+    # with the real ground truth (the producer-side grade saw gt="" → c_without≡0).
+    out = dcpo_region_rewards(
+        [_c(_meta_text("5"))],
+        ground_truth=["5"],
+        group_index=["g"],
+        cf_completions=["after more thought, The answer is \\boxed{4}"],
+    )
+    assert out["R_meta"][0] == 1.0
+
+
+def test_rmeta_cf_completions_correct_cf_zero():
+    # CF also right → meta made no causal difference → 0.
+    out = dcpo_region_rewards(
+        [_c(_meta_text("5"))],
+        ground_truth=["5"],
+        group_index=["g"],
+        cf_completions=["The answer is \\boxed{5}"],
+    )
+    assert out["R_meta"][0] == 0.0
+
+
+def test_rmeta_cf_completions_none_entry_falls_back():
+    # None entry (skipped/no-CF row) + no meta in main → R_meta 0.
+    out = dcpo_region_rewards(
+        [_c("plain. The answer is \\boxed{4}")],
+        ground_truth=["5"],
+        group_index=["g"],
+        cf_completions=[None],
+    )
+    assert out["R_meta"][0] == 0.0
+
+
 def test_rmeta_no_cf_args_uses_text_fallback():
     # No cf_correct / cf_completions: text fallback grades the pre-meta prefix.
     # Pre-meta prefix here has a boxed answer that is WRONG; main is RIGHT → +1.
