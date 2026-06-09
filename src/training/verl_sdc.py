@@ -1530,6 +1530,66 @@ class MetaCotSDCRewardManager:
             answer_extracted_list = [
                 _extract_ans_for_degen(t) for t in decoded_responses
             ]
+            # ── TRIOBJ_DCPO_V2/V3 (ADDITIVE, mode-gated) ─────────────────────
+            # rm_scores-PREFILLED path (agent-loop / async rollout): the reward
+            # funcs below read `_DCPO_HEAD_STASH`, but the from-scratch branch
+            # that normally runs the ONE-SHOT DCPO head pre-pass (masks + heads)
+            # is NOT reached here — so without this block the region heads stay
+            # the 0.0 placeholders and `dcpo_region_rewards` (its DCPO_DEBUG dump)
+            # never runs. V3's CF wrap installs `agent_loop_config_path`, which
+            # routes rollout through the prefilled path (V2 used the sync path,
+            # so it ran the pre-pass at the from-scratch branch). Mirror the
+            # from-scratch DCPO block here (masks + group-aware head stash, with
+            # the producer's cf_correct), BEFORE the reward-func loop reads the
+            # stash. Fires ONLY for the region-routed modes; every other mode's
+            # prefilled path is byte-identical.
+            _mode_pf = _ACTIVE_SDC_CONTEXT.get("mode", "")
+            if _mode_pf in _REGION_ROUTED_MODES:
+                _pf_ans, _pf_meta_c, _pf_conf = [], [], []
+                for i in range(bs):
+                    _item = data[i]
+                    _attn = _item.batch["attention_mask"]
+                    _vlen = int(_attn[prompt_length:].sum().item())
+                    _rids = _item.batch["responses"][:_vlen].tolist()
+                    _rmask = [True] * len(_rids)
+                    _decode = lambda ids: self.tokenizer.decode(ids, skip_special_tokens=False)
+                    _rmasks = build_dcpo_region_masks(_rids, _rmask, _decode)
+
+                    def _pf_pad_bool(arr) -> torch.Tensor:
+                        out = torch.zeros(response_length, dtype=torch.float32)
+                        n = min(response_length, len(arr))
+                        if n > 0:
+                            out[:n] = torch.as_tensor(arr[:n], dtype=torch.float32)
+                        return out
+
+                    _pf_ans.append(_pf_pad_bool(_rmasks["ANSWER_REGION"]))
+                    _pf_meta_c.append(_pf_pad_bool(_rmasks["META_CONTENT"]))
+                    _pf_conf.append(_pf_pad_bool(_rmasks["CONF"]))
+                data.batch["dcpo_answer_mask"] = torch.stack(_pf_ans, dim=0)
+                data.batch["dcpo_meta_content_mask"] = torch.stack(_pf_meta_c, dim=0)
+                data.batch["dcpo_conf_mask"] = torch.stack(_pf_conf, dim=0)
+
+                _pf_uid = data.non_tensor_batch.get("uid", None)
+                _pf_trainer = _ACTIVE_SDC_CONTEXT.get("trainer", None)
+                _pf_step = int(getattr(_pf_trainer, "global_steps", 0) or 0)
+                # TRIOBJ_DCPO_V3: consume producer cf_correct if present
+                # (NaN sentinel -> None for skipped rows); text fallback otherwise.
+                _pf_cf = data.non_tensor_batch.get("cf_correct", None)
+                if _pf_cf is not None:
+                    _pf_cf = [
+                        None if (v is None or (isinstance(v, float) and v != v)) else float(v)
+                        for v in list(_pf_cf)
+                    ]
+                _pf_heads = _compute_dcpo_heads_stash(
+                    completions, ground_truths, _pf_uid, _pf_step, self.config,
+                    cf_correct=_pf_cf,
+                )
+                data.non_tensor_batch["dcpo_phat"] = np.asarray(_pf_heads["p_hat"], dtype=np.float32)
+                data.non_tensor_batch["dcpo_group_acc"] = np.asarray(_pf_heads["group_acc"], dtype=np.float32)
+                data.non_tensor_batch["dcpo_canary_pass1_acc"] = np.asarray(
+                    _pf_heads.get("canary_pass1_acc", [1.0] * bs), dtype=np.float32)
+                data.non_tensor_batch["dcpo_sandbag_clamp"] = np.asarray(
+                    _pf_heads.get("sandbag_clamp", [1.0] * bs), dtype=np.float32)
             for func_idx, reward_fn in enumerate(self.reward_funcs):
                 key = self.reward_keys[func_idx]
                 try:
@@ -2617,7 +2677,20 @@ def _patch_verl_for_sdc():
         norm_adv_by_std_in_grpo=True,
         config=None,
     ):
-        if _is_gdpo_estimator(adv_estimator) and config is not None and config.get("sdc_enabled", False):
+        # _REGION_ROUTED_MODES (TRIOBJ_DCPO_V2/V3) need the per-region advantage routing
+        # (R_meta -> META_CONTENT tokens only) and the _populate producer — but they run
+        # teacher-FREE (sdc_enabled=false). The original gate required sdc_enabled=true,
+        # so region modes silently fell through to plain summed-GDPO (correctness broadcast
+        # crushes meta = the v1 failure). Route region modes regardless of sdc_enabled;
+        # _attach_teacher_signals short-circuits (no teacher forward) for these modes.
+        try:
+            _adv_sdc_mode = (config.get("sdc_mode", "") if config is not None else "") \
+                or _ACTIVE_SDC_CONTEXT.get("mode", "")
+        except Exception:
+            _adv_sdc_mode = ""
+        _adv_region = _adv_sdc_mode in _REGION_ROUTED_MODES
+        if _is_gdpo_estimator(adv_estimator) and config is not None and \
+           (config.get("sdc_enabled", False) or _adv_region):
             if "response_mask" not in data.batch.keys():
                 data.batch["response_mask"] = ray_trainer_module.compute_response_mask(data)
             data = _attach_teacher_signals(data)
