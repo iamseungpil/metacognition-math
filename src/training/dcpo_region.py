@@ -244,17 +244,9 @@ def dcpo_region_rewards(
     *,
     cf_completions=None,
     cf_correct=None,
-    # ── v2 carry-over kwargs: accepted-but-IGNORED (spec §5.1-B.7) so existing
-    # callers (_compute_dcpo_heads_stash) stay byte-identical without edits. ──
-    eps: float = 0.1,
-    eps_right_right: bool = False,
-    p_lo: float = 0.2,
-    p_hi: float = 0.8,
-    warmup_steps: int = 200,
-    sandbag_clamp: bool = True,
-    sandbag_floor: float = 0.05,
-    format_credit: float = 0.05,
-    format_penalty: float = 0.05,
+    # v2 carry-over reward knobs (eps/eps_right_right/p_lo/p_hi/warmup_steps/sandbag_*/
+    # format_*) are absorbed here and IGNORED — v3's R_meta = c_with - c_without uses
+    # none of them. Kept only so legacy callers don't raise TypeError.
     **cfg,
 ):
     """Compute the three raw region reward heads per rollout (TRIOBJ_DCPO_V3, spec §4).

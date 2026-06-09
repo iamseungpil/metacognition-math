@@ -100,6 +100,10 @@ def _compute_dcpo_heads_stash(
             return getattr(algo, name, default) if algo is not None else default
         except Exception:
             return default
+    # v3 R_meta = c_with - c_without uses only completions + cf_correct (+ uid/step for
+    # grouping/diagnostics). The v2 reward knobs (eps/p_lo/warmup/sandbag/format_*) are
+    # gone — no longer read or passed.
+    _ = _read  # (kept for any future per-mode knob; silences unused in the v3-only path)
     out = dcpo_region_rewards(
         completions,
         ground_truth=ground_truth,
@@ -107,15 +111,6 @@ def _compute_dcpo_heads_stash(
         step=step,
         cf_completions=cf_completions,   # v3: regenerated counterfactual texts (or None)
         cf_correct=cf_correct,           # v3: pre-graded CF correctness (producer) or None
-        eps=float(_read("dcpo_eps", 0.1)),
-        eps_right_right=bool(_read("dcpo_eps_right_right", False)),
-        p_lo=float(_read("dcpo_p_lo", 0.2)),
-        p_hi=float(_read("dcpo_p_hi", 0.8)),
-        warmup_steps=int(_read("dcpo_warmup_steps", 200)),
-        sandbag_clamp=bool(_read("dcpo_sandbag_clamp", True)),
-        sandbag_floor=float(_read("dcpo_sandbag_floor", 0.05)),
-        format_credit=float(_read("dcpo_format_credit", 0.05)),
-        format_penalty=float(_read("dcpo_format_penalty", 0.05)),
     )
     _DCPO_HEAD_STASH.update(out)
     return out
