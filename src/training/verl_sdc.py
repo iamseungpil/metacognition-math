@@ -222,6 +222,58 @@ def _populate_dcpo_region_keys(data) -> None:
     data.non_tensor_batch["dcpo_sandbag_clamp"] = np.asarray(
         _heads.get("sandbag_clamp", [1.0] * bs), dtype=np.float32)
 
+    # FULL-ROLLOUT wandb TABLE (observability: the v3b correlation-signal bug was
+    # only visible by grepping node logs for one DBG sample; this puts EVERY
+    # rollout — main text, CF text, per-head rewards, c_with/c_without — in the
+    # wandb UI so "is the signal right?" is checkable per step).
+    _log_dcpo_rollout_table(
+        step=_step, uid=_uid, completions=completions, ground_truths=ground_truths,
+        cf_texts=_cf_texts, heads=_heads,
+    )
+
+
+def _log_dcpo_rollout_table(*, step, uid, completions, ground_truths, cf_texts, heads):
+    """Log the whole batch as a wandb Table under 'dcpo/rollouts'.
+
+    Env knobs: DCPO_WANDB_ROLLOUTS=1 (default ON), DCPO_WANDB_ROLLOUTS_EVERY=5
+    (log every Nth step; 1 = every step), DCPO_WANDB_TEXT_CHARS=1500 (tail chars
+    of the main rollout; CF gets half). NEVER raises — observability must not
+    kill training. No-op when wandb is absent / run not initialized (console-only).
+    """
+    import os as _os
+    if _os.environ.get("DCPO_WANDB_ROLLOUTS", "1") != "1":
+        return
+    try:
+        every = max(1, int(_os.environ.get("DCPO_WANDB_ROLLOUTS_EVERY", "5") or 5))
+        if int(step) % every != 0:
+            return
+        import wandb  # noqa: F811
+        if wandb.run is None:
+            return
+        nchars = max(200, int(_os.environ.get("DCPO_WANDB_TEXT_CHARS", "1500") or 1500))
+        B = len(completions)
+        _uid_l = list(uid.tolist() if hasattr(uid, "tolist") else (uid or range(B)))
+        from src.training.rewards import _get_text as _gt_text
+        cols = ["step", "row", "group", "gt", "answer", "c_with", "c_without",
+                "R_corr", "R_meta", "R_cal", "conf", "has_meta", "main_tail", "cf_tail"]
+        table = wandb.Table(columns=cols)
+        for i in range(B):
+            main = _gt_text(completions[i]) or ""
+            cf = (cf_texts[i] if (cf_texts is not None and i < len(cf_texts)) else None) or ""
+            table.add_data(
+                int(step), i, str(_uid_l[i] if i < len(_uid_l) else i),
+                str(ground_truths[i])[:80], str(heads["answer"][i])[:80],
+                float(heads["c_with"][i]), float(heads["c_without"][i]),
+                float(heads["R_corr"][i]), float(heads["R_meta"][i]), float(heads["R_cal"][i]),
+                float(heads["conf"][i]), bool(heads["has_meta"][i]),
+                main[-nchars:], cf[-(nchars // 2):],
+            )
+        # step-keyed log; runs BEFORE the tracker's metric commit for this step,
+        # so the explicit step stays monotonic (no grid step-collision clamp).
+        wandb.log({"dcpo/rollouts": table}, step=int(step))
+    except Exception as _e:  # pragma: no cover — observability never kills training
+        print(f"[DCPO] rollout-table log skipped: {type(_e).__name__}: {_e}", flush=True)
+
 
 def correctness_region_reward(completions, ground_truth=None, **kwargs):
     """TRIOBJ_DCPO_V2 R_corr head (reads the per-batch DCPO stash)."""

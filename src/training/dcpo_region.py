@@ -397,6 +397,17 @@ def dcpo_region_rewards(
         "R_cal": R_cal,
         "p_hat": p_hat,
         "group_acc": group_acc,
+        # Per-rollout diagnostics for the wandb rollout TABLE (observability ask
+        # after the v3b silent-signal bug): c_without None -> nan so the column
+        # stays numeric ("no counterfactual" is visibly distinct from 0/1).
+        "c_with": [1.0 if c2[i] else 0.0 for i in range(B)],
+        "c_without": [
+            float("nan") if c_without[i] is None else (1.0 if c_without[i] else 0.0)
+            for i in range(B)
+        ],
+        "conf": [float("nan") if conf[i] is None else float(conf[i]) for i in range(B)],
+        "has_meta": list(has_meta),
+        "answer": [a if a is not None else "" for a in answer2],
         # Constant stubs: kept so existing wandb keys + _populate_dcpo_region_keys
         # stay alive without touching verl_sdc.py (spec §5.1-B.6). v3 has no canary
         # / sandbag clamp (the counterfactual is anti-hack by construction, §8).

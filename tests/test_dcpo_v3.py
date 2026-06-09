@@ -194,6 +194,22 @@ def test_rmeta_cf_completions_none_entry_falls_back():
     assert out["R_meta"][0] == 0.0
 
 
+def test_diagnostic_keys_for_rollout_table():
+    # The wandb rollout table reads c_with / c_without / conf / has_meta / answer.
+    out = dcpo_region_rewards(
+        [_c(_meta_text("5")), _c("plain. The answer is \\boxed{7}")],
+        ground_truth=["5", "5"],
+        group_index=["g", "g"],
+        cf_completions=["The answer is \\boxed{4}", None],
+    )
+    assert out["c_with"] == [1.0, 0.0]
+    assert out["c_without"][0] == 0.0          # CF graded wrong with real gt
+    assert out["c_without"][1] != out["c_without"][1]  # NaN (no CF, no meta)
+    assert abs(out["conf"][0] - 0.80) < 1e-9   # parsed from the meta block
+    assert out["has_meta"] == [True, False]
+    assert out["answer"] == ["5", "7"]
+
+
 def test_rmeta_no_cf_args_uses_text_fallback():
     # No cf_correct / cf_completions: text fallback grades the pre-meta prefix.
     # Pre-meta prefix here has a boxed answer that is WRONG; main is RIGHT → +1.
