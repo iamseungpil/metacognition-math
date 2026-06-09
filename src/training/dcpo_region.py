@@ -332,6 +332,21 @@ def dcpo_region_rewards(
         else:
             R_cal[i] = 0.0
 
+    # DIAGNOSTIC dump (guarded by DCPO_DEBUG, default on): print what the PRODUCER
+    # actually sees for sample 0 — the real RL rollout text + parsed conf/answers + R
+    # values — so the dead-head cause is visible in the amlt logs, not guessed.
+    import os as _os
+    if _os.environ.get("DCPO_DEBUG", "1") == "1" and B:
+        _t = (texts[0] or "")
+        print(
+            f"[DCPO_DBG] step={step} hasMetaTag={'<|meta|>' in _t} "
+            f"conf={conf[0]} two_pass={two_pass[0]} c1={c1[0]} c2={c2[0]} "
+            f"ans1={answer1[0]!r} ans2={answer2[0]!r} "
+            f"R_corr={R_corr[0]:.3f} R_meta={R_meta[0]:.4f} R_cal={R_cal[0]:.4f} "
+            f"p_hat={p_hat[0]:.2f} | text_tail={_t[-260:]!r}",
+            flush=True,
+        )
+
     return {
         "R_corr": R_corr,
         "R_meta": R_meta,
