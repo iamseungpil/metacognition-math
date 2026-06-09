@@ -50,6 +50,12 @@ algorithm:
   # (collective-sandbag backstop). Logged as dcpo_canary_pass1_acc / dcpo_sandbag_clamp.
   dcpo_sandbag_clamp: true
   dcpo_sandbag_floor: 0.05
+  # Option-B FORMAT enforcement: answers via the same lenient extractor as correctness
+  # (no \boxed-only); R_meta pushes the model to commit a PRELIMINARY answer before its
+  # <|meta|> verify block (two-pass) so revision is measurable. single-pass -> -penalty,
+  # two-pass-no-revision -> +credit, two-pass useful flip -> +1 (warmup-scaled).
+  dcpo_format_credit: 0.05
+  dcpo_format_penalty: 0.05
   # NOTE: counterfactual meta-ablation audit (re-decode with meta masked) is DEFERRED
   # to an escalation pass; the transition table + warrant-gating + canary are the v2
   # guards. cf knobs intentionally omitted until that path is implemented.

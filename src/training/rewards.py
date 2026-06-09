@@ -413,7 +413,7 @@ def _parse_meta_blocks_with_spans(text, allow_free_text_fallback=True):
     # Fallback: detect meta-like patterns in stripped text
     if allow_free_text_fallback and not blocks:
         conf_matches = re.findall(
-            r'(?:probability|confidence|확률|확신)[:\s\w]*?(\d+\.\d+|\d+)\s*%?',
+            r'(?:probability|confidence|확률|확신)(?:\s*\([^)]*\))?[:\s\w]*?(\d+\.\d+|\d+)\s*%?',
             text, re.IGNORECASE
         )
         for m in conf_matches:
@@ -701,7 +701,7 @@ def _score_stepwise_blocks(
 def _parse_confidence(text):
     """Extract confidence value from a meta block."""
     matches = re.findall(
-        r'(?:probability|confidence|확률|확신)[:\s\w]*?(\d+\.\d+|\d+)\s*%?',
+        r'(?:probability|confidence|확률|확신)(?:\s*\([^)]*\))?[:\s\w]*?(\d+\.\d+|\d+)\s*%?',
         text, re.IGNORECASE
     )
     for m in matches:
@@ -722,7 +722,7 @@ def _parse_confidence_charspan(text):
     identical to what _parse_confidence returns — only the offset is added.
     """
     m = re.search(
-        r'(?:probability|confidence|확률|확신)[:\s\w]*?(\d+\.\d+|\d+)\s*%?',
+        r'(?:probability|confidence|확률|확신)(?:\s*\([^)]*\))?[:\s\w]*?(\d+\.\d+|\d+)\s*%?',
         text, re.IGNORECASE
     )
     if m is None:

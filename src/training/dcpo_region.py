@@ -28,6 +28,7 @@ import torch
 # grade the LAST \boxed via _check_correctness, so we reuse exactly those.
 from src.training.rewards import (
     _check_correctness,
+    _extract_answer_fallback,
     _get_text,
     _parse_confidence,
     _parse_confidence_charspan,
@@ -197,6 +198,8 @@ def dcpo_region_rewards(
     warmup_steps: int = 200,
     sandbag_clamp: bool = True,
     sandbag_floor: float = 0.05,
+    format_credit: float = 0.05,
+    format_penalty: float = 0.05,
     **cfg,
 ):
     """Compute the three raw region reward heads per rollout (spec §2.2).
@@ -222,19 +225,31 @@ def dcpo_region_rewards(
     gts = [ground_truth[i] if ground_truth is not None else "" for i in range(B)]
 
     # Per-rollout primitives.
-    answer1 = [None] * B
-    answer2 = [None] * B
+    # B-rework: parse the PRELIMINARY answer (text before the first <|meta|>) and the
+    # FINAL answer (whole text) with the SAME lenient extractor correctness uses
+    # (_extract_answer_fallback handles "The answer is X" / last-\boxed / last-number),
+    # NOT \boxed-only — the SFT model answers as "The answer is X" (93% emit no \boxed),
+    # so the old \boxed-only path made every transition unparseable -> R_meta≡0.
+    # two_pass = the model committed a preliminary answer BEFORE its <|meta|> verify
+    # block AND a final answer -> only then is a revision (transition) measurable.
+    answer1 = [None] * B   # preliminary (pre-meta)
+    answer2 = [None] * B   # final (graded)
     c1 = [False] * B
     c2 = [False] * B
+    two_pass = [False] * B
     conf = [None] * B
     for i in range(B):
-        boxed = [b for b in _all_boxed(texts[i]) if b]
-        if boxed:
-            answer1[i] = boxed[0]
-            answer2[i] = boxed[-1]
-            c1[i] = bool(_check_correctness(answer1[i], gts[i]))
-            c2[i] = bool(_check_correctness(answer2[i], gts[i]))
-        conf[i] = _parse_confidence(texts[i])
+        t = texts[i]
+        final = _extract_answer_fallback(t)
+        answer2[i] = final
+        c2[i] = bool(_check_correctness(final, gts[i])) if final else False
+        if "<|meta|>" in t:
+            prelim = _extract_answer_fallback(t.split("<|meta|>", 1)[0])
+            if prelim:
+                answer1[i] = prelim
+                c1[i] = bool(_check_correctness(prelim, gts[i]))
+                two_pass[i] = final is not None
+        conf[i] = _parse_confidence(t)
 
     # Group ids.
     if group_index is None:
@@ -243,17 +258,18 @@ def dcpo_region_rewards(
         gid = list(group_index.tolist() if hasattr(group_index, "tolist") else group_index)
         gid = [str(g) for g in gid]
 
-    # Group p_hat (difficulty = mean answer1 correctness) and group_acc (mean answer2).
+    # Group difficulty p_hat = mean FINAL correctness (well-defined for every rollout;
+    # the preliminary answer is often absent in single-pass rollouts, so grouping on it
+    # would be skewed). group_acc == p_hat here (both on the final answer).
     groups: dict = {}
     for i in range(B):
         groups.setdefault(gid[i], []).append(i)
     p_hat = [0.0] * B
     group_acc = [0.0] * B
     for members in groups.values():
-        ph = float(np.mean([1.0 if c1[i] else 0.0 for i in members]))
         ga = float(np.mean([1.0 if c2[i] else 0.0 for i in members]))
         for i in members:
-            p_hat[i] = ph
+            p_hat[i] = ga
             group_acc[i] = ga
 
     w_warmup = min(1.0, float(step) / float(warmup_steps)) if warmup_steps > 0 else 1.0
@@ -266,7 +282,10 @@ def dcpo_region_rewards(
     # NOTE: the primary guard is warrant-gating the flip credit below; this clamp is
     # the backstop for COLLECTIVE sandbagging (whole group fakes pass-1 -> p_hat
     # drifts into the warranted band). Logged as canary/sandbag_clamp for wandb.
-    canary = float(np.mean([1.0 if c1[i] else 0.0 for i in range(B)])) if B else 1.0
+    # canary = mean PRELIMINARY accuracy over TWO-PASS rollouts (where a prelim answer
+    # exists). If the policy fakes wrong prelims to farm the flip credit, this collapses.
+    tp_idx = [i for i in range(B) if two_pass[i]]
+    canary = float(np.mean([1.0 if c1[i] else 0.0 for i in tp_idx])) if tp_idx else 1.0
     if sandbag_clamp and step >= warmup_steps and canary < sandbag_floor:
         clamp_f = max(0.0, canary / sandbag_floor) if sandbag_floor > 0 else 0.0
     else:
@@ -276,23 +295,33 @@ def dcpo_region_rewards(
     R_meta = [0.0] * B
     R_cal = [0.0] * B
     for i in range(B):
-        # R_corr
+        # R_corr — lenient final-answer correctness (same extractor as correctness head).
         R_corr[i] = 1.0 if c2[i] else -1.0
 
-        # R_meta — flat +1 transition table; flip credit AND no-harm bonus are BOTH
-        # warrant-gated (meta is rewarded only where it is plausibly useful). On
-        # unwarranted-easy problems (p_hat>p_hi) a wrong->right "flip" is almost
-        # certainly a STAGED pass-1 error, so it earns 0 -> closes the per-rollout /
-        # partial-group sandbagging hole the review flagged.
+        # R_meta (option B) — FORMAT enforcement + TRANSITION reward, routed to META_CONTENT.
+        # The SFT model is single-pass (one answer, meta inside <think>); to MEASURE useful
+        # metacognition we need it to commit a preliminary answer, verify in <|meta|>, then
+        # (maybe) revise. So:
+        #   single-pass (no preliminary answer)         -> small FORMAT PENALTY  (push to 2-pass)
+        #   two-pass, identical answer (no revision)    -> small FORMAT CREDIT   (did the structure)
+        #   two-pass, revised wrong->right (warranted)  -> +1.0  (useful metacognition)
+        #   two-pass, revised right->wrong              -> -1.0 * warmup (destructive)
+        #   two-pass, revised, other (warranted)        -> +eps  (genuine revision attempt)
+        # Format terms are warmup-scaled so a cold single-pass policy isn't harshly punished.
         warranted = (p_lo <= p_hat[i] <= p_hi)
-        if (not c1[i]) and c2[i]:
-            R_meta[i] = 1.0 if warranted else 0.0  # flip credit, warrant-gated
-        elif (not c1[i]) and (not c2[i]):
-            R_meta[i] = eps if warranted else 0.0
-        elif c1[i] and c2[i]:
-            R_meta[i] = (eps if (warranted and eps_right_right) else 0.0)
-        else:  # c1 and not c2
-            R_meta[i] = -1.0 * w_warmup  # the ONLY penalty (destruction, any difficulty)
+        if two_pass[i]:
+            revised = (answer1[i] != answer2[i])
+            if revised:
+                if (not c1[i]) and c2[i]:
+                    R_meta[i] = 1.0 if warranted else 0.0   # useful flip (warrant-gated anti-sandbag)
+                elif c1[i] and (not c2[i]):
+                    R_meta[i] = -1.0 * w_warmup             # destructive revision
+                else:
+                    R_meta[i] = eps if warranted else 0.0   # genuine revision attempt
+            else:
+                R_meta[i] = format_credit * w_warmup        # 2-pass structure, no revision
+        else:
+            R_meta[i] = -format_penalty * w_warmup          # single-pass -> push toward 2-pass format
 
         R_meta[i] *= clamp_f  # sandbagging circuit-breaker
 

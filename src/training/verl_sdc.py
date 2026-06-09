@@ -107,6 +107,8 @@ def _compute_dcpo_heads_stash(completions, ground_truth, group_index, step, conf
         warmup_steps=int(_read("dcpo_warmup_steps", 200)),
         sandbag_clamp=bool(_read("dcpo_sandbag_clamp", True)),
         sandbag_floor=float(_read("dcpo_sandbag_floor", 0.05)),
+        format_credit=float(_read("dcpo_format_credit", 0.05)),
+        format_penalty=float(_read("dcpo_format_penalty", 0.05)),
     )
     _DCPO_HEAD_STASH.update(out)
     return out
