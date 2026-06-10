@@ -93,14 +93,20 @@ def test_single_block_with_conf():
 
 
 def test_missing_close_truncation():
-    # <|meta|> opened, never closed (truncation): content runs to last valid.
+    # <|meta|> opened, never closed, NO </think> after (true truncation at max
+    # length). v3 format-fix semantics: META_REGION still runs open..end, but the
+    # block is GATED — NO META_CONTENT, NO conf span (a truncated CF is useless),
+    # and it is NOT a violation (length problem, not a format habit).
     ids = [1, META_OPEN, 4, 5, 6, 7, 8]
     m = _masks(ids)
     _assert_invariants(ids, [True] * len(ids), m)
     assert m["META_REGION"][1]  # open tag
-    # content = idx 2..6 (everything after open to end)
-    assert np.array_equal(np.where(m["META_CONTENT"])[0], np.array([2, 3, 4, 5, 6]))
-    assert np.array_equal(np.where(m["CONF"])[0], np.array([4, 5, 6]))
+    assert np.array_equal(np.where(m["META_REGION"])[0], np.array([1, 2, 3, 4, 5, 6]))
+    assert not m["META_CONTENT"].any()
+    assert not m["CONF"].any()
+    assert not m["FORMAT_VIOLATION"].any()
+    assert m["meta_unclosed"] is True
+    assert m["meta_drift"] is False
 
 
 def test_double_block():

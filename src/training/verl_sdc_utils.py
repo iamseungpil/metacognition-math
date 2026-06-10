@@ -250,6 +250,14 @@ def _compute_dcpo_region_advantage(
     NEITHER ANSWER nor META_CONTENT -> advantage 0 (delimiters). No global re-whiten
     (codex-r13 LOCK). The heavy-dependency-free compose lives in dcpo_region so the
     unit tests run without verl/omegaconf. Returns (A, A).
+
+    4th head (v3 format-penalty, OPTIONAL): when the populator stacked a
+    dcpo_format_violation_mask AND wrote format_penalty, R_format is routed onto
+    the drift-clamped block with w_format. TOLERATES ABSENCE (.get None default —
+    older ckpts / v2 mode): the term is simply skipped, output byte-identical.
+    NOTE: this presence gate is only meaningful because the populators stack the
+    mask + write the key ONLY when mode == TRIOBJ_DCPO_V3 (review finding: an
+    unconditional write here would silently arm the head on v2 async runs).
     """
     from src.training.dcpo_region import compose_dcpo_region_advantage
 
@@ -258,6 +266,17 @@ def _compute_dcpo_region_advantage(
     def _head(name) -> torch.Tensor:
         arr = non_tensor_batch[name]
         return torch.as_tensor(np.asarray(arr, dtype=np.float32), device=device)
+
+    # Optional 4th head (only pass when BOTH pieces are present).
+    _fmt_kwargs = {}
+    _fv_mask = batch.get("dcpo_format_violation_mask", None)
+    _r_fmt = non_tensor_batch.get("format_penalty", None)
+    if _fv_mask is not None and _r_fmt is not None:
+        _fmt_kwargs = dict(
+            R_format=_head("format_penalty"),
+            format_violation_mask=_fv_mask.to(device).float(),
+            w_format=float(config.get("dcpo_w_format", 0.1)),
+        )
 
     return compose_dcpo_region_advantage(
         response_mask=response_mask.float(),
@@ -271,6 +290,7 @@ def _compute_dcpo_region_advantage(
         w_corr=float(config.get("dcpo_w_corr", 1.0)),
         w_meta=float(config.get("dcpo_w_meta", 0.5)),
         w_cal=float(config.get("dcpo_w_cal", 0.3)),
+        **_fmt_kwargs,
     )
 
 

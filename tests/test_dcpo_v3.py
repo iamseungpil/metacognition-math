@@ -400,3 +400,264 @@ def test_region_routing_unchanged_basic():
 def test_group_mean_subtract_centers_group():
     out = group_mean_subtract(torch.tensor([1.0, 0.0, 0.0, -1.0]), ["g"] * 4).squeeze(1)
     assert abs(float(out.sum())) < 1e-6   # group-mean-subtract centers to ~0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# v3 FORMAT FIX — unclosed-meta mask clamp + gate + penalty + 4th routed head
+# (live-run finding: 40% unclosed meta; the old unclosed-to-end rule put the
+#  FINAL ANSWER inside META_CONTENT for 17% of rollouts → R_corr misrouted)
+# ═══════════════════════════════════════════════════════════════════════════
+from src.training.dcpo_region import build_dcpo_region_masks, THINK_CLOSE_DEFAULT
+
+THINK_CLOSE = 151668
+
+# Fake token vocab (decode = concatenation, exact char offsets — same pattern
+# as tests/test_dcpo_region.py).
+_VOCAB = {
+    META_OPEN: "<|meta|>",
+    META_CLOSE: "<|/meta|>",
+    THINK_CLOSE: "</think>",
+    1: "reason ",
+    2: "confidence:",
+    3: " 0",
+    4: ".",
+    5: "8",
+    6: "final ",
+    7: "\\boxed{5}",
+}
+
+
+def _decode(ids):
+    return "".join(_VOCAB.get(int(t), "?") for t in ids)
+
+
+def _m(ids):
+    return build_dcpo_region_masks(ids, [True] * len(ids), _decode)
+
+
+def test_think_close_default_id():
+    assert THINK_CLOSE_DEFAULT == 151668
+
+
+def test_mask_closed_span_unchanged():
+    # CLOSED block: byte-identical to the pre-fix behaviour (content + conf parsed).
+    ids = [1, META_OPEN, 2, 3, 4, 5, META_CLOSE, 6, 7]
+    m = _m(ids)
+    assert np.array_equal(np.where(m["META_CONTENT"])[0], np.array([2, 3, 4, 5]))
+    assert np.array_equal(np.where(m["CONF"])[0], np.array([3, 4, 5]))
+    assert np.array_equal(np.where(m["ANSWER_REGION"])[0], np.array([0, 7, 8]))
+    assert not m["FORMAT_VIOLATION"].any()
+    assert m["meta_unclosed"] is False
+    assert m["meta_drift"] is False
+
+
+def test_mask_drift_clamps_at_think_close():
+    # open .. content .. </think> answer — UNCLOSED + DRIFT (case a).
+    ids = [1, META_OPEN, 2, 3, THINK_CLOSE, 6, 7]
+    m = _m(ids)
+    # META_REGION clamped to open..(think_close-1) = idx 1..3
+    assert np.array_equal(np.where(m["META_REGION"])[0], np.array([1, 2, 3]))
+    # clamped block: REGION but NOT CONTENT (neutral) — and IS the violation span
+    assert not m["META_CONTENT"].any()
+    assert np.array_equal(np.where(m["FORMAT_VIOLATION"])[0], np.array([1, 2, 3]))
+    # </think> + the answer tokens REVERT to ANSWER_REGION → R_corr reaches \boxed
+    assert np.array_equal(np.where(m["ANSWER_REGION"])[0], np.array([0, 4, 5, 6]))
+    assert not m["CONF"].any()   # gate: no conf parse for the clamped block
+    assert m["meta_unclosed"] is True
+    assert m["meta_drift"] is True
+
+
+def test_mask_truncation_no_think_close():
+    # open, no close, NO </think>, runs to end (case b): gated, NOT a violation.
+    ids = [1, META_OPEN, 2, 3, 4, 5]
+    m = _m(ids)
+    assert np.array_equal(np.where(m["META_REGION"])[0], np.array([1, 2, 3, 4, 5]))
+    assert not m["META_CONTENT"].any()
+    assert not m["CONF"].any()       # gated — no conf span for a truncated block
+    assert not m["FORMAT_VIOLATION"].any()
+    assert m["meta_unclosed"] is True
+    assert m["meta_drift"] is False
+
+
+def test_mask_drift_invariants_hold():
+    ids = [1, META_OPEN, 2, 3, THINK_CLOSE, 6, 7]
+    m = _m(ids)
+    rm = np.ones(len(ids), dtype=bool)
+    assert np.all(m["CONF"] <= m["META_CONTENT"])
+    assert np.all(m["META_CONTENT"] <= m["META_REGION"])
+    assert np.all(m["FORMAT_VIOLATION"] <= m["META_REGION"])
+    assert not np.any(m["FORMAT_VIOLATION"] & m["META_CONTENT"])
+    assert not np.any(m["META_CONTENT"] & m["ANSWER_REGION"])
+    assert np.array_equal(m["ANSWER_REGION"] | m["META_REGION"], rm)
+
+
+def test_mask_dup_open_after_drift_clamps_previous_span():
+    # REGRESSION (review finding): a drifted span "closed" by a DUPLICATE
+    # <|meta|> open must NOT put the post-</think> ANSWER tokens into
+    # META_CONTENT — `open…</think>…answer…open` is the same drift class as
+    # case a and gets the same clamp/violation treatment.
+    ids = [1, META_OPEN, 2, 3, THINK_CLOSE, 6, 7, 6, META_OPEN, 1, 1]
+    m = _m(ids)
+    # First span: clamped to open..(think_close-1) = [1..3], a violation.
+    assert np.array_equal(np.where(m["FORMAT_VIOLATION"])[0], np.array([1, 2, 3]))
+    # </think> + the answer tokens REVERT to ANSWER_REGION (R_corr reaches \boxed).
+    assert np.array_equal(np.where(m["ANSWER_REGION"])[0], np.array([0, 4, 5, 6, 7]))
+    # Second span: unclosed-to-end with NO </think> after → truncation-gated.
+    assert np.array_equal(
+        np.where(m["META_REGION"])[0], np.array([1, 2, 3, 8, 9, 10]))
+    # BOTH spans gated: no content, no conf parse over answer text.
+    assert not m["META_CONTENT"].any()
+    assert not m["CONF"].any()
+    assert m["meta_unclosed"] is True
+    assert m["meta_drift"] is True
+
+
+def test_mask_dup_open_inside_think_keeps_legacy_force_close():
+    # Dup open with NO intervening </think>: pre-existing force-close at i-1
+    # stays byte-identical (content + span kept, no violation).
+    ids = [1, META_OPEN, 2, 3, 4, 5, META_OPEN, 1, META_CLOSE, 6, 7]
+    m = _m(ids)
+    assert np.array_equal(np.where(m["META_CONTENT"])[0], np.array([2, 3, 4, 5, 7]))
+    assert not m["FORMAT_VIOLATION"].any()
+    assert m["meta_unclosed"] is False
+    assert m["meta_drift"] is False
+
+
+# ── v2 byte-identical lock: clamp/gate are v3-ONLY ───────────────────────────
+def test_mask_clamp_unclosed_false_keeps_legacy_v2_behaviour():
+    # KARPATHY lock "v2 mode byte-identical": clamp_unclosed=False reproduces
+    # the pre-v3 unclosed-to-end rule VERBATIM (content + conf span kept, no
+    # violation/gate flags) — this is what the v2 populator paths request.
+    ids = [1, META_OPEN, 2, 3, 4, 5]
+    m = build_dcpo_region_masks(ids, [True] * len(ids), _decode, clamp_unclosed=False)
+    assert np.array_equal(np.where(m["META_CONTENT"])[0], np.array([2, 3, 4, 5]))
+    assert np.array_equal(np.where(m["CONF"])[0], np.array([3, 4, 5]))
+    assert not m["FORMAT_VIOLATION"].any()
+    assert m["meta_unclosed"] is False
+    assert m["meta_drift"] is False
+    # Drift pattern too: legacy keeps </think>+answer INSIDE the meta block.
+    ids2 = [1, META_OPEN, 2, 3, THINK_CLOSE, 6, 7]
+    m2 = build_dcpo_region_masks(ids2, [True] * len(ids2), _decode, clamp_unclosed=False)
+    assert np.array_equal(np.where(m2["META_REGION"])[0], np.array([1, 2, 3, 4, 5, 6]))
+    assert np.array_equal(np.where(m2["META_CONTENT"])[0], np.array([2, 3, 4, 5, 6]))
+    assert not m2["FORMAT_VIOLATION"].any()
+    assert m2["meta_unclosed"] is False
+
+
+def test_rewards_gate_unclosed_false_keeps_legacy_v2_behaviour():
+    # KARPATHY lock "v2 mode byte-identical": gate_unclosed=False disables the
+    # unclosed R_meta gate AND the drift penalty — R_meta follows the plain cf
+    # path exactly as before the v3 format fix.
+    text = "reason <|meta|> verify; confidence: 0.80 </think> The answer is \\boxed{5}"
+    out = dcpo_region_rewards(
+        [_c(text)], ground_truth=["5"], group_index=["g"],
+        cf_completions=["The answer is \\boxed{4}"],   # c_without=0, c_with=1
+        gate_unclosed=False,
+    )
+    assert out["R_meta"][0] == 1.0                 # UNgated (legacy)
+    assert out["format_penalty"][0] == 0.0         # no penalty head for v2
+    assert out["meta_unclosed"][0] == 0.0
+
+
+# ── rewards: the unclosed gate + the drift penalty ───────────────────────────
+def test_rmeta_gated_unclosed_even_with_positive_cf():
+    # DRIFT row whose cf grading would yield +1 → gate forces R_meta 0.
+    text = "reason <|meta|> verify; confidence: 0.80 </think> The answer is \\boxed{5}"
+    out = dcpo_region_rewards(
+        [_c(text)], ground_truth=["5"], group_index=["g"],
+        cf_completions=["The answer is \\boxed{4}"],   # would grade c_without=0 → +1
+    )
+    assert out["R_meta"][0] == 0.0
+    assert out["meta_unclosed"][0] == 1.0
+    assert out["format_penalty"][0] == -1.0
+
+
+def test_rmeta_gated_truncation_even_with_positive_cf():
+    # TRUNCATION row (no </think> after open): gated R_meta, but NO penalty.
+    text = "draft \\boxed{5} <|meta|> verify but cut mid-stre"
+    out = dcpo_region_rewards(
+        [_c(text)], ground_truth=["5"], group_index=["g"],
+        cf_correct=[0.0],   # ungated this would be +1 (c_with=1, c_without=0)
+    )
+    assert out["R_meta"][0] == 0.0
+    assert out["meta_unclosed"][0] == 1.0
+    assert out["format_penalty"][0] == 0.0
+
+
+def test_format_penalty_only_for_drift_rows():
+    drift = "a <|meta|> note </think> The answer is \\boxed{5}"
+    trunc = "a \\boxed{5} <|meta|> note that never ends"
+    closed = _meta_text("5")
+    out = dcpo_region_rewards(
+        [_c(drift), _c(trunc), _c(closed)],
+        ground_truth=["5"] * 3, group_index=["g"] * 3,
+        cf_correct=[0.0, 0.0, 0.0],
+    )
+    assert out["format_penalty"] == [-1.0, 0.0, 0.0]
+    assert out["meta_unclosed"] == [1.0, 1.0, 0.0]
+    # closed row stays UNgated: c_with=1, c_without=0 → +1
+    assert out["R_meta"][2] == 1.0
+    # has_meta semantics unchanged (emission tracking): all three emit the tag.
+    assert out["has_meta"] == [True, True, True]
+
+
+# ── compose: the 4th head routes ONLY onto FORMAT_VIOLATION ──────────────────
+def test_compose_format_head_routes_only_on_violation_mask():
+    rm = torch.ones(2, 3)
+    ans = torch.tensor([[1.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
+    zeros = torch.zeros(2, 3)
+    fv = torch.tensor([[0.0, 1.0, 1.0], [0.0, 0.0, 0.0]])
+    A, A2 = compose_dcpo_region_advantage(
+        response_mask=rm,
+        index=["g", "g"],
+        R_corr=np.zeros(2, dtype=np.float32),
+        R_meta=np.zeros(2, dtype=np.float32),
+        R_cal=np.zeros(2, dtype=np.float32),
+        answer_mask=ans,
+        meta_content_mask=zeros,
+        conf_mask=zeros,
+        R_format=np.asarray([-1.0, 0.0], dtype=np.float32),
+        format_violation_mask=fv,
+        w_format=0.1,
+    )
+    assert torch.equal(A, A2)
+    # Â_format = [-0.5, +0.5]; routed ONLY onto fv → row0 idx 1,2 = 0.1 * -0.5
+    assert torch.allclose(A[0], torch.tensor([0.0, -0.05, -0.05]))
+    # row1 has NO violation tokens → the +0.5 centered head lands NOWHERE.
+    assert torch.allclose(A[1], torch.zeros(3))
+
+
+def test_compose_none_format_params_byte_identical():
+    # None defaults → output byte-identical to the 3-head compose (v2 compat).
+    kwargs = dict(
+        response_mask=torch.ones(2, 4),
+        index=["g", "g"],
+        R_corr=np.asarray([1.0, -1.0], dtype=np.float32),
+        R_meta=np.asarray([1.0, -1.0], dtype=np.float32),
+        R_cal=np.asarray([0.5, -0.5], dtype=np.float32),
+        answer_mask=torch.tensor([[1.0, 0, 0, 0], [0, 0, 0, 0]]),
+        meta_content_mask=torch.tensor([[0.0, 0, 1, 1], [0, 0, 0, 0]]),
+        conf_mask=torch.tensor([[0.0, 0, 0, 1], [0, 0, 0, 0]]),
+    )
+    A_old, _ = compose_dcpo_region_advantage(**kwargs)
+    A_new, _ = compose_dcpo_region_advantage(
+        **kwargs, R_format=None, format_violation_mask=None, w_format=0.1
+    )
+    assert torch.equal(A_old, A_new)
+
+
+# ── the pure-text format_penalty_reward func (REWARD_CONFIGS 5th entry) ──────
+def test_format_penalty_reward_text_cases():
+    import tests.test_dcpo_v3_cf  # auto-stub (verl absent locally)
+    from src.training.verl_sdc import format_penalty_reward, REWARD_CONFIGS
+    closed = "<|meta|> ok <|/meta|> </think> \\boxed{1}"
+    drift = "<|meta|> ok </think> \\boxed{1}"
+    trunc = "<|meta|> ok but cut"          # truncation: no </think> after the open
+    nometa = "plain </think> \\boxed{1}"
+    out = format_penalty_reward([_c(closed), _c(drift), _c(trunc), _c(nometa)])
+    assert out == [0.0, -1.0, 0.0, 0.0]
+    # three-way sync: 5th entry wired with routing weight 0.1.
+    cfg = REWARD_CONFIGS["TRIOBJ_DCPO_V3"]
+    i = cfg["keys"].index("format_penalty")
+    assert cfg["weights"][i] == 0.1
+    assert len(cfg["funcs"]) == len(cfg["keys"]) == len(cfg["weights"]) == 5

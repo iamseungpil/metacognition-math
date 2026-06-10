@@ -354,6 +354,43 @@ def test_texts_placed_at_active_rows():
     assert out[2] is None   # blank text → None (consumer falls back conservatively)
 
 
+def test_texts_skip_unclosed_meta_rows():
+    # FORMAT-GATE skip: a row whose meta block is UNCLOSED (<|meta|> with no
+    # <|/meta|>) has R_meta forced to 0 by the dcpo_region_rewards gate, so the
+    # producer must NOT spend a 2nd generation on it — the slot stays None and
+    # the row is dropped from `active` BEFORE the engine call.
+    META_CLOSE = 151670
+
+    class MetaAwareTokenizer:
+        """decode surfaces the real tag strings so the cheap text check fires."""
+        SURF = {META_OPEN: "<|meta|>", META_CLOSE: "<|/meta|>"}
+
+        def decode(self, ids, skip_special_tokens=True):
+            return " ".join(self.SURF.get(int(t), f"t{int(t)}") for t in ids)
+
+    prompts = torch.tensor([[1, 1], [2, 2]])
+    responses = torch.tensor([
+        [5, META_OPEN, 7],            # open, NEVER closed → gated, skip CF
+        [6, META_OPEN, META_CLOSE],   # closed → CF generated as usual
+    ])
+    go = FakeGenOutput(prompts, responses, ground_truths=["A", "B"])
+    gb = FakeGenBatch(["p0", "p1"])
+    t = _mk_trainer()
+    t.tokenizer = MetaAwareTokenizer()
+
+    def fake_call(gen_batch, prefix_ids, active, meta_open):
+        assert active == [1]   # the unclosed row 0 was dropped by the gate
+        return ["cf for row1"]
+
+    t._dcpo_cf_call_engine = fake_call
+
+    skip = [False, False]
+    prefix_ids = [[1, 1, 5], [2, 2, 6]]
+    out = t._dcpo_cf_generate_texts(gb, go, prefix_ids, skip, META_OPEN)
+    assert out[0] is None             # gated row: no wasted 2nd generation
+    assert out[1] == "cf for row1"
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # cf_prefix_agent loop: per-call logit_bias must NOT mutate the shared dict
 # ═══════════════════════════════════════════════════════════════════════════

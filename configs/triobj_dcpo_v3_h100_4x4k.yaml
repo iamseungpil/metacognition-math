@@ -47,13 +47,20 @@ algorithm:
   # in YAML). gdpo_reward_keys/weights below are kept in sync for audit clarity.
   # meta_emission is OBSERVABILITY-ONLY (weight 0.0): boot validation requires these
   # lists to match len(funcs); advantage routing reads the 3 region heads BY NAME
-  # (verl_sdc_utils._compute_dcpo_region_advantage), so the 4th key never routes.
-  gdpo_reward_keys: [correctness, meta_region_utility, cal_region_reward, meta_emission]
-  gdpo_reward_weights: [1.0, 0.5, 0.3, 0.0]
+  # (verl_sdc_utils._compute_dcpo_region_advantage), so that key never routes.
+  # format_penalty (w 0.1) is the 4th ROUTED head: -1 for an unclosed-meta DRIFT
+  # block (open, no close, </think> after the open), routed ONLY onto the
+  # FORMAT_VIOLATION token mask. THREE-WAY SYNC RULE (two prior crashes): these
+  # two lists ↔ REWARD_CONFIGS['TRIOBJ_DCPO_V3'] ↔ _populate_dcpo_region_keys.
+  gdpo_reward_keys: [correctness, meta_region_utility, cal_region_reward, meta_emission, format_penalty]
+  gdpo_reward_weights: [1.0, 0.5, 0.3, 0.0, 0.1]
   # ── DCPO routing knobs (KEEP — region routing unchanged from v2) ──────────
   dcpo_w_corr: 1.0
   dcpo_w_meta: 0.5
   dcpo_w_cal: 0.3
+  # 4th routed head (v3 format fix): drift-block penalty routed onto the
+  # FORMAT_VIOLATION mask (dcpo_region.compose_dcpo_region_advantage R_format).
+  dcpo_w_format: 0.1
   # ── v3 counterfactual meta-ablation ───────────────────────────────────────
   # Installs the CF 2nd-generation wrap (gated, additive). After the main gen, each
   # rollout is cut at its first <|meta|> and regenerated with token 151669 suppressed

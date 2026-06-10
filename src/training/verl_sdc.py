@@ -89,7 +89,7 @@ _DCPO_HEAD_STASH: dict = {"R_corr": None, "R_meta": None, "R_cal": None,
 
 def _compute_dcpo_heads_stash(
     completions, ground_truth, group_index, step, config,
-    cf_completions=None, cf_correct=None,
+    cf_completions=None, cf_correct=None, gate_unclosed=True,
 ):
     algo = getattr(config, "algorithm", None) if config is not None else None
     # Robust knob read (OmegaConf DictConfig supports .get; plain object uses getattr).
@@ -111,6 +111,7 @@ def _compute_dcpo_heads_stash(
         step=step,
         cf_completions=cf_completions,   # v3: regenerated counterfactual texts (or None)
         cf_correct=cf_correct,           # v3: pre-graded CF correctness (producer) or None
+        gate_unclosed=gate_unclosed,     # v3-only unclosed gate/penalty (v2 byte-identical)
     )
     _DCPO_HEAD_STASH.update(out)
     return out
@@ -141,6 +142,12 @@ def _populate_dcpo_region_keys(data) -> None:
     trainer = _ACTIVE_SDC_CONTEXT.get("trainer")
     if tokenizer is None:
         raise RuntimeError("TRIOBJ_DCPO_V2: tokenizer context not initialized")
+    # KARPATHY lock "v2 mode byte-identical": EVERYTHING v3-format-fix below
+    # (unclosed clamp/gate in masks+heads, FORMAT_VIOLATION stack, the
+    # format_penalty key) is gated on this flag — TRIOBJ_DCPO_V2 keeps the
+    # legacy 3-mask/3-key population verbatim, so the 4th head can never arm
+    # on a v2 async run (its yaml has neither dcpo_w_format nor the key).
+    _is_v3 = _ACTIVE_SDC_CONTEXT.get("mode", "") == "TRIOBJ_DCPO_V3"
 
     bs = len(data)
     response_length = data.batch["responses"].shape[-1]
@@ -148,7 +155,7 @@ def _populate_dcpo_region_keys(data) -> None:
 
     decoded_responses: list[str] = []
     ground_truths: list[str] = []
-    dcpo_ans, dcpo_meta_c, dcpo_conf = [], [], []
+    dcpo_ans, dcpo_meta_c, dcpo_conf, dcpo_fmt = [], [], [], []
     for i in range(bs):
         item = data[i]
         text, response_ids = _decode_response(
@@ -167,7 +174,7 @@ def _populate_dcpo_region_keys(data) -> None:
         _rids = response_ids.tolist()
         _rmask = [True] * len(_rids)
         _decode = lambda ids: tokenizer.decode(ids, skip_special_tokens=False)
-        rmasks = build_dcpo_region_masks(_rids, _rmask, _decode)
+        rmasks = build_dcpo_region_masks(_rids, _rmask, _decode, clamp_unclosed=_is_v3)
 
         def _pad_bool(arr) -> torch.Tensor:
             out = torch.zeros(response_length, dtype=torch.float32)
@@ -179,10 +186,17 @@ def _populate_dcpo_region_keys(data) -> None:
         dcpo_ans.append(_pad_bool(rmasks["ANSWER_REGION"]))
         dcpo_meta_c.append(_pad_bool(rmasks["META_CONTENT"]))
         dcpo_conf.append(_pad_bool(rmasks["CONF"]))
+        dcpo_fmt.append(_pad_bool(rmasks["FORMAT_VIOLATION"]))
 
     data.batch["dcpo_answer_mask"] = torch.stack(dcpo_ans, dim=0)
     data.batch["dcpo_meta_content_mask"] = torch.stack(dcpo_meta_c, dim=0)
     data.batch["dcpo_conf_mask"] = torch.stack(dcpo_conf, dim=0)
+    # 4th routed head's token span: the drift-clamped block (zeros for closed /
+    # truncated / no-meta rows). Consumed by _compute_dcpo_region_advantage —
+    # v3-ONLY: _compute_dcpo_region_advantage activates the head on key
+    # PRESENCE, so stacking this for v2 would silently arm it (review finding).
+    if _is_v3:
+        data.batch["dcpo_format_violation_mask"] = torch.stack(dcpo_fmt, dim=0)
 
     completions = [[{"content": t}] for t in decoded_responses]
     _uid = data.non_tensor_batch.get("uid", None)
@@ -205,6 +219,7 @@ def _populate_dcpo_region_keys(data) -> None:
     _heads = _compute_dcpo_heads_stash(
         completions, ground_truths, _uid, _step, _config,
         cf_completions=_cf_texts,
+        gate_unclosed=_is_v3,   # v2 byte-identical: no unclosed gate/penalty
     )
 
     # AUTHORITATIVE group-aware GDPO reward keys (overwrite any async placeholder).
@@ -220,6 +235,15 @@ def _populate_dcpo_region_keys(data) -> None:
     # meta_emission_reward; weight 0.0 keeps it out of the advantage.
     data.non_tensor_batch["meta_emission"] = np.asarray(
         meta_emission_reward(completions), dtype=np.float32)
+    # format_penalty (4th ROUTED head, w_format 0.1): listed in v3's
+    # gdpo_reward_keys, so the GDPO assertion requires it on this ASYNC path too
+    # (three-way sync rule — same crash class as meta_emission above). Sourced
+    # from the heads (text-level meta_drift mirror) so it matches the
+    # FORMAT_VIOLATION mask rows. v3-ONLY: writing it for v2 (whose keys list
+    # has 3 entries) would arm the 4th head in _compute_dcpo_region_advantage.
+    if _is_v3:
+        data.non_tensor_batch["format_penalty"] = np.asarray(
+            _heads.get("format_penalty", [0.0] * bs), dtype=np.float32)
 
     # Diagnostics (wandb) — same as the synchronous __call__ block.
     data.non_tensor_batch["dcpo_phat"] = np.asarray(_heads["p_hat"], dtype=np.float32)
@@ -256,6 +280,8 @@ def _log_dcpo_trend_scalars(*, step, heads, cf_texts):
     dcpo/acc_without           batch accuracy of graded counterfactuals (c_without mean)
                                -> acc_with - acc_without = the batch-level CAUSAL effect of meta
     dcpo/cw_graded_rate        fraction of rows with a graded c_without (non-NaN)
+    dcpo/meta_unclosed_rate    fraction with an UNCLOSED meta (R_meta gated; live run saw 40%)
+    dcpo/format_penalty_rate   fraction with format_penalty < 0 (DRIFT rows — the trainable habit)
     """
     import os as _os
     if _os.environ.get("DCPO_WANDB_ROLLOUTS", "1") != "1":
@@ -284,6 +310,13 @@ def _log_dcpo_trend_scalars(*, step, heads, cf_texts):
             "dcpo/acc_with": sum(cw) / B,
             "dcpo/acc_without": (sum(graded) / len(graded)) if graded else float("nan"),
             "dcpo/cw_graded_rate": len(graded) / B,
+            # unclosed/drift trends (.get-guarded: older stashes lack the keys).
+            "dcpo/meta_unclosed_rate": (
+                sum(1 for v in heads.get("meta_unclosed", []) if float(v) > 0.5) / B
+            ),
+            "dcpo/format_penalty_rate": (
+                sum(1 for v in heads.get("format_penalty", []) if float(v) < 0.0) / B
+            ),
         }
         wandb.log(scal, step=int(step))
     except Exception as _e:  # pragma: no cover — observability never kills training
@@ -313,8 +346,10 @@ def _log_dcpo_rollout_table(*, step, uid, completions, ground_truths, cf_texts, 
         _uid_l = list(uid.tolist() if hasattr(uid, "tolist") else (uid or range(B)))
         from src.training.rewards import _get_text as _gt_text
         cols = ["step", "row", "group", "gt", "answer", "c_with", "c_without",
-                "R_corr", "R_meta", "R_cal", "conf", "has_meta", "main_tail", "cf_tail"]
+                "R_corr", "R_meta", "R_cal", "conf", "has_meta", "unclosed",
+                "main_tail", "cf_tail"]
         table = wandb.Table(columns=cols)
+        _unc = heads.get("meta_unclosed", None)  # .get-guarded (older stashes)
         for i in range(B):
             main = _gt_text(completions[i]) or ""
             cf = (cf_texts[i] if (cf_texts is not None and i < len(cf_texts)) else None) or ""
@@ -324,6 +359,7 @@ def _log_dcpo_rollout_table(*, step, uid, completions, ground_truths, cf_texts, 
                 float(heads["c_with"][i]), float(heads["c_without"][i]),
                 float(heads["R_corr"][i]), float(heads["R_meta"][i]), float(heads["R_cal"][i]),
                 float(heads["conf"][i]), bool(heads["has_meta"][i]),
+                bool(float(_unc[i]) > 0.5) if (_unc is not None and i < len(_unc)) else False,
                 main[-nchars:], cf[-(nchars // 2):],
             )
         # step-keyed log; runs BEFORE the tracker's metric commit for this step,
@@ -360,6 +396,28 @@ def meta_emission_reward(completions, ground_truth=None, **kwargs):
     by grepping node logs)."""
     from src.training.rewards import _get_text as _gt
     return [1.0 if "<|meta|>" in (_gt(c) or "") else 0.0 for c in completions]
+
+
+def format_penalty_reward(completions, ground_truth=None, **kwargs):
+    """FORMAT head (TRIOBJ_DCPO_V3, w 0.1; DeepSeek-R1-style separate format
+    reward): -1.0 iff the rollout opens a <|meta|> block, NEVER closes it, AND a
+    </think> appears after the last open — i.e. format DRIFT (the model abandoned
+    the tag mid-stream but kept generating). Text-level mirror of the mask-level
+    meta_drift in build_dcpo_region_masks; routed onto the FORMAT_VIOLATION token
+    span by compose_dcpo_region_advantage. TRUE TRUNCATION (no </think> after the
+    open — cut at max length) scores 0.0: that is a length problem, not a format
+    habit, so it carries no penalty. Closed blocks / no-meta rollouts -> 0.0."""
+    from src.training.rewards import _get_text as _gt
+    out = []
+    for c in completions:
+        t = _gt(c) or ""
+        pen = 0.0
+        if "<|meta|>" in t and "<|/meta|>" not in t:
+            _last_open = t.rfind("<|meta|>")
+            if t.find("</think>", _last_open) != -1:
+                pen = -1.0
+        out.append(pen)
+    return out
 
 
 REWARD_CONFIGS = {
@@ -730,10 +788,19 @@ REWARD_CONFIGS = {
         # per-benchmark emission rate. It IS listed (weight 0.0) in the config's
         # gdpo_reward_keys/weights (boot validation requires len==len(funcs));
         # advantage routing reads the 3 region heads BY NAME, so it never routes.
+        # format_penalty (w 0.1) is the 4th ROUTED head: -1 for an unclosed-meta
+        # DRIFT block (open, no close, </think> after), routed ONLY onto the
+        # FORMAT_VIOLATION token mask (compose_dcpo_region_advantage R_format).
+        # THREE-WAY SYNC RULE (two prior boot/step-1 crashes!): these lists, the
+        # yaml algorithm.gdpo_reward_keys/gdpo_reward_weights, and the
+        # _populate_dcpo_region_keys non_tensor_batch writes MUST stay in lockstep
+        # (tests: test_v3_yaml_reward_lists_match_reward_configs +
+        # test_populate_writes_every_gdpo_reward_key).
         "funcs": [correctness_region_reward, meta_region_utility_reward, cal_region_reward,
-                  meta_emission_reward],
-        "weights": [1.0, 0.5, 0.3, 0.0],
-        "keys": ["correctness", "meta_region_utility", "cal_region_reward", "meta_emission"],
+                  meta_emission_reward, format_penalty_reward],
+        "weights": [1.0, 0.5, 0.3, 0.0, 0.1],
+        "keys": ["correctness", "meta_region_utility", "cal_region_reward", "meta_emission",
+                 "format_penalty"],
     },
 }
 
@@ -1695,7 +1762,11 @@ class MetaCotSDCRewardManager:
             # prefilled path is byte-identical.
             _mode_pf = _ACTIVE_SDC_CONTEXT.get("mode", "")
             if _mode_pf in _REGION_ROUTED_MODES:
-                _pf_ans, _pf_meta_c, _pf_conf = [], [], []
+                # KARPATHY lock "v2 mode byte-identical": the v3 format-fix
+                # pieces (clamp/gate, FORMAT_VIOLATION stack) are v3-only here
+                # too — mirror of _populate_dcpo_region_keys.
+                _pf_v3 = _mode_pf == "TRIOBJ_DCPO_V3"
+                _pf_ans, _pf_meta_c, _pf_conf, _pf_fmt = [], [], [], []
                 for i in range(bs):
                     _item = data[i]
                     _attn = _item.batch["attention_mask"]
@@ -1703,7 +1774,7 @@ class MetaCotSDCRewardManager:
                     _rids = _item.batch["responses"][:_vlen].tolist()
                     _rmask = [True] * len(_rids)
                     _decode = lambda ids: self.tokenizer.decode(ids, skip_special_tokens=False)
-                    _rmasks = build_dcpo_region_masks(_rids, _rmask, _decode)
+                    _rmasks = build_dcpo_region_masks(_rids, _rmask, _decode, clamp_unclosed=_pf_v3)
 
                     def _pf_pad_bool(arr) -> torch.Tensor:
                         out = torch.zeros(response_length, dtype=torch.float32)
@@ -1715,9 +1786,15 @@ class MetaCotSDCRewardManager:
                     _pf_ans.append(_pf_pad_bool(_rmasks["ANSWER_REGION"]))
                     _pf_meta_c.append(_pf_pad_bool(_rmasks["META_CONTENT"]))
                     _pf_conf.append(_pf_pad_bool(_rmasks["CONF"]))
+                    _pf_fmt.append(_pf_pad_bool(_rmasks["FORMAT_VIOLATION"]))
                 data.batch["dcpo_answer_mask"] = torch.stack(_pf_ans, dim=0)
                 data.batch["dcpo_meta_content_mask"] = torch.stack(_pf_meta_c, dim=0)
                 data.batch["dcpo_conf_mask"] = torch.stack(_pf_conf, dim=0)
+                # 4th routed head's token span (drift-clamped block; mirror of
+                # _populate_dcpo_region_keys — the async/sync paths must agree).
+                # v3-ONLY: presence of this key arms the head downstream.
+                if _pf_v3:
+                    data.batch["dcpo_format_violation_mask"] = torch.stack(_pf_fmt, dim=0)
 
                 _pf_uid = data.non_tensor_batch.get("uid", None)
                 _pf_trainer = _ACTIVE_SDC_CONTEXT.get("trainer", None)
@@ -1730,6 +1807,7 @@ class MetaCotSDCRewardManager:
                 _pf_heads = _compute_dcpo_heads_stash(
                     completions, ground_truths, _pf_uid, _pf_step, self.config,
                     cf_completions=_pf_cf,
+                    gate_unclosed=_pf_v3,   # v2 byte-identical: no gate/penalty
                 )
                 data.non_tensor_batch["dcpo_phat"] = np.asarray(_pf_heads["p_hat"], dtype=np.float32)
                 data.non_tensor_batch["dcpo_group_acc"] = np.asarray(_pf_heads["group_acc"], dtype=np.float32)
@@ -1837,7 +1915,11 @@ class MetaCotSDCRewardManager:
         # every other mode's reward loop below is byte-identical.
         _mode = _ACTIVE_SDC_CONTEXT.get("mode", "")
         if _mode in _REGION_ROUTED_MODES:
-            dcpo_ans, dcpo_meta_c, dcpo_conf = [], [], []
+            # KARPATHY lock "v2 mode byte-identical": v3 format-fix pieces
+            # (clamp/gate, FORMAT_VIOLATION stack) are v3-only here too —
+            # mirror of _populate_dcpo_region_keys.
+            _is_v3 = _mode == "TRIOBJ_DCPO_V3"
+            dcpo_ans, dcpo_meta_c, dcpo_conf, dcpo_fmt = [], [], [], []
             for i in range(bs):
                 item = data[i]
                 _resp_ids = item.batch["responses"]
@@ -1846,7 +1928,7 @@ class MetaCotSDCRewardManager:
                 _rids = _resp_ids[: _vlen].tolist()
                 _rmask = [True] * len(_rids)
                 _decode = lambda ids: self.tokenizer.decode(ids, skip_special_tokens=False)
-                rmasks = build_dcpo_region_masks(_rids, _rmask, _decode)
+                rmasks = build_dcpo_region_masks(_rids, _rmask, _decode, clamp_unclosed=_is_v3)
 
                 def _pad_bool(arr) -> torch.Tensor:
                     out = torch.zeros(response_length, dtype=torch.float32)
@@ -1858,9 +1940,15 @@ class MetaCotSDCRewardManager:
                 dcpo_ans.append(_pad_bool(rmasks["ANSWER_REGION"]))
                 dcpo_meta_c.append(_pad_bool(rmasks["META_CONTENT"]))
                 dcpo_conf.append(_pad_bool(rmasks["CONF"]))
+                dcpo_fmt.append(_pad_bool(rmasks["FORMAT_VIOLATION"]))
             data.batch["dcpo_answer_mask"] = torch.stack(dcpo_ans, dim=0)
             data.batch["dcpo_meta_content_mask"] = torch.stack(dcpo_meta_c, dim=0)
             data.batch["dcpo_conf_mask"] = torch.stack(dcpo_conf, dim=0)
+            # 4th routed head's token span (drift-clamped block; mirror of
+            # _populate_dcpo_region_keys — the async/sync paths must agree).
+            # v3-ONLY: presence of this key arms the head downstream.
+            if _is_v3:
+                data.batch["dcpo_format_violation_mask"] = torch.stack(dcpo_fmt, dim=0)
 
             _uid = data.non_tensor_batch.get("uid", None)
             _trainer = _ACTIVE_SDC_CONTEXT.get("trainer", None)
@@ -1873,6 +1961,7 @@ class MetaCotSDCRewardManager:
             _heads = _compute_dcpo_heads_stash(
                 completions, ground_truths, _uid, _step, self.config,
                 cf_completions=_cf_texts,
+                gate_unclosed=_is_v3,   # v2 byte-identical: no gate/penalty
             )
             data.non_tensor_batch["dcpo_phat"] = np.asarray(_heads["p_hat"], dtype=np.float32)
             data.non_tensor_batch["dcpo_group_acc"] = np.asarray(_heads["group_acc"], dtype=np.float32)
@@ -2221,6 +2310,28 @@ class SDCRayPPOTrainer(RayPPOTrainer):
 
         # Filter to the rows that actually need a CF gen (have meta).
         active = [i for i in range(B) if not skip[i] and prefix_ids[i] is not None]
+
+        # FORMAT-GATE skip (cheap text check): a row whose meta block is UNCLOSED
+        # (<|meta|> with no <|/meta|> anywhere) has R_meta FORCED to 0 by the
+        # dcpo_region_rewards gate — a 2nd generation for it is pure wasted
+        # compute, so the slot stays None. skip_special_tokens=False so the meta
+        # tag surfaces survive the decode.
+        _resp = gen_output.batch["responses"]
+        _gated = []
+        for i in list(active):
+            try:
+                _txt = self.tokenizer.decode(
+                    [int(t) for t in _resp[i].tolist()], skip_special_tokens=False)
+            except Exception:
+                continue  # decode hiccup → keep the row (gate still holds downstream)
+            if "<|meta|>" in _txt and "<|/meta|>" not in _txt:
+                _gated.append(i)
+        if _gated:
+            active = [i for i in active if i not in set(_gated)]
+            if os.environ.get("DCPO_DEBUG", "1") == "1":
+                print(f"[DCPO-V3] CF skip (unclosed-meta gate): {len(_gated)} row(s) "
+                      f"-> cf slot None (R_meta gated to 0 anyway)", flush=True)
+
         cf_texts = [None] * B
         if not active:
             return cf_texts

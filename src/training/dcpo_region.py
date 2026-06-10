@@ -37,6 +37,7 @@ from src.training.meta_revision_rewards import _BOXED_RE
 
 META_OPEN_DEFAULT = 151669
 META_CLOSE_DEFAULT = 151670
+THINK_CLOSE_DEFAULT = 151668  # </think> — the drift-clamp boundary for UNCLOSED meta
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -99,6 +100,8 @@ def build_dcpo_region_masks(
     decode_fn: Callable[[list], str],
     meta_open: int = META_OPEN_DEFAULT,
     meta_close: int = META_CLOSE_DEFAULT,
+    think_close: int = THINK_CLOSE_DEFAULT,
+    clamp_unclosed: bool = True,
 ):
     """Build the four DCPO region masks over response positions.
 
@@ -108,15 +111,40 @@ def build_dcpo_region_masks(
         decode_fn: ids(list[int]) -> str. Injected so the util is importable with no
             transformers dependency (unit tests pass a fake decode_fn).
         meta_open / meta_close: the <|meta|> / <|/meta|> token ids.
+        think_close: the </think> token id — the drift-clamp boundary for an
+            UNCLOSED meta block (see below).
+        clamp_unclosed: True (v3 default) = apply the unclosed-meta handling
+            below. False (TRIOBJ_DCPO_V2 KARPATHY lock "v2 mode byte-identical"):
+            LEGACY unclosed-to-end behavior verbatim — unclosed content stays in
+            META_CONTENT + the conf-parse spans, FORMAT_VIOLATION stays all-zero
+            and meta_unclosed/meta_drift stay False.
 
-    Returns dict of np.bool_ arrays of shape [T]:
-        META_REGION   : tag-inclusive block (open..close inclusive).
-        META_CONTENT  : strictly-inside content (tags EXCLUDED).
-        CONF          : confidence-number token run inside META_CONTENT (first per block).
-        ANSWER_REGION : response_mask & ~META_REGION (tags NOT in answer).
+    Returns dict of np.bool_ arrays of shape [T] (+ two python bools):
+        META_REGION      : tag-inclusive block (open..close inclusive).
+        META_CONTENT     : strictly-inside content (tags EXCLUDED).
+        CONF             : confidence-number token run inside META_CONTENT (first per block).
+        ANSWER_REGION    : response_mask & ~META_REGION (tags NOT in answer).
+        FORMAT_VIOLATION : the clamped DRIFT-block tokens (case a below; zeros otherwise) —
+                           the 4th routed head (R_format) lands ONLY here.
+        meta_unclosed    : bool — ANY unclosed meta span (case a OR b) → R_meta gate.
+        meta_drift       : bool — case a only (format habit) → drives the -1 penalty.
+
+    UNCLOSED meta handling (live-run finding: 40% of meta blocks never emit
+    <|/meta|>; the old unclosed-to-end rule put the FINAL ANSWER inside
+    META_CONTENT for 17% of rollouts → R_corr never reached the answer):
+      a. DRIFT — a </think> token appears AFTER the open: META_REGION is clamped to
+         open..(think_close-1); </think> itself and everything after revert to
+         ANSWER_REGION. The clamped tokens go into META_REGION but NOT META_CONTENT
+         (neutral, like tag tokens) and into FORMAT_VIOLATION. No conf parse (gated).
+      b. TRUNCATION — no </think> after the open (cut at max length): META_REGION
+         keeps the unclosed-to-end extent, but the tokens are EXCLUDED from
+         META_CONTENT and from the conf-parse spans (gated; a truncated CF is
+         useless anyway). NOT a violation — truncation is a length problem, not a
+         format habit, so no penalty.
 
     Invariants (asserted in tests):
         CONF ⊆ META_CONTENT ⊆ META_REGION ⊆ response_mask;
+        FORMAT_VIOLATION ⊆ META_REGION; FORMAT_VIOLATION ∩ META_CONTENT = ∅;
         META_CONTENT and ANSWER_REGION disjoint; ANSWER_REGION ∪ META_REGION == response_mask;
         tag tokens ∈ (META_REGION \\ META_CONTENT \\ ANSWER_REGION).
     """
@@ -133,8 +161,44 @@ def build_dcpo_region_masks(
     META_REGION = np.zeros(T, dtype=bool)
     META_CONTENT = np.zeros(T, dtype=bool)
     CONF = np.zeros(T, dtype=bool)
+    FORMAT_VIOLATION = np.zeros(T, dtype=bool)
+    meta_unclosed = False  # case a OR b — the R_meta gate
+    meta_drift = False     # case a only — drives the format penalty
 
-    # Pass A — meta spans (mirrors meta_inject.meta_mask scan + unclosed-to-end).
+    def _finalize_unclosed(o_idx, end_idx):
+        """Finalize an UNCLOSED meta span (open at o_idx, last real token end_idx).
+
+        Case a (DRIFT): a </think> appears after the open → clamp META_REGION (and
+        FORMAT_VIOLATION) to open..(think_close-1); </think> + everything after
+        revert to ANSWER. Case b (TRUNCATION): unclosed-to-end META_REGION kept.
+        BOTH cases: NO META_CONTENT, NO conf span (gated — no spans entry).
+
+        clamp_unclosed=False (v2 byte-identical): LEGACY unclosed-to-end —
+        content + conf span kept, no gate/violation flags.
+        """
+        nonlocal meta_unclosed, meta_drift
+        if not clamp_unclosed:
+            # LEGACY (pre-v3, verbatim): close the block at the last valid token.
+            if end_idx >= o_idx + 1:
+                META_CONTENT[o_idx + 1 : end_idx + 1] = True
+                spans.append((o_idx + 1, end_idx + 1))
+            META_REGION[o_idx : end_idx + 1] = True
+            return
+        meta_unclosed = True
+        j = None
+        for k in range(o_idx + 1, end_idx + 1):
+            if ids[k] == think_close:
+                j = k
+                break
+        if j is not None:  # case a — format drift
+            META_REGION[o_idx : j] = True
+            FORMAT_VIOLATION[o_idx : j] = True
+            meta_drift = True
+        else:              # case b — true truncation (no penalty)
+            META_REGION[o_idx : end_idx + 1] = True
+
+    # Pass A — meta spans (mirrors meta_inject.meta_mask scan; unclosed spans are
+    # GATED via _finalize_unclosed — drift-clamped or truncation-neutralized).
     spans = []  # list of (content_lo, content_hi_exclusive)
     in_meta = False
     open_idx = None
@@ -143,23 +207,30 @@ def build_dcpo_region_masks(
     for i in range(T):
         if not rmask[i]:
             if in_meta:
-                # pad while open = truncation -> close the block at the last valid token.
-                if last_valid >= content_start:
-                    META_CONTENT[content_start : last_valid + 1] = True
-                    spans.append((content_start, last_valid + 1))
-                META_REGION[open_idx : last_valid + 1] = True
+                # pad while open = unclosed -> drift-clamp or truncation-gate.
+                _finalize_unclosed(open_idx, last_valid)
                 in_meta = False
             continue
         last_valid = i
         t = ids[i]
         if t == meta_open:
             if in_meta:
-                # EDGE: nested/dup open -> force-close previous span at i-1.
-                hi = i  # exclusive
-                if hi - 1 >= content_start:
-                    META_CONTENT[content_start : hi] = True
-                    spans.append((content_start, hi))
-                META_REGION[open_idx : i] = True
+                # EDGE: nested/dup open. If a </think> INTERVENED, the previous
+                # span is the SAME drift class as _finalize_unclosed case a —
+                # a dup open must not silently "close" a drifted span, or the
+                # post-</think> ANSWER tokens land in META_CONTENT (the exact
+                # misrouting this fix kills: `open…</think>…answer…open`).
+                # Clamp/violate it; otherwise force-close previous span at i-1.
+                if clamp_unclosed and any(
+                    ids[k] == think_close for k in range(open_idx + 1, i)
+                ):
+                    _finalize_unclosed(open_idx, i - 1)
+                else:
+                    hi = i  # exclusive
+                    if hi - 1 >= content_start:
+                        META_CONTENT[content_start : hi] = True
+                        spans.append((content_start, hi))
+                    META_REGION[open_idx : i] = True
             in_meta = True
             open_idx = i
             content_start = i + 1
@@ -172,11 +243,8 @@ def build_dcpo_region_masks(
             in_meta = False
         elif t == meta_close and not in_meta:
             pass  # EDGE: stray close -> ignore (default)
-    if in_meta:  # EDGE: missing close (truncation)
-        if last_valid >= content_start:
-            META_CONTENT[content_start : last_valid + 1] = True
-            spans.append((content_start, last_valid + 1))
-        META_REGION[open_idx : last_valid + 1] = True
+    if in_meta:  # EDGE: missing close — drift-clamp (case a) or truncation-gate (case b)
+        _finalize_unclosed(open_idx, last_valid)
 
     # Pass B — confidence run via EXACT char-span -> token-span map.
     for (lo, hi) in spans:
@@ -226,6 +294,9 @@ def build_dcpo_region_masks(
         "META_CONTENT": META_CONTENT,
         "CONF": CONF,
         "ANSWER_REGION": ANSWER_REGION,
+        "FORMAT_VIOLATION": FORMAT_VIOLATION,
+        "meta_unclosed": meta_unclosed,
+        "meta_drift": meta_drift,
     }
 
 
@@ -244,6 +315,11 @@ def dcpo_region_rewards(
     *,
     cf_completions=None,
     cf_correct=None,
+    # gate_unclosed: True (v3 default) = unclosed-meta R_meta gate + drift
+    # format_penalty below. False (TRIOBJ_DCPO_V2 KARPATHY lock "v2 mode
+    # byte-identical"): gate/penalty OFF — R_meta follows the plain cf path and
+    # format_penalty/meta_unclosed stay all-zero.
+    gate_unclosed: bool = True,
     # v2 carry-over reward knobs (eps/eps_right_right/p_lo/p_hi/warmup_steps/sandbag_*/
     # format_*) are absorbed here and IGNORED — v3's R_meta = c_with - c_without uses
     # none of them. Kept only so legacy callers don't raise TypeError.
@@ -279,7 +355,13 @@ def dcpo_region_rewards(
         cf_correct: optional parallel array (len B) of pre-graded CF correctness
             (1.0 / 0.0 / None). Takes precedence over cf_completions.
 
+    UNCLOSED-meta gate + format penalty (mirrors build_dcpo_region_masks): a row
+    whose ONLY meta is unclosed (no <|/meta|> in the text) has R_meta FORCED to 0
+    regardless of cf grading, and earns format_penalty = -1.0 iff it DRIFTED
+    (a </think> after the last open); pure truncation stays 0 (length, not habit).
+
     Returns dict of lists (len B): R_corr, R_meta, R_cal, p_hat, group_acc,
+    format_penalty (the 4th routed head), meta_unclosed (1.0/0.0 diagnostics),
     plus constant canary_pass1_acc / sandbag_clamp stubs (kept so the existing
     wandb keys + _populate_dcpo_region_keys stay alive without touching verl_sdc).
     """
@@ -303,6 +385,8 @@ def dcpo_region_rewards(
     c2 = [False] * B
     conf = [None] * B
     has_meta = [False] * B
+    meta_unclosed = [False] * B   # ONLY meta is unclosed -> R_meta GATE (forced 0)
+    meta_drift = [False] * B      # unclosed AND </think> after it -> format penalty
     c_without = [None] * B   # None == no counterfactual available -> R_meta 0
     for i in range(B):
         t = texts[i]
@@ -311,6 +395,18 @@ def dcpo_region_rewards(
         c2[i] = bool(_check_correctness(final, gts[i])) if final else False
         has_meta[i] = "<|meta|>" in (t or "")
         conf[i] = _parse_confidence(t)
+        # UNCLOSED-meta gate (text-level mirror of build_dcpo_region_masks'
+        # meta_unclosed/meta_drift): a rollout whose ONLY meta is unclosed (no
+        # <|/meta|> anywhere) gets R_meta forced to 0 — its meta content is
+        # un-routable (drift-clamped / truncation-gated at the mask level), so
+        # crediting/penalizing it via the CF would reward a broken block. DRIFT
+        # (a </think> AFTER the last open) additionally earns the format penalty;
+        # pure truncation does not (length problem, not a format habit).
+        # gate_unclosed=False (v2 byte-identical): both flags stay False.
+        if gate_unclosed and has_meta[i] and "<|/meta|>" not in (t or ""):
+            meta_unclosed[i] = True
+            _last_open = (t or "").rfind("<|meta|>")
+            meta_drift[i] = (t or "").find("</think>", _last_open) != -1
 
         # c_without[i]: precedence cf_correct -> cf_completions -> text fallback.
         # NaN-GUARD (v3b BUG-2): cf_correct may arrive as np.float32 with NaN
@@ -363,7 +459,11 @@ def dcpo_region_rewards(
         #   with-wrong / without-right -> -1  (meta turned right wrong)
         #   no counterfactual available ->  0  (no-meta / unparseable, conservative)
         c_with = 1.0 if c2[i] else 0.0
-        if c_without[i] is None:
+        if meta_unclosed[i]:
+            # GATE: the only meta block is unclosed (drift or truncation) — force
+            # 0 regardless of cf grading. has_meta stays True for emission metrics.
+            R_meta[i] = 0.0
+        elif c_without[i] is None:
             R_meta[i] = 0.0
         else:
             R_meta[i] = c_with - (1.0 if c_without[i] else 0.0)
@@ -407,6 +507,13 @@ def dcpo_region_rewards(
         ],
         "conf": [float("nan") if conf[i] is None else float(conf[i]) for i in range(B)],
         "has_meta": list(has_meta),
+        # FORMAT head (4th routed head, w_format): -1 ONLY for drift (unclosed +
+        # </think> after the open). Truncation rows stay 0 (no penalty). Routed
+        # onto the FORMAT_VIOLATION token mask by compose_dcpo_region_advantage.
+        "format_penalty": [-1.0 if meta_drift[i] else 0.0 for i in range(B)],
+        # Diagnostics: 1.0 = the row's only meta is unclosed (gated R_meta) — the
+        # trend scalar dcpo/meta_unclosed_rate charts this per step.
+        "meta_unclosed": [1.0 if meta_unclosed[i] else 0.0 for i in range(B)],
         "answer": [a if a is not None else "" for a in answer2],
         # Constant stubs: kept so existing wandb keys + _populate_dcpo_region_keys
         # stay alive without touching verl_sdc.py (spec §5.1-B.6). v3 has no canary
@@ -461,15 +568,25 @@ def compose_dcpo_region_advantage(
     w_corr: float = 1.0,
     w_meta: float = 0.5,
     w_cal: float = 0.3,
+    R_format=None,
+    format_violation_mask=None,
+    w_format: float = 0.1,
 ):
     """Independent per-head group-mean-subtract + per-region token routing (§2.3).
 
         A_token = ( w_corr*Â_corr*ANSWER
                   + w_meta*Â_meta*META_CONTENT
                   + w_cal *Â_cal *CONF ) * response_mask
+                [ + w_format*Â_format*FORMAT_VIOLATION * response_mask ]
 
     TAG tokens are in NEITHER ANSWER nor META_CONTENT -> advantage 0. NO global
     re-whiten (codex-r13 LOCK). Returns (A, A).
+
+    4th head (OPTIONAL, v3 format-penalty): R_format [B] is group-mean-subtracted
+    independently (same Dr.GRPO centering) and routed ONLY onto the
+    FORMAT_VIOLATION token mask (the drift-clamped block). BACKWARD COMPAT:
+    R_format / format_violation_mask default None -> the term is skipped and the
+    output is byte-identical to the 3-head compose (v2 mode + existing callers).
     """
     rm = torch.as_tensor(response_mask, dtype=torch.float32)
     device = rm.device
@@ -487,5 +604,10 @@ def compose_dcpo_region_advantage(
         + w_meta * A_meta * meta_c
         + w_cal * A_cal * conf
     ) * rm
+
+    if R_format is not None and format_violation_mask is not None:
+        A_format = group_mean_subtract(R_format, index).to(device)  # [B,1]
+        fv = torch.as_tensor(format_violation_mask, dtype=torch.float32).to(device)
+        advantages = advantages + w_format * A_format * fv * rm
 
     return advantages, advantages
