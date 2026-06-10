@@ -70,6 +70,11 @@ trainer:
   experiment_name: triobj_dcpo_v3_h100_4x4k
   default_local_dir: /scratch/checkpoints/triobj_dcpo_v3_h100_4x4k
   total_training_steps: 300
+  # NODE-FAILURE RESILIENCE (2026-06-10): westus2 H100 nodes died 3x tonight, each
+  # before the base save_freq=5 wrote its first ckpt → every attempt cold-restarted.
+  # save_freq=1 writes + HF-pushes a ckpt every step, so once training reaches step 1
+  # any node death resumes from HF instead of restarting. keep=1 bounds disk/push cost.
+  save_freq: 1
   # STEP-0 BASELINE (observability ask): run a full val pass BEFORE training so
   # the val-aux correctness/meta_emission/cal trends have the SFT cold-start as
   # their reference point ("did RL beat the SFT?" readable from the chart).
