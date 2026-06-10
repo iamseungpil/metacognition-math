@@ -213,6 +213,13 @@ def _populate_dcpo_region_keys(data) -> None:
     data.non_tensor_batch["correctness"] = np.asarray(_heads["R_corr"], dtype=np.float32)
     data.non_tensor_batch["meta_region_utility"] = np.asarray(_heads["R_meta"], dtype=np.float32)
     data.non_tensor_batch["cal_region_reward"] = np.asarray(_heads["R_cal"], dtype=np.float32)
+    # meta_emission (OBSERVABILITY-ONLY, weight 0.0): it is listed in gdpo_reward_keys,
+    # so the GDPO assertion requires it on this ASYNC path too — the RewardLoopWorker
+    # placeholder set does not include it (v3g step-1 crash 2026-06-10: "GDPO reward
+    # key 'meta_emission' not found in non_tensor_batch"). Same formula as
+    # meta_emission_reward; weight 0.0 keeps it out of the advantage.
+    data.non_tensor_batch["meta_emission"] = np.asarray(
+        meta_emission_reward(completions), dtype=np.float32)
 
     # Diagnostics (wandb) — same as the synchronous __call__ block.
     data.non_tensor_batch["dcpo_phat"] = np.asarray(_heads["p_hat"], dtype=np.float32)

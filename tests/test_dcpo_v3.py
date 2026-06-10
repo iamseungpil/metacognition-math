@@ -226,6 +226,21 @@ def test_v3_yaml_reward_lists_match_reward_configs():
     assert len(rc["funcs"]) == len(rc["keys"]) == len(rc["weights"])
 
 
+def test_populate_writes_every_gdpo_reward_key():
+    # REGRESSION (v3g step-1 crash 2026-06-10): the async-path populator
+    # (_populate_dcpo_region_keys) must write EVERY key in gdpo_reward_keys into
+    # non_tensor_batch — the GDPO advantage assertion requires all of them, and
+    # the RewardLoopWorker placeholders do not cover mode-specific extras like
+    # meta_emission. Source-level check: each configured key appears as a
+    # non_tensor_batch["<key>"] write in the populator.
+    import inspect
+    import tests.test_dcpo_v3_cf  # auto-stub
+    from src.training.verl_sdc import _populate_dcpo_region_keys, REWARD_CONFIGS
+    src = inspect.getsource(_populate_dcpo_region_keys)
+    for key in REWARD_CONFIGS["TRIOBJ_DCPO_V3"]["keys"]:
+        assert f'non_tensor_batch["{key}"]' in src, f"populator does not write {key!r}"
+
+
 def test_trend_scalar_helper_never_raises():
     import tests.test_dcpo_v3_cf  # auto-stub
     from src.training.verl_sdc import _log_dcpo_trend_scalars
