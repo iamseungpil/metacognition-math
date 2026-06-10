@@ -206,6 +206,26 @@ def test_meta_emission_reward_observability_func():
     assert cfg["keys"][:3] == ["correctness", "meta_region_utility", "cal_region_reward"]
 
 
+def test_v3_yaml_reward_lists_match_reward_configs():
+    # REGRESSION (v3f boot crash 2026-06-10): main_task validates
+    # len(yaml gdpo_reward_keys/weights) == len(REWARD_CONFIGS funcs). The v3e
+    # release added meta_emission as a 4th func but left the yaml lists at 3,
+    # killing the run at boot. Keep them in lockstep.
+    import os
+    import yaml as _yaml
+    import tests.test_dcpo_v3_cf  # auto-stub
+    from src.training.verl_sdc import REWARD_CONFIGS
+    cfg_path = os.path.join(os.path.dirname(__file__), "..", "configs",
+                            "triobj_dcpo_v3_h100_4x4k.yaml")
+    with open(cfg_path) as f:
+        ycfg = _yaml.safe_load(f)
+    alg = ycfg["algorithm"]
+    rc = REWARD_CONFIGS["TRIOBJ_DCPO_V3"]
+    assert alg["gdpo_reward_keys"] == rc["keys"]
+    assert [float(w) for w in alg["gdpo_reward_weights"]] == [float(w) for w in rc["weights"]]
+    assert len(rc["funcs"]) == len(rc["keys"]) == len(rc["weights"])
+
+
 def test_trend_scalar_helper_never_raises():
     import tests.test_dcpo_v3_cf  # auto-stub
     from src.training.verl_sdc import _log_dcpo_trend_scalars

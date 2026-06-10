@@ -45,8 +45,11 @@ algorithm:
   use_kl_in_reward: false
   # GDPO heads/weights come from REWARD_CONFIGS['TRIOBJ_DCPO_V3'] (funcs cannot live
   # in YAML). gdpo_reward_keys/weights below are kept in sync for audit clarity.
-  gdpo_reward_keys: [correctness, meta_region_utility, cal_region_reward]
-  gdpo_reward_weights: [1.0, 0.5, 0.3]
+  # meta_emission is OBSERVABILITY-ONLY (weight 0.0): boot validation requires these
+  # lists to match len(funcs); advantage routing reads the 3 region heads BY NAME
+  # (verl_sdc_utils._compute_dcpo_region_advantage), so the 4th key never routes.
+  gdpo_reward_keys: [correctness, meta_region_utility, cal_region_reward, meta_emission]
+  gdpo_reward_weights: [1.0, 0.5, 0.3, 0.0]
   # ── DCPO routing knobs (KEEP — region routing unchanged from v2) ──────────
   dcpo_w_corr: 1.0
   dcpo_w_meta: 0.5

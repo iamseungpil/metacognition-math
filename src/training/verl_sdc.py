@@ -720,8 +720,9 @@ REWARD_CONFIGS = {
     "TRIOBJ_DCPO_V3": {
         # meta_emission is OBSERVABILITY-ONLY (weight 0.0): it never moves the
         # reward; it exists so val-aux/<ds>/meta_emission/mean@1 charts the
-        # per-benchmark emission rate. It is NOT in algorithm.gdpo_reward_keys,
-        # so the advantage routing is untouched.
+        # per-benchmark emission rate. It IS listed (weight 0.0) in the config's
+        # gdpo_reward_keys/weights (boot validation requires len==len(funcs));
+        # advantage routing reads the 3 region heads BY NAME, so it never routes.
         "funcs": [correctness_region_reward, meta_region_utility_reward, cal_region_reward,
                   meta_emission_reward],
         "weights": [1.0, 0.5, 0.3, 0.0],
