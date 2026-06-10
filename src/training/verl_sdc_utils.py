@@ -277,6 +277,22 @@ def _compute_dcpo_region_advantage(
             format_violation_mask=_fv_mask.to(device).float(),
             w_format=float(config.get("dcpo_w_format", 0.1)),
         )
+        # v3k two-sided format signal: the FORMAT_OK mask (wellformed closers,
+        # +side of the SAME centered head) — stacked by the populators ONLY
+        # under mode==TRIOBJ_DCPO_V3 with the v3k fmt path. ABSENCE-TOLERANT
+        # (.get None — older ckpts / pre-k v3 / v2): the compose then routes
+        # onto FORMAT_VIOLATION alone, byte-identical to pre-k behavior.
+        _ok_mask = batch.get("dcpo_format_ok_mask", None)
+        if _ok_mask is not None:
+            _fmt_kwargs["format_ok_mask"] = _ok_mask.to(device).float()
+
+    # v3k tier-2 exclusion membership (spec §10 risk 2, CLOSED): 0.0 = discard
+    # row, excluded from the three content-head group means (a forced-0 scalar
+    # is not a real reward; averaging it in shifts every sibling's baseline by
+    # (d/n)·mean(siblings)). ABSENCE-TOLERANT (.get None — v2 mode / older
+    # ckpts, whose populators never write the key): compose then centers over
+    # ALL rows, byte-identical to the pre-fix path.
+    _member = non_tensor_batch.get("dcpo_head_member", None)
 
     return compose_dcpo_region_advantage(
         response_mask=response_mask.float(),
@@ -284,6 +300,9 @@ def _compute_dcpo_region_advantage(
         R_corr=_head("correctness"),
         R_meta=_head("meta_region_utility"),
         R_cal=_head("cal_region_reward"),
+        member_mask=(
+            np.asarray(_member, dtype=np.float32) if _member is not None else None
+        ),
         answer_mask=batch["dcpo_answer_mask"].to(device).float(),
         meta_content_mask=batch["dcpo_meta_content_mask"].to(device).float(),
         conf_mask=batch["dcpo_conf_mask"].to(device).float(),

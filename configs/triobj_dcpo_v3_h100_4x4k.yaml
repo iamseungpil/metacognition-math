@@ -48,10 +48,12 @@ algorithm:
   # meta_emission is OBSERVABILITY-ONLY (weight 0.0): boot validation requires these
   # lists to match len(funcs); advantage routing reads the 3 region heads BY NAME
   # (verl_sdc_utils._compute_dcpo_region_advantage), so that key never routes.
-  # format_penalty (w 0.1) is the 4th ROUTED head: -1 for an unclosed-meta DRIFT
-  # block (open, no close, </think> after the open), routed ONLY onto the
-  # FORMAT_VIOLATION token mask. THREE-WAY SYNC RULE (two prior crashes): these
-  # two lists ↔ REWARD_CONFIGS['TRIOBJ_DCPO_V3'] ↔ _populate_dcpo_region_keys.
+  # format_penalty (w 0.1) is the 4th ROUTED head — v3k three-tier values:
+  # +1 wellformed (onto the FORMAT_OK closer) / -1 drift+discard (onto
+  # FORMAT_VIOLATION: drift = the double-duty </think> token, discard = every
+  # garbage delimiter) / 0 replaced+truncation+no_meta. FIVE-WAY SYNC RULE
+  # (three prior crashes): these two lists ↔ REWARD_CONFIGS['TRIOBJ_DCPO_V3']
+  # ↔ populator+sync-__call__ writes ↔ compose params ↔ mask-stack key sets.
   gdpo_reward_keys: [correctness, meta_region_utility, cal_region_reward, meta_emission, format_penalty]
   gdpo_reward_weights: [1.0, 0.5, 0.3, 0.0, 0.1]
   # ── DCPO routing knobs (KEEP — region routing unchanged from v2) ──────────
@@ -67,6 +69,15 @@ algorithm:
   # (logit_bias); cf_correct (c_without) is graded and consumed by R_meta = c_with - c_without.
   sdc_counterfactual: true
   dcpo_meta_open: 151669      # <|meta|> token id (cut point + suppression target)
+  # ── v3k tier-1 format-token REPLACEMENT (three-tier spec 2026-06-10) ───────
+  # Inside the CF wrap (post-generation, PRE-old_log_prob) each rollout is
+  # classified by classify_dcpo_format; the 1:1-fixable classes (swapped /
+  # dup_open / reversed, ~30% of rollouts) get a SAME-LENGTH token-id
+  # substitution written into responses + the input_ids tail, so verl's actor
+  # pass recomputes old_log_prob on the corrected ids (STaR-style token-local
+  # correction). false -> no replacement; tier-1 rows demote to tier-2 discard
+  # at the populator (all heads zeroed, -1 on the garbage delimiters).
+  dcpo_format_replace: true
   # DROPPED from v2 (no longer used by R_meta; left here as comments for audit):
   #   dcpo_eps / dcpo_eps_right_right / dcpo_p_lo / dcpo_p_hi  (warrant gate removed)
   #   dcpo_warmup_steps / dcpo_format_credit / dcpo_format_penalty (format/transition removed)

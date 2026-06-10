@@ -109,6 +109,9 @@ class FakeGenOutput:
             self.batch["attention_mask"] = attention_mask
         if response_mask is not None:
             self.batch["response_mask"] = response_mask
+        # batch-level non_tensor_batch (DataProto contract): the v3k fmt
+        # classify/replace stash + the CF fmt-gate read/write it.
+        self.non_tensor_batch = {}
         self._gts = ground_truths or [""] * len(prompts)
 
     def __len__(self):
@@ -242,9 +245,11 @@ def test_call_engine_builds_cf_batch_and_calls_same_generate():
     assert list(cfb.non_tensor_batch["prefix_ids"][0]) == [1, 2, 3]
     assert list(cfb.non_tensor_batch["prefix_ids"][1]) == [4, 5]
     assert list(cfb.non_tensor_batch["prefix_ids"][2]) == [1, 2, 3]
-    # logit_bias suppresses meta_open with -100.0, per row
-    assert cfb.non_tensor_batch["cf_logit_bias"][0] == {META_OPEN: -100.0}
-    assert cfb.non_tensor_batch["cf_logit_bias"][1] == {META_OPEN: -100.0}
+    # logit_bias suppresses BOTH meta tag ids with -100.0, per row (CF leak fix:
+    # swapped/reversed classes open meta content without 151669, so the closer
+    # 151670 must be banned too; </think> stays allowed).
+    assert cfb.non_tensor_batch["cf_logit_bias"][0] == {META_OPEN: -100.0, META_OPEN + 1: -100.0}
+    assert cfb.non_tensor_batch["cf_logit_bias"][1] == {META_OPEN: -100.0, META_OPEN + 1: -100.0}
     # raw_prompt carried through (REQUIRED by _agent_loop_postprocess); padded row repeats pA.
     assert list(cfb.non_tensor_batch["raw_prompt"]) == ["pA", "pC", "pA"]
     # meta_info forced to train path, global_steps preserved
@@ -329,11 +334,14 @@ def test_texts_crash_safe_all_none_on_engine_raise():
 def test_texts_placed_at_active_rows():
     # Texts from the engine map back to their ORIGINAL row slots; skipped row stays
     # None; empty/whitespace text becomes None. No grading happens here (BUG-1).
+    # v3k: rows must be CLOSED (wellformed) — an open-never-closed row is now a
+    # `truncation` class and the fmt gate correctly skips its CF.
+    _CLOSE = 151670
     prompts = torch.tensor([[1, 1], [2, 2], [3, 3]])
     responses = torch.tensor([
-        [5, META_OPEN, 0],
+        [5, META_OPEN, _CLOSE],
         [1, 2, 3],          # no meta → skip
-        [6, META_OPEN, 0],
+        [6, META_OPEN, _CLOSE],
     ])
     go = FakeGenOutput(prompts, responses, ground_truths=["AAA", "x", "BBB"])
     gb = FakeGenBatch(["p0", "p1", "p2"])
@@ -355,14 +363,15 @@ def test_texts_placed_at_active_rows():
 
 
 def test_texts_skip_unclosed_meta_rows():
-    # FORMAT-GATE skip: a row whose meta block is UNCLOSED (<|meta|> with no
-    # <|/meta|>) has R_meta forced to 0 by the dcpo_region_rewards gate, so the
-    # producer must NOT spend a 2nd generation on it — the slot stays None and
-    # the row is dropped from `active` BEFORE the engine call.
+    # FORMAT-GATE skip (v3k: class-based via classify_dcpo_format): row 0 opens
+    # <|meta|> and never closes with NO </think> after → class `truncation` →
+    # R_meta stays gated, so the producer must NOT spend a 2nd generation on it
+    # — the slot stays None and the row is dropped from `active` BEFORE the
+    # engine call. Row 1 is wellformed → CF runs.
     META_CLOSE = 151670
 
     class MetaAwareTokenizer:
-        """decode surfaces the real tag strings so the cheap text check fires."""
+        """decode surfaces the real tag strings (signature check input)."""
         SURF = {META_OPEN: "<|meta|>", META_CLOSE: "<|/meta|>"}
 
         def decode(self, ids, skip_special_tokens=True):
@@ -413,3 +422,182 @@ def test_cf_agent_module_imports_and_logit_bias_injection():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# v3k TIER-1 FORMAT REPLACEMENT — _dcpo_format_classify_and_replace
+# (spec §6-2a / §1-V2 / §8: tensor coherence on responses + input_ids tail)
+# ═══════════════════════════════════════════════════════════════════════════
+META_CLOSE_ID = 151670
+THINK_CLOSE_ID = 151668
+SIG_ID = 9001  # decodes to a signature line ("confidence: ...")
+
+
+class SigTokenizer:
+    """Vocab decode with a real meta-content signature line for SIG_ID."""
+    SURF = {META_OPEN: "<|meta|>", META_CLOSE_ID: "<|/meta|>",
+            THINK_CLOSE_ID: "</think>", SIG_ID: "\nconfidence: 0.8\n"}
+
+    def decode(self, ids, skip_special_tokens=True):
+        return "".join(self.SURF.get(int(t), f" t{int(t)} ") for t in ids)
+
+
+def _mk_replace_trainer():
+    t = types.SimpleNamespace()
+    t.tokenizer = SigTokenizer()
+    t.config = types.SimpleNamespace(
+        algorithm=types.SimpleNamespace(dcpo_meta_open=META_OPEN))
+    cls = V.SDCRayPPOTrainer
+    for name in ("_dcpo_format_classify_and_replace", "_dcpo_cf_generate_texts",
+                 "_dcpo_cf_build_prefixes"):
+        setattr(t, name, getattr(cls, name).__get__(t))
+    return t
+
+
+def _fake_batch_with_input_ids(prompts, responses):
+    """gen_output whose batch carries the FULL tensor set the design names:
+    responses + prompts + attention_mask + input_ids (= prompt ⧺ response)."""
+    go = FakeGenOutput(prompts, responses)
+    go.batch["input_ids"] = torch.cat([prompts, responses], dim=-1)
+    go.batch["attention_mask"] = torch.ones(
+        prompts.shape[0], prompts.shape[1] + responses.shape[1], dtype=torch.long)
+    return go
+
+
+def test_replace_writes_responses_and_input_ids_coherently():
+    # row0 SWAPPED (</think> sig <|/meta|>) → one substitution at pos 1;
+    # row1 wellformed → untouched; row2 no_meta → untouched.
+    prompts = torch.tensor([[11, 12], [11, 12], [11, 12]])
+    responses = torch.tensor([
+        [5, THINK_CLOSE_ID, SIG_ID, META_CLOSE_ID, 7],
+        [5, META_OPEN, SIG_ID, META_CLOSE_ID, 7],
+        [5, 6, 7, 8, 7],
+    ])
+    go = _fake_batch_with_input_ids(prompts, responses)
+    t = _mk_replace_trainer()
+    attn_before = go.batch["attention_mask"].clone()
+    T_before = go.batch["responses"].shape
+    t._dcpo_format_classify_and_replace(go)
+    # responses AND the input_ids tail both carry the corrected opener.
+    assert int(go.batch["responses"][0, 1]) == META_OPEN
+    assert int(go.batch["input_ids"][0, 2 + 1]) == META_OPEN   # prompt_len=2
+    # full-tensor coherence: tail of input_ids == responses, row by row.
+    assert torch.equal(go.batch["input_ids"][:, 2:], go.batch["responses"])
+    # same-length invariant: no re-pad, no position shift, masks untouched.
+    assert go.batch["responses"].shape == T_before
+    assert torch.equal(go.batch["attention_mask"], attn_before)
+    # untouched rows byte-identical.
+    assert torch.equal(go.batch["responses"][1], responses[1])
+    assert torch.equal(go.batch["responses"][2], responses[2])
+    # stash: classes (original ids), replaced flags, plans.
+    assert list(go.non_tensor_batch["dcpo_fmt_class"]) == [
+        "swapped", "wellformed", "no_meta"]
+    assert list(go.non_tensor_batch["dcpo_fmt_replaced"]) == [1.0, 0.0, 0.0]
+    assert go.non_tensor_batch["dcpo_fmt_replace_plan"][0] == [
+        (1, THINK_CLOSE_ID, META_OPEN)]
+    assert go.non_tensor_batch["dcpo_fmt_replace_plan"][1] == []
+
+
+def test_replace_reversed_two_substitutions():
+    prompts = torch.tensor([[11]])
+    responses = torch.tensor([[META_CLOSE_ID, SIG_ID, META_OPEN, THINK_CLOSE_ID, 7]])
+    go = _fake_batch_with_input_ids(prompts, responses)
+    t = _mk_replace_trainer()
+    t._dcpo_format_classify_and_replace(go)
+    assert list(go.non_tensor_batch["dcpo_fmt_class"]) == ["reversed"]
+    assert int(go.batch["responses"][0, 0]) == META_OPEN
+    assert int(go.batch["responses"][0, 2]) == META_CLOSE_ID
+    assert torch.equal(go.batch["input_ids"][:, 1:], go.batch["responses"])
+
+
+def test_replace_coherence_fail_leaves_row_unreplaced():
+    # input_ids tail does NOT match responses at the plan position → the §8
+    # coherence guard refuses the write; row stays unreplaced (replaced=0) and
+    # the populator will demote it to discard.
+    prompts = torch.tensor([[11]])
+    responses = torch.tensor([[5, THINK_CLOSE_ID, SIG_ID, META_CLOSE_ID, 7]])
+    go = _fake_batch_with_input_ids(prompts, responses)
+    go.batch["input_ids"][0, 1 + 1] = 12345        # corrupt the tail copy
+    t = _mk_replace_trainer()
+    t._dcpo_format_classify_and_replace(go)
+    assert int(go.batch["responses"][0, 1]) == THINK_CLOSE_ID   # NOT mutated
+    assert list(go.non_tensor_batch["dcpo_fmt_replaced"]) == [0.0]
+    assert go.non_tensor_batch["dcpo_fmt_replace_plan"][0] == []
+    assert list(go.non_tensor_batch["dcpo_fmt_class"]) == ["swapped"]
+
+
+def test_replace_aborts_when_engine_logprobs_present():
+    # §8 hard abort: pre-existing rollout log-probs would go stale under token
+    # replacement → NO row is replaced (classes still stashed for diagnostics).
+    prompts = torch.tensor([[11]])
+    responses = torch.tensor([[5, THINK_CLOSE_ID, SIG_ID, META_CLOSE_ID, 7]])
+    go = _fake_batch_with_input_ids(prompts, responses)
+    go.batch["rollout_log_probs"] = torch.zeros(1, 5)
+    t = _mk_replace_trainer()
+    t._dcpo_format_classify_and_replace(go)
+    assert int(go.batch["responses"][0, 1]) == THINK_CLOSE_ID   # untouched
+    assert list(go.non_tensor_batch["dcpo_fmt_replaced"]) == [0.0]
+    assert list(go.non_tensor_batch["dcpo_fmt_class"]) == ["swapped"]
+
+
+def test_replace_works_without_input_ids_key():
+    # input_ids is read defensively (.get) — absent key: responses-only write.
+    prompts = torch.tensor([[11]])
+    responses = torch.tensor([[5, META_OPEN, SIG_ID, META_OPEN, THINK_CLOSE_ID]])
+    go = FakeGenOutput(prompts, responses)   # NO input_ids
+    t = _mk_replace_trainer()
+    t._dcpo_format_classify_and_replace(go)
+    assert list(go.non_tensor_batch["dcpo_fmt_class"]) == ["dup_open"]
+    assert int(go.batch["responses"][0, 3]) == META_CLOSE_ID
+    assert list(go.non_tensor_batch["dcpo_fmt_replaced"]) == [1.0]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# v3k CF fmt-gate — drift RUNS the CF; truncation/discard/unreplaced-tier1 skip
+# ═══════════════════════════════════════════════════════════════════════════
+def test_texts_fmt_gate_drift_runs_truncation_skips():
+    prompts = torch.tensor([[1, 1], [2, 2], [3, 3]])
+    responses = torch.tensor([
+        [META_OPEN, SIG_ID, THINK_CLOSE_ID, 7, 8],          # drift → CF RUNS
+        [META_OPEN, SIG_ID, 5, 6, 7],                       # truncation → skip
+        [META_OPEN, SIG_ID, META_CLOSE_ID, THINK_CLOSE_ID, 7],  # wellformed → runs
+    ])
+    go = FakeGenOutput(prompts, responses, ground_truths=["A", "B", "C"])
+    gb = FakeGenBatch(["p0", "p1", "p2"])
+    t = _mk_replace_trainer()
+    t._dcpo_cf = True
+
+    def fake_call(gen_batch, prefix_ids, active, meta_open):
+        assert active == [0, 2]      # drift IN, truncation OUT
+        return ["cf drift", "cf well"]
+
+    t._dcpo_cf_call_engine = fake_call
+    skip = [False, False, False]
+    prefix_ids = [[1, 1], [2, 2], [3, 3]]
+    out = t._dcpo_cf_generate_texts(gb, go, prefix_ids, skip, META_OPEN)
+    assert out == ["cf drift", None, "cf well"]
+
+
+def test_texts_fmt_gate_uses_stash_and_skips_unreplaced_tier1():
+    # With the wrap stash present the gate trusts it (no re-classify): an
+    # UNREPLACED tier-1 row (replaced=0) is skipped (it will be demoted to
+    # discard at the populator); a REPLACED one runs.
+    prompts = torch.tensor([[1, 1], [2, 2]])
+    responses = torch.tensor([
+        [META_OPEN, SIG_ID, META_CLOSE_ID, 7, 8],   # replaced swapped (already fixed)
+        [5, THINK_CLOSE_ID, SIG_ID, META_CLOSE_ID, 7],  # unreplaced swapped
+    ])
+    go = FakeGenOutput(prompts, responses, ground_truths=["A", "B"])
+    go.non_tensor_batch["dcpo_fmt_class"] = np.array(["swapped", "swapped"], dtype=object)
+    go.non_tensor_batch["dcpo_fmt_replaced"] = np.array([1.0, 0.0], dtype=np.float32)
+    gb = FakeGenBatch(["p0", "p1"])
+    t = _mk_replace_trainer()
+    t._dcpo_cf = True
+
+    def fake_call(gen_batch, prefix_ids, active, meta_open):
+        assert active == [0]         # replaced row runs; unreplaced tier-1 skipped
+        return ["cf replaced"]
+
+    t._dcpo_cf_call_engine = fake_call
+    out = t._dcpo_cf_generate_texts(gb, go, [[1, 1], [2, 2]], [False, False], META_OPEN)
+    assert out == ["cf replaced", None]

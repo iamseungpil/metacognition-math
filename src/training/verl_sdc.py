@@ -63,6 +63,7 @@ from src.training.meta_revision_rewards import meta_revision_utility_reward
 # import/head/mode changes.
 from src.training.dcpo_region import (
     build_dcpo_region_masks,
+    classify_dcpo_format,
     dcpo_region_rewards,
     first_meta_token_index,
     cf_answer_from_prefix,
@@ -89,7 +90,7 @@ _DCPO_HEAD_STASH: dict = {"R_corr": None, "R_meta": None, "R_cal": None,
 
 def _compute_dcpo_heads_stash(
     completions, ground_truth, group_index, step, config,
-    cf_completions=None, cf_correct=None, gate_unclosed=True,
+    cf_completions=None, cf_correct=None, gate_unclosed=True, fmt_class=None,
 ):
     algo = getattr(config, "algorithm", None) if config is not None else None
     # Robust knob read (OmegaConf DictConfig supports .get; plain object uses getattr).
@@ -112,6 +113,7 @@ def _compute_dcpo_heads_stash(
         cf_completions=cf_completions,   # v3: regenerated counterfactual texts (or None)
         cf_correct=cf_correct,           # v3: pre-graded CF correctness (producer) or None
         gate_unclosed=gate_unclosed,     # v3-only unclosed gate/penalty (v2 byte-identical)
+        fmt_class=fmt_class,             # v3k: per-row parser classes (three-tier routing)
     )
     _DCPO_HEAD_STASH.update(out)
     return out
@@ -153,9 +155,21 @@ def _populate_dcpo_region_keys(data) -> None:
     response_length = data.batch["responses"].shape[-1]
     prompt_length = data.batch["prompts"].shape[-1]
 
+    # v3k three-tier fmt machinery (parser-driven, spec §6-3). The CF wrap
+    # stashes dcpo_fmt_replaced (0/1 per row) when token replacement ran; if
+    # absent (replace knob off / wrap not installed) every row classifies HERE
+    # with tier1_to_discard=True — replacement at this advantage-stage site is
+    # TOO LATE (old_log_prob already computed), so unreplaced tier-1 rows are
+    # conservatively demoted to discard (never half-replaced, spec risk 7).
+    # Effective class per row: the ORIGINAL stashed class for replaced rows
+    # (tier-1 names = "replaced" semantics downstream), else the parser class.
+    _fmt_cls_stash = data.non_tensor_batch.get("dcpo_fmt_class", None) if _is_v3 else None
+    _fmt_rep_stash = data.non_tensor_batch.get("dcpo_fmt_replaced", None) if _is_v3 else None
+    _fmt_classes: list = []
+
     decoded_responses: list[str] = []
     ground_truths: list[str] = []
-    dcpo_ans, dcpo_meta_c, dcpo_conf, dcpo_fmt = [], [], [], []
+    dcpo_ans, dcpo_meta_c, dcpo_conf, dcpo_fmt, dcpo_fmt_ok = [], [], [], [], []
     for i in range(bs):
         item = data[i]
         text, response_ids = _decode_response(
@@ -174,7 +188,25 @@ def _populate_dcpo_region_keys(data) -> None:
         _rids = response_ids.tolist()
         _rmask = [True] * len(_rids)
         _decode = lambda ids: tokenizer.decode(ids, skip_special_tokens=False)
-        rmasks = build_dcpo_region_masks(_rids, _rmask, _decode, clamp_unclosed=_is_v3)
+        if _is_v3:
+            # v3k: ONE parser call drives masks + rewards + diagnostics. A
+            # replaced row's ids are ALREADY the corrected (wellformed) ids —
+            # the CF wrap mutated `responses` before old_log_prob — so the
+            # parser naturally yields the wellformed regions for it.
+            _rep = bool(
+                _fmt_rep_stash is not None
+                and i < len(_fmt_rep_stash)
+                and float(_fmt_rep_stash[i]) > 0.5
+            )
+            _fmt = classify_dcpo_format(_rids, _rmask, _decode, tier1_to_discard=not _rep)
+            if _rep and _fmt_cls_stash is not None and i < len(_fmt_cls_stash):
+                _fmt_classes.append(str(_fmt_cls_stash[i]))  # original tier-1 name
+            else:
+                _fmt_classes.append(_fmt["fmt_class"])
+            rmasks = build_dcpo_region_masks(
+                _rids, _rmask, _decode, clamp_unclosed=True, fmt=_fmt, fmt_replaced=_rep)
+        else:
+            rmasks = build_dcpo_region_masks(_rids, _rmask, _decode, clamp_unclosed=False)
 
         def _pad_bool(arr) -> torch.Tensor:
             out = torch.zeros(response_length, dtype=torch.float32)
@@ -187,16 +219,20 @@ def _populate_dcpo_region_keys(data) -> None:
         dcpo_meta_c.append(_pad_bool(rmasks["META_CONTENT"]))
         dcpo_conf.append(_pad_bool(rmasks["CONF"]))
         dcpo_fmt.append(_pad_bool(rmasks["FORMAT_VIOLATION"]))
+        dcpo_fmt_ok.append(_pad_bool(rmasks["FORMAT_OK"]))
 
     data.batch["dcpo_answer_mask"] = torch.stack(dcpo_ans, dim=0)
     data.batch["dcpo_meta_content_mask"] = torch.stack(dcpo_meta_c, dim=0)
     data.batch["dcpo_conf_mask"] = torch.stack(dcpo_conf, dim=0)
-    # 4th routed head's token span: the drift-clamped block (zeros for closed /
-    # truncated / no-meta rows). Consumed by _compute_dcpo_region_advantage —
-    # v3-ONLY: _compute_dcpo_region_advantage activates the head on key
-    # PRESENCE, so stacking this for v2 would silently arm it (review finding).
+    # 4th routed head's token spans: FORMAT_VIOLATION (-side: drift </think> /
+    # discard garbage) + FORMAT_OK (+side: wellformed closers, v3k two-sided
+    # signal). Consumed by _compute_dcpo_region_advantage — v3-ONLY: it
+    # activates the head on key PRESENCE, so stacking these for v2 would
+    # silently arm it (review finding). FIVE-WAY SYNC #5: the two sync
+    # __call__ DCPO blocks must stack the SAME v3 mask key set.
     if _is_v3:
         data.batch["dcpo_format_violation_mask"] = torch.stack(dcpo_fmt, dim=0)
+        data.batch["dcpo_format_ok_mask"] = torch.stack(dcpo_fmt_ok, dim=0)
 
     completions = [[{"content": t}] for t in decoded_responses]
     _uid = data.non_tensor_batch.get("uid", None)
@@ -220,7 +256,14 @@ def _populate_dcpo_region_keys(data) -> None:
         completions, ground_truths, _uid, _step, _config,
         cf_completions=_cf_texts,
         gate_unclosed=_is_v3,   # v2 byte-identical: no unclosed gate/penalty
+        fmt_class=(_fmt_classes if _is_v3 else None),  # v3k three-tier routing
     )
+
+    # v3k §8 runtime DCPO_DBG check (validates Assumption A1 on live steps):
+    # replacement survived fit()'s union + old_log_probs exist & are finite at
+    # the replaced positions. Warn-level oldlp-consistency heuristic inside.
+    if _is_v3:
+        _dcpo_fmt_replace_runtime_check(data, _step)
 
     # AUTHORITATIVE group-aware GDPO reward keys (overwrite any async placeholder).
     # R_corr -> 'correctness', R_meta -> 'meta_region_utility', R_cal -> 'cal_region_reward'.
@@ -244,6 +287,19 @@ def _populate_dcpo_region_keys(data) -> None:
     if _is_v3:
         data.non_tensor_batch["format_penalty"] = np.asarray(
             _heads.get("format_penalty", [0.0] * bs), dtype=np.float32)
+        # v3k tier-2 exclusion membership (spec §10 risk 2, CLOSED): 0.0 =
+        # discard row. _compute_dcpo_region_advantage threads this to compose
+        # as member_mask so the forced-0 R_corr/R_meta/R_cal scalars stay OUT
+        # of sibling group means (one discard in an all-correct group of n
+        # would otherwise hand every sibling a spurious +1/n at w_corr where
+        # exclusion gives the correct no-gradient 0). The row itself is
+        # unaffected (its region masks are all-zero); the FORMAT head keeps
+        # every row on purpose — discard's -1 vs wellformed's +1 IS the signal.
+        # NOT a gdpo_reward_key (diagnostic-style batch key, like dcpo_phat),
+        # so the FIVE-WAY SYNC key/weight lists are untouched.
+        data.non_tensor_batch["dcpo_head_member"] = np.asarray(
+            [0.0 if c == "discard" else 1.0 for c in _fmt_classes],
+            dtype=np.float32)
 
     # Diagnostics (wandb) — same as the synchronous __call__ block.
     data.non_tensor_batch["dcpo_phat"] = np.asarray(_heads["p_hat"], dtype=np.float32)
@@ -268,6 +324,77 @@ def _populate_dcpo_region_keys(data) -> None:
     _log_dcpo_trend_scalars(step=_step, heads=_heads, cf_texts=_cf_texts)
 
 
+# v3k §8 state: the populator-side old_log_prob consistency check runs on the
+# FIRST step that carries replacements, then every N=50 steps (cheap but not free).
+_DCPO_FMT_DBG_STATE = {"first_done": False}
+
+
+def _dcpo_fmt_replace_runtime_check(data, step, every: int = 50):
+    """v3k §8 runtime assertions at the ADVANTAGE stage (old_log_probs in batch).
+
+    Validates Assumption A1 (verl recomputes old_log_prob on the tensors the CF
+    wrap mutated — verl source absent locally, so this is checked AT RUNTIME):
+      1. every recorded replacement survived fit()'s union:
+         data.batch['responses'][row, pos] == new_id (HARD assert);
+      2. old_log_probs[row, pos] is finite (HARD assert);
+      3. heuristic (warn-only): the corrected tag was NOT sampled by the policy,
+         so its old_log_prob should sit well below the sampled-token mean —
+         if replaced_oldlp_mean > sampled_oldlp_mean - 0.5, print a LOUD
+         [DCPO_DBG] OLD-LOGPROB-CONSISTENCY SUSPECT warning.
+    Logs dcpo/replaced_oldlp_mean + dcpo/sampled_oldlp_mean. Never raises out
+    (assertion failures print loudly + re-raise: silent stale-ratio training is
+    the one failure mode this exists to prevent).
+    """
+    plans = data.non_tensor_batch.get("dcpo_fmt_replace_plan", None)
+    if plans is None:
+        return
+    has_repl = any(len(p or []) > 0 for p in list(plans))
+    if not has_repl:
+        return
+    if _DCPO_FMT_DBG_STATE["first_done"] and int(step) % every != 0:
+        return
+    _DCPO_FMT_DBG_STATE["first_done"] = True
+    resp = data.batch["responses"]
+    old_lp = data.batch.get("old_log_probs", None)
+    repl_lps = []
+    for row, plan in enumerate(list(plans)):
+        for (pos, _old_id, new_id) in (plan or []):
+            got = int(resp[row, pos])
+            assert got == int(new_id), (
+                f"[DCPO_DBG] REPLACEMENT LOST IN UNION: responses[{row},{pos}]="
+                f"{got} != replaced id {int(new_id)} — the actor forward saw "
+                f"different ids than the advantage stage (Assumption A1 broken)."
+            )
+            if old_lp is not None:
+                lp = float(old_lp[row, pos])
+                assert lp == lp and abs(lp) != float("inf"), (
+                    f"[DCPO_DBG] old_log_probs[{row},{pos}]={lp} not finite at a "
+                    f"replaced position."
+                )
+                repl_lps.append(lp)
+    if old_lp is None or not repl_lps:
+        return
+    try:
+        _rm = data.batch["attention_mask"][:, data.batch["prompts"].shape[-1]:]
+        _rm = _rm[:, : old_lp.shape[-1]].bool()
+        sampled_mean = float(old_lp[_rm].float().mean())
+        replaced_mean = float(np.mean(repl_lps))
+        if replaced_mean > sampled_mean - 0.5:
+            print(
+                f"[DCPO_DBG] OLD-LOGPROB-CONSISTENCY SUSPECT: replaced_oldlp_mean="
+                f"{replaced_mean:.3f} vs sampled_oldlp_mean={sampled_mean:.3f} — "
+                f"replaced (unsampled) tags should score well below sampled tokens; "
+                f"check that the engine is NOT reusing rollout log-probs.", flush=True)
+        import wandb
+        if wandb.run is not None:
+            wandb.log({"dcpo/replaced_oldlp_mean": replaced_mean,
+                       "dcpo/sampled_oldlp_mean": sampled_mean}, step=int(step))
+    except AssertionError:
+        raise
+    except Exception as _e:  # pragma: no cover — diagnostics never kill training
+        print(f"[DCPO_DBG] oldlp-consistency scalar skipped: {_e}", flush=True)
+
+
 def _log_dcpo_trend_scalars(*, step, heads, cf_texts):
     """Per-step intent-trend scalars under 'dcpo/' (crash-proof, never raises).
 
@@ -280,8 +407,13 @@ def _log_dcpo_trend_scalars(*, step, heads, cf_texts):
     dcpo/acc_without           batch accuracy of graded counterfactuals (c_without mean)
                                -> acc_with - acc_without = the batch-level CAUSAL effect of meta
     dcpo/cw_graded_rate        fraction of rows with a graded c_without (non-NaN)
-    dcpo/meta_unclosed_rate    fraction with an UNCLOSED meta (R_meta gated; live run saw 40%)
-    dcpo/format_penalty_rate   fraction with format_penalty < 0 (DRIFT rows — the trainable habit)
+    dcpo/meta_unclosed_rate    fraction with an UNCLOSED meta (continuity: textual unclosed = drift+truncation)
+    dcpo/format_penalty_rate   fraction with format_penalty < 0 (v3k: drift + discard rows)
+    v3k three-tier class rates (fmt_class present in the stash only under V3):
+    dcpo/replaced_rate         tier-1 token-replaced rows (swapped/dup_open/reversed)
+    dcpo/discard_rate          tier-2 rows (all heads zeroed, -1 on garbage delimiters)
+    dcpo/drift_rate            tier-3 rows (recovered span plays R_meta, -1 on </think>)
+    dcpo/wellformed_rate       originally-wellformed rows (+1 on the closer)
     """
     import os as _os
     if _os.environ.get("DCPO_WANDB_ROLLOUTS", "1") != "1":
@@ -318,6 +450,15 @@ def _log_dcpo_trend_scalars(*, step, heads, cf_texts):
                 sum(1 for v in heads.get("format_penalty", []) if float(v) < 0.0) / B
             ),
         }
+        # v3k class-rate scalars (heads["fmt_class"] is None pre-k / v2).
+        fc = heads.get("fmt_class", None)
+        if fc:
+            _tier1 = ("swapped", "dup_open", "reversed")
+            Bf = max(1, len(fc))
+            scal["dcpo/replaced_rate"] = sum(1 for c in fc if c in _tier1) / Bf
+            scal["dcpo/discard_rate"] = sum(1 for c in fc if c == "discard") / Bf
+            scal["dcpo/drift_rate"] = sum(1 for c in fc if c == "drift") / Bf
+            scal["dcpo/wellformed_rate"] = sum(1 for c in fc if c == "wellformed") / Bf
         wandb.log(scal, step=int(step))
     except Exception as _e:  # pragma: no cover — observability never kills training
         print(f"[DCPO] trend-scalar log skipped: {type(_e).__name__}: {_e}", flush=True)
@@ -347,12 +488,15 @@ def _log_dcpo_rollout_table(*, step, uid, completions, ground_truths, cf_texts, 
         from src.training.rewards import _get_text as _gt_text
         cols = ["step", "row", "group", "gt", "answer", "c_with", "c_without",
                 "R_corr", "R_meta", "R_cal", "conf", "has_meta", "unclosed",
-                "main_tail", "cf_tail"]
+                "fmt_class", "replaced", "main_tail", "cf_tail"]
         table = wandb.Table(columns=cols)
         _unc = heads.get("meta_unclosed", None)  # .get-guarded (older stashes)
+        _fc = heads.get("fmt_class", None)       # v3k class column (None pre-k / v2)
+        _tier1 = ("swapped", "dup_open", "reversed")
         for i in range(B):
             main = _gt_text(completions[i]) or ""
             cf = (cf_texts[i] if (cf_texts is not None and i < len(cf_texts)) else None) or ""
+            _fci = str(_fc[i]) if (_fc is not None and i < len(_fc)) else ""
             table.add_data(
                 int(step), i, str(_uid_l[i] if i < len(_uid_l) else i),
                 str(ground_truths[i])[:80], str(heads["answer"][i])[:80],
@@ -360,6 +504,9 @@ def _log_dcpo_rollout_table(*, step, uid, completions, ground_truths, cf_texts, 
                 float(heads["R_corr"][i]), float(heads["R_meta"][i]), float(heads["R_cal"][i]),
                 float(heads["conf"][i]), bool(heads["has_meta"][i]),
                 bool(float(_unc[i]) > 0.5) if (_unc is not None and i < len(_unc)) else False,
+                # fmt_class keeps the ORIGINAL tier-1 name for replaced rows;
+                # `replaced` flags them (tier-1 names appear ONLY when replaced).
+                _fci, _fci in _tier1,
                 main[-nchars:], cf[-(nchars // 2):],
             )
         # step-keyed log; runs BEFORE the tracker's metric commit for this step,
@@ -400,13 +547,23 @@ def meta_emission_reward(completions, ground_truth=None, **kwargs):
 
 def format_penalty_reward(completions, ground_truth=None, **kwargs):
     """FORMAT head (TRIOBJ_DCPO_V3, w 0.1; DeepSeek-R1-style separate format
-    reward): -1.0 iff the rollout opens a <|meta|> block, NEVER closes it, AND a
-    </think> appears after the last open — i.e. format DRIFT (the model abandoned
-    the tag mid-stream but kept generating). Text-level mirror of the mask-level
-    meta_drift in build_dcpo_region_masks; routed onto the FORMAT_VIOLATION token
-    span by compose_dcpo_region_advantage. TRUE TRUNCATION (no </think> after the
-    open — cut at max length) scores 0.0: that is a length problem, not a format
-    habit, so it carries no penalty. Closed blocks / no-meta rollouts -> 0.0."""
+    reward). STASH-FIRST (v3k five-way sync): when the per-batch DCPO head
+    pre-pass ran (it always does on the region-routed paths, right before the
+    reward-func loop), this returns the stashed per-class values — +1 wellformed
+    / -1 drift+discard / 0 replaced+truncation+no_meta — so the sync __call__
+    paths write the SAME format_penalty the async populator writes (identical
+    gate/penalty/tier semantics both paths).
+
+    TEXT FALLBACK (stash absent/stale, e.g. a bare val call): -1.0 iff the
+    rollout opens a <|meta|> block, NEVER closes it, AND a </think> appears
+    after the last open — i.e. format DRIFT (the model abandoned the tag
+    mid-stream but kept generating). Text-level mirror of the mask-level
+    meta_drift in build_dcpo_region_masks. TRUE TRUNCATION (no </think> after
+    the open — cut at max length) scores 0.0: that is a length problem, not a
+    format habit. Closed blocks / no-meta rollouts -> 0.0."""
+    r = _DCPO_HEAD_STASH.get("format_penalty")
+    if r is not None and len(r) == len(completions):
+        return list(r)
     from src.training.rewards import _get_text as _gt
     out = []
     for c in completions:
@@ -788,14 +945,20 @@ REWARD_CONFIGS = {
         # per-benchmark emission rate. It IS listed (weight 0.0) in the config's
         # gdpo_reward_keys/weights (boot validation requires len==len(funcs));
         # advantage routing reads the 3 region heads BY NAME, so it never routes.
-        # format_penalty (w 0.1) is the 4th ROUTED head: -1 for an unclosed-meta
-        # DRIFT block (open, no close, </think> after), routed ONLY onto the
-        # FORMAT_VIOLATION token mask (compose_dcpo_region_advantage R_format).
-        # THREE-WAY SYNC RULE (two prior boot/step-1 crashes!): these lists, the
-        # yaml algorithm.gdpo_reward_keys/gdpo_reward_weights, and the
-        # _populate_dcpo_region_keys non_tensor_batch writes MUST stay in lockstep
-        # (tests: test_v3_yaml_reward_lists_match_reward_configs +
-        # test_populate_writes_every_gdpo_reward_key).
+        # format_penalty (w 0.1) is the 4th ROUTED head. v3k three-tier values:
+        # +1 wellformed (routed onto FORMAT_OK at the closer) / -1 drift+discard
+        # (routed onto FORMAT_VIOLATION) / 0 replaced+truncation+no_meta —
+        # compose_dcpo_region_advantage centers ONE head and routes it onto the
+        # per-row-disjoint FORMAT_OK ∪ FORMAT_VIOLATION union.
+        # FIVE-WAY SYNC RULE (three prior boot/step-1 crashes!): (1) these
+        # lists, (2) yaml algorithm.gdpo_reward_keys/gdpo_reward_weights,
+        # (3) the populator + both sync __call__ non_tensor/mask writes,
+        # (4) compose_dcpo_region_advantage ↔ _compute_dcpo_region_advantage
+        # params, (5) build_dcpo_region_masks output keys ↔ the three
+        # mask-stack sites MUST stay in lockstep (tests:
+        # test_v3_yaml_reward_lists_match_reward_configs,
+        # test_populate_writes_every_gdpo_reward_key,
+        # test_v3_mask_stack_sites_in_lockstep).
         "funcs": [correctness_region_reward, meta_region_utility_reward, cal_region_reward,
                   meta_emission_reward, format_penalty_reward],
         "weights": [1.0, 0.5, 0.3, 0.0, 0.1],
@@ -1766,7 +1929,14 @@ class MetaCotSDCRewardManager:
                 # pieces (clamp/gate, FORMAT_VIOLATION stack) are v3-only here
                 # too — mirror of _populate_dcpo_region_keys.
                 _pf_v3 = _mode_pf == "TRIOBJ_DCPO_V3"
-                _pf_ans, _pf_meta_c, _pf_conf, _pf_fmt = [], [], [], []
+                # v3k fmt machinery — EXACT mirror of _populate_dcpo_region_keys
+                # (five-way sync: identical gate/penalty/tier semantics both
+                # paths). Stash present = CF wrap replaced tier-1 tokens;
+                # absent = classify here with tier1_to_discard.
+                _pf_cls_stash = data.non_tensor_batch.get("dcpo_fmt_class", None) if _pf_v3 else None
+                _pf_rep_stash = data.non_tensor_batch.get("dcpo_fmt_replaced", None) if _pf_v3 else None
+                _pf_fmt_classes: list = []
+                _pf_ans, _pf_meta_c, _pf_conf, _pf_fmt, _pf_fmt_ok = [], [], [], [], []
                 for i in range(bs):
                     _item = data[i]
                     _attn = _item.batch["attention_mask"]
@@ -1774,7 +1944,22 @@ class MetaCotSDCRewardManager:
                     _rids = _item.batch["responses"][:_vlen].tolist()
                     _rmask = [True] * len(_rids)
                     _decode = lambda ids: self.tokenizer.decode(ids, skip_special_tokens=False)
-                    _rmasks = build_dcpo_region_masks(_rids, _rmask, _decode, clamp_unclosed=_pf_v3)
+                    if _pf_v3:
+                        _rep = bool(
+                            _pf_rep_stash is not None and i < len(_pf_rep_stash)
+                            and float(_pf_rep_stash[i]) > 0.5)
+                        _fmt = classify_dcpo_format(
+                            _rids, _rmask, _decode, tier1_to_discard=not _rep)
+                        if _rep and _pf_cls_stash is not None and i < len(_pf_cls_stash):
+                            _pf_fmt_classes.append(str(_pf_cls_stash[i]))
+                        else:
+                            _pf_fmt_classes.append(_fmt["fmt_class"])
+                        _rmasks = build_dcpo_region_masks(
+                            _rids, _rmask, _decode, clamp_unclosed=True,
+                            fmt=_fmt, fmt_replaced=_rep)
+                    else:
+                        _rmasks = build_dcpo_region_masks(
+                            _rids, _rmask, _decode, clamp_unclosed=False)
 
                     def _pf_pad_bool(arr) -> torch.Tensor:
                         out = torch.zeros(response_length, dtype=torch.float32)
@@ -1787,14 +1972,16 @@ class MetaCotSDCRewardManager:
                     _pf_meta_c.append(_pf_pad_bool(_rmasks["META_CONTENT"]))
                     _pf_conf.append(_pf_pad_bool(_rmasks["CONF"]))
                     _pf_fmt.append(_pf_pad_bool(_rmasks["FORMAT_VIOLATION"]))
+                    _pf_fmt_ok.append(_pf_pad_bool(_rmasks["FORMAT_OK"]))
                 data.batch["dcpo_answer_mask"] = torch.stack(_pf_ans, dim=0)
                 data.batch["dcpo_meta_content_mask"] = torch.stack(_pf_meta_c, dim=0)
                 data.batch["dcpo_conf_mask"] = torch.stack(_pf_conf, dim=0)
-                # 4th routed head's token span (drift-clamped block; mirror of
-                # _populate_dcpo_region_keys — the async/sync paths must agree).
-                # v3-ONLY: presence of this key arms the head downstream.
+                # 4th routed head's token spans (violation + v3k FORMAT_OK;
+                # mirror of _populate_dcpo_region_keys — the async/sync paths
+                # must agree). v3-ONLY: key presence arms the head downstream.
                 if _pf_v3:
                     data.batch["dcpo_format_violation_mask"] = torch.stack(_pf_fmt, dim=0)
+                    data.batch["dcpo_format_ok_mask"] = torch.stack(_pf_fmt_ok, dim=0)
 
                 _pf_uid = data.non_tensor_batch.get("uid", None)
                 _pf_trainer = _ACTIVE_SDC_CONTEXT.get("trainer", None)
@@ -1808,6 +1995,7 @@ class MetaCotSDCRewardManager:
                     completions, ground_truths, _pf_uid, _pf_step, self.config,
                     cf_completions=_pf_cf,
                     gate_unclosed=_pf_v3,   # v2 byte-identical: no gate/penalty
+                    fmt_class=(_pf_fmt_classes if _pf_v3 else None),  # v3k tiers
                 )
                 data.non_tensor_batch["dcpo_phat"] = np.asarray(_pf_heads["p_hat"], dtype=np.float32)
                 data.non_tensor_batch["dcpo_group_acc"] = np.asarray(_pf_heads["group_acc"], dtype=np.float32)
@@ -1919,7 +2107,12 @@ class MetaCotSDCRewardManager:
             # (clamp/gate, FORMAT_VIOLATION stack) are v3-only here too —
             # mirror of _populate_dcpo_region_keys.
             _is_v3 = _mode == "TRIOBJ_DCPO_V3"
-            dcpo_ans, dcpo_meta_c, dcpo_conf, dcpo_fmt = [], [], [], []
+            # v3k fmt machinery — EXACT mirror of _populate_dcpo_region_keys
+            # (five-way sync: identical gate/penalty/tier semantics both paths).
+            _sc_cls_stash = data.non_tensor_batch.get("dcpo_fmt_class", None) if _is_v3 else None
+            _sc_rep_stash = data.non_tensor_batch.get("dcpo_fmt_replaced", None) if _is_v3 else None
+            _sc_fmt_classes: list = []
+            dcpo_ans, dcpo_meta_c, dcpo_conf, dcpo_fmt, dcpo_fmt_ok = [], [], [], [], []
             for i in range(bs):
                 item = data[i]
                 _resp_ids = item.batch["responses"]
@@ -1928,7 +2121,22 @@ class MetaCotSDCRewardManager:
                 _rids = _resp_ids[: _vlen].tolist()
                 _rmask = [True] * len(_rids)
                 _decode = lambda ids: self.tokenizer.decode(ids, skip_special_tokens=False)
-                rmasks = build_dcpo_region_masks(_rids, _rmask, _decode, clamp_unclosed=_is_v3)
+                if _is_v3:
+                    _rep = bool(
+                        _sc_rep_stash is not None and i < len(_sc_rep_stash)
+                        and float(_sc_rep_stash[i]) > 0.5)
+                    _fmt = classify_dcpo_format(
+                        _rids, _rmask, _decode, tier1_to_discard=not _rep)
+                    if _rep and _sc_cls_stash is not None and i < len(_sc_cls_stash):
+                        _sc_fmt_classes.append(str(_sc_cls_stash[i]))
+                    else:
+                        _sc_fmt_classes.append(_fmt["fmt_class"])
+                    rmasks = build_dcpo_region_masks(
+                        _rids, _rmask, _decode, clamp_unclosed=True,
+                        fmt=_fmt, fmt_replaced=_rep)
+                else:
+                    rmasks = build_dcpo_region_masks(
+                        _rids, _rmask, _decode, clamp_unclosed=False)
 
                 def _pad_bool(arr) -> torch.Tensor:
                     out = torch.zeros(response_length, dtype=torch.float32)
@@ -1941,14 +2149,16 @@ class MetaCotSDCRewardManager:
                 dcpo_meta_c.append(_pad_bool(rmasks["META_CONTENT"]))
                 dcpo_conf.append(_pad_bool(rmasks["CONF"]))
                 dcpo_fmt.append(_pad_bool(rmasks["FORMAT_VIOLATION"]))
+                dcpo_fmt_ok.append(_pad_bool(rmasks["FORMAT_OK"]))
             data.batch["dcpo_answer_mask"] = torch.stack(dcpo_ans, dim=0)
             data.batch["dcpo_meta_content_mask"] = torch.stack(dcpo_meta_c, dim=0)
             data.batch["dcpo_conf_mask"] = torch.stack(dcpo_conf, dim=0)
-            # 4th routed head's token span (drift-clamped block; mirror of
-            # _populate_dcpo_region_keys — the async/sync paths must agree).
-            # v3-ONLY: presence of this key arms the head downstream.
+            # 4th routed head's token spans (violation + v3k FORMAT_OK; mirror
+            # of _populate_dcpo_region_keys — the async/sync paths must agree).
+            # v3-ONLY: presence of these keys arms the head downstream.
             if _is_v3:
                 data.batch["dcpo_format_violation_mask"] = torch.stack(dcpo_fmt, dim=0)
+                data.batch["dcpo_format_ok_mask"] = torch.stack(dcpo_fmt_ok, dim=0)
 
             _uid = data.non_tensor_batch.get("uid", None)
             _trainer = _ACTIVE_SDC_CONTEXT.get("trainer", None)
@@ -1962,6 +2172,7 @@ class MetaCotSDCRewardManager:
                 completions, ground_truths, _uid, _step, self.config,
                 cf_completions=_cf_texts,
                 gate_unclosed=_is_v3,   # v2 byte-identical: no gate/penalty
+                fmt_class=(_sc_fmt_classes if _is_v3 else None),  # v3k tiers
             )
             data.non_tensor_batch["dcpo_phat"] = np.asarray(_heads["p_hat"], dtype=np.float32)
             data.non_tensor_batch["dcpo_group_acc"] = np.asarray(_heads["group_acc"], dtype=np.float32)
@@ -2097,6 +2308,15 @@ class SDCRayPPOTrainer(RayPPOTrainer):
         # BEFORE sleep_replicas() (spec §3.3-§3.5).
         self._dcpo_cf = bool(getattr(_algo, "sdc_counterfactual", False))
         self._dcpo_cf_orig_generate = None
+        # v3k tier-1 token REPLACEMENT (yaml knob `dcpo_format_replace`, default
+        # TRUE) — effective ONLY under sdc_mode==TRIOBJ_DCPO_V3 (v2 and every
+        # other mode byte-identical: the gate below can never arm for them).
+        # Replacement happens inside the CF-wrap site (post-generation,
+        # pre-old_log_prob) so verl recomputes old_log_prob on the REPLACED ids.
+        self._dcpo_fmt_replace = (
+            _sdc_mode == "TRIOBJ_DCPO_V3"
+            and bool(getattr(_algo, "dcpo_format_replace", True))
+        )
         if self._bci_inject_conf:
             from .meta_inject import default_conf_bins
             _n = int(self.config.actor_rollout_ref.rollout.n)
@@ -2138,11 +2358,15 @@ class SDCRayPPOTrainer(RayPPOTrainer):
             print("[BCI-RLVR] generate_sequences wrap INSTALLED on async_rollout_manager.")
 
         # ─── TRIOBJ_DCPO_V3 counterfactual wrap (ADDITIVE, gated) ─────────────
-        # Install the CF 2nd-gen wrap ONLY under sdc_counterfactual. Wrapping the
-        # SAME bound generate_sequences (after any BCI wrap) keeps both additive:
-        # the CF wrap calls the (possibly BCI-wrapped) main gen, then regenerates
-        # the meta-suppressed counterfactual. Byte-identical when the flag is off.
-        if getattr(self, "_dcpo_cf", False):
+        # Install the CF 2nd-gen wrap under sdc_counterfactual OR the v3k tier-1
+        # replacement knob (belt-and-suspenders: replacement must still run at
+        # this post-generation/pre-old_log_prob site if CF were ever turned off;
+        # the live v3 yaml has both true). Wrapping the SAME bound
+        # generate_sequences (after any BCI wrap) keeps both additive: the CF
+        # wrap calls the (possibly BCI-wrapped) main gen, replaces tier-1 format
+        # tokens, then regenerates the meta-suppressed counterfactual.
+        # Byte-identical when both flags are off.
+        if getattr(self, "_dcpo_cf", False) or getattr(self, "_dcpo_fmt_replace", False):
             mgr = getattr(self, "async_rollout_manager", None)
             if mgr is None:
                 raise RuntimeError(
@@ -2223,9 +2447,24 @@ class SDCRayPPOTrainer(RayPPOTrainer):
         import numpy as _np
 
         gen_output = self._dcpo_cf_orig_generate(gen_batch)
-        # Validation passes the same generate_sequences but does not train; skip CF.
+        # Validation passes the same generate_sequences but does not train; skip
+        # both the v3k format replacement and the CF.
         if gen_batch.meta_info.get("validate", False):
             return gen_output
+        # ── v3k TIER-1 FORMAT REPLACEMENT (spec §6-2a) — runs FIRST: BEFORE the
+        # CF prefix cut (the corrected opener is the cut point) and BEFORE verl
+        # computes old_log_prob in its separate actor pass (Assumption A1), so
+        # ratios are consistent on the REPLACED ids. CRASH-SAFE: on failure the
+        # stash is absent and the populator demotes tier-1 rows to discard.
+        if bool(getattr(self, "_dcpo_fmt_replace", False)):
+            try:
+                self._dcpo_format_classify_and_replace(gen_output)
+            except Exception as e:  # pragma: no cover — defensive
+                print(f"[DCPO-V3] format classify/replace FAILED "
+                      f"({type(e).__name__}: {e}); tier-1 rows degrade to "
+                      f"discard at the populator.", flush=True)
+                if os.environ.get("DCPO_DEBUG", "1") == "1":
+                    traceback.print_exc()
         if not bool(getattr(self, "_dcpo_cf", False)):
             return gen_output
 
@@ -2256,6 +2495,113 @@ class SDCRayPPOTrainer(RayPPOTrainer):
             _n_cf = sum(1 for v in cf_texts if v is not None)
             print(f"[DCPO-V3] CF gen done: B={B} cf_texts={_n_cf} skipped(no-meta)={int(sum(skip))}",
                   flush=True)
+        return gen_output
+
+    def _dcpo_format_classify_and_replace(self, gen_output):
+        """v3k TIER-1 token replacement + class stash (spec §3-tier-1 / §6-2a).
+
+        Per row: `classify_dcpo_format` on the response ids (the ONE parser;
+        tier-1 plans are §2.2-round-trip-validated INSIDE it). Tier-1 rows
+        (swapped / dup_open / reversed) get their 1:1 SAME-LENGTH plan written
+        into BOTH tensors the downstream consumers read (§1-V2):
+          - gen_output.batch['responses'][row, pos]              (advantage /
+            mask / reward decode + CF prefix cut)
+          - gen_output.batch['input_ids'][row, prompt_len + pos] (actor
+            log-prob forward), IF the key exists (defensive .get)
+        attention_mask / position_ids / response_mask are untouched — same
+        length, no re-pad, no position shift. After replacement the sequence IS
+        wellformed → full normal routing; π(correct tag) rises with the row's
+        routed advantage = token-local STaR-style correction.
+
+        §8 runtime guards (verl source absent locally; Assumption A1 — verl
+        recomputes old_log_prob AFTER this site — is validated at runtime):
+          - HARD ABORT if the engine already returned log-probs
+            ('old_log_probs' / 'rollout_log_probs' in gen_output.batch):
+            replacement would invalidate them → skip ALL replacement (rows
+            degrade to discard at the populator; never silently train on
+            stale ratios).
+          - per position: pre-write value must equal the plan's old_id in BOTH
+            tensors (coherence guard); post-write re-read must equal new_id.
+
+        Stash (flows through fit()'s union exactly like cf_texts):
+          dcpo_fmt_class        [B] object  — parser class per row (ORIGINAL ids)
+          dcpo_fmt_replaced     [B] float32 — 1.0 iff the row was replaced
+          dcpo_fmt_replace_plan [B] object  — [(pos, old, new), ...] (else [])
+        """
+        import numpy as _np
+
+        B = len(gen_output)
+        resp = gen_output.batch["responses"]
+        resp_mask = gen_output.batch.get("response_mask", None)
+        attn = gen_output.batch.get("attention_mask", None)
+        prompt_len = gen_output.batch["prompts"].shape[-1]
+        input_ids = gen_output.batch.get("input_ids", None)
+
+        # §8 hard abort: pre-existing log-probs would go stale under replacement.
+        replace_ok = True
+        for _k in ("old_log_probs", "rollout_log_probs"):
+            if gen_output.batch.get(_k, None) is not None:
+                print(f"[DCPO_DBG] FORMAT-REPLACE ABORT: gen_output.batch carries "
+                      f"{_k!r} — the engine returned/precomputed log-probs that "
+                      f"token replacement would invalidate. Skipping ALL "
+                      f"replacement (rows degrade to discard).", flush=True)
+                replace_ok = False
+
+        meta_open = int(getattr(self.config.algorithm, "dcpo_meta_open", 151669) or 151669)
+        _decode = lambda ids: self.tokenizer.decode(ids, skip_special_tokens=False)
+
+        classes = _np.empty(B, dtype=object)
+        replaced = _np.zeros(B, dtype=_np.float32)
+        plans = _np.empty(B, dtype=object)
+        n_rep = 0
+        for i in range(B):
+            rids = resp[i]
+            if resp_mask is not None:
+                rm = resp_mask[i]
+            elif attn is not None:
+                rm = attn[i][prompt_len:]
+            else:
+                rm = None
+            fmt = classify_dcpo_format(rids, rm, _decode, meta_open=meta_open)
+            classes[i] = fmt["fmt_class"]
+            plans[i] = []
+            plan = fmt["replacement_plan"]
+            if not plan or not replace_ok:
+                continue
+            # §8 coherence guard: pre-write values must match the plan's old_id
+            # in BOTH tensors (a mismatch means input_ids is not the simple
+            # prompt+response concat we verified — leave the row unreplaced; the
+            # populator demotes it to discard via tier1_to_discard).
+            coherent = all(
+                int(resp[i, pos]) == int(old_id)
+                and (input_ids is None
+                     or int(input_ids[i, prompt_len + pos]) == int(old_id))
+                for (pos, old_id, _new) in plan
+            )
+            if not coherent:
+                print(f"[DCPO_DBG] FORMAT-REPLACE coherence FAIL row {i} "
+                      f"(plan={plan}); row left unreplaced -> discard at the "
+                      f"populator.", flush=True)
+                continue
+            for (pos, _old, new_id) in plan:
+                resp[i, pos] = int(new_id)
+                if input_ids is not None:
+                    input_ids[i, prompt_len + pos] = int(new_id)
+            # §8 post-write re-read.
+            for (pos, _old, new_id) in plan:
+                assert int(resp[i, pos]) == int(new_id)
+                assert input_ids is None or int(input_ids[i, prompt_len + pos]) == int(new_id)
+            replaced[i] = 1.0
+            plans[i] = [(int(p), int(o), int(n)) for (p, o, n) in plan]
+            n_rep += 1
+
+        gen_output.non_tensor_batch["dcpo_fmt_class"] = classes
+        gen_output.non_tensor_batch["dcpo_fmt_replaced"] = replaced
+        gen_output.non_tensor_batch["dcpo_fmt_replace_plan"] = plans
+        if os.environ.get("DCPO_DEBUG", "1") == "1":
+            from collections import Counter as _Counter
+            print(f"[DCPO-V3] fmt classify/replace: B={B} replaced={n_rep} "
+                  f"classes={dict(_Counter(list(classes)))}", flush=True)
         return gen_output
 
     def _dcpo_cf_build_prefixes(self, gen_output, meta_open):
@@ -2311,26 +2657,48 @@ class SDCRayPPOTrainer(RayPPOTrainer):
         # Filter to the rows that actually need a CF gen (have meta).
         active = [i for i in range(B) if not skip[i] and prefix_ids[i] is not None]
 
-        # FORMAT-GATE skip (cheap text check): a row whose meta block is UNCLOSED
-        # (<|meta|> with no <|/meta|> anywhere) has R_meta FORCED to 0 by the
-        # dcpo_region_rewards gate — a 2nd generation for it is pure wasted
-        # compute, so the slot stays None. skip_special_tokens=False so the meta
-        # tag surfaces survive the decode.
+        # FORMAT-GATE skip (v3k §6-2c — NARROWED from the old "no <|/meta|>
+        # anywhere" text check): CF is skipped ONLY for rows whose R_meta will
+        # be zeroed/gated anyway — fmt_class ∈ {truncation, discard} plus
+        # unreplaced tier-1 rows (the populator demotes those to discard).
+        # DRIFT rows now RUN the CF: tier-3 plays R_meta over the recovered
+        # span. Class source = the stashed parser output when the replacement
+        # pass ran; otherwise classify here — same ONE parser, no duplicated
+        # text logic.
+        _cls_stash = gen_output.non_tensor_batch.get("dcpo_fmt_class", None)
+        _rep_stash = gen_output.non_tensor_batch.get("dcpo_fmt_replaced", None)
         _resp = gen_output.batch["responses"]
+        _resp_mask = gen_output.batch.get("response_mask", None)
+        _attn = gen_output.batch.get("attention_mask", None)
+        _plen = gen_output.batch["prompts"].shape[-1]
+        _tier1 = ("swapped", "dup_open", "reversed")
         _gated = []
         for i in list(active):
-            try:
-                _txt = self.tokenizer.decode(
-                    [int(t) for t in _resp[i].tolist()], skip_special_tokens=False)
-            except Exception:
-                continue  # decode hiccup → keep the row (gate still holds downstream)
-            if "<|meta|>" in _txt and "<|/meta|>" not in _txt:
+            if _cls_stash is not None and i < len(_cls_stash):
+                _cls = str(_cls_stash[i])
+                _rep = bool(
+                    _rep_stash is not None and i < len(_rep_stash)
+                    and float(_rep_stash[i]) > 0.5)
+            else:
+                try:
+                    _rm = (_resp_mask[i] if _resp_mask is not None
+                           else (_attn[i][_plen:] if _attn is not None else None))
+                    _cls = classify_dcpo_format(
+                        _resp[i], _rm,
+                        lambda ids: self.tokenizer.decode(ids, skip_special_tokens=False),
+                        meta_open=meta_open,
+                    )["fmt_class"]
+                except Exception:
+                    continue  # classify hiccup → keep the row (gates still hold downstream)
+                _rep = False  # no stash = replacement never ran
+            if _cls in ("truncation", "discard") or (_cls in _tier1 and not _rep):
                 _gated.append(i)
         if _gated:
             active = [i for i in active if i not in set(_gated)]
             if os.environ.get("DCPO_DEBUG", "1") == "1":
-                print(f"[DCPO-V3] CF skip (unclosed-meta gate): {len(_gated)} row(s) "
-                      f"-> cf slot None (R_meta gated to 0 anyway)", flush=True)
+                print(f"[DCPO-V3] CF skip (fmt gate truncation/discard/"
+                      f"unreplaced-tier1): {len(_gated)} row(s) -> cf slot None "
+                      f"(heads gated/zeroed anyway)", flush=True)
 
         cf_texts = [None] * B
         if not active:
@@ -2417,8 +2785,13 @@ class SDCRayPPOTrainer(RayPPOTrainer):
         cf_batch.non_tensor_batch["agent_name"] = np.array(["cf_prefix_agent"] * n_pad, dtype=object)
         cf_batch.non_tensor_batch["prefix_ids"] = pref
         bias = np.empty(n_pad, dtype=object)
+        # Suppress BOTH meta tag ids: the swapped/reversed classes proved the model
+        # can open meta content WITHOUT 151669 (e.g. "</think> content <|/meta|>"),
+        # so banning only the opener leaves a CF leak path that contaminates
+        # c_without. </think> (151668) stays ALLOWED — the CF must still close think.
+        _meta_close_id = int(meta_open) + 1  # 151670 <|/meta|> (adjacent vocab id)
         for k in range(n_pad):
-            bias[k] = {int(meta_open): -100.0}
+            bias[k] = {int(meta_open): -100.0, _meta_close_id: -100.0}
         cf_batch.non_tensor_batch["cf_logit_bias"] = bias
 
         # validate=False keeps it on the train sampling path (no val_kwargs override);
