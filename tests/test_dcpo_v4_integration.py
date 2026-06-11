@@ -605,3 +605,40 @@ def test_pmi_ref_guard_engine_path_passes_and_sets_temperature_one(monkeypatch):
     out = _dcpo_v4_ref_logprobs(trainer, tensors)
     assert captured["temperature"] == 1.0
     assert real_n == 1 and out.shape == (1, 2)
+
+
+def test_compute_pmi_rmeta_placebo_corrected_three_arm_wiring(monkeypatch):
+    # verl-layer lock for the placebo-corrected path (review 2b83bf3 minor-4):
+    # arm layout [0,n)=with, [n,2n)=without, [2n,2n+p)=placebo; the gated value
+    # must be agg(d_real) - agg(d_placebo), and a row is member only when its
+    # placebo arm scored.
+    tok = FakeMergeTokenizer(merges=())
+    response_texts = [
+        "work<|meta|>check the sum<|/meta|>so it is 42.",   # scored + corrected
+        "plain answer 9.",                                   # not attempted
+    ]
+    heads = {"c_with": [1.0, 1.0], "answer": ["42", "9"]}
+
+    def _fake_ref3(trainer, tensors):
+        n, r_max = tensors["responses"].shape
+        out = torch.full((n, r_max), -2.0)   # without-arm + padding
+        out[0] = -1.0                        # with-arm (n_al == 1)
+        out[2] = -1.5                        # placebo arm [2n, 2n+1)
+        return out
+
+    knobs = {"dcpo_pmi_placebo_correct": True, "dcpo_pmi_agg": "mean"}
+    monkeypatch.setattr(V, "_dcpo_v4_ref_logprobs", _fake_ref3)
+    r_meta, member = _compute_dcpo_v4_pmi_rmeta(
+        tokenizer=tok,
+        trainer=object(),
+        prompt_texts=["P0 ", "P1 "],
+        response_texts=response_texts,
+        fmt_classes=["wellformed", "no_meta"],
+        heads=heads,
+        read_knob=lambda name, default: knobs.get(name, default),
+        step=7,
+    )
+    # real delta +1.0/tok, placebo delta +0.5/tok -> corrected +0.5
+    assert r_meta[0] == pytest.approx(0.5)
+    assert member[0] == 1.0
+    assert r_meta[1] == 0.0 and member[1] == 0.0

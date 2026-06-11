@@ -1952,6 +1952,11 @@ def _compute_dcpo_v4_pmi_rmeta(
                 arm_prompts.append(psp["with_ids"][:cs_p])
                 arm_resps.append(psp["with_ids"][cs_p:])
     tensors, real_n = _build_pmi_score_batches(arm_prompts, arm_resps, pad_unit)
+    # bookkeeping invariant (review 2b83bf3 minor-1): the read ranges below
+    # assume exactly 2 full arms + the placebo partial arm, in that order.
+    assert real_n == 2 * len(aligned) + len(placebo_idx), (
+        f"PMI arm bookkeeping broken: {real_n} scored rows != "
+        f"2*{len(aligned)} + {len(placebo_idx)}")
     try:
         ref_lp = _dcpo_v4_ref_logprobs(trainer, tensors)
     except AssertionError:
