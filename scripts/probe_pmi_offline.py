@@ -474,6 +474,59 @@ def assemble_report(real_rows, placebo_rows, shuffle_rows, *, topk_frac=0.25,
                 "collapse_ratio": float(abs(mean_s) / max(abs(mean_r), 1e-9)),
             }
 
+    # (f) placebo-CORRECTED metric (cross-shuffle finding 2026-06-11): raw
+    # delta is dominated by generic text-presence (placebo retains ~86% of the
+    # mean-method delta; cross-problem shuffle retains 52%). The trainable
+    # content signal is delta' = delta - delta_placebo PER ROW. Grade delta'
+    # with the same KILL battery: mean>0 paired-t (delta''s own placebo test),
+    # AUC on the entangled split, and shuffle collapse where the shuffle arm is
+    # ALSO corrected (delta'_shuffle = delta_shuffle - delta_placebo).
+    report["corrected"] = {}
+    report["unfiltered"]["corrected"] = {}
+    for m in PMI_AGG_METHODS:
+        ra = np.asarray(real_d["raw_agg"][m], dtype=np.float64)
+        pa = np.asarray(plac_d["raw_agg"][m], dtype=np.float64)
+        sa = np.asarray(shuf_d["raw_agg"][m], dtype=np.float64)
+        ca, cs = ra - pa, sa - pa
+        for dest, keep in _views:
+            v = ~np.isnan(ca) & keep
+            vs = ~np.isnan(cs) & keep
+            t, p = paired_t(ca[v])
+            mean_c = float(ca[v].mean()) if v.any() else float("nan")
+            mean_cs = float(cs[vs].mean()) if vs.any() else float("nan")
+            dest["corrected"][m] = {
+                "n": int(v.sum()),
+                "delta_stats": _stats(ca[v]),
+                "t_stat": t, "p_one_sided": p,
+                "auc": {
+                    "overall": rank_auc(ca[v], correct[v]),
+                    "entangled": rank_auc(ca[v & entangled], correct[v & entangled]),
+                    "clean": rank_auc(ca[v & ~entangled], correct[v & ~entangled]),
+                    "n_entangled": int((v & entangled).sum()),
+                    "n_clean": int((v & ~entangled).sum()),
+                },
+                "shuffle": {
+                    "n": int(vs.sum()), "mean": mean_cs, "mean_real": mean_c,
+                    "collapse_ratio": float(abs(mean_cs) / max(abs(mean_c), 1e-9))
+                                      if not (math.isnan(mean_cs) or math.isnan(mean_c))
+                                      else float("nan"),
+                },
+            }
+
+    # per-row dump: re-analysis (new metrics, new thresholds) without the
+    # ~95min GPU re-scoring pass. ~12 x n float lists (~2 MB at n=8k).
+    report["per_row"] = {
+        "correct": correct.astype(int).tolist(),
+        "entangled": entangled.astype(int).tolist(),
+        "guard_hit": guard.astype(int).tolist(),
+        "raw_agg": {
+            arm: {m: [None if math.isnan(x) else round(float(x), 6)
+                      for x in np.asarray(d["raw_agg"][m], dtype=np.float64)]
+                  for m in PMI_AGG_METHODS}
+            for arm, d in (("real", real_d), ("placebo", plac_d), ("shuffle", shuf_d))
+        },
+    }
+
     # (e) recommendation + verdict — ON THE GUARD-FILTERED population (the
     # report top-level), matching what training scores (round 2 IMPORTANT-1).
     # Method = best AUC on the entangled split (the population that dominates
@@ -519,6 +572,35 @@ def assemble_report(real_rows, placebo_rows, shuffle_rows, *, topk_frac=0.25,
                                      and verdict["auc_entangled_pass"]) else "FAIL")
     report["recommendation"] = {"method": method, "clip_c": clip_c}
     report["verdict"] = verdict
+
+    # corrected verdict — same KILL battery on delta', with its own method
+    # choice (the corrected AUC winner can differ from the raw winner) and its
+    # own clip_c = p95(|delta'|) on the guard-filtered rows.
+    c_scored = [(m, report["corrected"][m]["auc"][split]) for m in PMI_AGG_METHODS
+                if not math.isnan(report["corrected"][m]["auc"][split])]
+    c_method = max(c_scored, key=lambda x: x[1])[0] if c_scored else method
+    c_ra = (np.asarray(real_d["raw_agg"][c_method], dtype=np.float64)
+            - np.asarray(plac_d["raw_agg"][c_method], dtype=np.float64))
+    c_ra = c_ra[~np.isnan(c_ra) & ~guard]
+    c_clip = float(np.percentile(np.abs(c_ra), 95)) if c_ra.size else float("nan")
+    cm = report["corrected"][c_method]
+    c_auc_ent = cm["auc"]["entangled"]
+    c_verdict = {
+        "method": c_method, "auc_split_used": split, "clip_c": c_clip,
+        "population": "guard_filtered",
+        # delta''s own "beats nothing" test: mean(delta') > 0 significantly
+        "mean_gt0_pass": bool(not math.isnan(cm["t_stat"]) and cm["t_stat"] > 0
+                              and cm["p_one_sided"] < PLACEBO_ALPHA),
+        "shuffle_pass": bool(not math.isnan(cm["shuffle"]["collapse_ratio"])
+                             and cm["shuffle"]["collapse_ratio"] < SHUFFLE_COLLAPSE_MAX),
+        "auc_entangled_pass": bool(ent_usable and not math.isnan(c_auc_ent)
+                                   and c_auc_ent > AUC_KILL),
+    }
+    c_verdict["overall"] = ("PASS" if (c_verdict["mean_gt0_pass"]
+                                       and c_verdict["shuffle_pass"]
+                                       and c_verdict["auc_entangled_pass"]) else "FAIL")
+    report["recommendation_corrected"] = {"method": c_method, "clip_c": c_clip}
+    report["verdict_corrected"] = c_verdict
     return report
 
 
@@ -578,6 +660,20 @@ def format_report_text(report: dict) -> str:
                  f"(placebo={v['placebo_pass']}, shuffle={v['shuffle_pass']}, "
                  f"auc_entangled={v['auc_entangled_pass']}, "
                  f"split_degenerate={v['split_degenerate']})")
+    lines.append("(f) placebo-CORRECTED delta' = delta - delta_placebo "
+                 "(guard-filtered):")
+    for m in PMI_AGG_METHODS:
+        c = report["corrected"][m]
+        lines.append(f"    {m:10s} mean={c['delta_stats'].get('mean', float('nan')):+.4f} "
+                     f"t={c['t_stat']:.2f} p={c['p_one_sided']:.4g} "
+                     f"auc={c['auc']['overall']:.3f}/{c['auc']['entangled']:.3f}/"
+                     f"{c['auc']['clean']:.3f} "
+                     f"shuffle_ratio={c['shuffle']['collapse_ratio']:.3f}")
+    cv = report["verdict_corrected"]
+    lines.append(f"{tag}VERDICT_CORRECTED: {cv['overall']} "
+                 f"(method={cv['method']}, clip_c={cv['clip_c']:.4f}, "
+                 f"mean_gt0={cv['mean_gt0_pass']}, shuffle={cv['shuffle_pass']}, "
+                 f"auc_entangled={cv['auc_entangled_pass']})")
     return "\n".join(lines)
 
 

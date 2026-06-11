@@ -314,10 +314,50 @@ def test_assemble_report_guard_rows_masked_out_of_verdict_and_clip_c():
 def test_format_report_text_has_sections_and_verdict():
     real, placebo, shuffle = _passing_passes()
     text = format_report_text(assemble_report(real, placebo, shuffle))
-    for marker in ("(a)", "(b)", "(c)", "(d)", "(e)", "VERDICT: PASS"):
+    for marker in ("(a)", "(b)", "(c)", "(d)", "(e)", "VERDICT: PASS",
+                   "(f)", "VERDICT_CORRECTED:"):
         assert marker in text
     smoke = format_report_text(assemble_report(real, placebo, shuffle, smoke=True))
     assert "[SMOKE]" in smoke and "VERDICT:" in smoke
+
+
+# ── corrected metric delta' = delta - delta_placebo (cross-shuffle amendment) ─
+def test_corrected_metric_subtracts_placebo_from_both_arms():
+    """Generic text-presence component (same constant in real AND placebo AND
+    shuffle) must vanish from delta': corrected real keeps only the content
+    increment and corrected shuffle collapses even when raw shuffle does NOT."""
+    real, placebo, shuffle = [], [], []
+    for i in range(60):
+        correct, entangled = i < 40, i % 2 == 0
+        generic = 1.0  # presence-of-text effect, identical across arms
+        content = 0.5 if correct else -0.2
+        real.append(_stub_row(generic + content, correct, entangled))
+        placebo.append(_stub_row(generic, correct, entangled))
+        shuffle.append(_stub_row(generic, correct, entangled))
+    report = assemble_report(real, placebo, shuffle)
+    # raw shuffle does NOT collapse (generic >> content) -> raw verdict FAIL
+    assert report["verdict"]["shuffle_pass"] is False
+    # corrected: shuffle collapses to ~0 and AUC separates perfectly
+    cm = report["corrected"][report["verdict_corrected"]["method"]]
+    assert cm["shuffle"]["collapse_ratio"] < 0.25
+    assert cm["auc"]["overall"] == 1.0
+    assert report["verdict_corrected"]["overall"] == "PASS"
+    assert report["recommendation_corrected"]["clip_c"] > 0
+
+
+def test_per_row_dump_enables_gpu_free_reanalysis():
+    real, placebo, shuffle = _passing_passes()
+    report = assemble_report(real, placebo, shuffle)
+    pr = report["per_row"]
+    assert len(pr["correct"]) == 60
+    for arm in ("real", "placebo", "shuffle"):
+        for m in PMI_AGG_METHODS:
+            assert len(pr["raw_agg"][arm][m]) == 60
+    # spot-check: dumped real mean-agg matches the reported distribution mean
+    vals = [x for x, g in zip(pr["raw_agg"]["real"]["mean"], pr["guard_hit"])
+            if x is not None and not g]
+    assert np.mean(vals) == pytest.approx(
+        report["delta_stats"]["mean"]["mean"], abs=1e-4)
 
 
 def test_placebo_meta_is_tag_wrapped_and_contentless():
