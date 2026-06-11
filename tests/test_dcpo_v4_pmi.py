@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from src.training.dcpo_pmi import (
+    _MAX_SPLICE_BOUNDARY_DROPS,
     PMI_AGG_METHODS,
     SpliceAlignmentError,
     compute_pmi_rows,
@@ -23,6 +24,7 @@ from src.training.dcpo_pmi import (
     pmi_aggregate,
     sign_gate,
     splice_and_align,
+    split_first_meta,
 )
 
 
@@ -156,6 +158,59 @@ def test_splice_align_raises_on_empty_continuation():
     tok = FakeMergeTokenizer()
     with pytest.raises(SpliceAlignmentError):
         splice_and_align(tok, "xy", "Mz", "")
+
+
+class ParityTokenizer(FakeMergeTokenizer):
+    """Pathological divergence (round 2 M-B repro): tokenizes in 2-char pieces
+    when len(text) is EVEN, single chars when ODD — the with/without arms get
+    incompatible granularity over the WHOLE shared continuation, so the
+    common-tail refinement would otherwise walk every token (O(L^2))."""
+
+    def encode(self, text, add_special_tokens=False):
+        if len(text) % 2 == 0:
+            pieces = [text[i:i + 2] for i in range(0, len(text), 2)]
+        else:
+            pieces = list(text)
+        return [self._intern(p) for p in pieces]
+
+
+def test_splice_align_caps_boundary_drops_on_pathological_divergence():
+    # with-arm "x"+"y"+cont has EVEN length (2-char tokens), without-arm "x"+cont
+    # ODD (1-char tokens): tails never id-match before the cap. Continuation is
+    # long enough that uncapped refinement would need ~3x the cap in drops.
+    cont = "abcdefghij" * (_MAX_SPLICE_BOUNDARY_DROPS // 5)   # 512 chars
+    tok = ParityTokenizer(merges=())
+    with pytest.raises(SpliceAlignmentError, match="boundary"):
+        splice_and_align(tok, "x", "y", cont)
+    # sanity: a clean small case on the same tokenizer class still aligns
+    out = splice_and_align(ParityTokenizer(merges=()), "xy", "Mz", "cdef")
+    assert out["c_text"]  # non-empty common span, no cap trip
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# split_first_meta (round 2 M-D: ONE definition for probe + verl_sdc)
+# ═══════════════════════════════════════════════════════════════════════════
+def test_split_first_meta_normal_and_first_block_only():
+    text = "pre<|meta|>check<|/meta|>mid<|meta|>again<|/meta|>tail"
+    prefix, meta, cont = split_first_meta(text)
+    assert prefix == "pre"
+    assert meta == "<|meta|>check<|/meta|>"
+    assert cont == "mid<|meta|>again<|/meta|>tail"   # FIRST block only
+    assert prefix + meta + cont == text              # lossless 3-way split
+
+
+def test_split_first_meta_rejects_malformed():
+    assert split_first_meta("no tags at all") is None
+    assert split_first_meta("work <|meta|>truncated at 16k cut") is None  # no close
+    assert split_first_meta(None) is None
+    assert split_first_meta("") is None
+
+
+def test_split_first_meta_whitespace_only_continuation_is_none():
+    # the STRICTER probe semantics, unified (round 2 M-D): nothing to score.
+    assert split_first_meta("p<|meta|>m<|/meta|>") is None
+    assert split_first_meta("p<|meta|>m<|/meta|>  \n\t") is None
+    assert split_first_meta("p<|meta|>m<|/meta|> x") is not None
 
 
 @needs_real_tok
@@ -314,13 +369,35 @@ def test_guard_boxed_answer_boundary_aware():
     # decimal fragments / digit-inside-number / step numbering never trip it
     assert ngram_overlap_guard("I am about 0.75 sure here", _CONT, boxed_answer="7") is False
     assert ngram_overlap_guard("rechecking step 27 above", _CONT, boxed_answer="7") is False
-    assert ngram_overlap_guard("as shown in step 2. we proceed", _CONT, boxed_answer="2") is False
+    # round 2: a SENTENCE-FINAL dot after the bare answer digit now flags (the
+    # decimal-aware trailing lookaround) — step numbering "2." is textually
+    # indistinguishable from "the answer is 2." and the guard fails CLOSED
+    # (member 0 = conservative under-credit, never a leak pass-through).
+    assert ngram_overlap_guard("as shown in step 2. we proceed", _CONT, boxed_answer="2") is True
     # genuine standalone statements still fire, mid-sentence or punctuated
     assert ngram_overlap_guard("so 7 must be the result", _CONT, boxed_answer="7") is True
     assert ngram_overlap_guard("I get 7, then verify", _CONT, boxed_answer="7") is True
     # regex metachars in the boxed answer are escaped, not interpreted
     assert ngram_overlap_guard("the value (x+1) appears", _CONT, boxed_answer="(x+1)") is True
     assert ngram_overlap_guard("plain text only", _CONT, boxed_answer="(x+1)") is False
+
+
+def test_guard_boxed_answer_sentence_final_punctuation():
+    # Round 2 IMPORTANT-2 (verified by execution): the round-1 lookarounds
+    # (?<![\w.])ans(?![\w.]) blocked '.' in EVERY trailing context, so
+    # "the answer is 7." passed the guard. The four mandated cases:
+    # 1. trailing SENTENCE period -> HIT
+    assert ngram_overlap_guard("the answer is 7.", _CONT, boxed_answer="7") is True
+    # 2. digit inside a decimal -> no hit ("8" inside "0.85")
+    assert ngram_overlap_guard("confidence: 0.85", _CONT, boxed_answer="8") is False
+    # 3. decimal followed by punctuation -> no hit ("7" inside "0.7,")
+    assert ngram_overlap_guard("maybe 0.7, maybe less", _CONT, boxed_answer="7") is False
+    # 4. non-numeric answer with trailing period -> HIT
+    assert ngram_overlap_guard("answer is 1/2.", _CONT, boxed_answer="1/2") is True
+    # supporting edges: "answer: 42." (the other executed repro) + the decimal
+    # CONTINUATION "7.5" must still be clean for ans="7" (dot-then-digit).
+    assert ngram_overlap_guard("answer: 42.", _CONT, boxed_answer="42") is True
+    assert ngram_overlap_guard("roughly 7.5 maybe", _CONT, boxed_answer="7") is False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -384,6 +461,36 @@ def test_compute_rows_records_all_methods():
     assert diag["raw_agg"]["mean"][0] == pytest.approx(2.0)
     assert diag["raw_agg"]["sum_clip"][0] == pytest.approx(3.0)   # 1 + clip(3 -> 2)
     assert r[0] == pytest.approx(2.0)                             # gate clip at 2.0
+
+
+def test_compute_rows_nonfinite_arm_logprob_fails_row_not_poisons():
+    # Round 2 IMPORTANT-3: one NaN/inf in either arm must fail the ROW (R 0,
+    # 'nonfinite' counter), never propagate — a NaN r_meta with member=1 NaNs
+    # every sibling's centered A_meta in group_mean_subtract downstream.
+    rows = [
+        _row([-1.0, np.nan, -1.0], [-2.0, -2.0, -2.0], correct=True),   # NaN with-arm
+        _row([-1.0, -1.0], [-np.inf, -2.0], correct=True),              # inf without-arm
+        _row([-1.0, -1.0, -1.0], [-2.0, -2.0, -2.0], correct=True),     # healthy sibling
+    ]
+    r, diag = compute_pmi_rows(rows, method="mean")
+    assert r[0] == 0.0 and r[1] == 0.0                  # never NaN, exactly 0
+    assert np.isfinite(r).all()
+    assert r[2] == pytest.approx(1.0)                   # sibling unaffected
+    assert diag["nonfinite"] == [True, True, False]
+    assert diag["alignment_failures"] == [False, False, False]
+    assert diag["guard_hits"] == [False, False, False]
+    # raw_agg is NaN'd for the failed rows (excluded from probe stats), and the
+    # per-row diagnostics lists stay index-aligned across all four counters.
+    assert math.isnan(diag["raw_agg"]["mean"][0])
+    assert math.isnan(diag["raw_agg"]["sum_clip"][1])
+    assert len(diag["nonfinite"]) == len(diag["guard_hits"]) == 3
+
+
+def test_compute_rows_alignment_failure_nonfinite_counter_stays_false():
+    # failed-alignment rows are counted under alignment_failures, NOT nonfinite.
+    r, diag = compute_pmi_rows([_row(None, None, alignment_failed=True)])
+    assert diag["alignment_failures"] == [True]
+    assert diag["nonfinite"] == [False]
 
 
 def test_compute_rows_misaligned_arm_lengths_raise():

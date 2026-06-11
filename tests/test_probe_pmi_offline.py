@@ -275,6 +275,42 @@ def test_assemble_report_degenerate_split_fails_kill3_loudly():
     assert "DEGENERATE" in text and "split_degenerate=True" in text
 
 
+def test_assemble_report_guard_rows_masked_out_of_verdict_and_clip_c():
+    # Round 2 IMPORTANT-1: TRAINING zeroes guard-hit rows (member 0), so the
+    # verdict path (delta_stats / KILL-3 AUC / placebo pairing / clip_c) must
+    # run on the guard-FILTERED population. Construct an upper-tail GUARD row
+    # (meta states the boxed answer) whose huge aggregate would otherwise FLIP
+    # the recommended clip_c = p95(|agg|).
+    real, placebo, shuffle = _passing_passes(n=8, n_correct=5)
+    leak = _stub_row(50.0, correct=True, entangled=True)        # massive delta
+    leak["meta_text"] = "surely the answer is 42 here"
+    leak["boxed_answer"] = "42"
+    real.append(leak)
+    placebo.append(_stub_row(0.0, True, True))
+    shuffle.append(_stub_row(0.0, True, True))
+    report = assemble_report(real, placebo, shuffle)
+    assert report["guard_hits_real"] == 1
+    m = report["verdict"]["method"]
+    # filtered (verdict) population excludes the guard row; unfiltered keeps it
+    assert report["delta_stats"][m]["n"] == 8
+    assert report["unfiltered"]["delta_stats"][m]["n"] == 9
+    # clip_c comes from the FILTERED p95: the honest per-token deltas are
+    # <= 1.5, so any clip near the leak's ~50/token tail means the guard row
+    # leaked into the recommendation.
+    assert report["verdict"]["population"] == "guard_filtered"
+    assert report["recommendation"]["clip_c"] < 10.0
+    assert report["unfiltered"]["delta_stats"][m]["p95"] > report["recommendation"]["clip_c"]
+    # placebo pairing + side-by-side views exist for every method
+    for mm in PMI_AGG_METHODS:
+        assert report["placebo"][mm]["n_paired"] == 8
+        assert report["unfiltered"]["placebo"][mm]["n_paired"] == 9
+        assert report["unfiltered"]["auc"][mm]["n_entangled"] \
+            == report["auc"][mm]["n_entangled"] + 1
+    # the text report renders both views side by side
+    text = format_report_text(report)
+    assert "guard-filtered" in text and "unfilt" in text
+
+
 def test_format_report_text_has_sections_and_verdict():
     real, placebo, shuffle = _passing_passes()
     text = format_report_text(assemble_report(real, placebo, shuffle))

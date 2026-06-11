@@ -33,6 +33,7 @@ from src.training.verl_sdc import (
     _compute_dcpo_v4_pmi_rmeta,
     _dcpo_v4_ref_logprobs,
     _populate_dcpo_region_keys,
+    _v4_rmeta_source_strict,
 )
 from src.training.verl_sdc_utils import (
     _compute_dcpo_region_advantage,
@@ -380,6 +381,145 @@ def test_compute_pmi_rmeta_wrong_row_gets_nonpositive(monkeypatch):
     )
     assert r_meta[0] < 0.0          # (+|delta| under a wrong outcome) -> negative
     assert member[0] == 1.0         # still a scored row (centering population)
+
+
+def test_v4_rmeta_source_must_be_explicit():
+    # Round 2 M-A: missing/unreadable knob RAISES — the old silent 'cf' default
+    # fell open onto the deprecated CF path with plausible nonzero values.
+    with pytest.raises(ValueError, match="dcpo_rmeta_source"):
+        _v4_rmeta_source_strict(lambda name, default: default)   # knob absent
+    with pytest.raises(ValueError, match="dcpo_rmeta_source"):
+        _v4_rmeta_source_strict(lambda name, default: None)      # yaml null
+    with pytest.raises(ValueError, match="not in"):
+        _v4_rmeta_source_strict(lambda name, default: "bogus")   # invalid value
+    # the three explicit values pass through ('cf' allowed as OPT-IN only)
+    for src in ("cf", "pmi", "none"):
+        assert _v4_rmeta_source_strict(lambda n, d, s=src: s) == src
+    # source-level: the populator uses the strict reader, not a 'cf'-defaulted
+    # read (the fail-open line this fix removes).
+    import inspect
+    pop = inspect.getsource(_populate_dcpo_region_keys)
+    assert "_v4_rmeta_source_strict" in pop
+    assert '_v4_read("dcpo_rmeta_source", "cf")' not in pop
+
+
+def test_compute_pmi_rmeta_nonfinite_logprob_zeroes_row_and_member(monkeypatch):
+    # Round 2 IMPORTANT-3 at the verl_sdc layer: NaN in one arm's ref logprobs
+    # -> that row R_meta 0 AND member 0 (out of the centering population);
+    # healthy sibling rows in the same batch keep scoring.
+    tok = FakeMergeTokenizer(merges=())
+
+    def _fake_ref(trainer, tensors):
+        n, r_max = tensors["responses"].shape
+        out = torch.full((n, r_max), -2.0)
+        out[:2] = -1.0                     # n_al == 2 with-arms
+        out[0, 1] = float("nan")           # poison row 0's with-arm
+        return out
+
+    monkeypatch.setattr(V, "_dcpo_v4_ref_logprobs", _fake_ref)
+    r_meta, member = _compute_dcpo_v4_pmi_rmeta(
+        tokenizer=tok,
+        trainer=object(),
+        prompt_texts=["P0 ", "P1 "],
+        response_texts=[
+            "a<|meta|>check once<|/meta|>so it is 42.",
+            "b<|meta|>check twice<|/meta|>so it is 43.",
+        ],
+        fmt_classes=["wellformed", "wellformed"],
+        heads={"c_with": [1.0, 1.0], "answer": ["", ""]},
+        read_knob=lambda name, default: default,
+        step=2,
+    )
+    assert r_meta[0] == 0.0 and member[0] == 0.0      # poisoned: fail-closed
+    assert np.isfinite(r_meta).all()                  # never NaN out of here
+    assert r_meta[1] > 0.0 and member[1] == 1.0       # sibling unaffected
+
+
+def test_compute_pmi_rmeta_whitespace_continuation_not_attempted():
+    # Round 2 M-D: split_first_meta's STRICTER probe semantics — a whitespace-
+    # only continuation is not attempted, so the ref scorer is never called
+    # (a call would raise here) and the row scores 0 with member 0.
+    r_meta, member = _compute_dcpo_v4_pmi_rmeta(
+        tokenizer=FakeMergeTokenizer(merges=()),
+        trainer=object(),
+        prompt_texts=["P "],
+        response_texts=["w<|meta|>hm<|/meta|>   \n"],
+        fmt_classes=["wellformed"],
+        heads={"c_with": [1.0], "answer": ["5"]},
+        read_knob=lambda name, default: default,
+        step=1,
+    )
+    assert r_meta[0] == 0.0 and member[0] == 0.0
+    # source-level lock: BOTH consumers route through the shared splitter.
+    import inspect
+    assert "split_first_meta" in inspect.getsource(_compute_dcpo_v4_pmi_rmeta)
+    import scripts.probe_pmi_offline as probe
+    assert "split_first_meta" in inspect.getsource(probe.parse_rollout)
+
+
+class _FakeWandb(types.ModuleType):
+    def __init__(self):
+        super().__init__("wandb")
+        self.run = object()      # truthy: logging path active
+        self.logged = []
+
+    def log(self, payload, step=None):
+        self.logged.append((dict(payload), step))
+
+
+def test_compute_pmi_rmeta_ref_failure_logs_zero_scalars(monkeypatch):
+    # Round 2 M-C: the early returns must chart ZEROS, not wandb gaps.
+    import sys
+    fake_wandb = _FakeWandb()
+    monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
+
+    def _boom(trainer, tensors):
+        raise RuntimeError("ref worker down")
+
+    monkeypatch.setattr(V, "_dcpo_v4_ref_logprobs", _boom)
+    _compute_dcpo_v4_pmi_rmeta(
+        tokenizer=FakeMergeTokenizer(merges=()),
+        trainer=object(),
+        prompt_texts=["P "],
+        response_texts=["w<|meta|>try<|/meta|>it equals 5."],
+        fmt_classes=["wellformed"],
+        heads={"c_with": [1.0], "answer": [""]},
+        read_knob=lambda name, default: default,
+        step=7,
+    )
+    assert len(fake_wandb.logged) == 1
+    payload, step = fake_wandb.logged[0]
+    assert step == 7
+    assert payload["dcpo/pmi_member_rate"] == 0.0
+    assert payload["dcpo/pmi_guard_hit_rate"] == 0.0
+    assert payload["dcpo/pmi_nonfinite_rate"] == 0.0
+    assert payload["dcpo/pmi_attempted_rate"] == 1.0   # the row WAS attempted
+    assert payload["dcpo/pmi_aligned_rate"] == 1.0     # and aligned pre-failure
+
+
+def test_compute_pmi_rmeta_no_aligned_logs_zero_scalars(monkeypatch):
+    # the other early return: attempted > 0 but every splice fails to align
+    # (whole continuation merges across the boundary on the merge tokenizer).
+    import sys
+    fake_wandb = _FakeWandb()
+    monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
+    r_meta, member = _compute_dcpo_v4_pmi_rmeta(
+        tokenizer=FakeMergeTokenizer(merges=("ab",)),
+        trainer=object(),
+        prompt_texts=["a"],
+        response_texts=["<|meta|>m<|/meta|>b"],   # prefix 'a' + C 'b' -> 'ab' merge
+        fmt_classes=["wellformed"],
+        heads={"c_with": [1.0], "answer": [""]},
+        read_knob=lambda name, default: default,
+        step=9,
+    )
+    assert float(member.sum()) == 0.0
+    assert len(fake_wandb.logged) == 1
+    payload, step = fake_wandb.logged[0]
+    assert step == 9
+    assert payload["dcpo/pmi_attempted_rate"] == 1.0
+    assert payload["dcpo/pmi_aligned_rate"] == 0.0
+    assert payload["dcpo/pmi_member_rate"] == 0.0
 
 
 def test_compute_pmi_rmeta_ref_failure_is_crash_safe(monkeypatch):

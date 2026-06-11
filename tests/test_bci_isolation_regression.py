@@ -88,10 +88,16 @@ def _install_verl_stubs():
     trainer.ppo = ppo
     ppo.ray_trainer = rt
 
-    # verl_sdc_utils imports verl/torch -> stub it with the 3 names verl_sdc pulls
+    # verl_sdc_utils imports verl/torch -> stub it with EVERY name verl_sdc pulls.
+    # SYNC PAIR (round 2 IMPORTANT-4): this attribute list mirrors the
+    # `from src.training.verl_sdc_utils import (...)` block in
+    # src/training/verl_sdc.py — a name added there without a stub line here
+    # makes THIS suite error at setup when run STANDALONE (the full suite hides
+    # it via import order). test_stub_covers_verl_sdc_utils_import_list locks it.
     vsu = _stub("src.training.verl_sdc_utils", force=True)
     vsu.build_sdc_region_masks = lambda *a, **k: None
     vsu.compute_sdc_gdpo_advantage = lambda *a, **k: None
+    vsu.dcpo_length_cost = lambda *a, **k: 0.0
     vsu.dcpo_w_meta_warmup_scale = lambda *a, **k: 1.0
 
     # postmeta_closure_reward is a REAL reward func used by SDC_SHARED's `funcs`.
@@ -278,3 +284,25 @@ def test_bci_rlvr_exists_with_spec_heads(reward_configs):
         "weights": [1.0, 0.5],
         "keys": ["correctness", "outcome_calibration"],
     }, got
+
+
+def test_stub_covers_verl_sdc_utils_import_list(reward_configs):
+    # Round 2 IMPORTANT-4 lock for the SYNC PAIR: every name verl_sdc.py pulls
+    # from src.training.verl_sdc_utils must exist on the stub module, else this
+    # suite errors at setup when run STANDALONE (the dcpo_length_cost regression
+    # — 3 setup ERRORS hidden in the full suite by import order).
+    import re
+
+    src_path = os.path.join(os.path.dirname(__file__), "..",
+                            "src", "training", "verl_sdc.py")
+    with open(src_path) as f:
+        src = f.read()
+    m = re.search(r"from src\.training\.verl_sdc_utils import \(([^)]*)\)", src)
+    assert m, "verl_sdc.py verl_sdc_utils import block not found"
+    names = [n.strip().rstrip(",") for n in m.group(1).splitlines() if n.strip()]
+    assert names, "empty verl_sdc_utils import list?"
+    vsu = sys.modules["src.training.verl_sdc_utils"]  # the installed stub
+    missing = [n for n in names if not hasattr(vsu, n)]
+    assert not missing, (
+        f"verl_sdc_utils stub out of sync with verl_sdc.py import list "
+        f"(add stub lines in _install_verl_stubs): {missing}")

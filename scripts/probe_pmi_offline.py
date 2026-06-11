@@ -48,6 +48,7 @@ from src.training.dcpo_pmi import (
     SpliceAlignmentError,
     compute_pmi_rows,
     splice_and_align,
+    split_first_meta,
 )
 # Canonical meta-content signature (entangled-population proxy, spec I5) + the
 # tag token ids. dcpo_region imports torch/numpy only — NOT verl.
@@ -88,27 +89,23 @@ def parse_rollout(record: dict, problem_id: int):
     once a tokenizer exists); meta = tag-INCLUSIVE block; C = the model's OWN
     text after <|/meta|> (native position). Returns None for malformed rows:
     no meta, truncated meta (open without close, the 16k-cutoff population), or
-    empty continuation (nothing to score).
+    whitespace-only continuation (nothing to score) — the split itself is the
+    SHARED dcpo_pmi.split_first_meta (round 2 M-D: one definition, also called
+    by verl_sdc's v4 scorer).
     """
     completion = record.get("completion") or ""
-    o = completion.find(META_START)
-    if o < 0:
+    parts = split_first_meta(completion)
+    if parts is None:
         return None
-    c = completion.find(META_END, o + len(META_START))
-    if c < 0:
-        return None  # truncated meta block (16k cutoff)
-    end = c + len(META_END)
-    continuation = completion[end:]
-    if not continuation.strip():
-        return None
+    prefix, meta, continuation = parts
     return {
         "problem_id": problem_id,
         "benchmark": record.get("benchmark", ""),
         "question": record.get("question", ""),
         "correct": bool(record.get("is_correct", False)),
         "boxed_answer": record.get("answer_extracted"),
-        "completion_prefix": completion[:o],
-        "meta_text": completion[o:end],
+        "completion_prefix": prefix,
+        "meta_text": meta,
         "continuation_text": continuation,
         # spec I5 entangled-population proxy — measured on the CONTINUATION,
         # NOT the meta's own inner text: the signature regex (field-label lines
@@ -380,6 +377,13 @@ def assemble_report(real_rows, placebo_rows, shuffle_rows, *, topk_frac=0.25,
 
     Row dicts follow the compute_pmi_rows contract plus `entangled` (spec I5
     split flag); placebo/shuffle rows are index-paired with real rows.
+
+    Round 2 IMPORTANT-1 (probe-vs-training population mismatch): TRAINING zeroes
+    every guard-hit row (member 0), but compute_pmi_rows keeps raw_agg on guard
+    rows BY DESIGN (diagnosable). So the VERDICT path — delta_stats, the KILL-3
+    AUC, the placebo pairing, and the recommended clip_c=p95(|agg|) — runs on
+    the guard-FILTERED population (the rows training actually scores); the
+    unfiltered view is reported side by side under report["unfiltered"].
     """
     kw = dict(topk_frac=topk_frac, clip_c_token=clip_c_token,
               ngram_n=ngram_n, ngram_threshold=ngram_threshold)
@@ -388,61 +392,72 @@ def assemble_report(real_rows, placebo_rows, shuffle_rows, *, topk_frac=0.25,
     _, shuf_d = compute_pmi_rows(shuffle_rows, **kw)
     correct = np.array([r["correct"] for r in real_rows], dtype=bool)
     entangled = np.array([r.get("entangled", False) for r in real_rows], dtype=bool)
+    guard = np.asarray(real_d["guard_hits"], dtype=bool)  # per-row, real-arm
 
     report = {
         "smoke": bool(smoke),
         "n_rows": len(real_rows),
         "n_correct": int(correct.sum()),
         "n_entangled": int(entangled.sum()),
-        "guard_hits_real": int(np.sum(real_d["guard_hits"])),
+        "guard_hits_real": int(guard.sum()),
         "alignment_failures": {
             "real": int(np.sum(real_d["alignment_failures"])),
             "placebo": int(np.sum(plac_d["alignment_failures"])),
             "shuffle": int(np.sum(shuf_d["alignment_failures"])),
         },
+        "nonfinite": {
+            "real": int(np.sum(real_d["nonfinite"])),
+            "placebo": int(np.sum(plac_d["nonfinite"])),
+            "shuffle": int(np.sum(shuf_d["nonfinite"])),
+        },
         "delta_stats": {}, "auc": {}, "placebo": {}, "shuffle": {},
+        "unfiltered": {"delta_stats": {}, "auc": {}, "placebo": {}, "shuffle": {}},
     }
+    _views = ((report, ~guard), (report["unfiltered"], np.ones(len(guard), dtype=bool)))
     for m in PMI_AGG_METHODS:
         ra = np.asarray(real_d["raw_agg"][m], dtype=np.float64)
         pa = np.asarray(plac_d["raw_agg"][m], dtype=np.float64)
         sa = np.asarray(shuf_d["raw_agg"][m], dtype=np.float64)
-        v = ~np.isnan(ra)
-        # (a) distribution
-        report["delta_stats"][m] = _stats(ra[v])
-        # (b) AUC overall + spec-I5 split (entangled = load-bearing population)
-        report["auc"][m] = {
-            "overall": rank_auc(ra[v], correct[v]),
-            "entangled": rank_auc(ra[v & entangled], correct[v & entangled]),
-            "clean": rank_auc(ra[v & ~entangled], correct[v & ~entangled]),
-            "n_entangled": int((v & entangled).sum()),
-            "n_clean": int((v & ~entangled).sum()),
-        }
-        # (c) placebo paired comparison (spec C1 KILL)
-        both = v & ~np.isnan(pa)
-        t, p = paired_t(ra[both] - pa[both])
-        report["placebo"][m] = {
-            "n_paired": int(both.sum()),
-            "mean_real": float(ra[both].mean()) if both.any() else float("nan"),
-            "mean_placebo": float(pa[both].mean()) if both.any() else float("nan"),
-            "mean_diff": float((ra[both] - pa[both]).mean()) if both.any() else float("nan"),
-            "t_stat": t, "p_one_sided": p,
-        }
-        # (d) shuffle collapse
-        vs = ~np.isnan(sa)
-        mean_s = float(sa[vs].mean()) if vs.any() else float("nan")
-        mean_r = float(ra[v].mean()) if v.any() else float("nan")
-        report["shuffle"][m] = {
-            "n": int(vs.sum()), "mean": mean_s, "mean_real": mean_r,
-            "collapse_ratio": float(abs(mean_s) / max(abs(mean_r), 1e-9)),
-        }
+        for dest, keep in _views:
+            v = ~np.isnan(ra) & keep
+            # (a) distribution
+            dest["delta_stats"][m] = _stats(ra[v])
+            # (b) AUC overall + spec-I5 split (entangled = load-bearing population)
+            dest["auc"][m] = {
+                "overall": rank_auc(ra[v], correct[v]),
+                "entangled": rank_auc(ra[v & entangled], correct[v & entangled]),
+                "clean": rank_auc(ra[v & ~entangled], correct[v & ~entangled]),
+                "n_entangled": int((v & entangled).sum()),
+                "n_clean": int((v & ~entangled).sum()),
+            }
+            # (c) placebo paired comparison (spec C1 KILL)
+            both = v & ~np.isnan(pa)
+            t, p = paired_t(ra[both] - pa[both])
+            dest["placebo"][m] = {
+                "n_paired": int(both.sum()),
+                "mean_real": float(ra[both].mean()) if both.any() else float("nan"),
+                "mean_placebo": float(pa[both].mean()) if both.any() else float("nan"),
+                "mean_diff": float((ra[both] - pa[both]).mean()) if both.any() else float("nan"),
+                "t_stat": t, "p_one_sided": p,
+            }
+            # (d) shuffle collapse
+            vs = ~np.isnan(sa) & keep
+            mean_s = float(sa[vs].mean()) if vs.any() else float("nan")
+            mean_r = float(ra[v].mean()) if v.any() else float("nan")
+            dest["shuffle"][m] = {
+                "n": int(vs.sum()), "mean": mean_s, "mean_real": mean_r,
+                "collapse_ratio": float(abs(mean_s) / max(abs(mean_r), 1e-9)),
+            }
 
-    # (e) recommendation + verdict. Method = best AUC on the entangled split
-    # (the population that dominates training, spec I5); the method CHOICE
-    # falls back to overall when that split is too thin — but a thin split is
-    # FLAGGED degenerate and KILL 3 then FAILS outright: the load-bearing
-    # (a)-vs-(b) contrast was never measured, and silently grading the overall
-    # AUC under the entangled name is the dead-constant-metric class this
-    # report exists to prevent (review round 1).
+    # (e) recommendation + verdict — ON THE GUARD-FILTERED population (the
+    # report top-level), matching what training scores (round 2 IMPORTANT-1).
+    # Method = best AUC on the entangled split (the population that dominates
+    # training, spec I5); the method CHOICE falls back to overall when that
+    # split is too thin — but a thin split is FLAGGED degenerate and KILL 3
+    # then FAILS outright: the load-bearing (a)-vs-(b) contrast was never
+    # measured, and silently grading the overall AUC under the entangled name
+    # is the dead-constant-metric class this report exists to prevent (review
+    # round 1).
     n_ent_min = min(report["auc"][m]["n_entangled"] for m in PMI_AGG_METHODS)
     n_clean_min = min(report["auc"][m]["n_clean"] for m in PMI_AGG_METHODS)
     ent_usable = n_ent_min >= MIN_SPLIT_N
@@ -451,14 +466,17 @@ def assemble_report(real_rows, placebo_rows, shuffle_rows, *, topk_frac=0.25,
     scored = [(m, report["auc"][m][split]) for m in PMI_AGG_METHODS
               if not math.isnan(report["auc"][m][split])]
     method = max(scored, key=lambda x: x[1])[0] if scored else "sum_clip"
+    # clip_c = p95(|agg|) over the guard-FILTERED rows: training zeroes guard
+    # rows, so a guard-hit outlier in the upper tail must not inflate the clip.
     ra = np.asarray(real_d["raw_agg"][method], dtype=np.float64)
-    ra = ra[~np.isnan(ra)]
+    ra = ra[~np.isnan(ra) & ~guard]
     clip_c = float(np.percentile(np.abs(ra), 95)) if ra.size else float("nan")
 
     plc, shf = report["placebo"][method], report["shuffle"][method]
     auc_ent = report["auc"][method]["entangled"]
     verdict = {
         "method": method, "auc_split_used": split, "clip_c": clip_c,
+        "population": "guard_filtered",
         "split_degenerate": split_degenerate,
         "n_entangled_min": int(n_ent_min), "n_clean_min": int(n_clean_min),
         # KILL 1 (C1): real meta must beat placebo significantly
@@ -480,38 +498,52 @@ def assemble_report(real_rows, placebo_rows, shuffle_rows, *, topk_frac=0.25,
 
 
 def format_report_text(report: dict) -> str:
-    """Human-readable report; ends with the single-line VERDICT."""
+    """Human-readable report; ends with the single-line VERDICT.
+
+    Sections (a)-(d) print the guard-FILTERED view (the training population,
+    round 2 IMPORTANT-1) with the unfiltered counterpart side by side in
+    [unfilt ...] brackets.
+    """
     tag = "[SMOKE] " if report["smoke"] else ""
+    unf = report["unfiltered"]
     lines = [
         f"{tag}PMI offline probe — n={report['n_rows']} "
         f"(correct {report['n_correct']}, entangled {report['n_entangled']}, "
         f"guard_hits {report['guard_hits_real']}, "
-        f"align_fail {report['alignment_failures']})",
-        "(a) delta-aggregate distribution:",
+        f"align_fail {report['alignment_failures']}, "
+        f"nonfinite {report['nonfinite']})",
+        "(a) delta-aggregate distribution (guard-filtered | [unfilt]):",
     ]
     for m in PMI_AGG_METHODS:
-        s = report["delta_stats"][m]
-        if s["n"]:
-            lines.append(f"    {m:10s} mean={s['mean']:+.4f} std={s['std']:.4f} "
-                         f"p05={s['p05']:+.4f} p50={s['p50']:+.4f} p95={s['p95']:+.4f}")
-    lines.append("(b) correct-vs-wrong AUC [overall / entangled / clean]:")
+        s, su = report["delta_stats"][m], unf["delta_stats"][m]
+        if s["n"] or su["n"]:
+            base = (f"    {m:10s} mean={s['mean']:+.4f} std={s['std']:.4f} "
+                    f"p05={s['p05']:+.4f} p50={s['p50']:+.4f} p95={s['p95']:+.4f}"
+                    if s["n"] else f"    {m:10s} n=0")
+            lines.append(base + (f" [unfilt n={su['n']} mean={su['mean']:+.4f} "
+                                 f"p95={su['p95']:+.4f}]" if su["n"] else " [unfilt n=0]"))
+    lines.append("(b) correct-vs-wrong AUC [overall / entangled / clean] "
+                 "(guard-filtered | [unfilt overall]):")
     for m in PMI_AGG_METHODS:
-        a = report["auc"][m]
+        a, au = report["auc"][m], unf["auc"][m]
         lines.append(f"    {m:10s} {a['overall']:.3f} / {a['entangled']:.3f} "
-                     f"(n={a['n_entangled']}) / {a['clean']:.3f} (n={a['n_clean']})")
-    lines.append("(c) placebo control (real - placebo, paired):")
+                     f"(n={a['n_entangled']}) / {a['clean']:.3f} (n={a['n_clean']}) "
+                     f"[unfilt {au['overall']:.3f}]")
+    lines.append("(c) placebo control (real - placebo, paired, guard-filtered "
+                 "| [unfilt diff]):")
     for m in PMI_AGG_METHODS:
-        p = report["placebo"][m]
+        p, pu = report["placebo"][m], unf["placebo"][m]
         lines.append(f"    {m:10s} diff={p['mean_diff']:+.4f} t={p['t_stat']:.2f} "
-                     f"p={p['p_one_sided']:.4g} (n={p['n_paired']})")
-    lines.append("(d) shuffle control (should collapse to ~0):")
+                     f"p={p['p_one_sided']:.4g} (n={p['n_paired']}) "
+                     f"[unfilt {pu['mean_diff']:+.4f}]")
+    lines.append("(d) shuffle control (should collapse to ~0, guard-filtered):")
     for m in PMI_AGG_METHODS:
         s = report["shuffle"][m]
         lines.append(f"    {m:10s} mean={s['mean']:+.4f} vs real {s['mean_real']:+.4f} "
                      f"ratio={s['collapse_ratio']:.3f}")
     v = report["verdict"]
     lines.append(f"(e) recommended: method={v['method']} clip_c={v['clip_c']:.4f} "
-                 f"(auc split={v['auc_split_used']})")
+                 f"(auc split={v['auc_split_used']}, population={v['population']})")
     if v["split_degenerate"]:
         lines.append(f"    WARNING: I5 split DEGENERATE "
                      f"(n_entangled={v['n_entangled_min']}, "
@@ -600,7 +632,10 @@ def main():
         assert report["n_rows"] == len(rows) > 0
         assert report["alignment_failures"]["real"] < report["n_rows"], \
             "smoke: every real-arm alignment failed"
-        assert all(report["delta_stats"][m]["n"] > 0 for m in PMI_AGG_METHODS)
+        # unfiltered: a guard hit on the tiny 5-row smoke set must not fail the
+        # pipeline assertion (the filtered view may legitimately be thinner).
+        assert all(report["unfiltered"]["delta_stats"][m]["n"] > 0
+                   for m in PMI_AGG_METHODS)
         assert report["verdict"]["overall"] in ("PASS", "FAIL")
         print("[probe] SMOKE OK")
 

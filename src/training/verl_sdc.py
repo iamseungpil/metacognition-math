@@ -78,7 +78,12 @@ from src.training.dcpo_pmi import (
     SpliceAlignmentError,
     compute_pmi_rows,
     splice_and_align,
+    split_first_meta,
 )
+# SYNC PAIR (round 2 IMPORTANT-4): this import list is mirrored by the
+# verl_sdc_utils STUB in tests/test_bci_isolation_regression.py
+# (_install_verl_stubs) — adding a name here without adding the stub attr
+# breaks that suite STANDALONE (hidden in the full suite by import order).
 from src.training.verl_sdc_utils import (
     build_sdc_region_masks,
     compute_sdc_gdpo_advantage,
@@ -129,6 +134,30 @@ def _compute_dcpo_heads_stash(
     )
     _DCPO_HEAD_STASH.update(out)
     return out
+
+
+# Round 2 M-A: under TRIOBJ_DCPO_V4 the R_meta source must be an EXPLICIT
+# decision — the old `read("dcpo_rmeta_source", "cf")` default silently fell
+# open onto the deprecated CF-regeneration path (plausible nonzero values, no
+# log line) whenever the knob was missing OR the algorithm config was
+# unreadable (the reader swallows exceptions into its default).
+_V4_RMETA_SOURCES = ("cf", "pmi", "none")
+_V4_RMETA_MISSING = object()
+
+
+def _v4_rmeta_source_strict(read_knob) -> str:
+    """Read algorithm.dcpo_rmeta_source; RAISE on absent/unreadable/invalid."""
+    raw = read_knob("dcpo_rmeta_source", _V4_RMETA_MISSING)
+    if raw is _V4_RMETA_MISSING or raw is None:
+        raise ValueError(
+            "TRIOBJ_DCPO_V4 requires algorithm.dcpo_rmeta_source to be set "
+            f"explicitly (one of {_V4_RMETA_SOURCES}); the deprecated 'cf' path "
+            "is opt-in only, never a silent fallback (review round 2 M-A)")
+    src = str(raw)
+    if src not in _V4_RMETA_SOURCES:
+        raise ValueError(
+            f"algorithm.dcpo_rmeta_source={src!r} not in {_V4_RMETA_SOURCES}")
+    return src
 
 
 def _populate_dcpo_region_keys(data) -> None:
@@ -325,10 +354,13 @@ def _populate_dcpo_region_keys(data) -> None:
             dtype=np.float32)
 
     # ── TRIOBJ_DCPO_V4 R_meta SOURCE (ADDITIVE, mode+knob gated) ──────────────
-    # dcpo_rmeta_source: 'cf' (DEFAULT — leave the dcpo_region_rewards value,
-    # byte-identical to the v3 path) | 'pmi' (overwrite meta_region_utility with
-    # the dense likelihood-delta head) | 'none' (stage 1: hard-zero the head so
-    # the logged scalar cannot leak a text-fallback CF signal at w_meta=0).
+    # dcpo_rmeta_source: 'cf' (EXPLICIT opt-in only — leave the
+    # dcpo_region_rewards value, byte-identical to the v3 path) | 'pmi'
+    # (overwrite meta_region_utility with the dense likelihood-delta head) |
+    # 'none' (stage 1: hard-zero the head so the logged scalar cannot leak a
+    # text-fallback CF signal at w_meta=0). Round 2 M-A: a MISSING/unreadable
+    # knob RAISES — the old silent 'cf' default fell open onto the deprecated
+    # regeneration path with plausible nonzero values, invisibly.
     # The overwrite happens HERE — after the authoritative head write above,
     # before compute_sdc_gdpo_advantage reads the key — so the FIVE-WAY SYNC
     # key/weight lists are untouched (same key, different source).
@@ -343,7 +375,7 @@ def _populate_dcpo_region_keys(data) -> None:
             except Exception:
                 return default
 
-        _rmeta_src = str(_v4_read("dcpo_rmeta_source", "cf"))
+        _rmeta_src = _v4_rmeta_source_strict(_v4_read)
         if _rmeta_src == "pmi":
             _v4_prompt_texts = [
                 _decode_prompt_only(
@@ -373,10 +405,8 @@ def _populate_dcpo_region_keys(data) -> None:
         elif _rmeta_src == "none":
             data.non_tensor_batch["meta_region_utility"] = np.zeros(bs, dtype=np.float32)
             data.non_tensor_batch["dcpo_rmeta_member"] = np.zeros(bs, dtype=np.float32)
-        elif _rmeta_src != "cf":
-            raise ValueError(
-                f"algorithm.dcpo_rmeta_source={_rmeta_src!r} not in ('cf', 'pmi', 'none')"
-            )
+        # 'cf' (explicit opt-in): no-op — the dcpo_region_rewards value stands.
+        # Invalid values already raised inside _v4_rmeta_source_strict.
         if _rmeta_src in ("pmi", "none"):
             # Observability truth: the rollout table + trend scalars below must
             # chart the R_meta that actually ROUTES, not the stale CF/text-
@@ -1761,6 +1791,27 @@ def _dcpo_v4_ref_logprobs(trainer, tensors):
     return out.batch["ref_log_prob"]
 
 
+def _log_pmi_wandb_scalars(step: int, *, attempted_rate: float, aligned_rate: float,
+                           guard_hit_rate: float, member_rate: float,
+                           nonfinite_rate: float) -> None:
+    """One wandb point for the dcpo/pmi_* scalars (observability never kills
+    training). Round 2 M-C: the early returns in _compute_dcpo_v4_pmi_rmeta call
+    this too, so a no-aligned/ref-failure step charts as a ZERO, not a GAP —
+    gaps are indistinguishable from logging outages."""
+    try:
+        import wandb
+        if wandb.run is not None:
+            wandb.log({
+                "dcpo/pmi_attempted_rate": float(attempted_rate),
+                "dcpo/pmi_aligned_rate": float(aligned_rate),
+                "dcpo/pmi_guard_hit_rate": float(guard_hit_rate),
+                "dcpo/pmi_member_rate": float(member_rate),
+                "dcpo/pmi_nonfinite_rate": float(nonfinite_rate),
+            }, step=int(step))
+    except Exception:
+        pass
+
+
 def _compute_dcpo_v4_pmi_rmeta(
     *,
     tokenizer,
@@ -1784,7 +1835,9 @@ def _compute_dcpo_v4_pmi_rmeta(
 
     CRASH-SAFE on the engine call (mirror of _dcpo_cf_generate_texts): a ref
     failure prints LOUDLY and returns all-zero R_meta + all-zero membership —
-    training continues, the dcpo/pmi_* scalars flatline visibly.
+    training continues, and the dcpo/pmi_* scalars are still LOGGED as zeros
+    on every early return (round 2 M-C: a zero-flatline is visible on the
+    chart; a logging GAP is not).
 
     Returns (r_meta float32 [B], rmeta_member float32 [B]) — member 1.0 only
     for rows whose PMI was actually computed (aligned + guard-passed), the
@@ -1807,14 +1860,15 @@ def _compute_dcpo_v4_pmi_rmeta(
     for i in range(B):
         if fmt_classes[i] not in TRUSTED_META_CLASSES:
             continue
-        t = response_texts[i] or ""
-        io = t.find(META_START)
-        ic = t.find(META_END, io) if io >= 0 else -1
-        if io < 0 or ic < 0:
-            continue  # no closed first block (drift/no-meta) — not attempted
-        prefix_text = (prompt_texts[i] or "") + t[:io]
-        meta_text = t[io : ic + len(META_END)]
-        continuation_text = t[ic + len(META_END):]
+        # Round 2 M-D: ONE split definition shared with the offline probe
+        # (dcpo_pmi.split_first_meta) — None covers no-meta, drift (no
+        # <|/meta|>) AND whitespace-only continuations (the stricter probe
+        # semantics: nothing to score) — not attempted.
+        parts = split_first_meta(response_texts[i])
+        if parts is None:
+            continue
+        response_prefix, meta_text, continuation_text = parts
+        prefix_text = (prompt_texts[i] or "") + response_prefix
         row = {
             "meta_text": meta_text,
             "continuation_text": continuation_text,
@@ -1832,6 +1886,9 @@ def _compute_dcpo_v4_pmi_rmeta(
         if attempted and os.environ.get("DCPO_DEBUG", "1") == "1":
             print(f"[DCPO-V4] pmi step={step}: {len(attempted)} attempted, 0 aligned "
                   f"— all R_meta 0 this batch.", flush=True)
+        _log_pmi_wandb_scalars(step, attempted_rate=len(attempted) / max(1, B),
+                               aligned_rate=0.0, guard_hit_rate=0.0,
+                               member_rate=0.0, nonfinite_rate=0.0)
         return r_meta, member
 
     # 2) Score both arms on the frozen ref worker (with-arms rows [0, n),
@@ -1866,10 +1923,14 @@ def _compute_dcpo_v4_pmi_rmeta(
         raise  # M1 config guard: deterministic misconfig must CRASH, not flatline
     except Exception as e:
         print(f"[DCPO-V4] PMI ref scoring FAILED ({type(e).__name__}: {e}) — "
-              f"R_meta all-zero this batch (member 0; dcpo/pmi_* flatlines).",
+              f"R_meta all-zero this batch (member 0; dcpo/pmi_* charts a zero).",
               flush=True)
         if os.environ.get("DCPO_DEBUG", "1") == "1":
             traceback.print_exc()
+        _log_pmi_wandb_scalars(step, attempted_rate=len(attempted) / max(1, B),
+                               aligned_rate=len(aligned) / max(1, B),
+                               guard_hit_rate=0.0, member_rate=0.0,
+                               nonfinite_rate=0.0)
         return r_meta, member
     n_al = len(aligned)
     for k, (_i, row, sp) in enumerate(aligned):
@@ -1885,30 +1946,34 @@ def _compute_dcpo_v4_pmi_rmeta(
     )
     for j, (i, _row, _sp) in enumerate(attempted):
         r_meta[i] = scored[j]
+        # IMPORTANT-3 (round 2): nonfinite rows are failed rows — R 0, member 0
+        # — a NaN r_meta with member=1 would NaN every sibling's centered A_meta
+        # in group_mean_subtract.
         member[i] = (
             0.0
-            if (diag["alignment_failures"][j] or diag["guard_hits"][j])
+            if (diag["alignment_failures"][j] or diag["nonfinite"][j]
+                or diag["guard_hits"][j])
             else 1.0
         )
 
     n_guard = int(sum(bool(g) for g in diag["guard_hits"]))
+    n_nonfinite = int(sum(bool(x) for x in diag["nonfinite"]))
+    if n_nonfinite:
+        print(f"[DCPO-V4] pmi step={step}: NON-FINITE arm logprobs on "
+              f"{n_nonfinite}/{len(attempted)} attempted row(s) — those rows "
+              f"score R_meta 0 / member 0 (poisoning guard, review round 2).",
+              flush=True)
     if os.environ.get("DCPO_DEBUG", "1") == "1":
         _scored_vals = [float(r_meta[i]) for (i, _r, _s) in attempted if member[i] > 0.5]
         print(f"[DCPO-V4] pmi step={step}: B={B} attempted={len(attempted)} "
-              f"aligned={n_al} guard_hits={n_guard} "
+              f"aligned={n_al} guard_hits={n_guard} nonfinite={n_nonfinite} "
               f"rmeta_mean_scored={np.mean(_scored_vals) if _scored_vals else 0.0:.4f}",
               flush=True)
-    try:  # observability never kills training (same guard style as the trends)
-        import wandb
-        if wandb.run is not None:
-            wandb.log({
-                "dcpo/pmi_attempted_rate": len(attempted) / max(1, B),
-                "dcpo/pmi_aligned_rate": n_al / max(1, B),
-                "dcpo/pmi_guard_hit_rate": n_guard / max(1, B),
-                "dcpo/pmi_member_rate": float(member.mean()),
-            }, step=int(step))
-    except Exception:
-        pass
+    _log_pmi_wandb_scalars(step, attempted_rate=len(attempted) / max(1, B),
+                           aligned_rate=n_al / max(1, B),
+                           guard_hit_rate=n_guard / max(1, B),
+                           member_rate=float(member.mean()),
+                           nonfinite_rate=n_nonfinite / max(1, B))
     return r_meta, member
 
 
