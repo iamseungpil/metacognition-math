@@ -30,6 +30,14 @@ import numpy as np
 # importable without verl/torch.
 from src.metacot.prompt import META_END, META_START
 
+# Fixed contentless-but-coherent meta for the placebo arm (spec C1): tag-wrapped
+# like real metas so the only difference vs the real arm is the CONTENT. SSOT
+# shared by the offline probe AND the stage-2 placebo-corrected reward — the
+# correction is only valid if training subtracts the SAME placebo the probe
+# validated (cross-shuffle finding 2026-06-11: raw delta is ~86% generic
+# text-presence; the trainable signal is delta - delta_placebo).
+PLACEBO_META = f"{META_START}\nLet me continue.\n{META_END}"
+
 # Aggregation menu the offline probe decides among (spec §2). max-minus-min is NOT
 # here on purpose: it scores a meta that makes the continuation LESS likely the same
 # as one that makes it MORE likely (direction-blind, rejected in review).
@@ -258,7 +266,8 @@ def split_first_meta(text):
 # ─────────────────────────────────────────────────────────────────────────────
 def compute_pmi_rows(rows, method: str = "sum_clip", topk_frac: float = 0.25,
                      clip_c_token: float = 2.0, clip_c_gate: float = 2.0,
-                     ngram_n: int = 8, ngram_threshold: float = 0.25):
+                     ngram_n: int = 8, ngram_threshold: float = 0.25,
+                     placebo_correct: bool = False):
     """Turn scored rows into gated R_meta values + probe diagnostics.
 
     The module does NOT load models: each row carries the two arms' per-token
@@ -269,14 +278,26 @@ def compute_pmi_rows(rows, method: str = "sum_clip", topk_frac: float = 0.25,
       alignment_failed (True, or logp arrays None/empty, when splice_and_align
       raised — the row scores 0 and is only counted).
 
+    placebo_correct (cross-shuffle amendment 2026-06-11): when True, each row
+    must ALSO carry `logp_placebo` — per-token logprobs of the same continuation
+    under prefix + PLACEBO_META, over the placebo splice's own C-span. The gated
+    value becomes agg(delta_real) - agg(delta_placebo): the generic
+    text-presence component (86% of raw delta) cancels at the AGGREGATE level
+    (probe `verdict_corrected` semantics — robust to boundary-drop span-length
+    differences between the real and placebo splices, since `mean` is
+    length-normalized per arm). A row missing/non-finite on the placebo arm
+    FAILS CLOSED (R 0, member 0 via `placebo_failures`): silently falling back
+    to raw delta would mix two reward definitions inside one centering group.
+
     Returns:
         (r_meta float32 [len(rows)], diagnostics) where diagnostics carries
         raw_agg (per-method raw aggregates, NaN on failed rows), guard_hits,
-        alignment_failures and nonfinite (per-row bools) — the probe's
-        kill-or-go evidence. Round 2 IMPORTANT-3: a NaN/inf in either arm's
-        logprobs marks the row `nonfinite` (R 0, raw_agg NaN) instead of
-        propagating — one poisoned r_meta with member=1 would NaN every
-        sibling's centered A_meta downstream (group_mean_subtract).
+        alignment_failures, nonfinite, and placebo_failures (per-row bools;
+        all-False when placebo_correct is off) — the probe's kill-or-go
+        evidence. Round 2 IMPORTANT-3: a NaN/inf in either arm's logprobs marks
+        the row `nonfinite` (R 0, raw_agg NaN) instead of propagating — one
+        poisoned r_meta with member=1 would NaN every sibling's centered A_meta
+        downstream (group_mean_subtract).
     """
     r_meta = np.zeros(len(rows), dtype=np.float32)
     diagnostics = {
@@ -284,7 +305,16 @@ def compute_pmi_rows(rows, method: str = "sum_clip", topk_frac: float = 0.25,
         "guard_hits": [],
         "alignment_failures": [],
         "nonfinite": [],
+        "placebo_failures": [],
     }
+
+    def _fail_row(nonfinite=False, placebo_failed=False):
+        diagnostics["nonfinite"].append(nonfinite)
+        diagnostics["placebo_failures"].append(placebo_failed)
+        diagnostics["guard_hits"].append(False)
+        for m in PMI_AGG_METHODS:
+            diagnostics["raw_agg"][m].append(float("nan"))
+
     for i, row in enumerate(rows):
         logp_w, logp_wo = row.get("logp_with"), row.get("logp_without")
         failed = bool(row.get("alignment_failed", False)) or logp_w is None or logp_wo is None
@@ -298,20 +328,32 @@ def compute_pmi_rows(rows, method: str = "sum_clip", topk_frac: float = 0.25,
             failed = logp_w.size == 0
         diagnostics["alignment_failures"].append(failed)
         if failed:
-            diagnostics["nonfinite"].append(False)
-            diagnostics["guard_hits"].append(False)
-            for m in PMI_AGG_METHODS:
-                diagnostics["raw_agg"][m].append(float("nan"))
+            _fail_row()
             continue  # R_meta stays 0
         delta = logp_w - logp_wo
         nonfinite = not bool(np.isfinite(delta).all())
-        diagnostics["nonfinite"].append(nonfinite)
         if nonfinite:
             # IMPORTANT-3 poisoning guard: fail the ROW, never emit NaN.
-            diagnostics["guard_hits"].append(False)
-            for m in PMI_AGG_METHODS:
-                diagnostics["raw_agg"][m].append(float("nan"))
+            _fail_row(nonfinite=True)
             continue  # R_meta stays 0 (caller sets member 0 off this counter)
+        placebo_agg = None
+        if placebo_correct:
+            logp_p = row.get("logp_placebo")
+            logp_pwo = row.get("logp_placebo_without", logp_wo)
+            p_failed = logp_p is None or bool(row.get("placebo_alignment_failed", False))
+            if not p_failed:
+                logp_p = np.asarray(logp_p, dtype=np.float64).reshape(-1)
+                logp_pwo = np.asarray(logp_pwo, dtype=np.float64).reshape(-1)
+                p_failed = (logp_p.size == 0 or logp_p.shape != logp_pwo.shape
+                            or not bool(np.isfinite(logp_p).all())
+                            or not bool(np.isfinite(logp_pwo).all()))
+            if p_failed:
+                _fail_row(placebo_failed=True)
+                continue  # fail closed: no raw-delta fallback inside the group
+            placebo_agg = pmi_aggregate(logp_p - logp_pwo, method,
+                                        topk_frac=topk_frac, clip_c=clip_c_token)
+        diagnostics["nonfinite"].append(False)
+        diagnostics["placebo_failures"].append(False)
         for m in PMI_AGG_METHODS:
             diagnostics["raw_agg"][m].append(
                 pmi_aggregate(delta, m, topk_frac=topk_frac, clip_c=clip_c_token))
@@ -322,5 +364,7 @@ def compute_pmi_rows(rows, method: str = "sum_clip", topk_frac: float = 0.25,
         if invalid:
             continue  # guard hit: delta invalid, R_meta stays 0
         agg = pmi_aggregate(delta, method, topk_frac=topk_frac, clip_c=clip_c_token)
+        if placebo_agg is not None:
+            agg -= placebo_agg
         r_meta[i] = sign_gate(agg, bool(row["correct"]), clip_c_gate)
     return r_meta, diagnostics

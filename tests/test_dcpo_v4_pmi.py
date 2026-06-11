@@ -501,3 +501,90 @@ def test_compute_rows_misaligned_arm_lengths_raise():
 def test_compute_rows_empty_input():
     r, diag = compute_pmi_rows([])
     assert len(r) == 0 and diag["guard_hits"] == [] and diag["alignment_failures"] == []
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# placebo-corrected delta' (cross-shuffle amendment 2026-06-11, report §4.1)
+# ═══════════════════════════════════════════════════════════════════════════
+def test_placebo_correct_cancels_generic_component():
+    # generic text-presence: placebo lifts the continuation EXACTLY as much as
+    # the real meta -> corrected aggregate 0 -> R_meta 0 (emitting filler must
+    # not out-earn silence).
+    rows = [_row([-1.0] * 3, [-2.0] * 3, correct=True,
+                 logp_placebo=[-1.0] * 3)]
+    r, diag = compute_pmi_rows(rows, method="mean", placebo_correct=True)
+    assert r[0] == pytest.approx(0.0)
+    assert diag["placebo_failures"] == [False]
+
+
+def test_placebo_correct_rewards_only_the_content_increment():
+    # real meta lifts by 2/tok, placebo by 0.5/tok -> corrected = 1.5; wrong row
+    # mirrors through the sign gate.
+    rows = [
+        _row([-1.0] * 4, [-3.0] * 4, correct=True, logp_placebo=[-2.5] * 4),
+        _row([-1.0] * 4, [-3.0] * 4, correct=False, logp_placebo=[-2.5] * 4),
+    ]
+    r, _ = compute_pmi_rows(rows, method="mean", clip_c_gate=2.0,
+                            placebo_correct=True)
+    assert r[0] == pytest.approx(1.5)
+    assert r[1] == pytest.approx(-1.5)
+
+
+def test_placebo_correct_wrong_content_clips_to_zero_not_negative_credit():
+    # meta WORSE than placebo on a correct row: corrected < 0 -> clip(., 0, c)
+    # -> 0 (a correct rollout never pays for a bad meta beyond losing credit).
+    rows = [_row([-2.0] * 3, [-2.5] * 3, correct=True,
+                 logp_placebo=[-1.0] * 3)]
+    r, _ = compute_pmi_rows(rows, method="mean", placebo_correct=True)
+    assert r[0] == pytest.approx(0.0)
+
+
+def test_placebo_correct_missing_arm_fails_closed():
+    # No logp_placebo / placebo_alignment_failed / nonfinite placebo: the row
+    # must fail closed (R 0 + placebo_failures True -> caller member 0), never
+    # silently fall back to the raw delta (mixed reward definitions inside one
+    # centering group).
+    rows = [
+        _row([-1.0] * 2, [-2.0] * 2, correct=True),                       # missing
+        _row([-1.0] * 2, [-2.0] * 2, correct=True, logp_placebo=[-1.0] * 2,
+             placebo_alignment_failed=True),                               # flagged
+        _row([-1.0] * 2, [-2.0] * 2, correct=True,
+             logp_placebo=[np.nan, -1.0]),                                 # nonfinite
+        _row([-1.0] * 2, [-2.0] * 2, correct=True, logp_placebo=[-1.5] * 2),  # healthy
+    ]
+    r, diag = compute_pmi_rows(rows, method="mean", placebo_correct=True)
+    assert r[0] == 0.0 and r[1] == 0.0 and r[2] == 0.0
+    assert r[3] == pytest.approx(0.5)
+    assert diag["placebo_failures"] == [True, True, True, False]
+    # failed rows are excluded from probe stats (raw_agg NaN), index-aligned
+    assert math.isnan(diag["raw_agg"]["mean"][0])
+    assert len(diag["placebo_failures"]) == len(diag["guard_hits"]) == 4
+
+
+def test_placebo_correct_separate_without_arm_and_length_mismatch():
+    # explicit logp_placebo_without is honored; a length mismatch between the
+    # placebo arms fails closed instead of raising mid-training.
+    ok = _row([-1.0] * 3, [-2.0] * 3, correct=True,
+              logp_placebo=[-1.2] * 3, logp_placebo_without=[-2.0] * 3)
+    bad = _row([-1.0] * 3, [-2.0] * 3, correct=True,
+               logp_placebo=[-1.2] * 2)  # 2 tokens vs without's 3
+    r, diag = compute_pmi_rows([ok, bad], method="mean", placebo_correct=True)
+    # real delta 1.0/tok, placebo delta 0.8/tok -> corrected content increment 0.2
+    assert r[0] == pytest.approx(0.2)
+    assert r[1] == 0.0
+    assert diag["placebo_failures"] == [False, True]
+
+
+def test_placebo_correct_off_ignores_placebo_keys_and_logs_no_failures():
+    # default path unchanged: placebo keys ignored, placebo_failures all False.
+    rows = [_row([-1.0] * 3, [-2.0] * 3, correct=True, logp_placebo=[-1.0] * 3)]
+    r, diag = compute_pmi_rows(rows, method="mean")
+    assert r[0] == pytest.approx(1.0)       # raw delta, no subtraction
+    assert diag["placebo_failures"] == [False]
+
+
+def test_placebo_meta_constant_is_tag_wrapped_ssot():
+    from src.training.dcpo_pmi import PLACEBO_META
+    from src.metacot.prompt import META_END, META_START
+    assert PLACEBO_META.startswith(META_START) and PLACEBO_META.endswith(META_END)
+    assert "Let me continue." in PLACEBO_META

@@ -44,6 +44,7 @@ if str(ROOT) not in sys.path:
 
 from src.metacot.prompt import META_END, META_START
 from src.training.dcpo_pmi import (
+    PLACEBO_META,
     PMI_AGG_METHODS,
     SpliceAlignmentError,
     compute_pmi_rows,
@@ -77,9 +78,8 @@ DEFAULT_MODEL = (
     "/home/v-seungplee/sft_v8_strict_local/models/v8_meta_inside_strict_sft/checkpoint-254"
 )
 
-# Fixed contentless-but-coherent meta for the placebo arm (spec C1). Tag-wrapped
-# like real metas so the only difference vs the real arm is the CONTENT.
-PLACEBO_META = f"{META_START}\nLet me continue.\n{META_END}"
+# PLACEBO_META now lives in src.training.dcpo_pmi (SSOT): the stage-2
+# placebo-corrected reward must subtract the SAME placebo this probe validated.
 
 # Kill-criteria thresholds (spec §3): real-beats-placebo significance, shuffle
 # collapse ratio, AUC bar on the entangled split, min n for trusting the split.

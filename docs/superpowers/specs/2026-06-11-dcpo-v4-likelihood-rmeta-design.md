@@ -78,3 +78,34 @@ C1 placebo/shuffle controls → §3; C2 overlap detector → §2 guards; C3 alig
 I1 floor stays → §2; I2 member-mask centering → §2; I4 CONF carve-out → §2; I5 probe split → §3;
 M1 T=1.0 → §2; M2 floor-mechanism reuse for stage-1 bonus → §1; M3 clip-at-0 sign gate → §2;
 M4 w_meta warmup + content exit-check → §1/§2.
+
+---
+
+## Amendment A1 (2026-06-11, post cross-shuffle probe): placebo-corrected Δ′
+
+Findings (report `docs/reports/2026-06-11-dcpo-v3-v4-study.md`, H5–H7): raw Δ
+passes placebo-t (17.9) and AUC (0.78) but is **86% generic text-presence**
+(placebo mean 0.114 vs real 0.133); cross-problem shuffle retains 0.52. The
+content increment (+0.019 right / −0.046 wrong vs placebo) is the trainable
+signal.
+
+Spec changes:
+1. **Stage-2 reward** = sign-gated `agg(Δ_real) − agg(Δ_placebo)` per row
+   (aggregate-level subtraction = probe `verdict_corrected` semantics). Knob
+   `dcpo_pmi_placebo_correct: true`; third scored arm (prefix + PLACEBO_META +
+   continuation) reusing the real without-arm logprobs (without-span equality
+   enforced at splice; divergence → row fails closed, member 0 — no raw
+   fallback inside a centering group). Ref cost ×1.5. PLACEBO_META SSOT moved
+   to `src/training/dcpo_pmi.py`.
+2. **Stage-1 exit gate** now grades the **corrected** battery on the gs50
+   checkpoint (probe `--shuffle-mode cross_problem`, read `verdict_corrected`)
+   and re-freezes `dcpo_pmi_clip_gate` from `recommendation_corrected` (the
+   corrected Δ′ distribution is much narrower: mean 0.019 vs 0.133).
+3. **Stage-2 watch item**: the v3m floor only *delays* collapse (8–12 steps);
+   if emission decays in the first ~60 stage-2 steps while Δ′ flows, extend
+   the w_meta warmup (M4) instead of raising the floor.
+4. New observability: `dcpo/pmi_placebo_fail_rate`.
+
+Gate: ship Δ′ only if the per-row corrected probe (E-corr, running) returns
+`verdict_corrected.overall == PASS`; corrected-AUC failure → pre-registered
+stop + re-decision (raw Δ + group-centering argument vs stage-1-only).

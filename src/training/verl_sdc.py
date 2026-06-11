@@ -75,6 +75,7 @@ from src.training._decoy_utils import _rule_based_decoy
 # pure numpy module (zero verl deps, shared with the offline probe). Referenced
 # ONLY by the V4 populator block + _compute_dcpo_v4_pmi_rmeta below.
 from src.training.dcpo_pmi import (
+    PLACEBO_META,
     SpliceAlignmentError,
     compute_pmi_rows,
     splice_and_align,
@@ -1793,7 +1794,8 @@ def _dcpo_v4_ref_logprobs(trainer, tensors):
 
 def _log_pmi_wandb_scalars(step: int, *, attempted_rate: float, aligned_rate: float,
                            guard_hit_rate: float, member_rate: float,
-                           nonfinite_rate: float) -> None:
+                           nonfinite_rate: float,
+                           placebo_fail_rate: float = 0.0) -> None:
     """One wandb point for the dcpo/pmi_* scalars (observability never kills
     training). Round 2 M-C: the early returns in _compute_dcpo_v4_pmi_rmeta call
     this too, so a no-aligned/ref-failure step charts as a ZERO, not a GAP —
@@ -1807,6 +1809,7 @@ def _log_pmi_wandb_scalars(step: int, *, attempted_rate: float, aligned_rate: fl
                 "dcpo/pmi_guard_hit_rate": float(guard_hit_rate),
                 "dcpo/pmi_member_rate": float(member_rate),
                 "dcpo/pmi_nonfinite_rate": float(nonfinite_rate),
+                "dcpo/pmi_placebo_fail_rate": float(placebo_fail_rate),
             }, step=int(step))
     except Exception:
         pass
@@ -1853,9 +1856,17 @@ def _compute_dcpo_v4_pmi_rmeta(
     clip_c_gate = float(read_knob("dcpo_pmi_clip_gate", 2.0))
     ngram_n = int(read_knob("dcpo_pmi_ngram_n", 8))
     ngram_threshold = float(read_knob("dcpo_pmi_ngram_threshold", 0.25))
+    # Cross-shuffle amendment (report 2026-06-11 §4.1): subtract the placebo
+    # aggregate per row so the generic text-presence component (86% of raw
+    # delta) cancels and only the CONTENT increment is rewarded. Third scored
+    # arm (prefix + PLACEBO_META + continuation) => ref cost x1.5.
+    placebo_correct = bool(read_knob("dcpo_pmi_placebo_correct", False))
 
-    # 1) Select + splice. attempted = (batch_idx, row_dict, splice|None); rows
-    #    with splice=None are alignment failures (scored 0, counted in diag).
+    # 1) Select + splice. attempted = (batch_idx, row_dict, splice|None,
+    #    placebo_splice|None); rows with splice=None are alignment failures
+    #    (scored 0, counted in diag). A row whose PLACEBO splice fails (or
+    #    whose placebo without-span diverges from the real one — boundary-drop
+    #    divergence) FAILS CLOSED downstream via placebo_alignment_failed.
     attempted: list = []
     for i in range(B):
         if fmt_classes[i] not in TRUSTED_META_CLASSES:
@@ -1880,8 +1891,22 @@ def _compute_dcpo_v4_pmi_rmeta(
         except SpliceAlignmentError:
             row["alignment_failed"] = True
             sp = None
-        attempted.append((i, row, sp))
-    aligned = [(i, row, sp) for (i, row, sp) in attempted if sp is not None]
+        psp = None
+        if sp is not None and placebo_correct:
+            try:
+                psp = splice_and_align(tokenizer, prefix_text, PLACEBO_META,
+                                       continuation_text)
+                # The placebo arm reuses the REAL without-arm logprobs, which
+                # is only valid when both splices located the continuation at
+                # the same without-span.
+                if psp["c_span_without"] != sp["c_span_without"]:
+                    psp = None
+            except SpliceAlignmentError:
+                psp = None
+            if psp is None:
+                row["placebo_alignment_failed"] = True
+        attempted.append((i, row, sp, psp))
+    aligned = [t for t in attempted if t[2] is not None]
     if not aligned:
         if attempted and os.environ.get("DCPO_DEBUG", "1") == "1":
             print(f"[DCPO-V4] pmi step={step}: {len(attempted)} attempted, 0 aligned "
@@ -1908,14 +1933,24 @@ def _compute_dcpo_v4_pmi_rmeta(
         micro_bs = 4
     pad_unit = nnodes * n_gpus_per_node * micro_bs
     arm_prompts, arm_resps = [], []
-    for (_i, _row, sp) in aligned:
+    for (_i, _row, sp, _psp) in aligned:
         cs_w, _ = sp["c_span_with"]
         arm_prompts.append(sp["with_ids"][:cs_w])
         arm_resps.append(sp["with_ids"][cs_w:])
-    for (_i, _row, sp) in aligned:
+    for (_i, _row, sp, _psp) in aligned:
         cs_wo, _ = sp["c_span_without"]
         arm_prompts.append(sp["without_ids"][:cs_wo])
         arm_resps.append(sp["without_ids"][cs_wo:])
+    # third arm (placebo_correct only): rows [2n, 2n + n_placebo) — only rows
+    # whose placebo splice succeeded; the rest fail closed in compute_pmi_rows.
+    placebo_idx: list = []
+    if placebo_correct:
+        for k, (_i, _row, _sp, psp) in enumerate(aligned):
+            if psp is not None:
+                placebo_idx.append(k)
+                cs_p, _ = psp["c_span_with"]
+                arm_prompts.append(psp["with_ids"][:cs_p])
+                arm_resps.append(psp["with_ids"][cs_p:])
     tensors, real_n = _build_pmi_score_batches(arm_prompts, arm_resps, pad_unit)
     try:
         ref_lp = _dcpo_v4_ref_logprobs(trainer, tensors)
@@ -1933,47 +1968,58 @@ def _compute_dcpo_v4_pmi_rmeta(
                                nonfinite_rate=0.0)
         return r_meta, member
     n_al = len(aligned)
-    for k, (_i, row, sp) in enumerate(aligned):
+    for k, (_i, row, sp, _psp) in enumerate(aligned):
         L = len(arm_resps[k])  # == both arms' span length (token-id-identical)
         row["logp_with"] = ref_lp[k, :L].float().cpu().numpy()
         row["logp_without"] = ref_lp[n_al + k, :L].float().cpu().numpy()
+    for j, k in enumerate(placebo_idx):
+        row = aligned[k][1]
+        Lp = len(arm_resps[2 * n_al + j])  # == without-span length (equality-checked)
+        row["logp_placebo"] = ref_lp[2 * n_al + j, :Lp].float().cpu().numpy()
+        # logp_placebo_without intentionally absent: compute_pmi_rows defaults
+        # it to logp_without (valid — without-span equality enforced above).
 
     # 3) Aggregate + guard + sign-gate via the pure core; scatter back to B.
-    rows = [row for (_i, row, _sp) in attempted]
+    rows = [row for (_i, row, _sp, _psp) in attempted]
     scored, diag = compute_pmi_rows(
         rows, method=method, topk_frac=topk_frac, clip_c_token=clip_c_token,
         clip_c_gate=clip_c_gate, ngram_n=ngram_n, ngram_threshold=ngram_threshold,
+        placebo_correct=placebo_correct,
     )
-    for j, (i, _row, _sp) in enumerate(attempted):
+    for j, (i, _row, _sp, _psp) in enumerate(attempted):
         r_meta[i] = scored[j]
         # IMPORTANT-3 (round 2): nonfinite rows are failed rows — R 0, member 0
         # — a NaN r_meta with member=1 would NaN every sibling's centered A_meta
-        # in group_mean_subtract.
+        # in group_mean_subtract. Placebo-failed rows fail closed the same way
+        # (no raw-delta fallback inside a centering group).
         member[i] = (
             0.0
             if (diag["alignment_failures"][j] or diag["nonfinite"][j]
-                or diag["guard_hits"][j])
+                or diag["guard_hits"][j] or diag["placebo_failures"][j])
             else 1.0
         )
 
     n_guard = int(sum(bool(g) for g in diag["guard_hits"]))
     n_nonfinite = int(sum(bool(x) for x in diag["nonfinite"]))
+    n_placebo_fail = int(sum(bool(x) for x in diag["placebo_failures"]))
     if n_nonfinite:
         print(f"[DCPO-V4] pmi step={step}: NON-FINITE arm logprobs on "
               f"{n_nonfinite}/{len(attempted)} attempted row(s) — those rows "
               f"score R_meta 0 / member 0 (poisoning guard, review round 2).",
               flush=True)
     if os.environ.get("DCPO_DEBUG", "1") == "1":
-        _scored_vals = [float(r_meta[i]) for (i, _r, _s) in attempted if member[i] > 0.5]
+        _scored_vals = [float(r_meta[i]) for (i, _r, _s, _p) in attempted if member[i] > 0.5]
         print(f"[DCPO-V4] pmi step={step}: B={B} attempted={len(attempted)} "
               f"aligned={n_al} guard_hits={n_guard} nonfinite={n_nonfinite} "
+              f"placebo_correct={placebo_correct} placebo_fails={n_placebo_fail} "
               f"rmeta_mean_scored={np.mean(_scored_vals) if _scored_vals else 0.0:.4f}",
               flush=True)
     _log_pmi_wandb_scalars(step, attempted_rate=len(attempted) / max(1, B),
                            aligned_rate=n_al / max(1, B),
                            guard_hit_rate=n_guard / max(1, B),
                            member_rate=float(member.mean()),
-                           nonfinite_rate=n_nonfinite / max(1, B))
+                           nonfinite_rate=n_nonfinite / max(1, B),
+                           placebo_fail_rate=n_placebo_fail / max(1, B))
     return r_meta, member
 
 

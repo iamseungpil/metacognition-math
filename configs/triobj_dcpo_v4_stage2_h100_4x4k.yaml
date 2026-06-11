@@ -99,6 +99,14 @@ algorithm:
   dcpo_pmi_topk_frac: 0.25          # only read for topk_mean (unused)
   dcpo_pmi_clip_token: 2.0          # per-token clip, sum_clip only (unused)
   dcpo_pmi_clip_gate: 0.342         # probe-frozen (p95 of mean-delta @ T=1)
+                                    # RE-FREEZE from recommendation_corrected
+                                    # (gs50 probe) before stage-2 launch — the
+                                    # corrected delta' distribution is much
+                                    # narrower than raw (mean 0.019 vs 0.133).
+  # Cross-shuffle amendment (report 2026-06-11 §4.1): subtract the placebo
+  # aggregate per row (third scored arm, ref cost x1.5) so only the CONTENT
+  # increment is rewarded. Gated on the corrected probe verdict (E-corr).
+  dcpo_pmi_placebo_correct: true
   dcpo_pmi_ngram_n: 8               # C2 overlap guard: word n-gram order
   dcpo_pmi_ngram_threshold: 0.25    # C2 overlap guard: invalidation ratio
   # CF regeneration machinery DORMANT (spec §4: gated off, not deleted).
