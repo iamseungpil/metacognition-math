@@ -67,6 +67,8 @@ from src.training.dcpo_region import (
     dcpo_region_rewards,
     first_meta_token_index,
     cf_answer_from_prefix,
+    TRUSTED_META_CLASSES,
+    signature_suppression_ids,
 )
 from src.training._decoy_utils import _rule_based_decoy
 from src.training.verl_sdc_utils import (
@@ -299,6 +301,15 @@ def _populate_dcpo_region_keys(data) -> None:
         # so the FIVE-WAY SYNC key/weight lists are untouched.
         data.non_tensor_batch["dcpo_head_member"] = np.asarray(
             [0.0 if c == "discard" else 1.0 for c in _fmt_classes],
+            dtype=np.float32)
+        # v3m anti-collapse floor membership: 1.0 = TRUSTED meta row (region
+        # routing reliable → eligible for the +dcpo_meta_floor emission bias on
+        # its META_CONTENT tokens). discard/truncation/no_meta → 0.0 (no trusted
+        # meta to lift; malformed meta must NOT farm the floor). Like
+        # dcpo_head_member this is a diagnostic-style batch key (NOT a
+        # gdpo_reward_key), so the FIVE-WAY SYNC key/weight lists are untouched.
+        data.non_tensor_batch["dcpo_meta_floor_member"] = np.asarray(
+            [1.0 if c in TRUSTED_META_CLASSES else 0.0 for c in _fmt_classes],
             dtype=np.float32)
 
     # Diagnostics (wandb) — same as the synchronous __call__ block.
@@ -2790,8 +2801,30 @@ class SDCRayPPOTrainer(RayPPOTrainer):
         # so banning only the opener leaves a CF leak path that contaminates
         # c_without. </think> (151668) stays ALLOWED — the CF must still close think.
         _meta_close_id = int(meta_open) + 1  # 151670 <|/meta|> (adjacent vocab id)
+        # v3m CF signature suppression: banning only the TWO tag ids let the model
+        # leak the reflection as PLAIN TEXT ("confidence: …"), which the leak guard
+        # then ungrades — silencing R_meta (v3l: ~3/4 of CFs discarded, rmeta_pos→0).
+        # Also down-bias the field-label first tokens so the CF answers directly
+        # with no reflection block, raising the gradable-c_without rate. Config-
+        # gated (default ON) + computed ONCE (cached). Absence-tolerant.
+        _suppress_sig = bool(getattr(self.config.algorithm, "dcpo_cf_suppress_signature", True))
+        _sig_ids = []
+        if _suppress_sig:
+            # Cache only a NON-EMPTY result: a transient first-call tokenizer
+            # failure yields [] (signature_suppression_ids swallows exceptions);
+            # caching [] would disable suppression for the WHOLE run (`[] is None`
+            # is False). `if not _sig_ids` retries until it resolves real ids.
+            _sig_ids = getattr(self, "_dcpo_cf_sig_ids", None)
+            if not _sig_ids:
+                _sig_ids = signature_suppression_ids(
+                    lambda s: self.tokenizer.encode(s, add_special_tokens=False))
+                if _sig_ids:
+                    self._dcpo_cf_sig_ids = _sig_ids
+        _base_bias = {int(meta_open): -100.0, _meta_close_id: -100.0}
+        for _sid in _sig_ids:
+            _base_bias[int(_sid)] = -100.0
         for k in range(n_pad):
-            bias[k] = {int(meta_open): -100.0, _meta_close_id: -100.0}
+            bias[k] = dict(_base_bias)
         cf_batch.non_tensor_batch["cf_logit_bias"] = bias
 
         # validate=False keeps it on the train sampling path (no val_kwargs override);

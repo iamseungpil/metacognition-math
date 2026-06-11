@@ -63,6 +63,18 @@ algorithm:
   # 4th routed head (v3 format fix): drift-block penalty routed onto the
   # FORMAT_VIOLATION mask (dcpo_region.compose_dcpo_region_advantage R_format).
   dcpo_w_format: 0.1
+  # ── v3m anti-collapse meta FLOOR ──────────────────────────────────────────
+  # +meta_floor UN-CENTERED advantage on TRUSTED-meta rows' META_CONTENT tokens
+  # (post Dr.GRPO centering, so it survives — a pre-centering constant cancels).
+  # Offsets the FORMAT-penalty collapse pressure that drove meta_emit 0.5→0 by
+  # step 60 in v3l. Keeps the meta channel OPEN; the centered R_meta still grades
+  # useful-vs-harmful meta on top. 0.0 disables (pre-v3m behavior).
+  dcpo_meta_floor: 0.1
+  # v3m CF leak fix: also suppress the meta field-label first tokens
+  # (confidence/assessment/action) during CF generation so the counterfactual
+  # answers directly with no reflection block, instead of leaking the reflection
+  # as plain text (which the leak guard ungrades → R_meta silent). true = ON.
+  dcpo_cf_suppress_signature: true
   # ── v3 counterfactual meta-ablation ───────────────────────────────────────
   # Installs the CF 2nd-generation wrap (gated, additive). After the main gen, each
   # rollout is cut at its first <|meta|> and regenerated with token 151669 suppressed

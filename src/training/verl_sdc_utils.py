@@ -294,6 +294,12 @@ def _compute_dcpo_region_advantage(
     # ALL rows, byte-identical to the pre-fix path.
     _member = non_tensor_batch.get("dcpo_head_member", None)
 
+    # v3m anti-collapse floor: +dcpo_meta_floor on trusted-meta rows'
+    # META_CONTENT tokens (post-centering bias). ABSENCE-TOLERANT (.get None —
+    # v2 / older ckpts whose populators never write the member key; floor 0.0 by
+    # default): compose then adds nothing, byte-identical to the pre-v3m path.
+    _floor_member = non_tensor_batch.get("dcpo_meta_floor_member", None)
+
     return compose_dcpo_region_advantage(
         response_mask=response_mask.float(),
         index=index,
@@ -309,6 +315,11 @@ def _compute_dcpo_region_advantage(
         w_corr=float(config.get("dcpo_w_corr", 1.0)),
         w_meta=float(config.get("dcpo_w_meta", 0.5)),
         w_cal=float(config.get("dcpo_w_cal", 0.3)),
+        meta_floor=float(config.get("dcpo_meta_floor", 0.0)),
+        floor_mask=(
+            np.asarray(_floor_member, dtype=np.float32)
+            if _floor_member is not None else None
+        ),
         **_fmt_kwargs,
     )
 

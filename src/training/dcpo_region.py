@@ -100,6 +100,42 @@ def _has_meta_signature(text: str) -> bool:
     return bool(_META_SIGNATURE_RE.search(text or ""))
 
 
+# v3m: the field-label words the CF leak guard (_META_SIGNATURE_RE) detects.
+_META_SIGNATURE_WORDS = ("confidence", "assessment", "action")
+
+# v3m anti-collapse floor: rows whose meta region is TRUSTED (region routing is
+# reliable) and therefore eligible for the +meta_floor emission bias. Mirrors the
+# effective fmt_class names verl_sdc stashes: replaced tier-1 rows keep their
+# original swapped/dup_open/reversed names; drift rows are content-anchor
+# recovered. discard / truncation / no_meta are EXCLUDED (no trusted meta to lift).
+TRUSTED_META_CLASSES = frozenset(
+    {"wellformed", "swapped", "dup_open", "reversed", "drift"}
+)
+
+
+def signature_suppression_ids(encode_fn, words=_META_SIGNATURE_WORDS):
+    """First-token ids of the meta field-label words (+ space / capitalized
+    variants) for CF logit_bias suppression (v3m).
+
+    Banning only the two meta TAG ids let the model leak the reflection as plain
+    text ("confidence: …"); the leak guard then ungrades that CF, silencing
+    R_meta (v3l: ~3/4 of CFs discarded). Suppressing the first token of each
+    field label pushes the CF toward "answer directly, no reflection block" so
+    more c_without grade. `encode_fn(str) -> list[int]` (e.g. a tokenizer's
+    encode with add_special_tokens=False). Returns a sorted unique id list.
+    """
+    ids = set()
+    for w in words:
+        for variant in (w, " " + w, w.capitalize(), " " + w.capitalize()):
+            try:
+                toks = encode_fn(variant)
+            except Exception:
+                continue
+            if toks:
+                ids.add(int(toks[0]))
+    return sorted(ids)
+
+
 def classify_dcpo_format(
     resp_ids,
     response_mask,
@@ -993,6 +1029,8 @@ def compose_dcpo_region_advantage(
     w_format: float = 0.1,
     format_ok_mask=None,
     member_mask=None,
+    meta_floor: float = 0.0,
+    floor_mask=None,
 ):
     """Independent per-head group-mean-subtract + per-region token routing (§2.3).
 
@@ -1023,6 +1061,18 @@ def compose_dcpo_region_advantage(
     shifts every sibling by (d/n)·mean(siblings)). The FORMAT head deliberately
     keeps EVERY row: discard's -1 vs wellformed's +1 IS the intended relative
     format signal. member_mask=None -> byte-identical to the pre-fix compose.
+
+    v3m anti-collapse FLOOR (OPTIONAL `meta_floor` + `floor_mask`): a small
+    POSITIVE, UN-CENTERED advantage bias added onto the META_CONTENT tokens of
+    TRUSTED-meta rows (floor_mask[B] 0/1 = wellformed/replaced/drift-recovered).
+    It is added AFTER the Dr.GRPO group-mean-subtract on purpose: a constant
+    folded into R_meta BEFORE centering cancels (the group mean absorbs any term
+    common to all rows), silently doing nothing. Routed post-centering it
+    survives, giving "emit a trusted wellformed meta" a fixed +meta_floor pull
+    that offsets the FORMAT-penalty collapse pressure (v3l: meta_emit 0.5→0 by
+    step 60). The CENTERED Â_meta still rides on top, so R_meta keeps deciding
+    useful-vs-harmful meta — the floor only keeps the channel OPEN, it does not
+    grade content. meta_floor=0.0 / floor_mask=None -> byte-identical.
     """
     rm = torch.as_tensor(response_mask, dtype=torch.float32)
     device = rm.device
@@ -1050,5 +1100,18 @@ def compose_dcpo_region_advantage(
             # row's own positions only.
             fv = fv + torch.as_tensor(format_ok_mask, dtype=torch.float32).to(device)
         advantages = advantages + w_format * A_format * fv * rm
+
+    # v3m anti-collapse floor: UN-CENTERED +meta_floor PER TRUSTED-META ROW
+    # (added AFTER centering so it survives — see docstring). Spread evenly over
+    # the row's META_CONTENT tokens so the row TOTAL is exactly +meta_floor,
+    # length-NEUTRAL: a per-token +meta_floor would pay 0.1×(#meta tokens),
+    # rewarding verbose useless meta (a length-farm hack). R_meta keeps its
+    # per-token routing (Â_meta>0 only for USEFUL meta, so length there is fine);
+    # the floor is a flat emission bonus, not a "write more meta" incentive.
+    if meta_floor and floor_mask is not None:
+        fl = torch.as_tensor(floor_mask, dtype=torch.float32).to(device).view(-1, 1)  # [B,1]
+        meta_in_resp = meta_c * rm
+        row_n = meta_in_resp.sum(dim=1, keepdim=True).clamp(min=1.0)  # [B,1] meta-token count
+        advantages = advantages + float(meta_floor) * fl * (meta_in_resp / row_n)
 
     return advantages, advantages

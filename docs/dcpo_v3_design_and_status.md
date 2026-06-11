@@ -101,7 +101,8 @@ reward key를 추가/변경할 때 다음 다섯 곳이 **반드시 함께** 움
 | v3h | 노드 하드웨어 장애 3회 (선점 아님; H100 Standard 154 GPU 여유 확인) | H100엔 Premium 없음, 리전 선택 불가 → save_freq로 대응 |
 | v3j | step 0–3 커밋, rmeta_pos 상승 확인 — **형식 오배달 발견으로 중단** | 768 rollout 감사가 17% 오배달 적발 |
 | v3k | 게이트 작동 실증 (acc_with 0.50 > acc_without 0.35–0.42 첫 역전), step 12 도달 | 게이트만으론 신호 희소화; 태그 중립의 비대칭 발견 |
-| v3l | 3-tier 형식 전략 (이 문서) — 진행 중 | |
+| v3l | 3-tier 형식 전략 도달, **step 60에 meta_emit 0.5→0 완전 붕괴** (이후 65 step 죽은 채 컴퓨트 소모) | **형식페널티가 붕괴 엔진**: 망가진 메타 16~24%만 정상 → 구분자가 −1, 안 뱉으면 페널티 0 → emit→0; R_meta 침묵(rmeta_pos<2%)이라 균형추 없음 |
+| v3m | 붕괴방지 floor + CF 시그니처 억제 (§7) — 진행 중 | meta_emit를 0으로 못 가게 채널을 강제로 열어둠 + R_meta 침묵 해소 |
 
 **amlt 운영 함정**: ① `amlt cancel`은 **repo 디렉토리 안에서만** 동작 — 밖에서 실행하면
 조용히 실패하므로 반드시 `status`로 killed 확인. ② 같은 HF ckpt repo를 쓰는 새 run 제출 전
@@ -125,3 +126,41 @@ reward key를 추가/변경할 때 다음 다섯 곳이 **반드시 함께** 움
 
 최종 판정은 gs300의 standalone eval (1030문제, 16k): AIME 포함 정확도+ECE를
 base 0.786 / inject 0.609 / v1 / e8 0.742와 비교.
+
+## 7. v3m 붕괴방지 — meta FLOOR + CF 시그니처 억제 (2026-06-11)
+
+v3l의 정의적 실패: **meta_emit 0.5 → 0 (step 60), 이후 죽은 채 65 step.** 원인은
+**메타 토큰에 대한 비대칭 압력** — 형식페널티(−1)가 망가진 메타(전체의 76~84%)의
+구분자를 때리는데, 모델이 이를 피하는 최단 경로는 "더 잘 쓰기"가 아니라 "**아예 안
+뱉기**"(구분자 없음 → 페널티 0). 유일한 균형추인 R_meta는 rmeta_pos<2%로 침묵.
+
+세 가지 일을 **세 메커니즘으로 분리**해 푼다:
+
+| 일 | 메커니즘 | 비고 |
+|---|---|---|
+| 채널 열기 (붕괴방지) | **meta FLOOR** (신규) | 보상 아님, 발행 바닥 |
+| 형식 가르치기 | format head (유지, w 0.1) | 변경 없음 |
+| 내용 가치 매기기 | R_meta (CF 침묵 해소) | 인과 신호 복원 |
+
+**(A) FLOOR (`dcpo_meta_floor: 0.1`)** — TRUSTED 메타 행(wellformed / replaced /
+drift-recovered)의 META_CONTENT 토큰에 **그룹센터링 *이후* 비중심 양수 바이어스**를
+더한다. 센터링 *전*에 더한 상수는 그룹 평균이 흡수해 **조용히 사라지므로**(상쇄) 반드시
+센터링 후에 라우팅. **행 단위 정규화**(행 총합 = meta_floor, 토큰 수로 나눔)로 길이
+중립 — 토큰당 가산이면 장황한 무용 메타로 바닥을 파먹는 length-farm이 생긴다.
+discard/truncation/no_meta는 제외(망가진 메타가 바닥 파밍 못 하게). 중심화된 Â_meta는
+그 위에 그대로 타므로 R_meta가 유용/무용 메타를 계속 구분 — floor는 채널만 연다.
+
+**(B) CF 시그니처 억제 (`dcpo_cf_suppress_signature: true`)** — CF가 태그(151669/70)
+만 막으니 모델이 `confidence:/assessment:/action:`를 평문으로 새고 누출 가드가 그 CF의
+~3/4를 미채점 → R_meta 침묵. CF logit_bias에 **필드라벨 첫 토큰**(confidence/
+assessment/action + 대문자·공백 변형)도 −100 추가 → CF가 반성 블록 없이 바로 답 →
+채점 가능한 c_without↑. CF 텍스트는 **측정 전용**(c_without 채점)이지 gradient로 안
+흐르므로 시그니처 억제의 부작용 반경은 counterfactual 추정치로 한정.
+
+**FIVE-WAY SYNC 영향 없음**: `dcpo_meta_floor_member`는 `dcpo_head_member`와 같은
+진단형 batch 키(gdpo_reward_key 아님) → 5개 보상키 리스트 불변, 부트 크래시 클래스 회피.
+authoritative 경로(`_populate_dcpo_region_keys`)에만 기록(async-rollout이 sync
+`__call__` DCPO 블록을 우회하므로 이 경로가 advantage 진실원천 — head_member 선례와 동일).
+
+검증: tests/test_dcpo_v3m.py (상쇄-회피 / 길이중립 / trusted-set / 시그니처 id) +
+test_dcpo_v3_cf.py CF bias 통합 테스트, 134 pass. 적대적 리뷰에서 7개 안전축 전부 PASS.

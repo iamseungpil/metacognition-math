@@ -161,11 +161,21 @@ class FakeTokenizer:
     def decode(self, ids, skip_special_tokens=True):
         return " ".join(f"t{int(t)}" for t in ids)
 
+    def encode(self, s, add_special_tokens=False):
+        # deterministic first-token id per signature variant (v3m suppression):
+        # strip + lowercase the first word → fixed id (collisions intended so
+        # space/case variants dedup, like a real BPE merges " word"/"word").
+        word = s.strip().lower().split()[0] if s.strip() else ""
+        return [{"confidence": 700, "assessment": 800, "action": 900}.get(word, 1)]
 
-def _mk_trainer():
+
+def _mk_trainer(suppress_signature=False):
     """A bare object carrying ONLY the CF methods bound from the real class."""
     t = types.SimpleNamespace()
     t.tokenizer = FakeTokenizer()
+    t.config = types.SimpleNamespace(
+        algorithm=types.SimpleNamespace(
+            dcpo_cf_suppress_signature=suppress_signature))
     t._dcpo_cf = True
     # bind the real unbound methods
     cls = V.SDCRayPPOTrainer
@@ -259,6 +269,31 @@ def test_call_engine_builds_cf_batch_and_calls_same_generate():
     assert len(texts) == 2
     assert texts[0] == "t11 t12"
     assert texts[1] == "t13"  # right-pad (attn 0) stripped
+
+
+def test_call_engine_signature_ids_present_in_bias():
+    # v3m: with dcpo_cf_suppress_signature ON, the field-label first tokens
+    # (confidence/assessment/action → 700/800/900 in FakeTokenizer) are added to
+    # EVERY row's bias alongside the two meta tag ids, pushing the CF to answer
+    # directly so c_without grades (R_meta less silent).
+    captured = {}
+    gb = FakeGenBatch(["pA", "pB", "pC"], meta_info={"global_steps": 7})
+    t = _mk_trainer(suppress_signature=True)
+
+    def fake_generate(cf_batch):
+        captured["cf_batch"] = cf_batch
+        return FakeGenOutput(
+            prompts=torch.zeros((2, 3), dtype=torch.long),
+            responses=torch.tensor([[11, 12], [13, 0]]),
+            attention_mask=torch.tensor([[1, 1, 1, 1, 1], [1, 1, 1, 1, 0]]),
+        )
+
+    t._dcpo_cf_orig_generate = fake_generate
+    t._dcpo_cf_call_engine(gb, [[1, 2, 3], None, [4, 5]], [0, 2], META_OPEN)
+    b = captured["cf_batch"].non_tensor_batch["cf_logit_bias"][0]
+    # base meta tags PLUS the three signature first-token ids, all -100.0.
+    assert b[META_OPEN] == -100.0 and b[META_OPEN + 1] == -100.0
+    assert b[700] == -100.0 and b[800] == -100.0 and b[900] == -100.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════
