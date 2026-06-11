@@ -19,6 +19,8 @@ Spec traceability (docs/superpowers/specs/2026-06-11-dcpo-v4-likelihood-rmeta-de
 """
 from __future__ import annotations
 
+import re
+
 import numpy as np
 
 # Aggregation menu the offline probe decides among (spec §2). max-minus-min is NOT
@@ -167,10 +169,17 @@ def ngram_overlap_guard(meta_text: str, continuation_text: str, n: int = 8,
          the fraction of word-level n-grams of the meta that also occur in the
          continuation reaching `threshold` (guard 2).
     Metas shorter than n words carry no n-grams -> valid on the overlap axis.
+
+    Guard 1 is BOUNDARY-AWARE (review round 1): a bare `ans in meta_text` tripped
+    on 36.7% of single-char-answer rows (e8_goldfree) — boxed "7" inside
+    "confidence: 0.7", boxed "2" inside step numbering — silently zeroing R_meta
+    + member on a GSM8K-skewed (easy/short-answer) population. The \\w/. lookarounds
+    keep genuine standalone answer statements ("the answer is 7") firing while
+    decimal fragments and word/number substrings pass.
     """
     if boxed_answer is not None:
         ans = str(boxed_answer).strip()
-        if ans and ans in meta_text:
+        if ans and re.search(rf"(?<![\w.]){re.escape(ans)}(?![\w.])", meta_text):
             return True
     meta_words = meta_text.split()
     cont_words = continuation_text.split()

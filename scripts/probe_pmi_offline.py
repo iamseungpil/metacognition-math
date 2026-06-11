@@ -9,7 +9,9 @@ spec C3), teacher-forced at **T=1.0** (spec M1 — logits are never divided).
 Report (spec §3 kill criteria):
   (a) Δ-aggregate distribution stats per aggregation method;
   (b) correct-vs-wrong AUC per method, SPLIT by leak-bias population (spec I5):
-      metas matching the v3 signature regex (entangled proxy) vs not, + overall;
+      rows whose CONTINUATION echoes the v3 signature regex (entangled proxy)
+      vs clean, + overall; a split with n < MIN_SPLIT_N is flagged DEGENERATE,
+      never silently relabeled;
   (c) PLACEBO control (spec C1, KILL): contentless meta "Let me continue." in
       tags — real Δ must beat placebo Δ (paired one-sided t);
   (d) SHUFFLE control: C from a different rollout of the same problem (random
@@ -99,7 +101,6 @@ def parse_rollout(record: dict, problem_id: int):
     continuation = completion[end:]
     if not continuation.strip():
         return None
-    inner = completion[o + len(META_START):c]
     return {
         "problem_id": problem_id,
         "benchmark": record.get("benchmark", ""),
@@ -109,9 +110,15 @@ def parse_rollout(record: dict, problem_id: int):
         "completion_prefix": completion[:o],
         "meta_text": completion[o:end],
         "continuation_text": continuation,
-        # spec I5 entangled-population proxy: the v3 signature regex on the
-        # tag-EXCLUSIVE meta content (field-label lines confidence:/assessment:/action:)
-        "entangled": _has_meta_signature(inner),
+        # spec I5 entangled-population proxy — measured on the CONTINUATION,
+        # NOT the meta's own inner text: the signature regex (field-label lines
+        # confidence:/assessment:/action:) IS the required meta format, so an
+        # inner-text flag is a dead constant (100% entangled, clean n=0 on the
+        # real probe data — the Agentness-Arena Discovery-metric class). The v3
+        # CF leak guard this proxy derives from checks the GENERATED text the
+        # same way (dcpo_region cf_txt): a field-label ECHO after <|/meta|>
+        # marks the meta<->continuation-entangled rows.
+        "entangled": _has_meta_signature(continuation),
     }
 
 
@@ -430,10 +437,17 @@ def assemble_report(real_rows, placebo_rows, shuffle_rows, *, topk_frac=0.25,
         }
 
     # (e) recommendation + verdict. Method = best AUC on the entangled split
-    # (the population that dominates training, spec I5); fall back to overall
-    # when the split is too thin to trust.
-    split = "entangled" if min(report["auc"][m]["n_entangled"]
-                               for m in PMI_AGG_METHODS) >= MIN_SPLIT_N else "overall"
+    # (the population that dominates training, spec I5); the method CHOICE
+    # falls back to overall when that split is too thin — but a thin split is
+    # FLAGGED degenerate and KILL 3 then FAILS outright: the load-bearing
+    # (a)-vs-(b) contrast was never measured, and silently grading the overall
+    # AUC under the entangled name is the dead-constant-metric class this
+    # report exists to prevent (review round 1).
+    n_ent_min = min(report["auc"][m]["n_entangled"] for m in PMI_AGG_METHODS)
+    n_clean_min = min(report["auc"][m]["n_clean"] for m in PMI_AGG_METHODS)
+    ent_usable = n_ent_min >= MIN_SPLIT_N
+    split_degenerate = not ent_usable or n_clean_min < MIN_SPLIT_N
+    split = "entangled" if ent_usable else "overall"
     scored = [(m, report["auc"][m][split]) for m in PMI_AGG_METHODS
               if not math.isnan(report["auc"][m][split])]
     method = max(scored, key=lambda x: x[1])[0] if scored else "sum_clip"
@@ -442,17 +456,21 @@ def assemble_report(real_rows, placebo_rows, shuffle_rows, *, topk_frac=0.25,
     clip_c = float(np.percentile(np.abs(ra), 95)) if ra.size else float("nan")
 
     plc, shf = report["placebo"][method], report["shuffle"][method]
-    auc_ent = report["auc"][method][split]
+    auc_ent = report["auc"][method]["entangled"]
     verdict = {
         "method": method, "auc_split_used": split, "clip_c": clip_c,
+        "split_degenerate": split_degenerate,
+        "n_entangled_min": int(n_ent_min), "n_clean_min": int(n_clean_min),
         # KILL 1 (C1): real meta must beat placebo significantly
         "placebo_pass": bool(plc["mean_diff"] > 0
                              and plc["p_one_sided"] < PLACEBO_ALPHA),
         # KILL 2: shuffled-C delta collapses toward 0
         "shuffle_pass": bool(not math.isnan(shf["collapse_ratio"])
                              and shf["collapse_ratio"] < SHUFFLE_COLLAPSE_MAX),
-        # KILL 3 (I5): correct/wrong separation must hold on the entangled split
-        "auc_entangled_pass": bool(not math.isnan(auc_ent) and auc_ent > AUC_KILL),
+        # KILL 3 (I5): correct/wrong separation must hold ON THE ENTANGLED
+        # SPLIT itself — an unmeasurable split (n < MIN_SPLIT_N) fails.
+        "auc_entangled_pass": bool(ent_usable and not math.isnan(auc_ent)
+                                   and auc_ent > AUC_KILL),
     }
     verdict["overall"] = ("PASS" if (verdict["placebo_pass"] and verdict["shuffle_pass"]
                                      and verdict["auc_entangled_pass"]) else "FAIL")
@@ -494,9 +512,15 @@ def format_report_text(report: dict) -> str:
     v = report["verdict"]
     lines.append(f"(e) recommended: method={v['method']} clip_c={v['clip_c']:.4f} "
                  f"(auc split={v['auc_split_used']})")
+    if v["split_degenerate"]:
+        lines.append(f"    WARNING: I5 split DEGENERATE "
+                     f"(n_entangled={v['n_entangled_min']}, "
+                     f"n_clean={v['n_clean_min']}, min={MIN_SPLIT_N}) — the "
+                     f"(a)-vs-(b) population contrast is UNMEASURED")
     lines.append(f"{tag}VERDICT: {v['overall']} "
                  f"(placebo={v['placebo_pass']}, shuffle={v['shuffle_pass']}, "
-                 f"auc_entangled={v['auc_entangled_pass']})")
+                 f"auc_entangled={v['auc_entangled_pass']}, "
+                 f"split_degenerate={v['split_degenerate']})")
     return "\n".join(lines)
 
 

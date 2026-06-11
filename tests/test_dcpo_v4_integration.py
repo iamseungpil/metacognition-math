@@ -17,8 +17,10 @@ Covers (task spec, all review-traced):
     ref scorer (selection / alignment-failure / answer-leak guard / membership).
 """
 import os
+import types
 
 import numpy as np
+import pytest
 import torch
 
 import tests.test_dcpo_v3_cf  # noqa: F401  (installs the verl/omegaconf auto-stub)
@@ -35,6 +37,7 @@ from src.training.verl_sdc import (
 from src.training.verl_sdc_utils import (
     _compute_dcpo_region_advantage,
     compute_sdc_gdpo_advantage,
+    dcpo_length_cost,
     dcpo_w_meta_warmup_scale,
 )
 from src.training.dcpo_region import compose_dcpo_region_advantage
@@ -84,6 +87,9 @@ def test_v4_stage1_yaml_five_way_sync():
     assert float(alg["dcpo_meta_floor"]) == 0.1     # M2: floor IS the stage-1 bonus
     assert alg["dcpo_rmeta_source"] == "none"       # no likelihood scoring in stage 1
     assert alg["sdc_counterfactual"] is False       # CF machinery dormant
+    # length cost is a STAGE-2 term (introduced with the w_meta warmup, spec §2):
+    # stage 1 must leave the knob at its 0.0 default.
+    assert float(alg.get("dcpo_len_cost", 0.0)) == 0.0
 
 
 def test_v4_stage2_yaml_five_way_sync():
@@ -98,6 +104,9 @@ def test_v4_stage2_yaml_five_way_sync():
     assert float(alg["dcpo_w_cal"]) == 0.3
     assert int(alg["dcpo_w_meta_warmup_steps"]) == 50   # M4 warmup
     assert float(alg["dcpo_meta_floor"]) == 0.05        # I1: floor STAYS
+    # spec §2 mild length cost (review round 1: in-scope, NOT deferred) — small
+    # per the RLT weakness warning, warmed up alongside w_meta.
+    assert 0.0 < float(alg["dcpo_len_cost"]) <= 0.05
     assert alg["dcpo_rmeta_source"] == "pmi"
     assert alg["dcpo_meta_excl_conf"] is True           # I4 conf carve-out
     assert alg["sdc_counterfactual"] is False           # CF machinery dormant
@@ -125,6 +134,10 @@ def test_populate_writes_every_gdpo_reward_key_v4():
     assert '"dcpo_rmeta_member"' in src        # I2 centering membership
     assert '"dcpo_w_meta_scale"' in src        # M4 warmup transport
     assert "dcpo_rmeta_source" in src          # the v4 source gate
+    # spec §2 length cost: subtracted from the SAME 'correctness' key inside
+    # the v4 block (no 6th GDPO key) via the pure helper, warmup-coupled.
+    assert "dcpo_len_cost" in src
+    assert "dcpo_length_cost(" in src
 
 
 def test_v4_advantage_dispatch_routes_region_path():
@@ -244,6 +257,18 @@ def test_w_meta_warmup_schedule():
     # warmup off (v2/v3 byte-identity): no knob -> scale 1 at every step.
     assert dcpo_w_meta_warmup_scale(0, 0) == 1.0
     assert dcpo_w_meta_warmup_scale(7, None) == 1.0
+
+
+def test_dcpo_length_cost_schedule():
+    # spec §2 mild length cost: coef * (valid_len / max_len) * warmup_scale,
+    # per row, float32 — the populator subtracts this from 'correctness'.
+    out = dcpo_length_cost([0, 2048, 4096], 4096, 0.02, [1.0, 1.0, 0.5])
+    assert out.dtype == np.float32
+    np.testing.assert_allclose(out, [0.0, 0.01, 0.01], rtol=1e-6)
+    # warmup at step 0 (scale 0.0) silences the cost entirely (M4 coupling).
+    assert not dcpo_length_cost([4096], 4096, 0.02, [0.0]).any()
+    # coef 0.0 (the knob default) -> exact zeros: v4-off paths byte-identical.
+    assert not dcpo_length_cost([4096, 17], 4096, 0.0, [1.0, 1.0]).any()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -375,3 +400,68 @@ def test_compute_pmi_rmeta_ref_failure_is_crash_safe(monkeypatch):
         step=1,
     )
     assert float(np.abs(r_meta).sum()) == 0.0 and float(member.sum()) == 0.0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# M1 runtime guard (review round 1): the T=1.0 hardcode only survives on the
+# ENGINE worker path — the legacy fsdp worker clobbers meta_info["temperature"]
+# with rollout.temperature AFTER the caller sets it (silent 1/T compression).
+# ═══════════════════════════════════════════════════════════════════════════
+def _guard_trainer(legacy):
+    return types.SimpleNamespace(
+        config=types.SimpleNamespace(
+            trainer=types.SimpleNamespace(
+                use_legacy_worker_impl=legacy, nnodes=1, n_gpus_per_node=1)))
+
+
+def test_pmi_ref_guard_rejects_legacy_worker_path():
+    # legacy path enabled -> the scorer must CRASH (AssertionError), and the
+    # crash-safe wrapper must RE-RAISE it (deterministic misconfig), never
+    # swallow it into an all-zero flatline.
+    with pytest.raises(AssertionError, match="legacy fsdp worker"):
+        _compute_dcpo_v4_pmi_rmeta(
+            tokenizer=FakeMergeTokenizer(merges=()),
+            trainer=_guard_trainer("enable"),
+            prompt_texts=["P "],
+            response_texts=["w<|meta|>try<|/meta|>it equals 5."],
+            fmt_classes=["wellformed"],
+            heads={"c_with": [1.0], "answer": ["5"]},
+            read_knob=lambda name, default: default,
+            step=1,
+        )
+
+
+def test_pmi_ref_guard_unreadable_config_fails_closed():
+    # config without the knob (standalone yaml copy / future verl rename):
+    # fail CLOSED rather than risk the silent 1/T compression.
+    with pytest.raises(AssertionError, match="unreadable"):
+        _dcpo_v4_ref_logprobs(object(), {})
+
+
+def test_pmi_ref_guard_engine_path_passes_and_sets_temperature_one(monkeypatch):
+    # disable (the inherited shared-yaml value) passes the guard, and the
+    # batch handed to the ref worker carries meta_info["temperature"] == 1.0
+    # (functional M1 lock, beyond the source-level assert above).
+    captured = {}
+
+    class _FakeProto:
+        def __init__(self, tensors):
+            self.tensors = tensors
+            self.meta_info = {}
+
+        @classmethod
+        def from_dict(cls, tensors):
+            return cls(tensors)
+
+    def _ref(batch):
+        captured["temperature"] = batch.meta_info.get("temperature")
+        n, r_max = batch.tensors["responses"].shape
+        return types.SimpleNamespace(batch={"ref_log_prob": torch.zeros(n, r_max)})
+
+    trainer = _guard_trainer("disable")
+    trainer._compute_ref_log_prob = _ref
+    monkeypatch.setattr(V, "DataProto", _FakeProto)
+    tensors, real_n = _build_pmi_score_batches([[1, 2]], [[3, 4]], 1)
+    out = _dcpo_v4_ref_logprobs(trainer, tensors)
+    assert captured["temperature"] == 1.0
+    assert real_n == 1 and out.shape == (1, 2)

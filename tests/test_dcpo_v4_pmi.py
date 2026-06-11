@@ -305,6 +305,24 @@ def test_guard_boxed_answer_leak():
     assert ngram_overlap_guard(meta, _CONT, boxed_answer=None) is False
 
 
+def test_guard_boxed_answer_boundary_aware():
+    # review round 1: bare `ans in meta_text` zeroed ~37% of single-digit-answer
+    # rows (GSM8K-skewed) — the confidence decimal and step numbering are NOT
+    # answer leaks. The two mandated cases first:
+    assert ngram_overlap_guard("confidence: 0.7", _CONT, boxed_answer="7") is False
+    assert ngram_overlap_guard("the answer is 7", _CONT, boxed_answer="7") is True
+    # decimal fragments / digit-inside-number / step numbering never trip it
+    assert ngram_overlap_guard("I am about 0.75 sure here", _CONT, boxed_answer="7") is False
+    assert ngram_overlap_guard("rechecking step 27 above", _CONT, boxed_answer="7") is False
+    assert ngram_overlap_guard("as shown in step 2. we proceed", _CONT, boxed_answer="2") is False
+    # genuine standalone statements still fire, mid-sentence or punctuated
+    assert ngram_overlap_guard("so 7 must be the result", _CONT, boxed_answer="7") is True
+    assert ngram_overlap_guard("I get 7, then verify", _CONT, boxed_answer="7") is True
+    # regex metachars in the boxed answer are escaped, not interpreted
+    assert ngram_overlap_guard("the value (x+1) appears", _CONT, boxed_answer="(x+1)") is True
+    assert ngram_overlap_guard("plain text only", _CONT, boxed_answer="(x+1)") is False
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # compute_pmi_rows (probe orchestrator)
 # ═══════════════════════════════════════════════════════════════════════════

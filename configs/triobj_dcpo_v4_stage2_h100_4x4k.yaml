@@ -16,11 +16,12 @@
 #     no standing emission pull; removing the floor reopens the v3l collapse).
 #     Floor removal only as a LATE stage-2 action gated on measured emission
 #     stability.
-#   - LENGTH COST: DEFERRED. The spec's "small coefficient added to the R_corr
-#     scalar" has NO cheap hook today — R_corr is the shared correctness head
-#     (touching it leaks into every mode) and a 6th GDPO key would churn the
-#     FIVE-WAY SYNC for an explicitly-"weak, RLT-warned" term. Revisit with the
-#     warmup once stage-2 emission stability is measured.
+#   - LENGTH COST ON (spec §2 triad, third leg): dcpo_len_cost subtracts
+#     coef * (valid_response_len / max_response_len) * dcpo_w_meta_scale from
+#     the R_corr SCALAR in the v4 populator block (mode-gated; every other
+#     mode is byte-identical). Same 'correctness' key — no 6th GDPO key, the
+#     FIVE-WAY SYNC lists are untouched — and the M4 warmup couples it to
+#     w_meta exactly as the spec asks.
 # Additive: every existing mode/config/test is byte-identical when v4 is off.
 
 defaults:
@@ -76,6 +77,10 @@ algorithm:
   # habit; stage 2 only needs to hold the channel open under the length/format
   # pressure while the centered delta grades content.
   dcpo_meta_floor: 0.05
+  # Mild LENGTH COST (spec §2; "weak" per the RLT warning => small coef): a
+  # FULL-LENGTH response costs 0.02 R_corr at warmup end; warmed up alongside
+  # w_meta (M4) via dcpo_w_meta_scale. 0.0 disables (stage-1/v4-off identity).
+  dcpo_len_cost: 0.02
   # ── v4 R_meta source: PMI (dense likelihood delta, frozen ref @ T=1.0) ─────
   dcpo_rmeta_source: pmi
   # I4 conf carve-out: dense delta routes onto META_CONTENT \ CONF (the conf

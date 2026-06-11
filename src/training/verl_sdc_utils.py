@@ -249,6 +249,20 @@ def dcpo_w_meta_warmup_scale(step: int, warmup_steps: int) -> float:
     return float(min(1.0, max(0.0, float(step) / float(warmup_steps))))
 
 
+def dcpo_length_cost(valid_response_lens, max_response_length, coef, warmup_scale):
+    """TRIOBJ_DCPO_V4 mild length cost (spec §2 emission-stability triad, third
+    leg): per-row penalty `coef * (valid_response_len / max_response_length) *
+    warmup_scale`, SUBTRACTED from the R_corr scalar by the populator — same
+    'correctness' key (no 6th GDPO key, FIVE-WAY SYNC lists untouched), warmed
+    up alongside w_meta (review M4) via the per-row dcpo_w_meta_scale array.
+    coef 0.0 (the knob default) returns all-zeros: v4-off paths byte-identical.
+    Returns a float32 array of len(valid_response_lens)."""
+    lens = np.asarray(valid_response_lens, dtype=np.float32)
+    scale = np.asarray(warmup_scale, dtype=np.float32)
+    return (float(coef) * lens / float(max(1, int(max_response_length)))
+            * scale).astype(np.float32)
+
+
 def _compute_dcpo_region_advantage(
     *,
     response_mask: torch.Tensor,

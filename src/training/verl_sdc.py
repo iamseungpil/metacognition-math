@@ -82,6 +82,7 @@ from src.training.dcpo_pmi import (
 from src.training.verl_sdc_utils import (
     build_sdc_region_masks,
     compute_sdc_gdpo_advantage,
+    dcpo_length_cost,
     dcpo_w_meta_warmup_scale,
     postmeta_closure_reward,
 )
@@ -390,6 +391,28 @@ def _populate_dcpo_region_keys(data) -> None:
         _warmup_steps = int(_v4_read("dcpo_w_meta_warmup_steps", 0) or 0)
         data.non_tensor_batch["dcpo_w_meta_scale"] = np.full(
             bs, dcpo_w_meta_warmup_scale(_step, _warmup_steps), dtype=np.float32)
+        # Mild LENGTH COST (spec §2 emission-stability triad, third leg —
+        # review round 1: in-scope, NOT deferred): subtract dcpo_len_cost *
+        # (valid_response_len / max_response_len) * dcpo_w_meta_scale from the
+        # R_corr scalar. Same 'correctness' key — no 6th GDPO key, FIVE-WAY
+        # SYNC lists untouched; the M4 warmup couples it to w_meta per spec.
+        # Knob default 0.0 keeps v4-off paths AND stage 1 byte-identical.
+        _len_cost = float(_v4_read("dcpo_len_cost", 0.0) or 0.0)
+        if _len_cost != 0.0:
+            _valid_lens = (
+                data.batch["attention_mask"][:, prompt_length:]
+                .sum(dim=-1).cpu().numpy()
+            )
+            data.non_tensor_batch["correctness"] = (
+                np.asarray(data.non_tensor_batch["correctness"], dtype=np.float32)
+                - dcpo_length_cost(
+                    _valid_lens, response_length, _len_cost,
+                    data.non_tensor_batch["dcpo_w_meta_scale"])
+            ).astype(np.float32)
+            # Observability truth (same rule as the R_meta reassign above): the
+            # rollout table / trend scalars must chart the R_corr that ROUTES.
+            _heads = dict(_heads)
+            _heads["R_corr"] = [float(x) for x in data.non_tensor_batch["correctness"]]
 
     # Diagnostics (wandb) — same as the synchronous __call__ block.
     data.non_tensor_batch["dcpo_phat"] = np.asarray(_heads["p_hat"], dtype=np.float32)
@@ -1713,6 +1736,24 @@ def _dcpo_v4_ref_logprobs(trainer, tensors):
     """Score the PMI arm rows on the FROZEN ref worker. T=1.0 HARDCODED (review
     M1): the precedent inherits rollout.temperature (0.6), which compresses the
     PMI delta by 1/T — the v4 scorer must NOT copy that line."""
+    # M1 runtime guard (review round 1): the meta_info temperature below only
+    # survives on the ENGINE worker path. verl 0.7.1's LEGACY fsdp worker
+    # overwrites data.meta_info["temperature"] with rollout.temperature (0.6)
+    # AFTER this caller sets it — a silent 1/T (~1.67x) PMI compression that is
+    # invisible in the dcpo/pmi_* scalars. Both v4 yamls inherit
+    # trainer.use_legacy_worker_impl: disable from verl_sdc_e21r_shared.yaml,
+    # but a base-config change or a standalone yaml copy must CRASH step 1
+    # here instead of training on compressed deltas (fail-closed: unreadable
+    # config also raises).
+    try:
+        _legacy = str(trainer.config.trainer.use_legacy_worker_impl)
+    except Exception:
+        _legacy = "<unreadable>"
+    assert _legacy == "disable", (
+        f"v4 PMI requires the engine worker path "
+        f"(trainer.use_legacy_worker_impl=disable, got {_legacy!r}): the legacy "
+        f"fsdp worker overwrites meta_info['temperature'] with "
+        f"rollout.temperature AFTER the caller's T=1.0 (review M1)")
     batch = DataProto.from_dict(tensors=tensors)
     batch.meta_info["temperature"] = 1.0
     out = trainer._compute_ref_log_prob(batch)
@@ -1821,6 +1862,8 @@ def _compute_dcpo_v4_pmi_rmeta(
     tensors, real_n = _build_pmi_score_batches(arm_prompts, arm_resps, pad_unit)
     try:
         ref_lp = _dcpo_v4_ref_logprobs(trainer, tensors)
+    except AssertionError:
+        raise  # M1 config guard: deterministic misconfig must CRASH, not flatline
     except Exception as e:
         print(f"[DCPO-V4] PMI ref scoring FAILED ({type(e).__name__}: {e}) — "
               f"R_meta all-zero this batch (member 0; dcpo/pmi_* flatlines).",

@@ -56,11 +56,23 @@ def test_parse_rollout_splits_prefix_meta_continuation():
     assert row["boxed_answer"] == "18" and row["benchmark"] == "gsm8k"
 
 
-def test_parse_rollout_entangled_flag_uses_signature_regex():
-    # field-label lines (confidence:/assessment:/action:) -> entangled (spec I5)
-    assert parse_rollout(_record(), 0)["entangled"] is True
-    prose = _record(meta_inner="\nI should double-check the multiplication here.\n")
-    assert parse_rollout(prose, 0)["entangled"] is False
+def test_parse_rollout_entangled_measures_continuation_echo():
+    # spec I5 proxy lives on the CONTINUATION: a field-label echo after
+    # <|/meta|> marks the entangled rows (the v3 cf_txt leak-guard analog).
+    clean = parse_rollout(_record(), 0)
+    assert clean["entangled"] is False
+    echo = _record(
+        continuation="\nconfidence: 0.9\nSo the total is 18.\n</think>\n\\boxed{18}")
+    assert parse_rollout(echo, 0)["entangled"] is True
+
+
+def test_parse_rollout_entangled_not_dead_constant_on_meta_inner():
+    # review round 1 lock: the meta's OWN inner text always carries the
+    # signature (it IS the required format) — flagging on it made entangled a
+    # dead constant (100% / clean n=0). A signature-bearing meta with a clean
+    # continuation must stay CLEAN.
+    sig_meta = _record(meta_inner="\nconfidence: 0.5\nassessment: looks fine\n")
+    assert parse_rollout(sig_meta, 0)["entangled"] is False
 
 
 def test_parse_rollout_skips_malformed():
@@ -189,6 +201,7 @@ def test_assemble_report_pass_scenario_all_sections():
     assert report["recommendation"]["method"] in PMI_AGG_METHODS
     assert report["recommendation"]["clip_c"] > 0
     assert report["verdict"]["auc_split_used"] == "entangled"
+    assert report["verdict"]["split_degenerate"] is False  # both splits n=30
     assert report["verdict"]["overall"] == "PASS"
 
 
@@ -232,8 +245,34 @@ def test_assemble_report_tolerates_alignment_failures_and_falls_back():
     report = assemble_report(real, placebo, shuffle)
     assert report["alignment_failures"]["real"] == 1
     assert report["delta_stats"]["mean"]["n"] == 9  # NaN row excluded
-    # < MIN_SPLIT_N entangled rows -> verdict falls back to the overall AUC
+    # < MIN_SPLIT_N entangled rows -> the method CHOICE falls back to overall,
+    # but the degenerate split is FLAGGED and KILL 3 fails (review round 1:
+    # never the overall AUC under the entangled name).
     assert report["verdict"]["auc_split_used"] == "overall"
+    assert report["verdict"]["split_degenerate"] is True
+    assert report["verdict"]["auc_entangled_pass"] is False
+    assert report["verdict"]["overall"] == "FAIL"
+
+
+def test_assemble_report_degenerate_split_fails_kill3_loudly():
+    # all-clean population (entangled n=0): perfect OVERALL separation must NOT
+    # pass KILL 3 — the load-bearing (a)-vs-(b) contrast was never measured.
+    real, placebo, shuffle = [], [], []
+    for i in range(60):
+        correct = i < 40
+        real.append(_stub_row(1.5 if correct else -0.5, correct, False))
+        placebo.append(_stub_row(0.0, correct, False))
+        shuffle.append(_stub_row(0.0, correct, False))
+    report = assemble_report(real, placebo, shuffle)
+    v = report["verdict"]
+    assert report["auc"][v["method"]]["overall"] == 1.0
+    assert v["auc_split_used"] == "overall"
+    assert v["split_degenerate"] is True and v["n_entangled_min"] == 0
+    assert v["auc_entangled_pass"] is False
+    assert v["overall"] == "FAIL"
+    # the report text carries the loud warning, not a silent relabel
+    text = format_report_text(report)
+    assert "DEGENERATE" in text and "split_degenerate=True" in text
 
 
 def test_format_report_text_has_sections_and_verdict():
