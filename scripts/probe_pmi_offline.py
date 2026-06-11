@@ -148,12 +148,22 @@ def load_rollouts(data_path: str, max_rows: int | None = None) -> list[dict]:
     return rows
 
 
-def pick_shuffle_partners(rows: list[dict], seed: int = 0) -> list[int]:
+def pick_shuffle_partners(rows: list[dict], seed: int = 0,
+                          mode: str = "same_problem") -> list[int]:
     """Per row, the index whose continuation feeds the SHUFFLE control (spec §3).
 
-    Deterministic cyclic next-rollout within the same problem; falls back to a
-    seeded random row from a DIFFERENT problem when the row has no usable sibling
-    (singleton problem, or identical continuation text).
+    mode='same_problem' (default, spec §3): deterministic cyclic next-rollout
+    within the same problem; falls back to a seeded random row from a DIFFERENT
+    problem when the row has no usable sibling (singleton problem, or identical
+    continuation text).
+
+    mode='cross_problem': seeded random row from a DIFFERENT problem for EVERY
+    row. Disambiguates the same-problem control's confound (sibling rollouts of
+    one problem share the same solution → near-identical continuations, measured
+    mean similarity ~0.49 on e8 — a non-collapsing same-problem shuffle can mean
+    EITHER generic-template signal OR legitimate shared-solution content). A
+    cross-problem partner removes the shared-solution explanation: surviving
+    delta here IS template-generic.
     """
     rng = np.random.default_rng(seed)
     by_pid: dict[int, list[int]] = {}
@@ -161,6 +171,11 @@ def pick_shuffle_partners(rows: list[dict], seed: int = 0) -> list[int]:
         by_pid.setdefault(r["problem_id"], []).append(i)
     partners = []
     for i, r in enumerate(rows):
+        if mode == "cross_problem":
+            others = [k for k in range(len(rows))
+                      if rows[k]["problem_id"] != r["problem_id"]]
+            partners.append(int(rng.choice(others)) if others else i)
+            continue
         group = by_pid[r["problem_id"]]
         j = group[(group.index(i) + 1) % len(group)]
         if j == i or rows[j]["continuation_text"] == r["continuation_text"]:
@@ -588,6 +603,12 @@ def main():
                     help="5 rows, asserts the pipeline end-to-end (no statistical meaning)")
     ap.add_argument("--out", default=None, help="JSON report path")
     ap.add_argument("--seed", type=int, default=0, help="shuffle-partner fallback seed")
+    ap.add_argument("--shuffle-mode", choices=["same_problem", "cross_problem"],
+                    default="same_problem",
+                    help="SHUFFLE-control partner pool: same_problem (spec §3 "
+                         "default; confounded by sibling solution duplication) or "
+                         "cross_problem (disambiguation re-test: surviving delta "
+                         "is template-generic)")
     args = ap.parse_args()
 
     import torch
@@ -601,7 +622,7 @@ def main():
     for row in rows:
         row["prefix_text"] = (render_chat_prompt(tokenizer, row["question"])
                               + row["completion_prefix"])
-    partners = pick_shuffle_partners(rows, seed=args.seed)
+    partners = pick_shuffle_partners(rows, seed=args.seed, mode=args.shuffle_mode)
     sequences = align_rows(rows, partners, tokenizer)
     print(f"[probe] {len(sequences)} unique sequences to score "
           f"(max len {max(map(len, sequences))})")
