@@ -73,6 +73,12 @@ class _AutoStubFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     def find_spec(self, fullname, path, target=None):
         root = fullname.split(".")[0]
         if root in _AUTO_STUB_PREFIXES and fullname not in sys.modules:
+            # Stub only MISSING deps: a genuinely installed package (e.g. real
+            # `datasets` in the metaprobe env) must win, else this finder
+            # shadows it for every later-collected test module (the
+            # test_self_distill_* suites need the real Dataset.from_pandas).
+            if importlib.machinery.PathFinder.find_spec(fullname, path) is not None:
+                return None
             return importlib.machinery.ModuleSpec(fullname, self)
         return None
 

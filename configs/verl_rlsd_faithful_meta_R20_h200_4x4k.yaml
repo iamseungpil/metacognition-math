@@ -1,0 +1,98 @@
+# R20 — RLSD_FAITHFUL_META (GFN_SGFN_IMPROVEMENT_PLAN iter-3 SURVEY-GROUNDED
+# LOCK, direction B core; memory project_gfn_sgfn_plan_v3_lock).
+#
+# "RLSD-faithful meta-token credit": restore the RLSD sign/magnitude separation
+# that ROD_*/clip break (diagnosed causes C1 throttle + C2 meta_penalty sign
+# injection vs E21Rv2):
+#   SIGN      ← env correctness ONLY (correctness-only reward head — NO
+#               meta_penalty, so base_advantages sign is pure env reward).
+#   MAGNITUDE ← teacher ONLY, single LOG-SYMMETRIC bound w_meta ∈ [1/w_max,
+#               w_max] (sdc_faithful_w_max) instead of the order-destroying
+#               ±ε clip (see verl_sdc_utils sdc_mode=="RLSD_FAITHFUL_META").
+# Single teacher (T+ only) → beta_contrast 0. Locked by
+# tests/test_rlsd_faithful_meta_smoke.py (config-content assertions).
+
+defaults:
+  - verl_sdc_e21r_shared
+  - _self_
+
+# Single source of truth — verl_sdc.py overwrites algorithm.sdc_mode at runtime
+# with this top-level `mode` (same contract as verl_e4_selfdistill_h200_4x4k).
+mode: RLSD_FAITHFUL_META
+
+data:
+  max_prompt_length: 2048
+  max_response_length: 4096
+  train_batch_size: 64
+  val_batch_size: 16
+
+actor_rollout_ref:
+  model:
+    path: /scratch/models/v8_meta_inside_strict_sft   # SFT_V8_STRICT cold start
+  actor:
+    ppo_mini_batch_size: 8
+    ppo_micro_batch_size_per_gpu: 1
+    ppo_max_token_len_per_gpu: 24576
+  ref:
+    log_prob_micro_batch_size_per_gpu: 4
+    log_prob_max_token_len_per_gpu: 24576
+  rollout:
+    tensor_model_parallel_size: 4
+    temperature: 0.6
+    top_k: 20
+    top_p: 0.95
+    response_length: ${data.max_response_length}
+    gpu_memory_utilization: 0.45
+    max_model_len: 4608
+    max_num_batched_tokens: 8192
+    max_num_seqs: 32
+    log_prob_micro_batch_size_per_gpu: 4
+    n: 4
+
+critic:
+  ppo_micro_batch_size_per_gpu: 1
+  forward_micro_batch_size_per_gpu: 1
+  ppo_max_token_len_per_gpu: 24576
+  forward_max_token_len_per_gpu: 24576
+
+reward_model:
+  micro_batch_size: 4
+
+algorithm:
+  # C2 fix: correctness-ONLY head (REWARD_CONFIGS["RLSD_FAITHFUL_META"]) — the
+  # asymmetric presence-only meta_penalty would inject a teacher/presence SIGN
+  # term into base_advantages on the meta region.
+  gdpo_reward_keys: [correctness]
+  gdpo_reward_weights: [1.0]
+  kl_ctrl:
+    type: fixed
+    kl_coef: 0.005
+  # NOTE: FUNCTIONALLY A NO-OP — runtime sdc_mode comes from the top-level
+  # `mode` above. Kept in sync so a config audit does not mis-read the run.
+  sdc_mode: RLSD_FAITHFUL_META
+  sdc_enabled: true
+  sdc_lambda_meta: 0.5
+  sdc_lambda_shared: 0.0
+  sdc_lambda_diff: 0.0
+  sdc_alpha_attr: 1.0        # α — attractive (T+ − student) on the meta region
+  sdc_beta_contrast: 0.0     # single teacher (T+ only) — no contrast arm
+  sdc_meta_quality_tau: 1.0
+  sdc_meta_post_k: 10
+  sdc_log_ratio_clamp: 10.0
+  # C1 fix (un-throttle): log-symmetric magnitude bound w_meta ∈ [1/w_max,
+  # w_max] — ~20x wider than the ROD clip [0.8, 1.2], preserves the teacher's
+  # relative magnitude ordering; only extreme tails saturate.
+  sdc_faithful_w_max: 4.0
+
+trainer:
+  nnodes: 1
+  n_gpus_per_node: 4
+  device: cuda
+  project_name: skilldiscovery2          # match the amlt WANDB_PROJECT
+  experiment_name: verl_rlsd_faithful_meta_R20_h200_4x4k
+  default_local_dir: /scratch/checkpoints/verl_rlsd_faithful_meta_R20_h200_4x4k
+  logger: ['console', 'wandb']
+  save_freq: 5               # frequent — H200 preempt resilience
+  test_freq: 25              # eval GSM8K/MATH/AIME + ECE to wandb
+  total_epochs: 20
+  total_training_steps: 300

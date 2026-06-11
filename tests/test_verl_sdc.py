@@ -4,9 +4,25 @@ import os
 import sys
 
 import numpy as np
+import pytest
 import torch
-from verl import DataProto
-from verl.trainer.ppo.core_algos import AdvantageEstimator
+
+try:
+    from verl import DataProto
+    from verl.trainer.ppo.core_algos import AdvantageEstimator
+except ModuleNotFoundError:
+    pytest.skip("verl not installed (cluster-env suite)", allow_module_level=True)
+
+# In-suite, test_dcpo_v3_cf's auto-stub finder makes `import verl` succeed with
+# blank stubs — tests that call into the REAL GDPO-patched verl (the fork adds
+# AdvantageEstimator.GDPO / DataProto.from_dict / compute_gdpo_outcome_advantage)
+# must skip on the stub rather than fail on blank attributes. Pure-python tests
+# (mask building, decode, contrast strings) still run everywhere.
+requires_real_verl = pytest.mark.skipif(
+    not hasattr(AdvantageEstimator, "GDPO"),
+    reason="requires the GDPO-patched verl (cluster env); local env only has "
+           "the auto-stub",
+)
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
@@ -61,6 +77,7 @@ def test_postmeta_closure_reward_prefers_clean_commit():
     assert good_score > bad_score
 
 
+@requires_real_verl
 def test_compute_sdc_gdpo_advantage_routes_regions():
     response_mask = torch.tensor([[1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0]])
     batch = {
@@ -114,6 +131,7 @@ def test_compute_sdc_gdpo_advantage_routes_regions():
     assert adv[0, 1].abs().item() <= adv[0, 2].abs().item() + 1e-6
 
 
+@requires_real_verl
 def test_attach_teacher_signals_adds_token_logprobs():
     tok = DummyCharTokenizer()
 
@@ -155,6 +173,7 @@ def test_attach_teacher_signals_adds_token_logprobs():
         verl_sdc_mod._ACTIVE_SDC_CONTEXT.update(old_ctx)
 
 
+@requires_real_verl
 def test_is_gdpo_estimator_handles_string_and_enum():
     assert verl_sdc_mod._is_gdpo_estimator("gdpo") is True
     assert verl_sdc_mod._is_gdpo_estimator(AdvantageEstimator.GDPO) is True
@@ -229,6 +248,7 @@ def test_build_sdc_region_masks_falls_back_on_degenerate_offsets():
     assert diff[payload_idx].item() == 1.0
 
 
+@requires_real_verl
 def test_teacher_prompt_omits_synthetic_answer_separator():
     # The teacher batch must condition on exactly what the actor sees
     # ({prompt}{answer}) — not inject a synthetic " Answer: " that the policy
@@ -299,6 +319,7 @@ def _with_variant(variant):
     return old
 
 
+@requires_real_verl
 def test_contrast_variant_default_decoy_byte_identical():
     # Unset variant → the .get(..., "decoy") default → the UNCHANGED f-string.
     old = _with_variant(None)
@@ -317,6 +338,7 @@ def test_contrast_variant_default_decoy_byte_identical():
         verl_sdc_mod._ACTIVE_SDC_CONTEXT.update(old)
 
 
+@requires_real_verl
 def test_contrast_variant_stance_contexts():
     old = _with_variant("stance")
     try:
@@ -335,6 +357,7 @@ def test_contrast_variant_stance_contexts():
         verl_sdc_mod._ACTIVE_SDC_CONTEXT.update(old)
 
 
+@requires_real_verl
 def test_contrast_variant_conf_contexts():
     old = _with_variant("conf")
     try:
@@ -417,6 +440,7 @@ def _attach_capture(variant):
     return captured
 
 
+@requires_real_verl
 def test_attach_teacher_signals_stance_uses_gold_both_sides():
     # stance: the T- (2nd) teacher prompt must carry GOLD (42), proving the
     # answer-cancel invariant — NOT the rule-based decoy of 42.

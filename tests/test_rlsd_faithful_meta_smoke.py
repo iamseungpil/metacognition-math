@@ -28,6 +28,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 import torch
 
+try:  # cluster env has the real verl/ray stack
+    import ray  # noqa: F401
+except ModuleNotFoundError:
+    # local (metaprobe) env: importing tests.test_dcpo_v3_cf installs the
+    # auto-stub finder so the lazy `from src.training.verl_sdc import ...`
+    # inside the tests below resolves (same pattern as the v4 test files).
+    import tests.test_dcpo_v3_cf  # noqa: F401
+
 
 # ─── 1. Reward-config wiring: correctness-ONLY (C2 fix) ───────────────────────
 

@@ -18,6 +18,18 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 
+# Every sys.modules name _install_verl_stubs may FORCE-replace. The fixture
+# snapshots these before stubbing and restores them after the module's tests,
+# so the stub torch (etc.) cannot leak into later test modules (real torch ops
+# resolve `torch.SymFloat` through sys.modules at call time — a leaked stub
+# breaks tensor indexing in every module that runs after this one).
+_STUBBED_NAMES = (
+    "torch", "ray", "tensordict", "numpy", "hydra",
+    "verl", "verl.trainer", "verl.trainer.ppo", "verl.trainer.ppo.ray_trainer",
+    "src.training.verl_sdc_utils", "src.training.verl_sdc",
+)
+
+
 def _install_verl_stubs():
     """Minimal fake modules so src.training.verl_sdc imports far enough to build
     REWARD_CONFIGS, without pulling in the real verl/ray/torch stack."""
@@ -80,6 +92,7 @@ def _install_verl_stubs():
     vsu = _stub("src.training.verl_sdc_utils", force=True)
     vsu.build_sdc_region_masks = lambda *a, **k: None
     vsu.compute_sdc_gdpo_advantage = lambda *a, **k: None
+    vsu.dcpo_w_meta_warmup_scale = lambda *a, **k: 1.0
 
     # postmeta_closure_reward is a REAL reward func used by SDC_SHARED's `funcs`.
     # It lives in verl_sdc_utils (torch/verl deps) so we can't import it here;
@@ -98,10 +111,16 @@ def _install_verl_stubs():
 
 @pytest.fixture(scope="module")
 def reward_configs():
+    saved = {name: sys.modules.get(name) for name in _STUBBED_NAMES}
     _install_verl_stubs()
     from src.training.verl_sdc import REWARD_CONFIGS
 
-    return REWARD_CONFIGS
+    yield REWARD_CONFIGS
+    for name, mod in saved.items():
+        if mod is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = mod
 
 
 def _snapshot(cfg):
@@ -202,6 +221,35 @@ EXPECTED = {
         "weights": [1.0, 0.35, 0.30, 0.15, 0.5, 1.0],
         "keys": ["correctness", "confidence_revision", "redirect_execution",
                  "verify_execution", "meta_floor", "meta_count_bonus"],
+    },
+    # tri-objective family (post-E.9 additions, snapshotted on registration)
+    "TRIOBJ_META_V1": {
+        "funcs": ["correctness_reward", "meta_revision_utility_reward",
+                  "meta_commit_shape_reward"],
+        "weights": [1.0, 0.5, 0.3],
+        "keys": ["correctness", "meta_revision_utility", "meta_commit_shape"],
+    },
+    "TRIOBJ_DCPO_V2": {
+        "funcs": ["correctness_region_reward", "meta_region_utility_reward",
+                  "cal_region_reward"],
+        "weights": [1.0, 0.5, 0.3],
+        "keys": ["correctness", "meta_region_utility", "cal_region_reward"],
+    },
+    "TRIOBJ_DCPO_V3": {
+        "funcs": ["correctness_region_reward", "meta_region_utility_reward",
+                  "cal_region_reward", "meta_emission_reward",
+                  "format_penalty_reward"],
+        "weights": [1.0, 0.5, 0.3, 0.0, 0.1],
+        "keys": ["correctness", "meta_region_utility", "cal_region_reward",
+                 "meta_emission", "format_penalty"],
+    },
+    "TRIOBJ_DCPO_V4": {
+        "funcs": ["correctness_region_reward", "meta_region_utility_reward",
+                  "cal_region_reward", "meta_emission_reward",
+                  "format_penalty_reward"],
+        "weights": [1.0, 0.5, 0.3, 0.0, 0.1],
+        "keys": ["correctness", "meta_region_utility", "cal_region_reward",
+                 "meta_emission", "format_penalty"],
     },
 }
 
