@@ -58,11 +58,21 @@ from src.training.dcpo_region import (
     _has_meta_signature,
 )
 
-DEFAULT_DATA = (
-    "/home/v-seungplee/.cache/huggingface/hub/datasets--iamseungpil--metacot/"
-    "snapshots/2a4c69ad3bbe337970447975c076c6080200db12/eval/"
-    "e8_goldfree_1030_16k_k8/e8_goldfree_1030_16k_k8.json"
-)
+def _default_data() -> str:
+    # Resolve whatever snapshot of the eval file is in the local HF cache
+    # (pinning a snapshot hash here breaks on cache refresh and trips the
+    # release token-leak scan, which flags any 40-hex word).
+    import glob
+
+    pattern = (
+        "/home/v-seungplee/.cache/huggingface/hub/datasets--iamseungpil--metacot/"
+        "snapshots/*/eval/e8_goldfree_1030_16k_k8/e8_goldfree_1030_16k_k8.json"
+    )
+    hits = sorted(glob.glob(pattern))
+    return hits[-1] if hits else pattern
+
+
+DEFAULT_DATA = _default_data()
 DEFAULT_MODEL = (
     "/home/v-seungplee/sft_v8_strict_local/models/v8_meta_inside_strict_sft/checkpoint-254"
 )
