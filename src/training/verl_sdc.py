@@ -33,7 +33,7 @@ from tensordict import TensorDict
 from verl import DataProto
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer, ResourcePoolManager, Role
 
-from src.metacot.prompt import META_START
+from src.metacot.prompt import META_END, META_START
 from src.training.rewards import (
     compute_degeneration_penalty,
     correctness_reward,
@@ -71,9 +71,18 @@ from src.training.dcpo_region import (
     signature_suppression_ids,
 )
 from src.training._decoy_utils import _rule_based_decoy
+# TRIOBJ_DCPO_V4 (ADDITIVE): the dense likelihood-delta (PMI) R_meta core is a
+# pure numpy module (zero verl deps, shared with the offline probe). Referenced
+# ONLY by the V4 populator block + _compute_dcpo_v4_pmi_rmeta below.
+from src.training.dcpo_pmi import (
+    SpliceAlignmentError,
+    compute_pmi_rows,
+    splice_and_align,
+)
 from src.training.verl_sdc_utils import (
     build_sdc_region_masks,
     compute_sdc_gdpo_advantage,
+    dcpo_w_meta_warmup_scale,
     postmeta_closure_reward,
 )
 
@@ -151,7 +160,9 @@ def _populate_dcpo_region_keys(data) -> None:
     # format_penalty key) is gated on this flag — TRIOBJ_DCPO_V2 keeps the
     # legacy 3-mask/3-key population verbatim, so the 4th head can never arm
     # on a v2 async run (its yaml has neither dcpo_w_format nor the key).
-    _is_v3 = _ACTIVE_SDC_CONTEXT.get("mode", "") == "TRIOBJ_DCPO_V3"
+    # TRIOBJ_DCPO_V4 joins via _DCPO_V3_FMT_MODES (same format machinery
+    # verbatim; only the R_meta SOURCE differs — see the v4 block below).
+    _is_v3 = _ACTIVE_SDC_CONTEXT.get("mode", "") in _DCPO_V3_FMT_MODES
 
     bs = len(data)
     response_length = data.batch["responses"].shape[-1]
@@ -311,6 +322,74 @@ def _populate_dcpo_region_keys(data) -> None:
         data.non_tensor_batch["dcpo_meta_floor_member"] = np.asarray(
             [1.0 if c in TRUSTED_META_CLASSES else 0.0 for c in _fmt_classes],
             dtype=np.float32)
+
+    # ── TRIOBJ_DCPO_V4 R_meta SOURCE (ADDITIVE, mode+knob gated) ──────────────
+    # dcpo_rmeta_source: 'cf' (DEFAULT — leave the dcpo_region_rewards value,
+    # byte-identical to the v3 path) | 'pmi' (overwrite meta_region_utility with
+    # the dense likelihood-delta head) | 'none' (stage 1: hard-zero the head so
+    # the logged scalar cannot leak a text-fallback CF signal at w_meta=0).
+    # The overwrite happens HERE — after the authoritative head write above,
+    # before compute_sdc_gdpo_advantage reads the key — so the FIVE-WAY SYNC
+    # key/weight lists are untouched (same key, different source).
+    if _ACTIVE_SDC_CONTEXT.get("mode", "") == "TRIOBJ_DCPO_V4":
+        _algo_v4 = getattr(_config, "algorithm", None) if _config is not None else None
+
+        def _v4_read(name, default):
+            try:
+                if _algo_v4 is not None and hasattr(_algo_v4, "get"):
+                    return _algo_v4.get(name, default)
+                return getattr(_algo_v4, name, default) if _algo_v4 is not None else default
+            except Exception:
+                return default
+
+        _rmeta_src = str(_v4_read("dcpo_rmeta_source", "cf"))
+        if _rmeta_src == "pmi":
+            _v4_prompt_texts = [
+                _decode_prompt_only(
+                    tokenizer,
+                    data[i].batch["prompts"],
+                    data[i].batch["attention_mask"],
+                    prompt_length,
+                )
+                for i in range(bs)
+            ]
+            _r_meta_pmi, _rmeta_member = _compute_dcpo_v4_pmi_rmeta(
+                tokenizer=tokenizer,
+                trainer=trainer,
+                prompt_texts=_v4_prompt_texts,
+                response_texts=decoded_responses,
+                fmt_classes=_fmt_classes,
+                heads=_heads,
+                read_knob=_v4_read,
+                step=_step,
+            )
+            data.non_tensor_batch["meta_region_utility"] = _r_meta_pmi
+            # R_meta-ONLY centering membership (review I2): 1.0 only for rows
+            # whose PMI was actually computed (meta-emitting, splice-aligned,
+            # guard-passed). NOT a gdpo_reward_key (diagnostic-style batch key
+            # like dcpo_head_member) — FIVE-WAY SYNC lists untouched.
+            data.non_tensor_batch["dcpo_rmeta_member"] = _rmeta_member
+        elif _rmeta_src == "none":
+            data.non_tensor_batch["meta_region_utility"] = np.zeros(bs, dtype=np.float32)
+            data.non_tensor_batch["dcpo_rmeta_member"] = np.zeros(bs, dtype=np.float32)
+        elif _rmeta_src != "cf":
+            raise ValueError(
+                f"algorithm.dcpo_rmeta_source={_rmeta_src!r} not in ('cf', 'pmi', 'none')"
+            )
+        if _rmeta_src in ("pmi", "none"):
+            # Observability truth: the rollout table + trend scalars below must
+            # chart the R_meta that actually ROUTES, not the stale CF/text-
+            # fallback stash value. REASSIGN (not mutate): _DCPO_HEAD_STASH
+            # still holds the original list, so the reward-func wrappers (which
+            # feed the logging-only summed rm_scores) are untouched.
+            _heads = dict(_heads)
+            _heads["R_meta"] = [float(x) for x in data.non_tensor_batch["meta_region_utility"]]
+        # w_meta warmup (review M4): linear 0 -> dcpo_w_meta over
+        # dcpo_w_meta_warmup_steps; transported to the advantage stage via the
+        # diagnostic-style key (absence-tolerant there; 0 steps -> scale 1.0).
+        _warmup_steps = int(_v4_read("dcpo_w_meta_warmup_steps", 0) or 0)
+        data.non_tensor_batch["dcpo_w_meta_scale"] = np.full(
+            bs, dcpo_w_meta_warmup_scale(_step, _warmup_steps), dtype=np.float32)
 
     # Diagnostics (wandb) — same as the synchronous __call__ block.
     data.non_tensor_batch["dcpo_phat"] = np.asarray(_heads["p_hat"], dtype=np.float32)
@@ -976,6 +1055,24 @@ REWARD_CONFIGS = {
         "keys": ["correctness", "meta_region_utility", "cal_region_reward", "meta_emission",
                  "format_penalty"],
     },
+    # TRIOBJ_DCPO_V4 (ADDITIVE, env-reward-only, region-routed): IDENTICAL head
+    # wiring to TRIOBJ_DCPO_V3 (same 5 funcs/keys/weights, same advantage
+    # routing, same FIVE-WAY SYNC rule as documented on the V3 entry). The ONLY
+    # change is the SOURCE of R_meta: instead of the CF-regeneration delta
+    # (sdc_counterfactual=false in the v4 yamls — machinery dormant, NOT
+    # deleted), the populator overwrites `meta_region_utility` with the dense
+    # likelihood-delta (PMI) head when algorithm.dcpo_rmeta_source == 'pmi'
+    # (sign-gated agg of logP_ref(C|prefix+meta) - logP_ref(C|prefix) over the
+    # model's OWN post-meta continuation, frozen ref worker at T=1.0).
+    # Stage 1 (format-only) sets dcpo_rmeta_source: none + dcpo_w_meta: 0.
+    # See docs/superpowers/specs/2026-06-11-dcpo-v4-likelihood-rmeta-design.md.
+    "TRIOBJ_DCPO_V4": {
+        "funcs": [correctness_region_reward, meta_region_utility_reward, cal_region_reward,
+                  meta_emission_reward, format_penalty_reward],
+        "weights": [1.0, 0.5, 0.3, 0.0, 0.1],
+        "keys": ["correctness", "meta_region_utility", "cal_region_reward", "meta_emission",
+                 "format_penalty"],
+    },
 }
 
 # Modes that do NOT compute teacher forward (env reward only).
@@ -991,7 +1088,13 @@ _VANILLA_MODES = {"VANILLA_GRPO", "MATCHED_E21RV2", "BCI_RLVR", "TRIOBJ_META_V1"
 # both gate on this set, so no T+/T-/position forward runs and the per-region
 # advantage path (_compute_dcpo_region_advantage) is used instead of the summed
 # GDPO whiten. Membership of every pre-existing mode is unchanged.
-_REGION_ROUTED_MODES = {"TRIOBJ_DCPO_V2", "TRIOBJ_DCPO_V3"}
+_REGION_ROUTED_MODES = {"TRIOBJ_DCPO_V2", "TRIOBJ_DCPO_V3", "TRIOBJ_DCPO_V4"}
+# TRIOBJ_DCPO_V4 (ADDITIVE): V4 reuses the v3/v3k/v3m format machinery VERBATIM
+# (clamp/gate, three-tier classes, FORMAT_VIOLATION/OK stacks, head/floor
+# membership) — this set gates all of it at the three mask-stack sites + the
+# tier-1 replacement wrap. V2 stays outside (KARPATHY lock "v2 byte-identical");
+# V3 membership keeps every v3 path byte-identical (the predicate is still true).
+_DCPO_V3_FMT_MODES = {"TRIOBJ_DCPO_V3", "TRIOBJ_DCPO_V4"}
 # BCI_RLVR (E.9, ADDITIVE): a NO-teacher env-reward-only mode (correctness +
 # outcome_calibration; sdc_enabled=false). It joins the teacher-free set so
 # _attach_teacher_signals returns early (no T+/T-/position forward) exactly like
@@ -1539,6 +1642,233 @@ def _build_teacher_logprob_batch(
     )
 
 
+# ── TRIOBJ_DCPO_V4 dense likelihood-delta (PMI) R_meta scoring ───────────────
+# Modeled on _build_teacher_logprob_batch (the ref-scoring custom-batch
+# precedent) but with the verl-STANDARD tensor layout: the precedent writes
+# input_ids LEFT-ALIGNED (prompt at cols [0,p_len), response at p_len) while
+# verl 0.7.1's no_padding_2_padding computes prompt/response lengths from
+# attention_mask split AT COLUMN P_max — so any row whose prompt is shorter
+# than the batch max gets its response logprobs silently SHIFTED LEFT (latent
+# C3-class bug, API-scout finding). Here the prompt is left-padded INTO the
+# full tensor ([P_max-p_len, P_max)) and the response starts exactly at P_max,
+# so ref_log_prob[i, t] aligns with responses[i, t] for EVERY row.
+def _build_pmi_score_batches(prompt_ids_list, response_ids_list, pad_to_multiple: int = 1):
+    """Build the ref-worker scoring tensors for the 2n PMI arm rows.
+
+    Each row is one ARM of one scored rollout: prompt = everything before the
+    shared C-span (prefix [+ meta]), response = the C-span token ids themselves
+    (identical between the two arms of a rollout by splice_and_align's
+    token-id-identity contract), so ref_log_prob[i, t] IS
+    logP_ref(C_t | arm-context + C_<t) with no slicing arithmetic.
+
+    Rows are padded to a multiple of `pad_to_multiple` (dp_size x ref
+    micro-batch, verl dispatch divisibility — same duplicate-row-0 trick as the
+    position-teacher subset batch); the caller reads only the first `real_n`
+    rows of the result.
+
+    Returns (tensors dict — input_ids / attention_mask / response_mask /
+    position_ids / prompts / responses, all verl-standard — , real_n). The
+    caller wraps DataProto.from_dict + meta_info; returning the plain dict
+    keeps the layout unit-testable without verl.
+    """
+    real_n = len(prompt_ids_list)
+    assert real_n == len(response_ids_list) and real_n > 0
+    rows = list(zip(prompt_ids_list, response_ids_list))
+    pad_n = (-real_n) % max(1, int(pad_to_multiple))
+    rows += [rows[0]] * pad_n
+    n = len(rows)
+    p_max = max(len(p) for p, _ in rows)
+    r_max = max(len(r) for _, r in rows)
+    total = p_max + r_max
+
+    input_ids = torch.zeros(n, total, dtype=torch.long)
+    attention_mask = torch.zeros(n, total, dtype=torch.long)
+    response_mask_full = torch.zeros(n, total, dtype=torch.long)
+    for i, (p, r) in enumerate(rows):
+        p_len, r_len = len(p), len(r)
+        # prompt left-padded INTO the full tensor; response at column p_max;
+        # attention contiguous across the p_max boundary (verl convention).
+        input_ids[i, p_max - p_len : p_max] = torch.as_tensor(p, dtype=torch.long)
+        input_ids[i, p_max : p_max + r_len] = torch.as_tensor(r, dtype=torch.long)
+        attention_mask[i, p_max - p_len : p_max + r_len] = 1
+        response_mask_full[i, p_max : p_max + r_len] = 1
+    # verl position convention (NOT the precedent's arange, which is only valid
+    # for its packed layout): positions count VALID tokens, pads clamp to 0.
+    position_ids = torch.clamp(torch.cumsum(attention_mask, dim=-1) - 1, min=0)
+
+    return (
+        {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "response_mask": response_mask_full,
+            "position_ids": position_ids,
+            "prompts": input_ids[:, :p_max],
+            "responses": input_ids[:, p_max:],
+        },
+        real_n,
+    )
+
+
+def _dcpo_v4_ref_logprobs(trainer, tensors):
+    """Score the PMI arm rows on the FROZEN ref worker. T=1.0 HARDCODED (review
+    M1): the precedent inherits rollout.temperature (0.6), which compresses the
+    PMI delta by 1/T — the v4 scorer must NOT copy that line."""
+    batch = DataProto.from_dict(tensors=tensors)
+    batch.meta_info["temperature"] = 1.0
+    out = trainer._compute_ref_log_prob(batch)
+    # [i, t] = logP_ref(responses[i, t] | prompt + responses[i, :t]).
+    return out.batch["ref_log_prob"]
+
+
+def _compute_dcpo_v4_pmi_rmeta(
+    *,
+    tokenizer,
+    trainer,
+    prompt_texts: list,
+    response_texts: list,
+    fmt_classes: list,
+    heads: dict,
+    read_knob,
+    step: int = 0,
+):
+    """TRIOBJ_DCPO_V4 dense R_meta (spec §2): per trusted meta-bearing row,
+    Delta_t = logP_ref(C_t | prefix+meta+C_<t) - logP_ref(C_t | prefix+C_<t)
+    over the model's OWN post-meta continuation C, aggregated + overlap-guarded
+    + sign-gated by dcpo_pmi (the pure core shared with the offline probe).
+
+    Row eligibility: fmt class TRUSTED (region routing reliable) AND a CLOSED
+    first meta block in the text — drift rows (no <|/meta|>; the de-facto closer
+    is </think>) are excluded rather than guessing a splice boundary, scoring 0
+    with member 0 (conservative under-credit, never misalignment).
+
+    CRASH-SAFE on the engine call (mirror of _dcpo_cf_generate_texts): a ref
+    failure prints LOUDLY and returns all-zero R_meta + all-zero membership —
+    training continues, the dcpo/pmi_* scalars flatline visibly.
+
+    Returns (r_meta float32 [B], rmeta_member float32 [B]) — member 1.0 only
+    for rows whose PMI was actually computed (aligned + guard-passed), the
+    review-I2 centering population.
+    """
+    B = len(response_texts)
+    r_meta = np.zeros(B, dtype=np.float32)
+    member = np.zeros(B, dtype=np.float32)
+
+    method = str(read_knob("dcpo_pmi_agg", "sum_clip"))
+    topk_frac = float(read_knob("dcpo_pmi_topk_frac", 0.25))
+    clip_c_token = float(read_knob("dcpo_pmi_clip_token", 2.0))
+    clip_c_gate = float(read_knob("dcpo_pmi_clip_gate", 2.0))
+    ngram_n = int(read_knob("dcpo_pmi_ngram_n", 8))
+    ngram_threshold = float(read_knob("dcpo_pmi_ngram_threshold", 0.25))
+
+    # 1) Select + splice. attempted = (batch_idx, row_dict, splice|None); rows
+    #    with splice=None are alignment failures (scored 0, counted in diag).
+    attempted: list = []
+    for i in range(B):
+        if fmt_classes[i] not in TRUSTED_META_CLASSES:
+            continue
+        t = response_texts[i] or ""
+        io = t.find(META_START)
+        ic = t.find(META_END, io) if io >= 0 else -1
+        if io < 0 or ic < 0:
+            continue  # no closed first block (drift/no-meta) — not attempted
+        prefix_text = (prompt_texts[i] or "") + t[:io]
+        meta_text = t[io : ic + len(META_END)]
+        continuation_text = t[ic + len(META_END):]
+        row = {
+            "meta_text": meta_text,
+            "continuation_text": continuation_text,
+            "correct": bool(float(heads["c_with"][i]) > 0.5),
+            "boxed_answer": (heads["answer"][i] or None),
+        }
+        try:
+            sp = splice_and_align(tokenizer, prefix_text, meta_text, continuation_text)
+        except SpliceAlignmentError:
+            row["alignment_failed"] = True
+            sp = None
+        attempted.append((i, row, sp))
+    aligned = [(i, row, sp) for (i, row, sp) in attempted if sp is not None]
+    if not aligned:
+        if attempted and os.environ.get("DCPO_DEBUG", "1") == "1":
+            print(f"[DCPO-V4] pmi step={step}: {len(attempted)} attempted, 0 aligned "
+                  f"— all R_meta 0 this batch.", flush=True)
+        return r_meta, member
+
+    # 2) Score both arms on the frozen ref worker (with-arms rows [0, n),
+    #    without-arms rows [n, 2n)). Same dispatch-divisibility padding as the
+    #    position-teacher batch (dp_size x ref micro-batch, duplicate row 0).
+    try:
+        nnodes = int(trainer.config.trainer.nnodes)
+    except Exception:
+        nnodes = 1
+    try:
+        n_gpus_per_node = int(trainer.config.trainer.n_gpus_per_node)
+    except Exception:
+        n_gpus_per_node = 4
+    try:
+        micro_bs = int(trainer.config.actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu)
+    except Exception:
+        micro_bs = 4
+    pad_unit = nnodes * n_gpus_per_node * micro_bs
+    arm_prompts, arm_resps = [], []
+    for (_i, _row, sp) in aligned:
+        cs_w, _ = sp["c_span_with"]
+        arm_prompts.append(sp["with_ids"][:cs_w])
+        arm_resps.append(sp["with_ids"][cs_w:])
+    for (_i, _row, sp) in aligned:
+        cs_wo, _ = sp["c_span_without"]
+        arm_prompts.append(sp["without_ids"][:cs_wo])
+        arm_resps.append(sp["without_ids"][cs_wo:])
+    tensors, real_n = _build_pmi_score_batches(arm_prompts, arm_resps, pad_unit)
+    try:
+        ref_lp = _dcpo_v4_ref_logprobs(trainer, tensors)
+    except Exception as e:
+        print(f"[DCPO-V4] PMI ref scoring FAILED ({type(e).__name__}: {e}) — "
+              f"R_meta all-zero this batch (member 0; dcpo/pmi_* flatlines).",
+              flush=True)
+        if os.environ.get("DCPO_DEBUG", "1") == "1":
+            traceback.print_exc()
+        return r_meta, member
+    n_al = len(aligned)
+    for k, (_i, row, sp) in enumerate(aligned):
+        L = len(arm_resps[k])  # == both arms' span length (token-id-identical)
+        row["logp_with"] = ref_lp[k, :L].float().cpu().numpy()
+        row["logp_without"] = ref_lp[n_al + k, :L].float().cpu().numpy()
+
+    # 3) Aggregate + guard + sign-gate via the pure core; scatter back to B.
+    rows = [row for (_i, row, _sp) in attempted]
+    scored, diag = compute_pmi_rows(
+        rows, method=method, topk_frac=topk_frac, clip_c_token=clip_c_token,
+        clip_c_gate=clip_c_gate, ngram_n=ngram_n, ngram_threshold=ngram_threshold,
+    )
+    for j, (i, _row, _sp) in enumerate(attempted):
+        r_meta[i] = scored[j]
+        member[i] = (
+            0.0
+            if (diag["alignment_failures"][j] or diag["guard_hits"][j])
+            else 1.0
+        )
+
+    n_guard = int(sum(bool(g) for g in diag["guard_hits"]))
+    if os.environ.get("DCPO_DEBUG", "1") == "1":
+        _scored_vals = [float(r_meta[i]) for (i, _r, _s) in attempted if member[i] > 0.5]
+        print(f"[DCPO-V4] pmi step={step}: B={B} attempted={len(attempted)} "
+              f"aligned={n_al} guard_hits={n_guard} "
+              f"rmeta_mean_scored={np.mean(_scored_vals) if _scored_vals else 0.0:.4f}",
+              flush=True)
+    try:  # observability never kills training (same guard style as the trends)
+        import wandb
+        if wandb.run is not None:
+            wandb.log({
+                "dcpo/pmi_attempted_rate": len(attempted) / max(1, B),
+                "dcpo/pmi_aligned_rate": n_al / max(1, B),
+                "dcpo/pmi_guard_hit_rate": n_guard / max(1, B),
+                "dcpo/pmi_member_rate": float(member.mean()),
+            }, step=int(step))
+    except Exception:
+        pass
+    return r_meta, member
+
+
 def _attach_teacher_signals(data: DataProto):
     trainer = _ACTIVE_SDC_CONTEXT.get("trainer")
     tokenizer = _ACTIVE_SDC_CONTEXT.get("tokenizer")
@@ -1938,8 +2268,9 @@ class MetaCotSDCRewardManager:
             if _mode_pf in _REGION_ROUTED_MODES:
                 # KARPATHY lock "v2 mode byte-identical": the v3 format-fix
                 # pieces (clamp/gate, FORMAT_VIOLATION stack) are v3-only here
-                # too — mirror of _populate_dcpo_region_keys.
-                _pf_v3 = _mode_pf == "TRIOBJ_DCPO_V3"
+                # too — mirror of _populate_dcpo_region_keys (V4 joins via
+                # _DCPO_V3_FMT_MODES, same machinery verbatim).
+                _pf_v3 = _mode_pf in _DCPO_V3_FMT_MODES
                 # v3k fmt machinery — EXACT mirror of _populate_dcpo_region_keys
                 # (five-way sync: identical gate/penalty/tier semantics both
                 # paths). Stash present = CF wrap replaced tier-1 tokens;
@@ -2116,8 +2447,9 @@ class MetaCotSDCRewardManager:
         if _mode in _REGION_ROUTED_MODES:
             # KARPATHY lock "v2 mode byte-identical": v3 format-fix pieces
             # (clamp/gate, FORMAT_VIOLATION stack) are v3-only here too —
-            # mirror of _populate_dcpo_region_keys.
-            _is_v3 = _mode == "TRIOBJ_DCPO_V3"
+            # mirror of _populate_dcpo_region_keys (V4 joins via
+            # _DCPO_V3_FMT_MODES, same machinery verbatim).
+            _is_v3 = _mode in _DCPO_V3_FMT_MODES
             # v3k fmt machinery — EXACT mirror of _populate_dcpo_region_keys
             # (five-way sync: identical gate/penalty/tier semantics both paths).
             _sc_cls_stash = data.non_tensor_batch.get("dcpo_fmt_class", None) if _is_v3 else None
@@ -2320,12 +2652,15 @@ class SDCRayPPOTrainer(RayPPOTrainer):
         self._dcpo_cf = bool(getattr(_algo, "sdc_counterfactual", False))
         self._dcpo_cf_orig_generate = None
         # v3k tier-1 token REPLACEMENT (yaml knob `dcpo_format_replace`, default
-        # TRUE) — effective ONLY under sdc_mode==TRIOBJ_DCPO_V3 (v2 and every
+        # TRUE) — effective ONLY under sdc_mode==TRIOBJ_DCPO_V3/V4 (v2 and every
         # other mode byte-identical: the gate below can never arm for them).
         # Replacement happens inside the CF-wrap site (post-generation,
         # pre-old_log_prob) so verl recomputes old_log_prob on the REPLACED ids.
+        # V4: the SAME wrap installs for replacement only — its CF regeneration
+        # is independently gated on self._dcpo_cf (sdc_counterfactual=false in
+        # the v4 yamls -> CF machinery dormant, NOT deleted).
         self._dcpo_fmt_replace = (
-            _sdc_mode == "TRIOBJ_DCPO_V3"
+            _sdc_mode in ("TRIOBJ_DCPO_V3", "TRIOBJ_DCPO_V4")
             and bool(getattr(_algo, "dcpo_format_replace", True))
         )
         if self._bci_inject_conf:

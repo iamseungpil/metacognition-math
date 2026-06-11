@@ -235,6 +235,20 @@ def _group_mean_subtract(values: torch.Tensor, index) -> torch.Tensor:
     return group_mean_subtract(values, index)
 
 
+def dcpo_w_meta_warmup_scale(step: int, warmup_steps: int) -> float:
+    """TRIOBJ_DCPO_V4 w_meta warmup (spec review M4): linear 0 -> 1 over
+    `warmup_steps` trainer steps, so the dense PMI R_meta (and any future
+    warmup-coupled term) phases in instead of shocking a fresh stage-2 policy.
+    warmup_steps <= 0 -> 1.0 (no warmup; v2/v3 byte-identical — their configs
+    never set the knob). The populator computes this (it has trainer.global_steps)
+    and transports it via the diagnostic-style non_tensor key `dcpo_w_meta_scale`
+    (same pattern as dcpo_head_member: NOT a gdpo_reward_key, FIVE-WAY SYNC
+    lists untouched)."""
+    if warmup_steps is None or int(warmup_steps) <= 0:
+        return 1.0
+    return float(min(1.0, max(0.0, float(step) / float(warmup_steps))))
+
+
 def _compute_dcpo_region_advantage(
     *,
     response_mask: torch.Tensor,
@@ -300,6 +314,34 @@ def _compute_dcpo_region_advantage(
     # default): compose then adds nothing, byte-identical to the pre-v3m path.
     _floor_member = non_tensor_batch.get("dcpo_meta_floor_member", None)
 
+    # v4 R_meta-only membership (review I2): 1.0 only for rows whose PMI delta
+    # was actually computed (meta-emitting, splice-aligned, guard-passed) — the
+    # V4 populator writes it; ABSENCE-TOLERANT (.get None — v2/v3, whose
+    # populators never write the key): compose falls back to member_mask,
+    # byte-identical to the pre-v4 path.
+    _rmeta_member = non_tensor_batch.get("dcpo_rmeta_member", None)
+
+    # v4 conf carve-out (review I4): the dense PMI head routes onto
+    # META_CONTENT \ CONF — dense likelihood credit on the conf token rewards
+    # "stating a confidence the continuation echoes", fighting the Brier head.
+    # Carved HERE (call site) so compose stays stable; default False ->
+    # v2/v3 byte-identical (their configs never set the knob). NOTE: the v3m
+    # floor inside compose also spreads over the carved mask (the row TOTAL
+    # stays +meta_floor — allocation only shifts off the conf tokens).
+    _meta_c_mask = batch["dcpo_meta_content_mask"].to(device).float()
+    if bool(config.get("dcpo_meta_excl_conf", False)):
+        _meta_c_mask = _meta_c_mask * (
+            1.0 - batch["dcpo_conf_mask"].to(device).float()
+        )
+
+    # v4 w_meta warmup (review M4): per-batch scale in [0,1] from the populator
+    # (dcpo_w_meta_warmup_steps; see dcpo_w_meta_warmup_scale). ABSENCE-TOLERANT
+    # (.get None — v2/v3): scale 1.0, byte-identical.
+    _w_meta_scale = non_tensor_batch.get("dcpo_w_meta_scale", None)
+    _w_meta = float(config.get("dcpo_w_meta", 0.5))
+    if _w_meta_scale is not None:
+        _w_meta *= float(np.asarray(_w_meta_scale, dtype=np.float32).reshape(-1)[0])
+
     return compose_dcpo_region_advantage(
         response_mask=response_mask.float(),
         index=index,
@@ -310,15 +352,19 @@ def _compute_dcpo_region_advantage(
             np.asarray(_member, dtype=np.float32) if _member is not None else None
         ),
         answer_mask=batch["dcpo_answer_mask"].to(device).float(),
-        meta_content_mask=batch["dcpo_meta_content_mask"].to(device).float(),
+        meta_content_mask=_meta_c_mask,
         conf_mask=batch["dcpo_conf_mask"].to(device).float(),
         w_corr=float(config.get("dcpo_w_corr", 1.0)),
-        w_meta=float(config.get("dcpo_w_meta", 0.5)),
+        w_meta=_w_meta,
         w_cal=float(config.get("dcpo_w_cal", 0.3)),
         meta_floor=float(config.get("dcpo_meta_floor", 0.0)),
         floor_mask=(
             np.asarray(_floor_member, dtype=np.float32)
             if _floor_member is not None else None
+        ),
+        rmeta_member_mask=(
+            np.asarray(_rmeta_member, dtype=np.float32)
+            if _rmeta_member is not None else None
         ),
         **_fmt_kwargs,
     )
@@ -415,7 +461,12 @@ def compute_sdc_gdpo_advantage(
     # DEFINITION changed in dcpo_region_rewards, not the advantage composition).
     # This OR-clause only ADDS a mode; the `== "TRIOBJ_DCPO_V2"` predicate stays
     # independently true, so V2 behaviour is byte-identical.
-    if sdc_mode == "TRIOBJ_DCPO_V2" or sdc_mode == "TRIOBJ_DCPO_V3":
+    # TRIOBJ_DCPO_V4 (ADDITIVE): SAME per-region routing as V2/V3 — only the
+    # SOURCE of R_meta changed (dense PMI likelihood-delta, written into the
+    # same meta_region_utility key by the V4 populator). This OR-clause only
+    # ADDS a mode; the V2/V3 predicates stay independently true, so both are
+    # byte-identical.
+    if sdc_mode == "TRIOBJ_DCPO_V2" or sdc_mode == "TRIOBJ_DCPO_V3" or sdc_mode == "TRIOBJ_DCPO_V4":
         return _compute_dcpo_region_advantage(
             response_mask=response_mask,
             index=index,

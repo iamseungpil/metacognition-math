@@ -1,0 +1,107 @@
+# TRIOBJ_DCPO_V4 STAGE 2 — dense likelihood R_meta (PMI), spec
+# docs/superpowers/specs/2026-06-11-dcpo-v4-likelihood-rmeta-design.md §2.
+# Runs FROM the stage-1 exit checkpoint (override actor_rollout_ref.model.path
+# at launch, e.g.
+#   actor_rollout_ref.model.path=/scratch/checkpoints/triobj_dcpo_v4_stage1_h100_4x4k/global_step_50/actor/huggingface
+# — leaving the SFT default trains stage 2 cold, which the spec advises against).
+# v4 deltas vs stage 1:
+#   - dcpo_rmeta_source=pmi: the populator overwrites meta_region_utility with
+#     the dense likelihood-delta head — Delta_t = logP_ref(C_t|prefix+meta+C_<t)
+#     - logP_ref(C_t|prefix+C_<t) on the FROZEN SFT ref worker at T=1.0 (M1),
+#     aggregated (probe-decided), overlap/answer-leak guarded (C2), sign-gated
+#     by correctness with clip-at-0 (M3), centered over PMI-scored rows only
+#     (I2, dcpo_rmeta_member), routed onto META_CONTENT \ CONF (I4).
+#   - w_meta 0.5 with LINEAR WARMUP over the first 50 steps (M4); w_cal 0.3.
+#   - FLOOR STAYS at a reduced 0.05 (review I1: centered delta is mean-zero =>
+#     no standing emission pull; removing the floor reopens the v3l collapse).
+#     Floor removal only as a LATE stage-2 action gated on measured emission
+#     stability.
+#   - LENGTH COST: DEFERRED. The spec's "small coefficient added to the R_corr
+#     scalar" has NO cheap hook today — R_corr is the shared correctness head
+#     (touching it leaks into every mode) and a 6th GDPO key would churn the
+#     FIVE-WAY SYNC for an explicitly-"weak, RLT-warned" term. Revisit with the
+#     warmup once stage-2 emission stability is measured.
+# Additive: every existing mode/config/test is byte-identical when v4 is off.
+
+defaults:
+  - verl_e4_selfdistill_h200_4x4k
+  - _self_
+
+mode: TRIOBJ_DCPO_V4
+
+data:
+  # PLAIN redirect parquets (NO two-pass INSTR rewrite) — the SFT/e8 prompt.
+  train_files: /scratch/metacognition/data/verl_train_redirect.parquet
+  val_files: /scratch/metacognition/data/verl_val_redirect.parquet
+  max_response_length: 4096
+
+actor_rollout_ref:
+  actor:
+    # Keep the FROZEN ref worker alive WITHOUT actor KL — the PMI scorer IS the
+    # ref worker (API-scout footgun: actor.use_kl_loss=false would make verl's
+    # need_reference_policy skip ref-worker init and crash
+    # trainer._compute_ref_log_prob at the first PMI batch). kl_loss_coef 0.0
+    # zeroes the loss term; the bool keeps the worker. NOTE the ref model stays
+    # actor_rollout_ref.model.path's ORIGINAL weights only when launching fresh;
+    # when resuming from the stage-1 ckpt the ref = stage-1 policy, which is the
+    # intended "frozen SFT-lineage base" scorer (never the live stage-2 policy).
+    use_kl_loss: true
+    kl_loss_coef: 0.0
+  rollout:
+    agent:
+      # Same agent-loop registry as v3 (path parity; the CF agent only ever
+      # activates under sdc_counterfactual=true, which v4 keeps false).
+      agent_loop_config_path: /scratch/metacognition/configs/cf_prefix_agent.yaml
+
+algorithm:
+  sdc_mode: TRIOBJ_DCPO_V4
+  sdc_enabled: false          # teacher OFF — env-reward-only region-routed GDPO
+  sdc_beta_contrast: 0.0
+  adv_estimator: gdpo
+  use_kl_in_reward: false
+  # FIVE-WAY SYNC RULE (three prior crashes): these two lists ↔
+  # REWARD_CONFIGS['TRIOBJ_DCPO_V4'] ↔ populator+sync-__call__ writes ↔ compose
+  # params ↔ mask-stack key sets. Keys MUST equal the REWARD_CONFIGS keys;
+  # weights mirror the dcpo_w_* routing knobs below for audit clarity.
+  gdpo_reward_keys: [correctness, meta_region_utility, cal_region_reward, meta_emission, format_penalty]
+  gdpo_reward_weights: [1.0, 0.5, 0.3, 0.0, 0.1]
+  # ── DCPO routing knobs (stage 2: dense R_meta on) ──────────────────────────
+  dcpo_w_corr: 1.0
+  dcpo_w_meta: 0.5
+  dcpo_w_cal: 0.3
+  dcpo_w_format: 0.1
+  # w_meta warmup (review M4): linear 0 -> dcpo_w_meta over the first N steps.
+  dcpo_w_meta_warmup_steps: 50
+  # FLOOR STAYS (review I1), reduced 0.1 -> 0.05: stage 1 already taught the
+  # habit; stage 2 only needs to hold the channel open under the length/format
+  # pressure while the centered delta grades content.
+  dcpo_meta_floor: 0.05
+  # ── v4 R_meta source: PMI (dense likelihood delta, frozen ref @ T=1.0) ─────
+  dcpo_rmeta_source: pmi
+  # I4 conf carve-out: dense delta routes onto META_CONTENT \ CONF (the conf
+  # token stays Brier-only — dense PMI there rewards "stating a confidence the
+  # continuation echoes", fighting R_cal).
+  dcpo_meta_excl_conf: true
+  # PMI knobs — PLACEHOLDERS pending the offline probe (spec §3 kill-or-go):
+  # the probe decides the aggregation among {sum_clip, topk_mean, mean, max}
+  # and fixes the clip thresholds from the T=1 delta distribution. Do NOT
+  # launch stage 2 before replacing these with the probe-frozen values.
+  dcpo_pmi_agg: sum_clip            # PLACEHOLDER (probe-decided)
+  dcpo_pmi_topk_frac: 0.25          # PLACEHOLDER (only read for topk_mean)
+  dcpo_pmi_clip_token: 2.0          # PLACEHOLDER (per-token clip, sum_clip)
+  dcpo_pmi_clip_gate: 2.0           # PLACEHOLDER (clip c in the M3 sign gate)
+  dcpo_pmi_ngram_n: 8               # C2 overlap guard: word n-gram order
+  dcpo_pmi_ngram_threshold: 0.25    # C2 overlap guard: invalidation ratio
+  # CF regeneration machinery DORMANT (spec §4: gated off, not deleted).
+  sdc_counterfactual: false
+  dcpo_cf_suppress_signature: true   # inert while sdc_counterfactual=false
+  dcpo_meta_open: 151669      # <|meta|> token id (replacement/cut anchor)
+  # v3k tier-1 format-token REPLACEMENT stays ON (same wrap, independent gate).
+  dcpo_format_replace: true
+
+trainer:
+  experiment_name: triobj_dcpo_v4_stage2_h100_4x4k
+  default_local_dir: /scratch/checkpoints/triobj_dcpo_v4_stage2_h100_4x4k
+  total_training_steps: 300
+  save_freq: 10
+  val_before_train: true

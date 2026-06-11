@@ -1,0 +1,88 @@
+# TRIOBJ_DCPO_V4 STAGE 1 — format-only RL (~50 steps), spec
+# docs/superpowers/specs/2026-06-11-dcpo-v4-likelihood-rmeta-design.md §1.
+# CLONE of triobj_dcpo_v3_h100_4x4k with the v4 deltas:
+#   - sdc_mode=TRIOBJ_DCPO_V4 selects REWARD_CONFIGS['TRIOBJ_DCPO_V4'] (same 5
+#     heads/keys as V3; only the R_meta SOURCE differs — and stage 1 runs NONE).
+#   - R_meta OFF: dcpo_rmeta_source=none hard-zeros the head at the populator
+#     (no text-fallback CF leak into the logged scalar) AND dcpo_w_meta=0 /
+#     dcpo_w_cal=0 — stage 1 teaches FORMAT alone: R_corr (w1.0) + the v3m
+#     un-centered post-centering emission FLOOR (0.1, trusted classes only,
+#     length-neutral) + the two-sided format head (w0.1). Review M2: the floor
+#     mechanism IS the stage-1 emission bonus (reused verbatim, no new head).
+#   - sdc_counterfactual=false — the CF 2nd-generation machinery stays DORMANT
+#     (not deleted); dcpo_format_replace stays true (tier-1 token replacement
+#     runs in the same wrap, independently gated).
+#   - Exit gate (manual, review M4): wellformed >= 70-80% AND a NON-DEGENERATE
+#     PMI delta distribution on a held-out scoring batch (content check — a
+#     form-only exit invites hollow-format overfit). Read dcpo/wellformed_rate
+#     from wandb; run the offline probe on a checkpoint for the delta check.
+# Additive: every existing mode/config/test is byte-identical when v4 is off.
+
+defaults:
+  - verl_e4_selfdistill_h200_4x4k
+  - _self_
+
+mode: TRIOBJ_DCPO_V4
+
+data:
+  # PLAIN redirect parquets (NO two-pass INSTR rewrite) — the SFT/e8 prompt.
+  train_files: /scratch/metacognition/data/verl_train_redirect.parquet
+  val_files: /scratch/metacognition/data/verl_val_redirect.parquet
+  max_response_length: 4096
+
+actor_rollout_ref:
+  actor:
+    # Keep the FROZEN ref worker alive WITHOUT actor KL (API-scout footgun:
+    # verl's need_reference_policy reads actor.use_kl_loss — setting it false
+    # to "kill KL" would skip ref-worker init and crash stage 2's PMI scorer
+    # (trainer._compute_ref_log_prob on a missing ref_policy_wg). kl_loss_coef
+    # 0.0 zeroes the loss term while the bool keeps the worker. Pinned in BOTH
+    # stages so stage-1/stage-2 optimization differs only by the v4 knobs.
+    use_kl_loss: true
+    kl_loss_coef: 0.0
+  rollout:
+    agent:
+      # Same agent-loop registry as v3 (path parity; the CF agent only ever
+      # activates under sdc_counterfactual=true, which v4 keeps false).
+      agent_loop_config_path: /scratch/metacognition/configs/cf_prefix_agent.yaml
+
+algorithm:
+  sdc_mode: TRIOBJ_DCPO_V4
+  sdc_enabled: false          # teacher OFF — env-reward-only region-routed GDPO
+  sdc_beta_contrast: 0.0
+  adv_estimator: gdpo
+  use_kl_in_reward: false
+  # FIVE-WAY SYNC RULE (three prior crashes): these two lists ↔
+  # REWARD_CONFIGS['TRIOBJ_DCPO_V4'] ↔ populator+sync-__call__ writes ↔ compose
+  # params ↔ mask-stack key sets. Keys MUST equal the REWARD_CONFIGS keys;
+  # weights mirror the dcpo_w_* routing knobs below for audit clarity (the
+  # advantage path routes per-region by the dcpo_w_* knobs; this summed-GDPO
+  # scalar is logging-only for region modes).
+  gdpo_reward_keys: [correctness, meta_region_utility, cal_region_reward, meta_emission, format_penalty]
+  gdpo_reward_weights: [1.0, 0.0, 0.0, 0.0, 0.1]
+  # ── DCPO routing knobs (stage 1: format only) ──────────────────────────────
+  dcpo_w_corr: 1.0
+  dcpo_w_meta: 0.0            # R_meta/R_cal weights 0 in this stage (spec §1)
+  dcpo_w_cal: 0.0
+  dcpo_w_format: 0.1
+  # v3m anti-collapse FLOOR = the stage-1 emission bonus (review M2): +0.1
+  # un-centered post-centering advantage on TRUSTED-meta rows' META_CONTENT.
+  dcpo_meta_floor: 0.1
+  # ── v4 R_meta source: NONE (stage 1 has no likelihood scoring, NO CF) ──────
+  dcpo_rmeta_source: none
+  # CF regeneration machinery DORMANT (spec §4: gated off, not deleted).
+  sdc_counterfactual: false
+  dcpo_cf_suppress_signature: true   # inert while sdc_counterfactual=false
+  dcpo_meta_open: 151669      # <|meta|> token id (replacement/cut anchor)
+  # v3k tier-1 format-token REPLACEMENT stays ON (same wrap, independent gate).
+  dcpo_format_replace: true
+
+trainer:
+  experiment_name: triobj_dcpo_v4_stage1_h100_4x4k
+  default_local_dir: /scratch/checkpoints/triobj_dcpo_v4_stage1_h100_4x4k
+  # ~50 steps: format converges fast without value learning in the same run
+  # (the v3l lesson — format penalties drove emission collapse when both shared
+  # one run). save_freq 10 -> ckpts at 10..50 for the exit-gate probe.
+  total_training_steps: 50
+  save_freq: 10
+  val_before_train: true

@@ -1031,6 +1031,7 @@ def compose_dcpo_region_advantage(
     member_mask=None,
     meta_floor: float = 0.0,
     floor_mask=None,
+    rmeta_member_mask=None,
 ):
     """Independent per-head group-mean-subtract + per-region token routing (§2.3).
 
@@ -1073,12 +1074,23 @@ def compose_dcpo_region_advantage(
     step 60). The CENTERED Â_meta still rides on top, so R_meta keeps deciding
     useful-vs-harmful meta — the floor only keeps the channel OPEN, it does not
     grade content. meta_floor=0.0 / floor_mask=None -> byte-identical.
+
+    v4 R_meta-ONLY membership (OPTIONAL `rmeta_member_mask`, review I2): the
+    dense PMI R_meta is defined ONLY for rows whose delta was actually computed
+    (meta-emitting, splice-aligned, guard-passed). Centering it over all rows
+    would pull the group mean toward the structural zeros of no-meta /
+    failed-alignment rows AND hand those rows a spurious nonzero centered value.
+    When given, R_meta is centered over rmeta_member_mask INSTEAD of
+    member_mask; R_corr/R_cal keep member_mask (their scalars are real for
+    every non-discard row). None -> byte-identical to the pre-v4 compose
+    (R_meta centered with member_mask like the other two heads).
     """
     rm = torch.as_tensor(response_mask, dtype=torch.float32)
     device = rm.device
 
+    _rmeta_member = rmeta_member_mask if rmeta_member_mask is not None else member_mask
     A_corr = group_mean_subtract(R_corr, index, member=member_mask).to(device)  # [B,1]
-    A_meta = group_mean_subtract(R_meta, index, member=member_mask).to(device)  # [B,1]
+    A_meta = group_mean_subtract(R_meta, index, member=_rmeta_member).to(device)  # [B,1]
     A_cal = group_mean_subtract(R_cal, index, member=member_mask).to(device)    # [B,1]
 
     ans = torch.as_tensor(answer_mask, dtype=torch.float32).to(device)
