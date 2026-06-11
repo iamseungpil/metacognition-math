@@ -70,7 +70,10 @@ def _load_real_tokenizer():
         return None
     try:
         from transformers import AutoTokenizer
-    except ImportError:
+    except Exception:
+        # ImportError when transformers is absent; AttributeError when collected
+        # AFTER test_dcpo_v3_cf.py (its verl/ray auto-stub finder breaks the real
+        # torch.distributed import transformers pulls in). Skip gracefully either way.
         return None
     tmp = tempfile.mkdtemp(prefix="qwen_tok_patch_")
     for fname in ("tokenizer.json", "tokenizer_config.json", "chat_template.jinja"):
