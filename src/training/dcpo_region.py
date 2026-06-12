@@ -1105,12 +1105,14 @@ def compose_dcpo_region_advantage(
     suppressing meta conditionally (emission 0.531->0.289 over 8 steps). The
     fix is to make silence strictly WORST: Dr.GRPO-center R_emit over ALL rows
     (silence is a real signal — every row kept, like the FORMAT head) and
-    spread the centered value evenly over the row's RESPONSE tokens
-    (length-neutral: row total = w_emit*Â_emit, so neither long emitters nor
-    short silent rows game the magnitude). Silent rows in a mixed group get a
-    strictly negative total; pre-centering pointwise ordering with the format
-    head at w_emit 0.4 / w_format 1.0: wellformed +1.4 > drift +0.2 >
-    silence 0. R_emit=None / w_emit 0.0 -> byte-identical (v2/v3 and all
+    broadcast the centered value PER-TOKEN on the response mask (correctness-
+    head style). Per-token magnitude matters, not row totals: verl's PG loss
+    is a token mean, so a row-total-normalized spread (the chain5 first cut)
+    dilutes to ~Â/len and loses to the format head's concentrated per-token
+    negatives. Silent rows in a mixed group get -w_emit*er on EVERY token;
+    pre-centering pointwise ordering with the format head at w_emit 0.4 /
+    w_format 1.0: wellformed +1.4 > drift +0.2 > silence 0 (per emitted-row
+    scalar). R_emit=None / w_emit 0.0 -> byte-identical (v2/v3 and all
     pre-existing v4 configs never set the knob).
     """
     rm = torch.as_tensor(response_mask, dtype=torch.float32)
@@ -1142,12 +1144,18 @@ def compose_dcpo_region_advantage(
         advantages = advantages + w_format * A_format * fv * rm
 
     # EMISSION head (user decision 2026-06-12): centered over ALL rows (silence
-    # is the signal), spread evenly over the row's response tokens so the row
-    # TOTAL is exactly w_emit*Â_emit (length-neutral both ways — see docstring).
+    # is the signal), broadcast PER-TOKEN on the response mask like the
+    # correctness head. chain5 postmortem: the first cut divided by row length
+    # ("length-neutral row total"), making the per-token advantage ~Â/800 ≈
+    # 0.0003 — two orders below the format head's concentrated per-token
+    # negatives (0.03-0.15), so in verl's token-mean PG loss the anti-silence
+    # signal was noise and emission collapsed on the chain4 schedule anyway
+    # (0.53->0.10 by s11). Per-token broadcast puts silence at -w_emit*er per
+    # token (~-0.1 at er 0.5/w 0.4) — the same order as the format signal, and
+    # the token-mean loss already normalizes row length (no length-farm).
     if R_emit is not None and w_emit:
         A_emit = group_mean_subtract(R_emit, index).to(device)  # [B,1]
-        row_n = rm.to(device).sum(dim=1, keepdim=True).clamp(min=1.0)  # [B,1]
-        advantages = advantages + float(w_emit) * A_emit * (rm.to(device) / row_n)
+        advantages = advantages + float(w_emit) * A_emit * rm.to(device)
 
     # v3m anti-collapse floor: UN-CENTERED +meta_floor PER TRUSTED-META ROW
     # (added AFTER centering so it survives — see docstring). Spread evenly over

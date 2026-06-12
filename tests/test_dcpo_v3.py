@@ -1398,10 +1398,11 @@ def test_format_neg_makes_emission_dominate_silence_in_expectation():
 
 
 # ── EMISSION head (chain4 postmortem, user decision 2026-06-12) ──────────────
-def test_compose_emit_head_length_neutral_and_silence_negative():
-    """R_emit centered over ALL rows, spread evenly over response tokens: the
-    row TOTAL is exactly w_emit*Â_emit regardless of response length, and
-    silent rows in a mixed group total strictly negative."""
+def test_compose_emit_head_per_token_and_silence_negative():
+    """R_emit centered over ALL rows, broadcast PER-TOKEN (chain5 postmortem:
+    a row-total-normalized spread dilutes to ~A/len and loses to the format
+    head in the token-mean PG loss). Every response token of a silent row in a
+    mixed group carries a strictly negative advantage of full magnitude."""
     rm = torch.tensor([
         [1.0, 1, 1, 1],   # emitter, len 4
         [1.0, 0, 0, 0],   # emitter, len 1
@@ -1422,11 +1423,14 @@ def test_compose_emit_head_length_neutral_and_silence_negative():
         w_emit=0.4,
     )
     assert torch.equal(A, A2)
-    totals = A.sum(dim=1)
-    # Â_emit = [0.5, 0.5, -0.5, -0.5]; w_emit 0.4 -> totals ±0.2 length-free.
-    assert torch.allclose(totals, torch.tensor([0.2, 0.2, -0.2, -0.2]))
-    # silence strictly negative (the anti-escape invariant).
-    assert totals[2] < 0 and totals[3] < 0
+    # A_emit = [0.5, 0.5, -0.5, -0.5]; w_emit 0.4 -> per-token +-0.2 on every
+    # response token (full magnitude at the meta-open decision position too).
+    assert torch.allclose(A[0], torch.tensor([0.2, 0.2, 0.2, 0.2]))
+    assert torch.allclose(A[1], torch.tensor([0.2, 0.0, 0.0, 0.0]))
+    assert torch.allclose(A[2], torch.tensor([-0.2, -0.2, -0.2, -0.2]))
+    assert torch.allclose(A[3], torch.tensor([-0.2, -0.2, 0.0, 0.0]))
+    # silence strictly negative on every live token (the anti-escape invariant).
+    assert (A[2] < 0).all() and (A[3][:2] < 0).all()
 
 
 def test_compose_emit_default_byte_identical():
