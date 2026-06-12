@@ -29,8 +29,11 @@ data:
   train_batch_size: 32          # 32 prompts x n=8 = 256 rollouts/step (same cost)
 
 actor_rollout_ref:
-  model:
-    path: /scratch/models/v4_s1_gs50   # stage-1 gs50 (merged), NOT v8_strict
+  # model.path inherits the base v8_strict SFT (user decision 2026-06-12:
+  # SFT start beats a gs50 start for FORMAT learning — s1's correctness-RL
+  # lengthened responses 787->1037 tokens / truncation 15->17%, and truncation
+  # is the unclosed-meta driver; SFT responses are shorter, and the KL anchor's
+  # reference is then the spec-intended frozen SFT).
   actor:
     use_kl_loss: true
     kl_loss_coef: 0.001         # KL anchor ON (the stage-1b safety pin)

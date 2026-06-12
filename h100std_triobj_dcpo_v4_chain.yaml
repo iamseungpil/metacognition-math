@@ -1,0 +1,182 @@
+description: "TRIOBJ_DCPO_V4 CHAIN — stage-1b (PURE-format RL + KL anchor, SFT start, 50 steps) -> on-node merge -> corrected PMI probe gate (~95min) -> on PASS auto-launch stage-2 (placebo-corrected delta' dense R_meta, 300 steps, init+ref from s1b-final, clip auto-frozen from the probe's recommendation_corrected). FAIL-CLOSED: probe FAIL prints loudly and sleeps (human decision). IDEMPOTENT RESTART: s1b-final model + probe report are uploaded to HF (models/v4_s1b_final/, reports/probe_s1b_report.json); a preempted-restarted job pulls them and jumps straight to stage-2 resume instead of retraining s1b. HF sync: per-stage push daemons (s1b + s2 ckpt dirs) + pull_resume for both stages. User decisions 2026-06-12: pure-format w_corr 0 / w_format 1.0 / KL 1e-3 / n 8 / SFT start / chain-immediately."
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: triobj_dcpo_v4_chain
+    sku: 80G4-H100
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 604800
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        CODE_TAR_REVISION: "PLACEHOLDER_ASSET_ID"
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        WANDB_API_KEY: ${WANDB_API_KEY}
+        WANDB_KEY: ${WANDB_API_KEY}
+        WANDB_PROJECT: skilldiscovery2
+        WANDB_RUN_GROUP: triobj_dcpo_v4_chain
+        WANDB_TAGS: TRIOBJ,DCPO,v4,chain,stage1b,stage2,placebo,TRIOBJ_DCPO_V4
+        DCPO_WANDB_ROLLOUTS: "1"
+        DCPO_WANDB_ROLLOUTS_EVERY: "1"
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        DCPO_DEBUG: "1"
+        HF_REPO: iamseungpil/metacot-h200-triobj-dcpo-v3
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints /scratch/models
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+        echo "$${CODE_TAR_REVISION}" > /scratch/metacognition/.bootstrap_version
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper_early.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        python /scratch/metacognition/scripts/pull_parquets.py 2>&1 | tail -3
+
+        # v8_strict SFT staging (s1b init + KL ref + probe fallback scorer)
+        python -c "
+        from huggingface_hub import snapshot_download
+        import os, shutil
+        snapshot_download(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/v8_meta_inside_strict_sft/checkpoint-254/*\"], local_dir=\"/scratch/models_dl\")
+        src=\"/scratch/models_dl/models/v8_meta_inside_strict_sft/checkpoint-254\"; dst=\"/scratch/models/v8_meta_inside_strict_sft\"
+        shutil.rmtree(dst, ignore_errors=True); shutil.copytree(src, dst); print(\"base SFT staged\")
+        "
+        python -c "
+        import json; p=\"/scratch/models/v8_meta_inside_strict_sft/tokenizer_config.json\"
+        cfg=json.load(open(p)); cfg.pop(\"extra_special_tokens\", None); json.dump(cfg, open(p,\"w\"), indent=2); print(\"tokenizer patched\")
+        "
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        export PYTHONPATH=/scratch/metacognition
+
+        # ── IDEMPOTENT RESTART CHECK: s1b-final + probe report already on HF? ──
+        python -c "
+        from huggingface_hub import snapshot_download
+        import os, sys
+        try:
+            snapshot_download(repo_id=os.environ[\"HF_REPO\"], repo_type=\"model\", token=os.environ[\"HF_TOKEN\"],
+                allow_patterns=[\"models/v4_s1b_final/*\", \"reports/probe_s1b_report.json\"], local_dir=\"/scratch/hf_chain\")
+            ok = (os.path.exists(\"/scratch/hf_chain/models/v4_s1b_final/config.json\")
+                  and os.path.exists(\"/scratch/hf_chain/reports/probe_s1b_report.json\"))
+            sys.exit(0 if ok else 3)
+        except Exception as e:
+            print(\"restart-check:\", e); sys.exit(3)
+        "
+        CHAIN_DONE=$$?
+        if [ "$${CHAIN_DONE}" = "0" ]; then
+          echo "[CHAIN] s1b artifacts found on HF — SKIPPING s1b (idempotent restart)"
+          mkdir -p /scratch/models/v4_s1b_final
+          cp -r /scratch/hf_chain/models/v4_s1b_final/* /scratch/models/v4_s1b_final/
+          cp /scratch/hf_chain/reports/probe_s1b_report.json /scratch/logs/probe_s1b_report.json
+        else
+          # ════════════════ PHASE A: stage-1b (pure-format RL) ════════════════
+          nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/triobj_dcpo_v4_stage1b_h100_4x4k --repo_id $${HF_REPO} --token $${HF_TOKEN} --interval 90 --config_name triobj_dcpo_v4_stage1b_h100_4x4k > /scratch/logs/push_s1b.log 2>&1 &
+          PUSH1_PID=$$!
+          cd /scratch/metacognition
+          python /scratch/metacognition/scripts/pull_resume_ckpt.py --repo $${HF_REPO} --config_name triobj_dcpo_v4_stage1b_h100_4x4k --local_dir /scratch/checkpoints/triobj_dcpo_v4_stage1b_h100_4x4k --token $${HF_TOKEN} 2>&1 | tail -5
+          WANDB_NAME=triobj_dcpo_v4_s1b /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
+              --config-name=triobj_dcpo_v4_stage1b_h100_4x4k \
+              trainer.experiment_name=triobj_dcpo_v4_stage1b_h100_4x4k \
+              trainer.default_local_dir=/scratch/checkpoints/triobj_dcpo_v4_stage1b_h100_4x4k \
+              trainer.resume_mode=auto \
+              ++hydra.searchpath=[pkg://verl/trainer/config]
+          S1B_RC=$$?
+          echo "[CHAIN] s1b rc=$${S1B_RC}"
+          if [ "$${S1B_RC}" != "0" ]; then echo "[CHAIN] s1b FAILED — stopping before gate"; sleep 86400; exit 1; fi
+          kill $${PUSH1_PID} 2>/dev/null
+
+          # ── merge the FINAL s1b ckpt -> /scratch/models/v4_s1b_final ────────
+          LAST_GS=$$(ls -d /scratch/checkpoints/triobj_dcpo_v4_stage1b_h100_4x4k/global_step_* | sed "s/.*global_step_//" | sort -n | tail -1)
+          echo "[CHAIN] merging global_step_$${LAST_GS}"
+          /scratch/conda_envs/simplerl/bin/python -m verl.model_merger merge \
+              --backend fsdp \
+              --local_dir /scratch/checkpoints/triobj_dcpo_v4_stage1b_h100_4x4k/global_step_$${LAST_GS}/actor \
+              --target_dir /scratch/models/v4_s1b_final 2>&1 | tail -3
+          cp -n /scratch/checkpoints/triobj_dcpo_v4_stage1b_h100_4x4k/global_step_$${LAST_GS}/actor/huggingface/* /scratch/models/v4_s1b_final/ 2>/dev/null
+          if [ ! -f /scratch/models/v4_s1b_final/config.json ]; then echo "[CHAIN] MERGE FAILED — stopping"; sleep 86400; exit 1; fi
+
+          # ── corrected PMI probe vs THESE weights (the stage-2 ref lineage) ──
+          python -c "
+          from huggingface_hub import snapshot_download
+          import os
+          snapshot_download(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+              allow_patterns=[\"eval/e8_goldfree_1030_16k_k8/*\"], local_dir=\"/scratch/probe_data\")
+          print(\"e8 probe data staged\")
+          "
+          cd /scratch/metacognition
+          CUDA_VISIBLE_DEVICES=0 /scratch/conda_envs/simplerl/bin/python -u scripts/probe_pmi_offline.py \
+              --model /scratch/models/v4_s1b_final \
+              --data /scratch/probe_data/eval/e8_goldfree_1030_16k_k8/e8_goldfree_1030_16k_k8.json \
+              --shuffle-mode cross_problem \
+              --out /scratch/logs/probe_s1b_report.json 2>&1 | tail -20
+
+          # ── upload artifacts (idempotency markers) ──────────────────────────
+          python -c "
+          from huggingface_hub import HfApi
+          import os
+          api = HfApi(token=os.environ[\"HF_TOKEN\"])
+          api.upload_folder(folder_path=\"/scratch/models/v4_s1b_final\", path_in_repo=\"models/v4_s1b_final\", repo_id=os.environ[\"HF_REPO\"], repo_type=\"model\")
+          api.upload_file(path_or_fileobj=\"/scratch/logs/probe_s1b_report.json\", path_in_repo=\"reports/probe_s1b_report.json\", repo_id=os.environ[\"HF_REPO\"], repo_type=\"model\")
+          print(\"s1b artifacts uploaded\")
+          "
+        fi
+
+        # ════════════════ GATE: verdict_corrected ════════════════════════════
+        VERDICT=$$(python -c "
+        import json; r=json.load(open(\"/scratch/logs/probe_s1b_report.json\"))
+        print(r[\"verdict_corrected\"][\"overall\"])")
+        CLIP=$$(python -c "
+        import json; r=json.load(open(\"/scratch/logs/probe_s1b_report.json\"))
+        print(round(float(r[\"recommendation_corrected\"][\"clip_c\"]), 4))")
+        WELLFORMED_NOTE=$$(python -c "
+        import json; r=json.load(open(\"/scratch/logs/probe_s1b_report.json\"))
+        v=r[\"verdict_corrected\"]; print(\"auc_ent_pass=%s shuffle=%s mean_gt0=%s\" % (v[\"auc_entangled_pass\"], v[\"shuffle_pass\"], v[\"mean_gt0_pass\"]))")
+        echo "[CHAIN-GATE] verdict_corrected=$${VERDICT} clip=$${CLIP} $${WELLFORMED_NOTE}"
+        if [ "$${VERDICT}" != "PASS" ]; then
+          echo "[CHAIN-GATE] PROBE FAILED — NOT launching stage-2 (fail-closed; human decision needed)"
+          sleep 86400; exit 1
+        fi
+
+        # ════════════════ PHASE B: stage-2 (placebo-corrected delta') ════════
+        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/triobj_dcpo_v4_stage2_h100_4x4k --repo_id $${HF_REPO} --token $${HF_TOKEN} --interval 90 --config_name triobj_dcpo_v4_stage2_h100_4x4k > /scratch/logs/push_s2.log 2>&1 &
+        cd /scratch/metacognition
+        python /scratch/metacognition/scripts/pull_resume_ckpt.py --repo $${HF_REPO} --config_name triobj_dcpo_v4_stage2_h100_4x4k --local_dir /scratch/checkpoints/triobj_dcpo_v4_stage2_h100_4x4k --token $${HF_TOKEN} 2>&1 | tail -5
+        WANDB_NAME=triobj_dcpo_v4_s2 /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
+            --config-name=triobj_dcpo_v4_stage2_h100_4x4k \
+            trainer.experiment_name=triobj_dcpo_v4_stage2_h100_4x4k \
+            trainer.default_local_dir=/scratch/checkpoints/triobj_dcpo_v4_stage2_h100_4x4k \
+            trainer.resume_mode=auto \
+            actor_rollout_ref.model.path=/scratch/models/v4_s1b_final \
+            algorithm.dcpo_pmi_clip_gate=$${CLIP} \
+            ++hydra.searchpath=[pkg://verl/trainer/config]
+        VERL_RC=$$?
+        echo "[YAML] stage-2 verl_sdc rc=$${VERL_RC}"
+        echo "[YAML] triobj_dcpo_v4_chain DONE (s1b -> gate PASS -> s2 rc=$${VERL_RC})"
+        sleep 86400
+        '
