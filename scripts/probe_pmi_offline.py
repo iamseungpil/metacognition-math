@@ -573,26 +573,42 @@ def assemble_report(real_rows, placebo_rows, shuffle_rows, *, topk_frac=0.25,
     report["recommendation"] = {"method": method, "clip_c": clip_c}
     report["verdict"] = verdict
 
-    # corrected verdict — same KILL battery on delta', with its own method
-    # choice (the corrected AUC winner can differ from the raw winner) and its
-    # own clip_c = p95(|delta'|) on the guard-filtered rows.
-    c_scored = [(m, report["corrected"][m]["auc"][split]) for m in PMI_AGG_METHODS
-                if not math.isnan(report["corrected"][m]["auc"][split])]
-    c_method = max(c_scored, key=lambda x: x[1])[0] if c_scored else method
+    # corrected verdict — graded on the TRAINING method (the raw recommendation
+    # the reward freezes), NOT the corrected-AUC argmax: AUC-shopping picked
+    # topk_mean on 2026-06-12, whose corrected shuffle retains +0.50 of the
+    # positive signal (wrong content still earns half — gameable); mean's
+    # higher per-row variance costs AUC but its wrong-content aggregate is
+    # NEGATIVE (signed retention -2.43), which is the anti-gaming property the
+    # reward needs.
+    c_method = method
     c_ra = (np.asarray(real_d["raw_agg"][c_method], dtype=np.float64)
             - np.asarray(plac_d["raw_agg"][c_method], dtype=np.float64))
     c_ra = c_ra[~np.isnan(c_ra) & ~guard]
     c_clip = float(np.percentile(np.abs(c_ra), 95)) if c_ra.size else float("nan")
     cm = report["corrected"][c_method]
     c_auc_ent = cm["auc"]["entangled"]
+    # SIGNED shuffle criterion (2026-06-12 fix): |shuffle|/|real| is
+    # direction-blind — it graded mean's wrong-content SIGN FLIP (-0.0456 vs
+    # +0.0188, ratio 2.43) as "did not collapse". The criterion's intent is
+    # "wrong content must not EARN": pass when the corrected real mean is
+    # positive and the corrected shuffle mean retains < SHUFFLE_COLLAPSE_MAX
+    # of it IN THE SIGNED sense (negative retention = wrong content punished
+    # = better than collapse).
+    c_real_mean = cm["shuffle"]["mean_real"]
+    c_shuf_mean = cm["shuffle"]["mean"]
+    signed_ok = (not math.isnan(c_real_mean) and not math.isnan(c_shuf_mean)
+                 and c_real_mean > 0
+                 and c_shuf_mean < SHUFFLE_COLLAPSE_MAX * c_real_mean)
     c_verdict = {
         "method": c_method, "auc_split_used": split, "clip_c": c_clip,
         "population": "guard_filtered",
         # delta''s own "beats nothing" test: mean(delta') > 0 significantly
         "mean_gt0_pass": bool(not math.isnan(cm["t_stat"]) and cm["t_stat"] > 0
                               and cm["p_one_sided"] < PLACEBO_ALPHA),
-        "shuffle_pass": bool(not math.isnan(cm["shuffle"]["collapse_ratio"])
-                             and cm["shuffle"]["collapse_ratio"] < SHUFFLE_COLLAPSE_MAX),
+        "shuffle_pass": bool(signed_ok),
+        "signed_retention": (float(c_shuf_mean / c_real_mean)
+                             if (not math.isnan(c_real_mean) and c_real_mean != 0
+                                 and not math.isnan(c_shuf_mean)) else float("nan")),
         "auc_entangled_pass": bool(ent_usable and not math.isnan(c_auc_ent)
                                    and c_auc_ent > AUC_KILL),
     }
@@ -672,7 +688,8 @@ def format_report_text(report: dict) -> str:
     cv = report["verdict_corrected"]
     lines.append(f"{tag}VERDICT_CORRECTED: {cv['overall']} "
                  f"(method={cv['method']}, clip_c={cv['clip_c']:.4f}, "
-                 f"mean_gt0={cv['mean_gt0_pass']}, shuffle={cv['shuffle_pass']}, "
+                 f"mean_gt0={cv['mean_gt0_pass']}, shuffle={cv['shuffle_pass']} "
+                 f"[signed_retention={cv['signed_retention']:+.3f}], "
                  f"auc_entangled={cv['auc_entangled_pass']})")
     return "\n".join(lines)
 

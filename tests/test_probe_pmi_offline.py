@@ -366,3 +366,34 @@ def test_placebo_meta_is_tag_wrapped_and_contentless():
     # contentless: must NOT match the entangled-signature field labels
     from src.training.dcpo_region import _has_meta_signature
     assert _has_meta_signature(PLACEBO_META) is False
+
+
+def test_corrected_shuffle_criterion_is_signed():
+    """2026-06-12 fix: a SIGN FLIP (wrong content punished, |ratio| > 1) must
+    PASS the corrected shuffle criterion, while positive half-retention (wrong
+    content still earning, the topk_mean failure mode) must FAIL."""
+    def _passes(shuffle_delta):
+        real, placebo, shuffle = [], [], []
+        for i in range(60):
+            correct, entangled = i < 40, i % 2 == 0
+            content = 0.5 if correct else -0.2
+            real.append(_stub_row(1.0 + content, correct, entangled))
+            placebo.append(_stub_row(1.0, correct, entangled))
+            shuffle.append(_stub_row(1.0 + shuffle_delta, correct, entangled))
+        rep = assemble_report(real, placebo, shuffle)
+        return rep["verdict_corrected"]
+
+    flip = _passes(-0.8)     # corrected shuffle mean -0.8 (sign flip)
+    assert flip["shuffle_pass"] is True
+    assert flip["signed_retention"] < 0
+    assert flip["overall"] == "PASS"
+
+    retain = _passes(+0.2)   # retains ~half the positive content signal
+    assert retain["shuffle_pass"] is False
+    assert retain["overall"] == "FAIL"
+
+
+def test_corrected_verdict_grades_training_method_not_auc_argmax():
+    real, placebo, shuffle = _passing_passes()
+    rep = assemble_report(real, placebo, shuffle)
+    assert rep["verdict_corrected"]["method"] == rep["verdict"]["method"]

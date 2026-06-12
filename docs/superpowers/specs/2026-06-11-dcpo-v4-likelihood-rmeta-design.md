@@ -109,3 +109,25 @@ Spec changes:
 Gate: ship Δ′ only if the per-row corrected probe (E-corr, running) returns
 `verdict_corrected.overall == PASS`; corrected-AUC failure → pre-registered
 stop + re-decision (raw Δ + group-centering argument vs stage-1-only).
+
+### A1 addendum (2026-06-12): E-corr verdict = PASS; signed shuffle criterion
+
+The per-row corrected probe initially printed FAIL, traced to two grading
+artifacts, both fixed (commit pending):
+1. **Direction-blind collapse ratio**: |shuffle|/|real| graded mean's
+   wrong-content SIGN FLIP (−0.0456 vs +0.0188, ratio 2.43) as "did not
+   collapse". The criterion's intent is "wrong content must not EARN" →
+   replaced with the SIGNED criterion (real>0 and shuffle < 0.25·real;
+   negative retention passes). Same direction-blindness we rejected in
+   max−min (spec §2) — reproduced in our own metric, now test-locked.
+2. **AUC-shopping method choice**: the corrected verdict picked topk_mean
+   (AUC_ent 0.764) whose wrong-content retention is +0.50 — wrong content
+   still earns half; gameable. Verdict now grades the TRAINING method (mean).
+
+Final E-corr (method=mean, guard-filtered n=7877): mean_gt0 t=17.9 PASS /
+signed retention −2.43 PASS / corrected AUC_ent 0.714 PASS → **PASS**.
+Payout simulation (sign-gated, clip 0.1085): honest content E[R]=+0.0106 vs
+noise content +0.0015 (7× margin); two-sided clip would widen the margin
+(+0.0076 vs −0.0337) at the cost of punishing honest-negative rows — keep
+the one-sided M3 gate, note two-sided as a fallback if stage-2 shows mashing.
+clip_gate re-frozen 0.342 → 0.1085 (corrected p95).
