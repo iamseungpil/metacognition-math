@@ -1,0 +1,68 @@
+# TRIOBJ_DCPO_V4 STAGE 1b — PURE-FORMAT RL + KL anchor (+50 steps from s1 gs50).
+# User decision 2026-06-12: stage-1's correctness-dominant mix (w_corr 1.0 /
+# w_format 0.1) left wellformed FLAT at 0.15-0.22 over 30 steps (the format
+# gradient is 1/10th the weight on 1-2 token positions vs hundreds for
+# correctness). Stage 1b flips the ratio to PURE format: w_corr 0 /
+# w_format 1.0, with the KL-to-ref anchor switched ON (kl_loss_coef 1e-3) as
+# the anti-degeneration safety pin — without correctness OR KL, the format-only
+# optimum is "empty math, perfect tags". Group n 4->8 (prompts 64->32, same
+# 256 rollouts/step): with wellformed ~0.2, n=4 groups often carry 0-1
+# wellformed sibling and the Dr.GRPO centered contrast vanishes; n=8 restores
+# it. INIT: fresh run from stage-1 gs50 actor weights (verl.model_merger
+# output staged by the node yaml at /scratch/models/v4_s1_gs50) — fresh
+# optimizer because batch/n/reward changed (resume would restore a mismatched
+# dataloader state). Floor stays (emission insurance). Exit gate unchanged
+# (wellformed 70-80% + probe at the END of 1b — stage-2's ref worker loads the
+# stage-2-entry model, so clip re-freezing only makes sense against THESE
+# weights).
+
+defaults:
+  - verl_e4_selfdistill_h200_4x4k
+  - _self_
+
+mode: TRIOBJ_DCPO_V4
+
+data:
+  train_files: /scratch/metacognition/data/verl_train_redirect.parquet
+  val_files: /scratch/metacognition/data/verl_val_redirect.parquet
+  max_response_length: 4096
+  train_batch_size: 32          # 32 prompts x n=8 = 256 rollouts/step (same cost)
+
+actor_rollout_ref:
+  model:
+    path: /scratch/models/v4_s1_gs50   # stage-1 gs50 (merged), NOT v8_strict
+  actor:
+    use_kl_loss: true
+    kl_loss_coef: 0.001         # KL anchor ON (the stage-1b safety pin)
+  rollout:
+    n: 8                        # format-contrast restoration (see header)
+    agent:
+      agent_loop_config_path: /scratch/metacognition/configs/cf_prefix_agent.yaml
+
+algorithm:
+  sdc_mode: TRIOBJ_DCPO_V4
+  sdc_enabled: false
+  sdc_beta_contrast: 0.0
+  adv_estimator: gdpo
+  use_kl_in_reward: false
+  # FIVE-WAY SYNC RULE: keys MUST equal REWARD_CONFIGS['TRIOBJ_DCPO_V4'] keys.
+  gdpo_reward_keys: [correctness, meta_region_utility, cal_region_reward, meta_emission, format_penalty]
+  gdpo_reward_weights: [0.0, 0.0, 0.0, 0.0, 1.0]
+  # ── DCPO routing knobs (stage 1b: PURE format) ─────────────────────────────
+  dcpo_w_corr: 0.0              # correctness OFF (KL anchors capability)
+  dcpo_w_meta: 0.0
+  dcpo_w_cal: 0.0
+  dcpo_w_format: 1.0            # format DOMINATES (was 0.1)
+  dcpo_meta_floor: 0.1          # emission insurance, unchanged
+  dcpo_rmeta_source: none
+  sdc_counterfactual: false
+  dcpo_cf_suppress_signature: true
+  dcpo_meta_open: 151669
+  dcpo_format_replace: true
+
+trainer:
+  experiment_name: triobj_dcpo_v4_stage1b_h100_4x4k
+  default_local_dir: /scratch/checkpoints/triobj_dcpo_v4_stage1b_h100_4x4k
+  total_training_steps: 50
+  save_freq: 10
+  val_before_train: true
