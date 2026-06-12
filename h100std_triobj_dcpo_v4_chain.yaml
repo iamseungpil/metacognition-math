@@ -163,7 +163,7 @@ jobs:
           sleep 86400; exit 1
         fi
 
-        # ════════════════ PHASE B: stage-2 (placebo-corrected delta') ════════
+        # ════════════════ PHASE B: stage-2 (placebo-corrected delta_prime) ═══
         nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/triobj_dcpo_v4_stage2_h100_4x4k --repo_id $${HF_REPO} --token $${HF_TOKEN} --interval 90 --config_name triobj_dcpo_v4_stage2_h100_4x4k > /scratch/logs/push_s2.log 2>&1 &
         cd /scratch/metacognition
         python /scratch/metacognition/scripts/pull_resume_ckpt.py --repo $${HF_REPO} --config_name triobj_dcpo_v4_stage2_h100_4x4k --local_dir /scratch/checkpoints/triobj_dcpo_v4_stage2_h100_4x4k --token $${HF_TOKEN} 2>&1 | tail -5
