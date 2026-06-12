@@ -64,6 +64,16 @@ algorithm:
   # (live value ~40%), so emission dominates silence and wellformed (+1) still
   # towers over drift (-0.2).
   dcpo_format_neg: 0.2
+  # EMISSION head (chain4 postmortem + user decision 2026-06-12): the average
+  # argument above was only half right — silence (0) still beat drift (-0.2)
+  # POINTWISE, so the policy escaped by suppressing meta conditionally
+  # (emission 0.531 -> 0.289 over chain4's 8 steps; wf-among-emitters fell
+  # 0.30 -> 0.11 and format mean went negative at step 9). Fix: arm the binary
+  # meta_emission key as a 5th REGION head — Dr.GRPO-centered over ALL rows,
+  # length-neutral spread over response tokens. Pre-centering pointwise
+  # ordering: wellformed +1.4 > drift +0.2 > silence 0 — emitting (even badly)
+  # strictly beats silence, then the +1 vs -0.2 format contrast teaches closing.
+  dcpo_w_emit: 0.4
   dcpo_meta_floor: 0.1          # emission insurance, unchanged
   dcpo_rmeta_source: none
   sdc_counterfactual: false

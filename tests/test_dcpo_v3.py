@@ -1395,3 +1395,91 @@ def test_format_neg_makes_emission_dominate_silence_in_expectation():
     w = 0.4
     assert w * 1.0 - (1 - w) * 1.0 < 0      # symmetric: abstain wins
     assert w * 1.0 - (1 - w) * 0.2 > 0      # asymmetric: emission wins
+
+
+# ── EMISSION head (chain4 postmortem, user decision 2026-06-12) ──────────────
+def test_compose_emit_head_length_neutral_and_silence_negative():
+    """R_emit centered over ALL rows, spread evenly over response tokens: the
+    row TOTAL is exactly w_emit*Â_emit regardless of response length, and
+    silent rows in a mixed group total strictly negative."""
+    rm = torch.tensor([
+        [1.0, 1, 1, 1],   # emitter, len 4
+        [1.0, 0, 0, 0],   # emitter, len 1
+        [1.0, 1, 1, 1],   # silent,  len 4
+        [1.0, 1, 0, 0],   # silent,  len 2
+    ])
+    zeros = torch.zeros(4, 4)
+    A, A2 = compose_dcpo_region_advantage(
+        response_mask=rm,
+        index=["g"] * 4,
+        R_corr=np.zeros(4, dtype=np.float32),
+        R_meta=np.zeros(4, dtype=np.float32),
+        R_cal=np.zeros(4, dtype=np.float32),
+        answer_mask=zeros,
+        meta_content_mask=zeros,
+        conf_mask=zeros,
+        R_emit=np.asarray([1.0, 1.0, 0.0, 0.0], dtype=np.float32),
+        w_emit=0.4,
+    )
+    assert torch.equal(A, A2)
+    totals = A.sum(dim=1)
+    # Â_emit = [0.5, 0.5, -0.5, -0.5]; w_emit 0.4 -> totals ±0.2 length-free.
+    assert torch.allclose(totals, torch.tensor([0.2, 0.2, -0.2, -0.2]))
+    # silence strictly negative (the anti-escape invariant).
+    assert totals[2] < 0 and totals[3] < 0
+
+
+def test_compose_emit_default_byte_identical():
+    """R_emit=None / w_emit=0.0 (every pre-existing config) -> byte-identical."""
+    kwargs = dict(
+        response_mask=torch.ones(2, 4),
+        index=["g", "g"],
+        R_corr=np.asarray([1.0, -1.0], dtype=np.float32),
+        R_meta=np.asarray([1.0, -1.0], dtype=np.float32),
+        R_cal=np.asarray([0.5, -0.5], dtype=np.float32),
+        answer_mask=torch.tensor([[1.0, 0, 0, 0], [0, 0, 0, 0]]),
+        meta_content_mask=torch.tensor([[0.0, 0, 1, 1], [0, 0, 0, 0]]),
+        conf_mask=torch.tensor([[0.0, 0, 0, 1], [0, 0, 0, 0]]),
+    )
+    A_old, _ = compose_dcpo_region_advantage(**kwargs)
+    A_new, _ = compose_dcpo_region_advantage(**kwargs, R_emit=None, w_emit=0.0)
+    A_zero, _ = compose_dcpo_region_advantage(
+        **kwargs, R_emit=np.asarray([1.0, 0.0], dtype=np.float32), w_emit=0.0
+    )
+    assert torch.equal(A_old, A_new)
+    assert torch.equal(A_old, A_zero)
+
+
+def test_compose_emit_plus_format_early_regime_ordering():
+    """The s1b early regime (wf-among-emitters ~33%, emit 0.75): with
+    w_emit 0.4 / w_format 1.0 the POST-centering row totals order
+    wellformed > drift > silent, and silent < 0 — the pointwise escape route
+    (silence beats drift) that collapsed chain4 is closed."""
+    n = 8
+    rm = torch.ones(n, 4)
+    zeros = torch.zeros(n, 4)
+    # rows 0-1 wellformed, 2-5 drift, 6-7 silent
+    R_emit = np.asarray([1, 1, 1, 1, 1, 1, 0, 0], dtype=np.float32)
+    R_fmt = np.asarray([1, 1, -0.2, -0.2, -0.2, -0.2, 0, 0], dtype=np.float32)
+    ok = torch.zeros(n, 4); ok[0:2, 0] = 1.0
+    fv = torch.zeros(n, 4); fv[2:6, 0] = 1.0
+    A, _ = compose_dcpo_region_advantage(
+        response_mask=rm,
+        index=["g"] * n,
+        R_corr=np.zeros(n, dtype=np.float32),
+        R_meta=np.zeros(n, dtype=np.float32),
+        R_cal=np.zeros(n, dtype=np.float32),
+        answer_mask=zeros,
+        meta_content_mask=zeros,
+        conf_mask=zeros,
+        R_format=R_fmt,
+        format_violation_mask=fv,
+        format_ok_mask=ok,
+        w_format=1.0,
+        R_emit=R_emit,
+        w_emit=0.4,
+    )
+    totals = A.sum(dim=1)
+    wf, drift, silent = totals[0], totals[2], totals[6]
+    assert wf > drift > silent
+    assert silent < 0

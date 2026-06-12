@@ -356,6 +356,17 @@ def _compute_dcpo_region_advantage(
     if _w_meta_scale is not None:
         _w_meta *= float(np.asarray(_w_meta_scale, dtype=np.float32).reshape(-1)[0])
 
+    # EMISSION head (user decision 2026-06-12, chain4 postmortem): silence must
+    # be strictly worse than malformed emission or the policy escapes format
+    # pressure by suppressing meta. R_emit = the binary meta_emission key the
+    # populators already write on BOTH sync/async paths (v3g five-way sync).
+    # Knob dcpo_w_emit default 0.0 -> kwargs empty, byte-identical for every
+    # pre-existing config (v2/v3/v4 stage-2 yamls never set it).
+    _emit_kwargs = {}
+    _w_emit = float(config.get("dcpo_w_emit", 0.0))
+    if _w_emit:
+        _emit_kwargs = dict(R_emit=_head("meta_emission"), w_emit=_w_emit)
+
     return compose_dcpo_region_advantage(
         response_mask=response_mask.float(),
         index=index,
@@ -381,6 +392,7 @@ def _compute_dcpo_region_advantage(
             if _rmeta_member is not None else None
         ),
         **_fmt_kwargs,
+        **_emit_kwargs,
     )
 
 

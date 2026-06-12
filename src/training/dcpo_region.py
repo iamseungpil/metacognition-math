@@ -1043,6 +1043,8 @@ def compose_dcpo_region_advantage(
     meta_floor: float = 0.0,
     floor_mask=None,
     rmeta_member_mask=None,
+    R_emit=None,
+    w_emit: float = 0.0,
 ):
     """Independent per-head group-mean-subtract + per-region token routing (§2.3).
 
@@ -1095,6 +1097,21 @@ def compose_dcpo_region_advantage(
     member_mask; R_corr/R_cal keep member_mask (their scalars are real for
     every non-discard row). None -> byte-identical to the pre-v4 compose
     (R_meta centered with member_mask like the other two heads).
+
+    EMISSION head (OPTIONAL `R_emit` + `w_emit`, user decision 2026-06-12):
+    R_emit[B] is the binary emit-any-meta signal (1.0/0.0). chain4 showed the
+    asymmetric format penalty (drift -0.2) is NOT enough: silence (0) still
+    beats drift (-0.2) POINTWISE, so the policy escapes format pressure by
+    suppressing meta conditionally (emission 0.531->0.289 over 8 steps). The
+    fix is to make silence strictly WORST: Dr.GRPO-center R_emit over ALL rows
+    (silence is a real signal — every row kept, like the FORMAT head) and
+    spread the centered value evenly over the row's RESPONSE tokens
+    (length-neutral: row total = w_emit*Â_emit, so neither long emitters nor
+    short silent rows game the magnitude). Silent rows in a mixed group get a
+    strictly negative total; pre-centering pointwise ordering with the format
+    head at w_emit 0.4 / w_format 1.0: wellformed +1.4 > drift +0.2 >
+    silence 0. R_emit=None / w_emit 0.0 -> byte-identical (v2/v3 and all
+    pre-existing v4 configs never set the knob).
     """
     rm = torch.as_tensor(response_mask, dtype=torch.float32)
     device = rm.device
@@ -1123,6 +1140,14 @@ def compose_dcpo_region_advantage(
             # row's own positions only.
             fv = fv + torch.as_tensor(format_ok_mask, dtype=torch.float32).to(device)
         advantages = advantages + w_format * A_format * fv * rm
+
+    # EMISSION head (user decision 2026-06-12): centered over ALL rows (silence
+    # is the signal), spread evenly over the row's response tokens so the row
+    # TOTAL is exactly w_emit*Â_emit (length-neutral both ways — see docstring).
+    if R_emit is not None and w_emit:
+        A_emit = group_mean_subtract(R_emit, index).to(device)  # [B,1]
+        row_n = rm.to(device).sum(dim=1, keepdim=True).clamp(min=1.0)  # [B,1]
+        advantages = advantages + float(w_emit) * A_emit * (rm.to(device) / row_n)
 
     # v3m anti-collapse floor: UN-CENTERED +meta_floor PER TRUSTED-META ROW
     # (added AFTER centering so it survives — see docstring). Spread evenly over
