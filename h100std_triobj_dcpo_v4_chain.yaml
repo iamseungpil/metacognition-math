@@ -122,13 +122,18 @@ jobs:
           if [ ! -f /scratch/models/v4_s1b_final/config.json ]; then echo "[CHAIN] MERGE FAILED — stopping"; sleep 86400; exit 1; fi
 
           # ── corrected PMI probe vs THESE weights (the stage-2 ref lineage) ──
+          # NOTE chain6 postmortem: python -c blocks INSIDE the if-branch sit at
+          # 10-space yaml indent while the literal-block base is 8 — the 2 extra
+          # spaces ride into the -c string and python dies with IndentationError
+          # (data never staged -> probe FileNotFoundError -> empty VERDICT ->
+          # fail-closed). Python lines below are therefore at BASE (8) indent.
           python -c "
-          from huggingface_hub import snapshot_download
-          import os
-          snapshot_download(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
-              allow_patterns=[\"eval/e8_goldfree_1030_16k_k8/*\"], local_dir=\"/scratch/probe_data\")
-          print(\"e8 probe data staged\")
-          "
+        from huggingface_hub import snapshot_download
+        import os
+        snapshot_download(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"eval/e8_goldfree_1030_16k_k8/*\"], local_dir=\"/scratch/probe_data\")
+        print(\"e8 probe data staged\")
+        "
           cd /scratch/metacognition
           CUDA_VISIBLE_DEVICES=0 /scratch/conda_envs/simplerl/bin/python -u scripts/probe_pmi_offline.py \
               --model /scratch/models/v4_s1b_final \
@@ -137,14 +142,15 @@ jobs:
               --out /scratch/logs/probe_s1b_report.json 2>&1 | tail -20
 
           # ── upload artifacts (idempotency markers) ──────────────────────────
+          # (same base-indent rule as the probe-data block above)
           python -c "
-          from huggingface_hub import HfApi
-          import os
-          api = HfApi(token=os.environ[\"HF_TOKEN\"])
-          api.upload_folder(folder_path=\"/scratch/models/v4_s1b_final\", path_in_repo=\"models/v4_s1b_final\", repo_id=os.environ[\"HF_REPO\"], repo_type=\"model\")
-          api.upload_file(path_or_fileobj=\"/scratch/logs/probe_s1b_report.json\", path_in_repo=\"reports/probe_s1b_report.json\", repo_id=os.environ[\"HF_REPO\"], repo_type=\"model\")
-          print(\"s1b artifacts uploaded\")
-          "
+        from huggingface_hub import HfApi
+        import os
+        api = HfApi(token=os.environ[\"HF_TOKEN\"])
+        api.upload_folder(folder_path=\"/scratch/models/v4_s1b_final\", path_in_repo=\"models/v4_s1b_final\", repo_id=os.environ[\"HF_REPO\"], repo_type=\"model\")
+        api.upload_file(path_or_fileobj=\"/scratch/logs/probe_s1b_report.json\", path_in_repo=\"reports/probe_s1b_report.json\", repo_id=os.environ[\"HF_REPO\"], repo_type=\"model\")
+        print(\"s1b artifacts uploaded\")
+        "
         fi
 
         # ════════════════ GATE: verdict_corrected ════════════════════════════
