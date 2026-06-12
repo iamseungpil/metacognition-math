@@ -56,6 +56,14 @@ algorithm:
   dcpo_w_meta: 0.0
   dcpo_w_cal: 0.0
   dcpo_w_format: 1.0            # format DOMINATES (was 0.1)
+  # ASYMMETRIC format head (chain2 collapse fix 2026-06-12): drift/discard pay
+  # -0.2 instead of -1.0. At -1.0 + w_format 1.0 the silent no_meta rows (R 0)
+  # beat the emitting rows' NEGATIVE expectation and group-centering actively
+  # REWARDED abstention -> emission 0.566 -> 0.012 in 10 live steps. At 0.2 the
+  # emitting expectation is positive for wellformed-among-emitters > ~17%
+  # (live value ~40%), so emission dominates silence and wellformed (+1) still
+  # towers over drift (-0.2).
+  dcpo_format_neg: 0.2
   dcpo_meta_floor: 0.1          # emission insurance, unchanged
   dcpo_rmeta_source: none
   sdc_counterfactual: false

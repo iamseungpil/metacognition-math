@@ -1355,3 +1355,43 @@ def test_cf_leak_guard_clean_cf_still_grades():
         cf_completions=["plain continuation. The answer is \\boxed{4}"],
     )
     assert out["R_meta"][0] == 1.0
+
+
+# ── s1b collapse fix (2026-06-12): asymmetric format head via format_neg ─────
+def test_format_neg_scales_negative_side_only():
+    """At w_format 1.0 the symmetric -1.0 made silence (R 0) beat emission's
+    negative expectation and group-centering REWARDED abstention (chain2 live
+    collapse: emission 0.566 -> 0.012 in 10 steps). format_neg shrinks ONLY the
+    negative side; wellformed +1.0 and the zero classes are untouched, and the
+    default 1.0 is pre-fix verbatim."""
+    drift = "a <|meta|> note </think> The answer is \\boxed{5}"
+    closed = _meta_text("5")
+    no_meta = "plain reasoning, the answer is \\boxed{5}"
+    fmt = ["drift", "wellformed", "no_meta", "discard"]
+    rows = [_c(drift), _c(closed), _c(no_meta), _c(drift)]
+    out = dcpo_region_rewards(
+        rows, ground_truth=["5"] * 4, group_index=["g"] * 4,
+        cf_correct=[0.0] * 4, fmt_class=fmt, format_neg=0.2,
+    )
+    assert out["format_penalty"] == [-0.2, 1.0, 0.0, -0.2]
+    # default unchanged (pre-fix verbatim)
+    out_def = dcpo_region_rewards(
+        rows, ground_truth=["5"] * 4, group_index=["g"] * 4,
+        cf_correct=[0.0] * 4, fmt_class=fmt,
+    )
+    assert out_def["format_penalty"] == [-1.0, 1.0, 0.0, -1.0]
+    # pre-v3k fallback branch (fmt_class None) scales too
+    out_fb = dcpo_region_rewards(
+        [_c(drift)], ground_truth=["5"], group_index=["g"],
+        cf_correct=[0.0], format_neg=0.2,
+    )
+    assert out_fb["format_penalty"][0] == -0.2
+
+
+def test_format_neg_makes_emission_dominate_silence_in_expectation():
+    """The fix's load-bearing inequality: with wellformed-among-emitters w and
+    negative magnitude q, emitting beats silence iff w*1 - (1-w)*q > 0. At the
+    live w=0.4: q=1.0 fails (-0.2), q=0.2 passes (+0.28)."""
+    w = 0.4
+    assert w * 1.0 - (1 - w) * 1.0 < 0      # symmetric: abstain wins
+    assert w * 1.0 - (1 - w) * 0.2 > 0      # asymmetric: emission wins

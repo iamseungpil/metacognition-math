@@ -122,7 +122,6 @@ def _compute_dcpo_heads_stash(
     # v3 R_meta = c_with - c_without uses only completions + cf_correct (+ uid/step for
     # grouping/diagnostics). The v2 reward knobs (eps/p_lo/warmup/sandbag/format_*) are
     # gone — no longer read or passed.
-    _ = _read  # (kept for any future per-mode knob; silences unused in the v3-only path)
     out = dcpo_region_rewards(
         completions,
         ground_truth=ground_truth,
@@ -132,6 +131,9 @@ def _compute_dcpo_heads_stash(
         cf_correct=cf_correct,           # v3: pre-graded CF correctness (producer) or None
         gate_unclosed=gate_unclosed,     # v3-only unclosed gate/penalty (v2 byte-identical)
         fmt_class=fmt_class,             # v3k: per-row parser classes (three-tier routing)
+        # s1b collapse fix: asymmetric format head (see dcpo_region docstring);
+        # default 1.0 = pre-fix verbatim for every existing config.
+        format_neg=float(_read("dcpo_format_neg", 1.0)),
     )
     _DCPO_HEAD_STASH.update(out)
     return out

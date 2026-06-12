@@ -708,6 +708,16 @@ def dcpo_region_rewards(
     # None (default) -> pre-v3k behavior verbatim (and gate_unclosed=False ->
     # v2 verbatim).
     fmt_class=None,
+    # format_neg (s1b collapse fix 2026-06-12): magnitude of the NEGATIVE side
+    # of the format head (drift/discard). At 1.0 (default, v3k verbatim) an
+    # emitting row's expected format reward is NEGATIVE whenever wellformed-
+    # among-emitters < 50%, so under Dr.GRPO group-centering the silent no_meta
+    # rows (R_format 0) earn POSITIVE centered advantage — abstention gets
+    # actively reinforced (s1b live collapse: emission 0.566 -> 0.012 in 10
+    # steps at w_format 1.0). At 0.2 the emitting expectation flips positive
+    # for wellformed-among-emitters > ~17%, making emission dominate silence
+    # while wellformed (+1) still towers over drift (-0.2).
+    format_neg: float = 1.0,
     # v2 carry-over reward knobs (eps/eps_right_right/p_lo/p_hi/warmup_steps/sandbag_*/
     # format_*) are absorbed here and IGNORED — v3's R_meta = c_with - c_without uses
     # none of them. Kept only so legacy callers don't raise TypeError.
@@ -938,11 +948,12 @@ def dcpo_region_rewards(
         # Pre-v3k (fmt_class=None): -1 ONLY for drift, verbatim as before.
         "format_penalty": (
             [
-                1.0 if c == "wellformed" else (-1.0 if c in ("drift", "discard") else 0.0)
+                1.0 if c == "wellformed"
+                else (-float(format_neg) if c in ("drift", "discard") else 0.0)
                 for c in fmt_class
             ]
             if fmt_class is not None
-            else [-1.0 if meta_drift[i] else 0.0 for i in range(B)]
+            else [-float(format_neg) if meta_drift[i] else 0.0 for i in range(B)]
         ),
         # v3k observability echo: the per-row parser class (None pre-v3k). The
         # trend scalars (replaced/discard/drift/wellformed rates) and the
