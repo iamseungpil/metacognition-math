@@ -71,6 +71,23 @@ algorithm:
   dcpo_w_meta: 0.5
   dcpo_w_cal: 0.3
   dcpo_w_format: 0.1
+  # EMISSION-COLLAPSE FIXES (chain4-6 postmortem, user decision 2026-06-13:
+  # rerun stage-2 FROM SFT with both fixes). The first stage-2 launch (from the
+  # s1b ckpt) collapsed emission 0.61->0.27 in 14 steps because (a) these two
+  # knobs were UNSET here, so the harsh defaults applied — dcpo_format_neg
+  # defaulted to 1.0 (silence beats malformed emission POINTWISE -> abstention
+  # escape) and dcpo_w_emit defaulted to 0.0 (no anti-silence head at all) —
+  # and (b) the s1b init had already length-farmed to ~2000 tokens / 57%
+  # truncation, and truncated rows cannot close <|meta|> so every long rollout
+  # was a format violation. Restarting from SFT (short responses, no inflation)
+  # plus the validated chain6 fixes keeps emission alive while PMI grades
+  # content. dcpo_format_neg 0.2: drift/discard pay -0.2 not -1.0 (break-even
+  # wellformed-among-emitters ~17%). dcpo_w_emit 0.4: binary meta_emission as a
+  # 5th region head, Dr.GRPO-centered over ALL rows (silence auto-negative),
+  # broadcast PER-TOKEN on the response mask (chain5 lesson: row-length-
+  # normalized spread dilutes to noise vs the format head in token-mean PG).
+  dcpo_format_neg: 0.2
+  dcpo_w_emit: 0.4
   # w_meta warmup (review M4): linear 0 -> dcpo_w_meta over the first N steps.
   dcpo_w_meta_warmup_steps: 50
   # FLOOR STAYS (review I1), reduced 0.1 -> 0.05: stage 1 already taught the
