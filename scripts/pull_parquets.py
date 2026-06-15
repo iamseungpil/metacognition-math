@@ -14,6 +14,8 @@ for fn in [
     "verl_val_redirect.parquet",
     "verl_train_redirect_base.parquet",
     "verl_val_redirect_base.parquet",
+    "verl_train_meta_mix.parquet",
+    "verl_val_meta_mix.parquet",
 ]:
     print(f"[pull] {fn}")
     src = hf_hub_download(repo_id=REPO, repo_type="dataset", filename=fn, token=TOKEN, local_dir=str(OUT))
