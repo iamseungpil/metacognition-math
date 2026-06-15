@@ -42,3 +42,22 @@ def test_anchor_off_is_byte_identical():
     base, _ = compose_dcpo_region_advantage(**args)
     off, _ = compose_dcpo_region_advantage(**args, anchor_norm=False)
     assert torch.allclose(base, off)
+
+def test_anchor_rescales_format_and_emit():
+    B, T = 4, 6
+    idx = [0, 0, 1, 1]
+    ans = torch.zeros(B, T); ans[:, :2] = 1.0
+    meta = torch.zeros(B, T); meta[:, 2:4] = 1.0
+    fv = torch.zeros(B, T); fv[:, 4] = 1.0
+    state = {}
+    A, _ = compose_dcpo_region_advantage(
+        response_mask=torch.ones(B, T), index=idx,
+        R_corr=[1.0,-1.0,1.0,-1.0], R_meta=[0.0]*B, R_cal=[0.0]*B,
+        answer_mask=ans, meta_content_mask=meta, conf_mask=torch.zeros(B,T),
+        R_format=[0.02,-0.02,0.02,-0.02], format_violation_mask=fv, w_format=1.0,
+        w_corr=1.0, w_meta=0.0, w_cal=0.0,
+        anchor_norm=True, anchor_ema_state=state, anchor_ema_decay=0.0, anchor_warmup_steps=0,
+    )
+    corr_mag = A[:, 0].abs().mean().item()
+    fmt_mag = A[:, 4].abs().mean().item()
+    assert abs(fmt_mag - corr_mag) / corr_mag < 0.05, (fmt_mag, corr_mag)

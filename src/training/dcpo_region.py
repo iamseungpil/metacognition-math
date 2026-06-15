@@ -1173,6 +1173,12 @@ def compose_dcpo_region_advantage(
             # plain sum IS the union (no clamp needed) — ONE centered head, each
             # row's own positions only.
             fv = fv + torch.as_tensor(format_ok_mask, dtype=torch.float32).to(device)
+        if anchor_norm and anchor_ema_state is not None and \
+           anchor_ema_state.get("_n", 0) > anchor_warmup_steps:
+            cs = anchor_ema_state.get("corr", 0.0)
+            fs = _ema_mean_abs(A_format, anchor_ema_state, "format", anchor_ema_decay)
+            if cs > 0:
+                A_format = A_format * (cs / max(fs, 1e-6))
         advantages = advantages + w_format * A_format * fv * rm
 
     # EMISSION head (user decision 2026-06-12): centered over ALL rows (silence
@@ -1187,6 +1193,12 @@ def compose_dcpo_region_advantage(
     # the token-mean loss already normalizes row length (no length-farm).
     if R_emit is not None and w_emit:
         A_emit = group_mean_subtract(R_emit, index).to(device)  # [B,1]
+        if anchor_norm and anchor_ema_state is not None and \
+           anchor_ema_state.get("_n", 0) > anchor_warmup_steps:
+            cs = anchor_ema_state.get("corr", 0.0)
+            es = _ema_mean_abs(A_emit, anchor_ema_state, "emit", anchor_ema_decay)
+            if cs > 0:
+                A_emit = A_emit * (cs / max(es, 1e-6))
         advantages = advantages + float(w_emit) * A_emit * rm.to(device)
 
     # v3m anti-collapse floor: UN-CENTERED +meta_floor PER TRUSTED-META ROW
