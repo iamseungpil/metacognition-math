@@ -975,6 +975,18 @@ def dcpo_region_rewards(
 # §2.3 — per-region advantage composition (torch-only; no verl/omegaconf deps so
 # this is unit-testable under a minimal env). verl_sdc_utils delegates here.
 # ─────────────────────────────────────────────────────────────────────────────
+def _ema_mean_abs(centered, state, key, decay):
+    """EMA of mean(|centered advantage|) for one head. Updates `state` in place,
+    returns the running value. `centered` is [B,1] or [B]. decay in [0,1):
+    new = decay*old + (1-decay)*cur (decay 0 -> just current batch)."""
+    cur = torch.as_tensor(centered, dtype=torch.float32).abs().reshape(-1)
+    cur = float(cur[cur > 0].mean()) if (cur > 0).any() else 0.0
+    old = state.get(key)
+    val = cur if old is None else (decay * old + (1.0 - decay) * cur)
+    state[key] = val
+    return val
+
+
 def group_mean_subtract(values, index, member=None):
     """Dr.GRPO block-wise group centering: subtract group mean, NO /std.
 
@@ -1045,6 +1057,10 @@ def compose_dcpo_region_advantage(
     rmeta_member_mask=None,
     R_emit=None,
     w_emit: float = 0.0,
+    anchor_norm: bool = False,
+    anchor_ema_state: dict | None = None,
+    anchor_ema_decay: float = 0.9,
+    anchor_warmup_steps: int = 0,
 ):
     """Independent per-head group-mean-subtract + per-region token routing (§2.3).
 
@@ -1122,6 +1138,22 @@ def compose_dcpo_region_advantage(
     A_corr = group_mean_subtract(R_corr, index, member=member_mask).to(device)  # [B,1]
     A_meta = group_mean_subtract(R_meta, index, member=_rmeta_member).to(device)  # [B,1]
     A_cal = group_mean_subtract(R_cal, index, member=member_mask).to(device)    # [B,1]
+
+    # Anchor-on-R_corr scale normalization (spec 2026-06-15 §3.1): keep R_corr as
+    # the Dr.GRPO anchor; rescale auxiliary heads to its mean|advantage| so w_* is
+    # "strength relative to correctness" and weak heads (PMI) are not buried.
+    # Default-off (anchor_norm False) -> byte-identical.
+    if anchor_norm and anchor_ema_state is not None:
+        st = anchor_ema_state
+        n = st.get("_n", 0) + 1
+        st["_n"] = n
+        corr_s = _ema_mean_abs(A_corr, st, "corr", anchor_ema_decay)
+        meta_s = _ema_mean_abs(A_meta, st, "meta", anchor_ema_decay)
+        cal_s = _ema_mean_abs(A_cal, st, "cal", anchor_ema_decay)
+        if n > anchor_warmup_steps and corr_s > 0:
+            _floor = 1e-6
+            A_meta = A_meta * (corr_s / max(meta_s, _floor))
+            A_cal = A_cal * (corr_s / max(cal_s, _floor))
 
     ans = torch.as_tensor(answer_mask, dtype=torch.float32).to(device)
     meta_c = torch.as_tensor(meta_content_mask, dtype=torch.float32).to(device)
