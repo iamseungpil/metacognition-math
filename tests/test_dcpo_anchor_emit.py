@@ -104,3 +104,21 @@ def test_meta_len_cap_limits_floor():
     assert capped[:, 2:9].sum().item() < uncapped[:, 2:9].sum().item()
     # capped applies floor to only the first 3 meta tokens
     assert capped[0, 5:9].abs().sum().item() == 0.0
+
+from src.training.dcpo_region import dcpo_region_rewards
+
+def test_trunc_open_penalty_only_for_opened_then_truncated():
+    # Row A: opened a meta then truncated (fmt_class 'truncation', has_meta True).
+    # Row B: no meta, long answer truncated (fmt_class 'truncation', no <|meta|>).
+    # Penalty must hit A, not B.
+    comps = [
+        {"content": "reason <|meta|> confidence: 0.5 ... (cut)"},   # opened+cut
+        {"content": "just a long answer with no meta block ... (cut)"},
+    ]
+    out = dcpo_region_rewards(
+        comps, ground_truth=["1", "1"], group_index=[0, 0],
+        fmt_class=["truncation", "truncation"], trunc_open_penalty=0.3,
+    )
+    fp = out["format_penalty"]
+    assert fp[0] == -0.3      # opened-then-truncated penalized
+    assert fp[1] == 0.0       # meta-less truncation untouched

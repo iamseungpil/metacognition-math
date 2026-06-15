@@ -718,6 +718,12 @@ def dcpo_region_rewards(
     # for wellformed-among-emitters > ~17%, making emission dominate silence
     # while wellformed (+1) still towers over drift (-0.2).
     format_neg: float = 1.0,
+    # trunc_open_penalty (spec 2026-06-15 §3.3): a MEDIUM negative on the FORMAT
+    # head for rows that OPENED a <|meta|> then ran into the length budget
+    # (fmt_class 'truncation' AND has_meta) — discourages starting an expensive
+    # meta block it cannot afford to close, WITHOUT punishing meta-less rows that
+    # merely ran long. 0.0 (default) -> truncation stays format-neutral (verbatim).
+    trunc_open_penalty: float = 0.0,
     # v2 carry-over reward knobs (eps/eps_right_right/p_lo/p_hi/warmup_steps/sandbag_*/
     # format_*) are absorbed here and IGNORED — v3's R_meta = c_with - c_without uses
     # none of them. Kept only so legacy callers don't raise TypeError.
@@ -949,8 +955,11 @@ def dcpo_region_rewards(
         "format_penalty": (
             [
                 1.0 if c == "wellformed"
-                else (-float(format_neg) if c in ("drift", "discard") else 0.0)
-                for c in fmt_class
+                else (-float(format_neg) if c in ("drift", "discard")
+                      else (-float(trunc_open_penalty)
+                            if (c == "truncation" and trunc_open_penalty and has_meta[i])
+                            else 0.0))
+                for i, c in enumerate(fmt_class)
             ]
             if fmt_class is not None
             else [-float(format_neg) if meta_drift[i] else 0.0 for i in range(B)]
