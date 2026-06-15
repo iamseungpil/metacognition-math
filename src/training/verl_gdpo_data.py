@@ -126,6 +126,9 @@ def _load_message_list(raw_messages) -> list[dict]:
         return json.loads(raw_messages)
     if isinstance(raw_messages, list):
         return raw_messages
+    # pandas/pyarrow round-trips a list-of-dicts column as an ndarray.
+    if hasattr(raw_messages, "tolist"):
+        return list(raw_messages.tolist())
     raise TypeError(f"Unsupported messages payload type: {type(raw_messages)!r}")
 
 
@@ -222,6 +225,68 @@ def build_v8_redirect_subset(
         target_prefix = "base_val" if idx in val_idx else "base_train"
         outputs[target_prefix].append(base_record)
 
+    return outputs
+
+
+def build_v8_meta_subset(
+    meta_path: str,
+    base_path: str,
+    *,
+    scenarios: tuple[str, ...] = ("redirect", "verify"),
+    allowed_difficulties: tuple[str, ...] = ("easy", "medium", "hard"),
+    require_gradable_gold: bool = True,
+    val_ratio: float = 0.1,
+    seed: int = 42,
+) -> dict[str, list[dict]]:
+    """Generalized v8 subset: multi-scenario + multi-difficulty (easy restored) +
+    prose-gold filter. Source mix is whatever the corpus carries (gsm8k/MATH/omni).
+    Parallel to build_v8_redirect_subset (which stays as-is). Spec 2026-06-15."""
+    meta_df = pd.read_parquet(meta_path)
+    base_df = pd.read_parquet(base_path)
+    if len(meta_df) != len(base_df):
+        raise ValueError(f"Meta/base length mismatch: {len(meta_df)} vs {len(base_df)}")
+    selector = (
+        meta_df["scenario"].isin(list(scenarios))
+        & meta_df["difficulty"].isin(list(allowed_difficulties))
+    )
+    selected_idx = meta_df.index[selector].tolist()
+    if require_gradable_gold:
+        keep = []
+        for idx in selected_idx:
+            _, gt = _extract_prompt_and_gt_from_messages(meta_df.loc[idx]["messages"])
+            if _gold_is_rule_gradable(gt):
+                keep.append(idx)
+        selected_idx = keep
+    if not selected_idx:
+        raise ValueError("Meta subset selection produced zero rows")
+    rng = random.Random(seed)
+    rng.shuffle(selected_idx)
+    n_val = max(1, int(round(len(selected_idx) * val_ratio)))
+    val_idx = set(selected_idx[:n_val])
+    outputs = {"meta_train": [], "meta_val": [], "base_train": [], "base_val": []}
+    for idx in selected_idx:
+        meta_row = meta_df.loc[idx]
+        base_row = base_df.loc[idx]
+        prompt_text, gt = _extract_prompt_and_gt_from_messages(meta_row["messages"])
+        data_source = str(meta_row.get("source", "v8_meta"))
+        record = {
+            "data_source": data_source,
+            "prompt": [{"role": "user", "content": prompt_text}],
+            "ability": "math",
+            "reward_model": {"style": "rule", "ground_truth": gt},
+            "split_tags": {
+                "scenario": str(meta_row.get("scenario", "")),
+                "difficulty": str(meta_row.get("difficulty", "")),
+                "trigger": str(meta_row.get("trigger", "")),
+                "row_index": int(idx),
+            },
+        }
+        outputs["meta_val" if idx in val_idx else "meta_train"].append(record)
+        base_prompt, base_gt = _extract_prompt_and_gt_from_messages(base_row["messages"])
+        if base_prompt != prompt_text or base_gt != gt:
+            raise ValueError(f"Base-matched row mismatch at index {idx}")
+        outputs["base_val" if idx in val_idx else "base_train"].append(
+            {**record, "data_source": f"{data_source}::base_matched"})
     return outputs
 
 
