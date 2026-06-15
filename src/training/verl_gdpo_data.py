@@ -363,9 +363,9 @@ def main():
     parser.add_argument("--split", choices=["train", "val"], default="train")
     parser.add_argument(
         "--mode",
-        choices=["mixed", "v8_redirect"],
+        choices=["mixed", "v8_redirect", "meta_mix"],
         default="mixed",
-        help="mixed: legacy GSM8K+MATH builder, v8_redirect: paired redirect-focused subset from V8 parquets",
+        help="mixed: legacy GSM8K+MATH builder, v8_redirect: paired redirect-focused subset from V8 parquets, meta_mix: generalized multi-scenario/difficulty subset (spec 2026-06-15)",
     )
     parser.add_argument("--gsm_n", type=int, default=500)
     parser.add_argument("--math_n", type=int, default=500)
@@ -375,6 +375,10 @@ def main():
     parser.add_argument("--out_val_meta", default="data/verl_val_redirect.parquet")
     parser.add_argument("--out_train_base", default="data/verl_train_redirect_base.parquet")
     parser.add_argument("--out_val_base", default="data/verl_val_redirect_base.parquet")
+    parser.add_argument("--out_train_meta_mix", default="data/verl_train_meta_mix.parquet")
+    parser.add_argument("--out_val_meta_mix", default="data/verl_val_meta_mix.parquet")
+    parser.add_argument("--out_train_meta_mix_base", default="data/verl_train_meta_mix_base.parquet")
+    parser.add_argument("--out_val_meta_mix_base", default="data/verl_val_meta_mix_base.parquet")
     parser.add_argument("--scenario", default="redirect")
     parser.add_argument("--difficulties", nargs="*", default=["medium", "hard"])
     parser.add_argument("--val_ratio", type=float, default=0.1)
@@ -389,6 +393,19 @@ def main():
         else:
             records = build_val(gsm_n=args.gsm_n, math_n=args.math_n)
         records_to_parquet(records, args.output)
+        return
+
+    if args.mode == "meta_mix":
+        outs = build_v8_meta_subset(args.meta_path, args.base_path)
+        for key, out_path in [
+            ("meta_train", args.out_train_meta_mix),
+            ("meta_val", args.out_val_meta_mix),
+            ("base_train", args.out_train_meta_mix_base),
+            ("base_val", args.out_val_meta_mix_base),
+        ]:
+            Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+            records_to_parquet(outs[key], out_path)
+            print(f"[{key}] {len(outs[key])} rows -> {out_path}")
         return
 
     outputs = build_v8_redirect_subset(
