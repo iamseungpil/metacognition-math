@@ -41,13 +41,19 @@ def _check_correctness(pred_text, gold):
     """
     if HAS_MATH_VERIFY:
         try:
-            # math_verify's SIGALRM only works in the main thread; in Ray worker
-            # threads signal.alarm(None) raised TypeError -> log flood + fallback.
-            # Pass a positive timeout (math_verify guards thread-safety internally
-            # in current versions); the try/except still rescues any failure.
-            gold_parsed = parse(str(gold), extraction_mode="first_match", parsing_timeout=5)
-            pred_parsed = parse(str(pred_text), extraction_mode="first_match", parsing_timeout=5)
-            if bool(verify(gold_parsed, pred_parsed, timeout_seconds=5)):
+            # parsing_timeout=None / timeout_seconds=None disable math_verify's
+            # signal.SIGALRM timeout, which only works in the main thread and
+            # raises ValueError("signal only works in main thread") in Ray
+            # RewardLoopWorker threads. The installed math_verify RE-RAISES that
+            # ValueError (its own docstring says any timeout > 0 raises in a
+            # threaded environment and recommends parsing_timeout=None), so a
+            # positive timeout silently degrades correct symbolic answers
+            # (1/2==0.5, radicals, fractions) to string-match → mis-grades them.
+            # With the signal disabled the real symbolic comparison runs
+            # correctly in worker threads. Main-thread behaviour is preserved.
+            gold_parsed = parse(str(gold), extraction_mode="first_match", parsing_timeout=None)
+            pred_parsed = parse(str(pred_text), extraction_mode="first_match", parsing_timeout=None)
+            if bool(verify(gold_parsed, pred_parsed, timeout_seconds=None)):
                 return True
             # fall through to string-match (math_verify may have silent-failed)
         except Exception:
