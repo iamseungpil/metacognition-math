@@ -1054,6 +1054,7 @@ def compose_dcpo_region_advantage(
     member_mask=None,
     meta_floor: float = 0.0,
     floor_mask=None,
+    meta_len_cap: int = 0,
     rmeta_member_mask=None,
     R_emit=None,
     w_emit: float = 0.0,
@@ -1225,7 +1226,21 @@ def compose_dcpo_region_advantage(
     if meta_floor and floor_mask is not None:
         fl = torch.as_tensor(floor_mask, dtype=torch.float32).to(device).view(-1, 1)  # [B,1]
         meta_in_resp = meta_c * rm
+        # row_n is the FULL meta-token count so the per-token floor stays
+        # +meta_floor/row_n; capping below zeros the tail tokens WITHOUT
+        # re-normalizing, so a long meta row delivers strictly less total floor
+        # (floor*cap/row_n) — the floor stops paying for sheer meta length.
         row_n = meta_in_resp.sum(dim=1, keepdim=True).clamp(min=1.0)  # [B,1] meta-token count
+        if meta_len_cap and meta_len_cap > 0:
+            # keep only the first meta_len_cap meta tokens per row (spec §3.3:
+            # floor must not pay for sheer meta length).
+            capped = torch.zeros_like(meta_in_resp)
+            mb = meta_in_resp > 0.5
+            for b in range(meta_in_resp.shape[0]):
+                pos = torch.nonzero(mb[b], as_tuple=False).flatten()
+                if pos.numel():
+                    capped[b, pos[:meta_len_cap]] = 1.0
+            meta_in_resp = capped
         advantages = advantages + float(meta_floor) * fl * (meta_in_resp / row_n)
 
     return advantages, advantages

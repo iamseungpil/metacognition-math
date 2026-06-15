@@ -85,3 +85,22 @@ def test_emit_first_token_routing_clean():
     assert torch.allclose(routed[:, 1:3], base[:, 1:3])
     # silent row (row 1) gets negative emit on token 0
     assert routed[1, 0] < 0
+
+def test_meta_len_cap_limits_floor():
+    # A row with many meta tokens: with a cap, only the first `cap` meta tokens
+    # share the +floor (row total <= floor*cap/row_n stays bounded); without cap
+    # the whole meta span shares it. Assert capped floor total < uncapped.
+    B, T = 1, 10
+    meta = torch.zeros(B, T); meta[:, 2:9] = 1.0   # 7 meta tokens
+    args = dict(
+        response_mask=torch.ones(B, T), index=[0],
+        R_corr=[1.0], R_meta=[0.0], R_cal=[0.0],
+        answer_mask=torch.zeros(B,T), meta_content_mask=meta, conf_mask=torch.zeros(B,T),
+        w_corr=0.0, w_meta=0.0, w_cal=0.0,
+        meta_floor=0.1, floor_mask=[1.0],
+    )
+    uncapped, _ = compose_dcpo_region_advantage(**args)
+    capped, _ = compose_dcpo_region_advantage(**args, meta_len_cap=3)
+    assert capped[:, 2:9].sum().item() < uncapped[:, 2:9].sum().item()
+    # capped applies floor to only the first 3 meta tokens
+    assert capped[0, 5:9].abs().sum().item() == 0.0
