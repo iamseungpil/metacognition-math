@@ -64,6 +64,19 @@ class CFPrefixAgentLoop(SingleTurnAgentLoop):
             # vLLM SamplingParams.logit_bias = {token_id: bias}; -100.0 masks <|meta|>.
             sp["logit_bias"] = {int(k): float(v) for k, v in dict(lb).items()}
 
+        # s3b §3.2 (BEST-EFFORT, default OFF): bound the meta block by forcing a
+        # close after a token budget. Same verbatim-splat path as logit_bias above
+        # (vllm_async_server.py builds SamplingParams(**sp)), so a vLLM that accepts
+        # `logits_processors` picks this up with NO key filtering. If the vLLM/verl
+        # version rejects the kwarg or Ray can't pickle the processor, set
+        # DCPO_META_CLOSE_FORCE=0 (default) and s3b relies on Tasks 1-6 (SFT priming).
+        if os.environ.get("DCPO_META_CLOSE_FORCE", "0") == "1":
+            from src.training.meta_close_processor import MetaCloseLogitsProcessor
+            sp.setdefault("logits_processors", []).append(
+                MetaCloseLogitsProcessor(
+                    meta_open=151669, meta_close=151670,
+                    max_open_tokens=int(os.environ.get("DCPO_META_CLOSE_N", "96"))))
+
         # 3. continue raw from prefix_ids (vLLM TokensPrompt, no chat template).
         metrics: dict[str, Any] = {}
         with simple_timer("generate_sequences", metrics):
