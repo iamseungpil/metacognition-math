@@ -225,6 +225,30 @@ def build_v8_redirect_subset(
     return outputs
 
 
+def _gold_is_rule_gradable(gt: str) -> bool:
+    """True iff gold answer is rule-gradable (numeric / boxed-able), NOT prose.
+    Drops omni-math prose golds (~26%) that rule-based grading scores 0 even when
+    the model is right (spec 2026-06-15 §3.6)."""
+    if gt is None:
+        return False
+    s = str(gt).strip()
+    if not s:
+        return False
+    # Reject obvious prose: \text{...} wrappers or >2 alphabetic words.
+    if "\\text{" in s:
+        return False
+    words = re.findall(r"[A-Za-z]{2,}", s)
+    has_math = any(t in s for t in ("\\frac", "\\sqrt", "\\pi", "(", "="))
+    # Reject prose: multiple alphabetic words with no math structure,
+    # e.g. "Player 0 wins" — a stray digit does not make it gradable.
+    if len(words) >= 2 and not has_math:
+        return False
+    # Accept if it contains a digit, a fraction/sqrt/expression token, or is short symbolic.
+    if re.search(r"[0-9]", s) or has_math:
+        return True
+    return len(s) <= 8  # short symbolic like 'x', 'a+b'
+
+
 def _extract_math_answer(row: dict) -> str:
     """Extract answer from hendrycks_math format.
 
