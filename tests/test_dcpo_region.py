@@ -171,3 +171,14 @@ def test_free_text_conf_outside_meta_not_marked():
     assert not m["CONF"].any()
     assert not m["META_CONTENT"].any()
     _assert_invariants(ids, [True] * len(ids), m)
+
+
+def test_multi_open_recovers_first_pair_when_flag_on():
+    from src.training.dcpo_region import classify_dcpo_format
+    # ids: <|meta|> sig <|/meta|> ... <|meta|> stray   (a stray 2nd open after a valid pair)
+    O, C = 151669, 151670
+    ids = [O, 1, 2, C, 9, 9, O, 3]   # first pair valid, trailing stray open
+    rm = [True] * len(ids)
+    dec = lambda xs: "confidence: 0.5"   # signature present
+    out = classify_dcpo_format(ids, rm, dec, recover_first_pair=True)
+    assert out["fmt_class"] in ("wellformed", "dup_open", "swapped", "reversed")  # recovered, not discard

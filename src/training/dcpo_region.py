@@ -145,6 +145,7 @@ def classify_dcpo_format(
     think_close: int = THINK_CLOSE_DEFAULT,
     tier1_to_discard: bool = False,
     _validate_plan: bool = True,
+    recover_first_pair: bool = False,
 ):
     """Classify one rollout's meta-delimiter format (v3k three-tier spec §2.1).
 
@@ -342,6 +343,20 @@ def classify_dcpo_format(
 
     # 8. DISCARD (tier-2) — everything else: multiple/crossing/interleaved
     #    blocks, >2 meta tokens not matching the shapes above, etc.
+    #    s3b §3.4 (flag, default OFF): widen auto-correction — if a valid first
+    #    open->close pair exists, keep only that prefix span and reclassify it,
+    #    recovering some otherwise-discarded rows (e.g. a stray trailing open).
+    if recover_first_pair and len(O) >= 1 and len(C) >= 1:
+        first_o = O[0]
+        first_c = min(c for c in C if c > first_o) if any(c > first_o for c in C) else None
+        if first_c is not None:
+            sub_ids = ids[:first_c + 1]
+            sub_rm = rmask[:first_c + 1]
+            return classify_dcpo_format(
+                sub_ids, sub_rm, decode_fn,
+                meta_open=meta_open, meta_close=meta_close, think_close=think_close,
+                tier1_to_discard=tier1_to_discard, _validate_plan=_validate_plan,
+                recover_first_pair=False)
     return _discard()
 
 

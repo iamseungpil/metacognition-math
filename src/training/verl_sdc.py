@@ -3090,6 +3090,9 @@ class SDCRayPPOTrainer(RayPPOTrainer):
                 replace_ok = False
 
         meta_open = int(getattr(self.config.algorithm, "dcpo_meta_open", 151669) or 151669)
+        # s3b §3.4 (flag, default False): widen tier-1 auto-correction to recover
+        # the first valid meta pair from otherwise-discarded multi-open rows.
+        recover_first_pair = bool(getattr(self.config.algorithm, "dcpo_recover_first_pair", False))
         _decode = lambda ids: self.tokenizer.decode(ids, skip_special_tokens=False)
 
         classes = _np.empty(B, dtype=object)
@@ -3104,7 +3107,8 @@ class SDCRayPPOTrainer(RayPPOTrainer):
                 rm = attn[i][prompt_len:]
             else:
                 rm = None
-            fmt = classify_dcpo_format(rids, rm, _decode, meta_open=meta_open)
+            fmt = classify_dcpo_format(rids, rm, _decode, meta_open=meta_open,
+                                       recover_first_pair=recover_first_pair)
             classes[i] = fmt["fmt_class"]
             plans[i] = []
             plan = fmt["replacement_plan"]
