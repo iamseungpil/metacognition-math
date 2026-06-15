@@ -250,13 +250,26 @@ def build_v8_meta_subset(
         & meta_df["difficulty"].isin(list(allowed_difficulties))
     )
     selected_idx = meta_df.index[selector].tolist()
-    if require_gradable_gold:
-        keep = []
-        for idx in selected_idx:
-            _, gt = _extract_prompt_and_gt_from_messages(meta_df.loc[idx]["messages"])
-            if _gold_is_rule_gradable(gt):
-                keep.append(idx)
-        selected_idx = keep
+    # Filter to rows that are (a) rule-gradable on the meta side and (b) have a
+    # clean, agreeing base-matched pair. Unlike build_v8_redirect_subset (which
+    # raises on any base mismatch), the widened easy+verify slice surfaces ~2.5%
+    # rows whose base-matched solution string is broken (e.g. truncated \boxed);
+    # we DROP those rather than crash, keeping splits consistent and pairing
+    # exact for the surviving rows (spec 2026-06-15 §3.6 grading robustness).
+    keep = []
+    for idx in selected_idx:
+        prompt_text, gt = _extract_prompt_and_gt_from_messages(meta_df.loc[idx]["messages"])
+        if require_gradable_gold and not _gold_is_rule_gradable(gt):
+            continue
+        try:
+            base_prompt, base_gt = _extract_prompt_and_gt_from_messages(
+                base_df.loc[idx]["messages"])
+        except (ValueError, TypeError):
+            continue
+        if base_prompt != prompt_text or base_gt != gt:
+            continue
+        keep.append(idx)
+    selected_idx = keep
     if not selected_idx:
         raise ValueError("Meta subset selection produced zero rows")
     rng = random.Random(seed)
@@ -266,7 +279,6 @@ def build_v8_meta_subset(
     outputs = {"meta_train": [], "meta_val": [], "base_train": [], "base_val": []}
     for idx in selected_idx:
         meta_row = meta_df.loc[idx]
-        base_row = base_df.loc[idx]
         prompt_text, gt = _extract_prompt_and_gt_from_messages(meta_row["messages"])
         data_source = str(meta_row.get("source", "v8_meta"))
         record = {
@@ -282,9 +294,6 @@ def build_v8_meta_subset(
             },
         }
         outputs["meta_val" if idx in val_idx else "meta_train"].append(record)
-        base_prompt, base_gt = _extract_prompt_and_gt_from_messages(base_row["messages"])
-        if base_prompt != prompt_text or base_gt != gt:
-            raise ValueError(f"Base-matched row mismatch at index {idx}")
         outputs["base_val" if idx in val_idx else "base_train"].append(
             {**record, "data_source": f"{data_source}::base_matched"})
     return outputs
