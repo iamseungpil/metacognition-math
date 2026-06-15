@@ -1057,6 +1057,8 @@ def compose_dcpo_region_advantage(
     rmeta_member_mask=None,
     R_emit=None,
     w_emit: float = 0.0,
+    emit_route: str = "global",
+    emit_first_n: int = 1,
     anchor_norm: bool = False,
     anchor_ema_state: dict | None = None,
     anchor_ema_decay: float = 0.9,
@@ -1199,7 +1201,19 @@ def compose_dcpo_region_advantage(
             es = _ema_mean_abs(A_emit, anchor_ema_state, "emit", anchor_ema_decay)
             if cs > 0:
                 A_emit = A_emit * (cs / max(es, 1e-6))
-        advantages = advantages + float(w_emit) * A_emit * rm.to(device)
+        if emit_route == "first_token":
+            # Route emit onto the first emit_first_n REAL tokens (the emit/abstain
+            # decision point) — disjoint from ANSWER/META, so it no longer mixes
+            # into answer learning while still penalizing silent rows. (spec §3.2)
+            first_mask = torch.zeros_like(rm)
+            rmb = rm > 0.5
+            for b in range(rm.shape[0]):
+                pos = torch.nonzero(rmb[b], as_tuple=False).flatten()
+                if pos.numel():
+                    first_mask[b, pos[:emit_first_n]] = 1.0
+            advantages = advantages + float(w_emit) * A_emit * first_mask.to(device)
+        else:
+            advantages = advantages + float(w_emit) * A_emit * rm.to(device)
 
     # v3m anti-collapse floor: UN-CENTERED +meta_floor PER TRUSTED-META ROW
     # (added AFTER centering so it survives — see docstring). Spread evenly over
