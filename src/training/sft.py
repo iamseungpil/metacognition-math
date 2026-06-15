@@ -374,6 +374,12 @@ def run_sft(config_path: str):
         model.resize_token_embeddings(len(tokenizer))
         print(f"Resized embeddings to {len(tokenizer)}")
 
+    import os as _os
+    if _os.environ.get("S3B_META_EMB_TRANSPLANT", "0") == "1":
+        from src.training.meta_token_init import transplant_meta_embeddings_from_think
+        transplant_meta_embeddings_from_think(model, tokenizer)
+        print("[s3b] transplanted meta-token embeddings from think tokens")
+
     full_dataset = prepare_sft_dataset(
         data_path,
         tokenizer,
