@@ -25,6 +25,10 @@ from src.training.meta_rlsd_data_pipeline import (
     _manual_offset_scan,
 )
 
+# Anchor EMA state persists ACROSS steps (spec 2026-06-15 §3.5). Module-level so a
+# single training process keeps one running estimate; re-warms on resume (acceptable).
+_ANCHOR_EMA_STATE: dict = {}
+
 
 def _offsets_with_degenerate_guard(
     tokenizer,
@@ -367,6 +371,26 @@ def _compute_dcpo_region_advantage(
     if _w_emit:
         _emit_kwargs = dict(R_emit=_head("meta_emission"), w_emit=_w_emit)
 
+    # spec 2026-06-15 conflict-free composition knobs (all default-off ->
+    # byte-identical for every pre-existing config).
+    _anchor_kwargs = {}
+    if bool(config.get("dcpo_anchor_norm", False)):
+        _anchor_kwargs = dict(
+            anchor_norm=True,
+            anchor_ema_state=_ANCHOR_EMA_STATE,
+            anchor_ema_decay=float(config.get("dcpo_anchor_ema", 0.9)),
+            anchor_warmup_steps=int(config.get("dcpo_anchor_warmup_steps", 0)),
+        )
+    _emit_route_kwargs = {}
+    if str(config.get("dcpo_emit_route", "global")) == "first_token":
+        _emit_route_kwargs = dict(
+            emit_route="first_token",
+            emit_first_n=int(config.get("dcpo_emit_first_n", 1)),
+        )
+    _len_cap = int(config.get("dcpo_meta_len_cap", 0))
+    if _len_cap:
+        _emit_route_kwargs["meta_len_cap"] = _len_cap
+
     return compose_dcpo_region_advantage(
         response_mask=response_mask.float(),
         index=index,
@@ -393,6 +417,8 @@ def _compute_dcpo_region_advantage(
         ),
         **_fmt_kwargs,
         **_emit_kwargs,
+        **_anchor_kwargs,
+        **_emit_route_kwargs,
     )
 
 

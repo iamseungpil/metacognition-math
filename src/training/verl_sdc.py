@@ -134,6 +134,9 @@ def _compute_dcpo_heads_stash(
         # s1b collapse fix: asymmetric format head (see dcpo_region docstring);
         # default 1.0 = pre-fix verbatim for every existing config.
         format_neg=float(_read("dcpo_format_neg", 1.0)),
+        # spec 2026-06-15 §3.3: medium penalty for opened-then-truncated meta
+        # rows. Default 0.0 -> truncation stays format-neutral (byte-identical).
+        trunc_open_penalty=float(_read("dcpo_trunc_open_penalty", 0.0) or 0.0),
     )
     _DCPO_HEAD_STASH.update(out)
     return out

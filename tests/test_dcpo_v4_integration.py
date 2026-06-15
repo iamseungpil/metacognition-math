@@ -642,3 +642,35 @@ def test_compute_pmi_rmeta_placebo_corrected_three_arm_wiring(monkeypatch):
     assert r_meta[0] == pytest.approx(0.5)
     assert member[0] == 1.0
     assert r_meta[1] == 0.0 and member[1] == 0.0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# spec 2026-06-15: anchor / emit-route / meta-len-cap knob forwarding
+# ═══════════════════════════════════════════════════════════════════════════
+def _run_min_compute(config_overrides=None):
+    # Minimal compute call reusing the carve-out fixture (no _run_min_compute
+    # helper existed in this file; mirror the integration fixture builder).
+    rm, batch, non_tensor = _carveout_setup()
+    cfg = {"dcpo_w_meta": 0.5}
+    if config_overrides:
+        cfg.update(config_overrides)
+    return _compute_dcpo_region_advantage(
+        response_mask=rm, index=["g", "g"], batch=batch,
+        non_tensor_batch=non_tensor, config=cfg,
+    )
+
+
+def test_anchor_knobs_forwarded(monkeypatch):
+    captured = {}
+    import src.training.dcpo_region as R
+    real = R.compose_dcpo_region_advantage
+    def spy(**kw):
+        captured.update(kw); return real(**kw)
+    monkeypatch.setattr(R, "compose_dcpo_region_advantage", spy)
+    _run_min_compute(config_overrides={"dcpo_anchor_norm": True,
+                                       "dcpo_emit_route": "first_token",
+                                       "dcpo_meta_len_cap": 3})
+    assert captured.get("anchor_norm") is True
+    assert captured.get("emit_route") == "first_token"
+    assert captured.get("meta_len_cap") == 3
+    assert captured.get("anchor_ema_state") is not None   # module-level dict passed
