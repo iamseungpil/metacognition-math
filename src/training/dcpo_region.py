@@ -455,8 +455,11 @@ def build_dcpo_region_masks(
       b. TRUNCATION — no </think> after the open (cut at max length): META_REGION
          keeps the unclosed-to-end extent, but the tokens are EXCLUDED from
          META_CONTENT and from the conf-parse spans (gated; a truncated CF is
-         useless anyway). NOT a violation — truncation is a length problem, not a
-         format habit, so no penalty.
+         useless anyway). NOT a FORMAT_VIOLATION — truncation is a length problem,
+         not a format habit. The dangling opener is recorded in TRUNC_OPEN as the
+         target for the OPTIONAL un-centered open-meta-then-truncation penalty
+         (spec 2026-06-15 §3.3); with the penalty off (default) TRUNC_OPEN is
+         ignored, so behavior is byte-identical.
 
     Invariants (asserted in tests):
         CONF ⊆ META_CONTENT ⊆ META_REGION ⊆ response_mask;
@@ -479,6 +482,14 @@ def build_dcpo_region_masks(
     CONF = np.zeros(T, dtype=bool)
     FORMAT_VIOLATION = np.zeros(T, dtype=bool)
     FORMAT_OK = np.zeros(T, dtype=bool)   # v3k +side of the R_format head
+    # TRUNC_OPEN: the dangling <|meta|> opener of an opened-then-truncated row
+    # (case b). It is a DEDICATED single-token target for the un-centered
+    # open-meta-then-truncation penalty (spec 2026-06-15 §3.3) — kept OUT of
+    # FORMAT_VIOLATION on purpose, because FORMAT_VIOLATION is routed by the
+    # group-CENTERED R_format head and a truncation row owns no real violation.
+    # The mask is computed unconditionally (cheap); the EFFECT is gated by
+    # compose's `trunc_penalty` weight (default 0 -> no-op -> byte-identical).
+    TRUNC_OPEN = np.zeros(T, dtype=bool)
     meta_unclosed = False  # case a OR b — the R_meta gate
     meta_drift = False     # case a only — drives the format penalty
 
@@ -487,7 +498,8 @@ def build_dcpo_region_masks(
 
         Case a (DRIFT): a </think> appears after the open → clamp META_REGION (and
         FORMAT_VIOLATION) to open..(think_close-1); </think> + everything after
-        revert to ANSWER. Case b (TRUNCATION): unclosed-to-end META_REGION kept.
+        revert to ANSWER. Case b (TRUNCATION): unclosed-to-end META_REGION kept,
+        the dangling opener recorded in TRUNC_OPEN (un-centered penalty target).
         BOTH cases: NO META_CONTENT, NO conf span (gated — no spans entry).
 
         clamp_unclosed=False (v2 byte-identical): LEGACY unclosed-to-end —
@@ -511,8 +523,11 @@ def build_dcpo_region_masks(
             META_REGION[o_idx : j] = True
             FORMAT_VIOLATION[o_idx : j] = True
             meta_drift = True
-        else:              # case b — true truncation (no penalty)
+        else:              # case b — true truncation (opened-then-truncated)
             META_REGION[o_idx : end_idx + 1] = True
+            # Mark the dangling opener as the un-centered trunc-penalty target
+            # (spec §3.3). NOT a FORMAT_VIOLATION — see the TRUNC_OPEN comment.
+            TRUNC_OPEN[o_idx] = True
 
     spans = []  # list of (content_lo, content_hi_exclusive) — Pass B conf input
     # Pass A′ — v3k fmt-DRIVEN region construction (spec §6-1b). The parser
@@ -664,6 +679,7 @@ def build_dcpo_region_masks(
         "ANSWER_REGION": ANSWER_REGION,
         "FORMAT_VIOLATION": FORMAT_VIOLATION,
         "FORMAT_OK": FORMAT_OK,        # v3k +side (all-zero for legacy callers)
+        "TRUNC_OPEN": TRUNC_OPEN,      # opened-then-truncated opener (spec §3.3)
         "fmt_class": _fmt_cls,          # None for legacy (fmt=None) callers
         "meta_unclosed": meta_unclosed,
         "meta_drift": meta_drift,
@@ -718,11 +734,16 @@ def dcpo_region_rewards(
     # for wellformed-among-emitters > ~17%, making emission dominate silence
     # while wellformed (+1) still towers over drift (-0.2).
     format_neg: float = 1.0,
-    # trunc_open_penalty (spec 2026-06-15 §3.3): a MEDIUM negative on the FORMAT
-    # head for rows that OPENED a <|meta|> then ran into the length budget
-    # (fmt_class 'truncation' AND has_meta) — discourages starting an expensive
-    # meta block it cannot afford to close, WITHOUT punishing meta-less rows that
-    # merely ran long. 0.0 (default) -> truncation stays format-neutral (verbatim).
+    # trunc_open_penalty (spec 2026-06-15 §3.3): a MEDIUM negative for rows that
+    # OPENED a <|meta|> then ran into the length budget (fmt_class 'truncation'
+    # AND has_meta) — discourages starting an expensive meta block it cannot
+    # afford to close, WITHOUT punishing meta-less rows that merely ran long.
+    # The penalty is NOT routed through the group-centered FORMAT head (a
+    # truncation row owns no FORMAT_VIOLATION token, so a -0.3 there only shifts
+    # the FORMAT group mean and never reaches the offending row — the original
+    # misroute). Instead this scalar marks the row via `trunc_open_member`; the
+    # advantage composer applies it un-centered onto the row's dangling opener
+    # (TRUNC_OPEN). 0.0 (default) -> truncation stays format-neutral (verbatim).
     trunc_open_penalty: float = 0.0,
     # v2 carry-over reward knobs (eps/eps_right_right/p_lo/p_hi/warmup_steps/sandbag_*/
     # format_*) are absorbed here and IGNORED — v3's R_meta = c_with - c_without uses
@@ -952,17 +973,34 @@ def dcpo_region_rewards(
         # ONCE by compose; FORMAT_OK ∪ FORMAT_VIOLATION are per-row disjoint so
         # the centered value lands only on the row's own positions.
         # Pre-v3k (fmt_class=None): -1 ONLY for drift, verbatim as before.
+        # FORMAT head scalar (group-CENTERED, routed onto FORMAT_VIOLATION ∪
+        # FORMAT_OK). Truncation rows are DELIBERATELY 0 here: they own no FORMAT
+        # token, so a nonzero value would only pollute the FORMAT group mean
+        # (penalizing well-behaved siblings) and never land on the row itself.
+        # The open-meta-then-truncation penalty is delivered separately and
+        # un-centered via `trunc_open_member` + compose's TRUNC_OPEN routing.
         "format_penalty": (
             [
                 1.0 if c == "wellformed"
-                else (-float(format_neg) if c in ("drift", "discard")
-                      else (-float(trunc_open_penalty)
-                            if (c == "truncation" and trunc_open_penalty and has_meta[i])
-                            else 0.0))
-                for i, c in enumerate(fmt_class)
+                else (-float(format_neg) if c in ("drift", "discard") else 0.0)
+                for c in fmt_class
             ]
             if fmt_class is not None
             else [-float(format_neg) if meta_drift[i] else 0.0 for i in range(B)]
+        ),
+        # trunc_open_member (spec 2026-06-15 §3.3): 1.0 for rows that opened a
+        # <|meta|> then truncated before closing (fmt_class 'truncation' AND
+        # has_meta), 0.0 otherwise. The populator threads this to compose so the
+        # un-centered -trunc_open_penalty lands on the row's dangling opener.
+        # All-zero unless trunc_open_penalty>0 -> default byte-identical.
+        "trunc_open_member": (
+            [
+                1.0 if (c == "truncation" and trunc_open_penalty and has_meta[i])
+                else 0.0
+                for i, c in enumerate(fmt_class)
+            ]
+            if fmt_class is not None
+            else [0.0] * B
         ),
         # v3k observability echo: the per-row parser class (None pre-v3k). The
         # trend scalars (replaced/discard/drift/wellformed rates) and the
@@ -1064,6 +1102,8 @@ def compose_dcpo_region_advantage(
     meta_floor: float = 0.0,
     floor_mask=None,
     meta_len_cap: int = 0,
+    trunc_penalty: float = 0.0,
+    trunc_open_mask=None,
     rmeta_member_mask=None,
     R_emit=None,
     w_emit: float = 0.0,
@@ -1251,5 +1291,19 @@ def compose_dcpo_region_advantage(
                     capped[b, pos[:meta_len_cap]] = 1.0
             meta_in_resp = capped
         advantages = advantages + float(meta_floor) * fl * (meta_in_resp / row_n)
+
+    # Open-meta-then-truncation penalty (spec 2026-06-15 §3.3): a MEDIUM,
+    # UN-CENTERED NEGATIVE bias on the dangling <|meta|> opener of rows that
+    # opened a meta block and then truncated before closing. Delivered like the
+    # v3m floor (post-centering, un-centered) — NOT through the group-centered
+    # FORMAT head: a truncation row owns no FORMAT_VIOLATION token, so routing
+    # it there only shifted the FORMAT group mean (penalizing well-behaved
+    # siblings) and never reached the offending row. Landing it un-centered on
+    # the row's own opener makes the penalty actually fall on the abstention-via-
+    # truncation escape it is designed to close. trunc_penalty=0 / mask None ->
+    # byte-identical (no pre-existing config sets the knob).
+    if trunc_penalty and trunc_open_mask is not None:
+        to = torch.as_tensor(trunc_open_mask, dtype=torch.float32).to(device)
+        advantages = advantages - float(trunc_penalty) * to * rm
 
     return advantages, advantages

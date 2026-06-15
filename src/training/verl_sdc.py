@@ -219,6 +219,7 @@ def _populate_dcpo_region_keys(data) -> None:
     decoded_responses: list[str] = []
     ground_truths: list[str] = []
     dcpo_ans, dcpo_meta_c, dcpo_conf, dcpo_fmt, dcpo_fmt_ok = [], [], [], [], []
+    dcpo_trunc = []  # TRUNC_OPEN: opened-then-truncated opener (spec §3.3)
     for i in range(bs):
         item = data[i]
         text, response_ids = _decode_response(
@@ -269,6 +270,7 @@ def _populate_dcpo_region_keys(data) -> None:
         dcpo_conf.append(_pad_bool(rmasks["CONF"]))
         dcpo_fmt.append(_pad_bool(rmasks["FORMAT_VIOLATION"]))
         dcpo_fmt_ok.append(_pad_bool(rmasks["FORMAT_OK"]))
+        dcpo_trunc.append(_pad_bool(rmasks["TRUNC_OPEN"]))
 
     data.batch["dcpo_answer_mask"] = torch.stack(dcpo_ans, dim=0)
     data.batch["dcpo_meta_content_mask"] = torch.stack(dcpo_meta_c, dim=0)
@@ -282,6 +284,10 @@ def _populate_dcpo_region_keys(data) -> None:
     if _is_v3:
         data.batch["dcpo_format_violation_mask"] = torch.stack(dcpo_fmt, dim=0)
         data.batch["dcpo_format_ok_mask"] = torch.stack(dcpo_fmt_ok, dim=0)
+        # TRUNC_OPEN target for the un-centered open-meta-then-truncation penalty
+        # (spec §3.3). Always stacked for v3; compose ignores it unless
+        # dcpo_trunc_open_penalty>0 (default 0 -> byte-identical).
+        data.batch["dcpo_trunc_open_mask"] = torch.stack(dcpo_trunc, dim=0)
 
     completions = [[{"content": t}] for t in decoded_responses]
     _uid = data.non_tensor_batch.get("uid", None)
@@ -358,6 +364,13 @@ def _populate_dcpo_region_keys(data) -> None:
         data.non_tensor_batch["dcpo_meta_floor_member"] = np.asarray(
             [1.0 if c in TRUSTED_META_CLASSES else 0.0 for c in _fmt_classes],
             dtype=np.float32)
+        # open-meta-then-truncation membership (spec §3.3): 1.0 = the row opened
+        # a <|meta|> then truncated before closing. compose applies the
+        # un-centered -dcpo_trunc_open_penalty onto these rows' TRUNC_OPEN opener.
+        # All-zero unless dcpo_trunc_open_penalty>0 -> default byte-identical.
+        # Diagnostic-style batch key (NOT a gdpo_reward_key) -> SYNC lists intact.
+        data.non_tensor_batch["dcpo_trunc_open_member"] = np.asarray(
+            _heads.get("trunc_open_member", [0.0] * bs), dtype=np.float32)
 
     # ── TRIOBJ_DCPO_V4 R_meta SOURCE (ADDITIVE, mode+knob gated) ──────────────
     # dcpo_rmeta_source: 'cf' (EXPLICIT opt-in only — leave the
@@ -2443,6 +2456,7 @@ class MetaCotSDCRewardManager:
                 _pf_rep_stash = data.non_tensor_batch.get("dcpo_fmt_replaced", None) if _pf_v3 else None
                 _pf_fmt_classes: list = []
                 _pf_ans, _pf_meta_c, _pf_conf, _pf_fmt, _pf_fmt_ok = [], [], [], [], []
+                _pf_trunc = []  # TRUNC_OPEN (spec §3.3)
                 for i in range(bs):
                     _item = data[i]
                     _attn = _item.batch["attention_mask"]
@@ -2479,6 +2493,7 @@ class MetaCotSDCRewardManager:
                     _pf_conf.append(_pf_pad_bool(_rmasks["CONF"]))
                     _pf_fmt.append(_pf_pad_bool(_rmasks["FORMAT_VIOLATION"]))
                     _pf_fmt_ok.append(_pf_pad_bool(_rmasks["FORMAT_OK"]))
+                    _pf_trunc.append(_pf_pad_bool(_rmasks["TRUNC_OPEN"]))
                 data.batch["dcpo_answer_mask"] = torch.stack(_pf_ans, dim=0)
                 data.batch["dcpo_meta_content_mask"] = torch.stack(_pf_meta_c, dim=0)
                 data.batch["dcpo_conf_mask"] = torch.stack(_pf_conf, dim=0)
@@ -2488,6 +2503,7 @@ class MetaCotSDCRewardManager:
                 if _pf_v3:
                     data.batch["dcpo_format_violation_mask"] = torch.stack(_pf_fmt, dim=0)
                     data.batch["dcpo_format_ok_mask"] = torch.stack(_pf_fmt_ok, dim=0)
+                    data.batch["dcpo_trunc_open_mask"] = torch.stack(_pf_trunc, dim=0)
 
                 _pf_uid = data.non_tensor_batch.get("uid", None)
                 _pf_trainer = _ACTIVE_SDC_CONTEXT.get("trainer", None)

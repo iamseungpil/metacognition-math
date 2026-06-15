@@ -391,6 +391,23 @@ def _compute_dcpo_region_advantage(
     if _len_cap:
         _emit_route_kwargs["meta_len_cap"] = _len_cap
 
+    # Open-meta-then-truncation penalty (spec 2026-06-15 §3.3): un-centered
+    # negative bias on the opened-then-truncated row's dangling opener. The
+    # populator stacks dcpo_trunc_open_mask (TRUNC_OPEN target) and writes the
+    # per-row dcpo_trunc_open_member (1.0 for the offending rows). Pass BOTH
+    # only when the knob is on -> every pre-existing config is byte-identical.
+    _trunc_kwargs = {}
+    _trunc_pen = float(config.get("dcpo_trunc_open_penalty", 0.0) or 0.0)
+    _trunc_mask = batch.get("dcpo_trunc_open_mask", None)
+    _trunc_member = non_tensor_batch.get("dcpo_trunc_open_member", None)
+    if _trunc_pen and _trunc_mask is not None and _trunc_member is not None:
+        # Land the penalty only on the flagged rows' opener: mask * per-row member.
+        _tm = _trunc_mask.to(device).float()
+        _mem = torch.as_tensor(
+            np.asarray(_trunc_member, dtype=np.float32), device=device
+        ).view(-1, 1)
+        _trunc_kwargs = dict(trunc_penalty=_trunc_pen, trunc_open_mask=_tm * _mem)
+
     return compose_dcpo_region_advantage(
         response_mask=response_mask.float(),
         index=index,
@@ -419,6 +436,7 @@ def _compute_dcpo_region_advantage(
         **_emit_kwargs,
         **_anchor_kwargs,
         **_emit_route_kwargs,
+        **_trunc_kwargs,
     )
 
 
