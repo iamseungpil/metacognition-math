@@ -621,6 +621,22 @@ def _log_dcpo_trend_scalars(*, step, heads, cf_texts):
             scal["dcpo/discard_rate"] = sum(1 for c in fc if c == "discard") / Bf
             scal["dcpo/drift_rate"] = sum(1 for c in fc if c == "drift") / Bf
             scal["dcpo/wellformed_rate"] = sum(1 for c in fc if c == "wellformed") / Bf
+        # anchor-norm effective scales (spec 2026-06-15 HC1): is the weak PMI/meta
+        # head riding at R_corr's scale (anchor working) or still buried? Read the
+        # module-level EMA that compose updates. Guarded: empty dict pre-anchor /
+        # anchor off -> no keys logged (byte-identical observability).
+        try:
+            from src.training.verl_sdc_utils import _ANCHOR_EMA_STATE as _AES
+            _cs = float(_AES.get("corr", 0.0) or 0.0)
+            if _cs > 0:
+                for _h in ("corr", "meta", "cal", "format", "emit"):
+                    if _h in _AES:
+                        _v = float(_AES.get(_h, 0.0) or 0.0)
+                        scal[f"dcpo/eff_scale_{_h}"] = _v
+                        if _h != "corr":
+                            scal[f"dcpo/eff_ratio_{_h}"] = _v / _cs
+        except Exception:
+            pass
         wandb.log(scal, step=int(step))
     except Exception as _e:  # pragma: no cover — observability never kills training
         print(f"[DCPO] trend-scalar log skipped: {type(_e).__name__}: {_e}", flush=True)

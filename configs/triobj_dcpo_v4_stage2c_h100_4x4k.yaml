@@ -174,6 +174,9 @@ algorithm:
   dcpo_trunc_open_penalty: 0.3
 
 trainer:
+  # verl reads the wandb project from config.trainer.project_name (the WANDB_PROJECT
+  # env var is IGNORED) — set it here so stage-C logs to the dedicated v4 project.
+  project_name: metacot-dcpo-v4
   experiment_name: triobj_dcpo_v4_stage2c_h100_4x4k
   default_local_dir: /scratch/checkpoints/triobj_dcpo_v4_stage2c_h100_4x4k
   total_training_steps: 300
