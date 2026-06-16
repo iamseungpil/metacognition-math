@@ -15,6 +15,40 @@ from pathlib import Path
 import re
 from src.training.meta_quality import score_meta_commit_quality
 
+# ── thread-safe signal guard for math_verify ────────────────────────────────
+# math_verify wraps every comparison in a SIGALRM-based timeout
+# (math_verify/utils.py: signal.signal(signal.SIGALRM, ...); signal.alarm(t)).
+# SIGALRM only works in the main thread, so inside Ray RewardLoopWorker threads
+# EVERY comparison raises ValueError("signal only works in main thread of the
+# main interpreter"): the real symbolic comparison never runs (it falls back to
+# string-match, mis-grading 1/2==0.5, fractions, radicals), and the per-call
+# exception + traceback flood also massively slows the run. Passing
+# timeout_seconds=None does NOT help — the installed math_verify calls
+# signal.signal unconditionally. Fix: make signal.signal / signal.alarm no-ops
+# when called off the main thread (where they cannot work anyway), so the
+# comparison runs without a timeout in worker threads. Main-thread behaviour
+# (a real timeout) is fully preserved. Idempotent.
+import signal as _signal
+import threading as _threading
+
+if not getattr(_signal, "_metacot_threadsafe_patch", False):
+    _orig_signal_signal = _signal.signal
+    _orig_signal_alarm = _signal.alarm
+
+    def _threadsafe_signal(signalnum, handler):
+        if _threading.current_thread() is not _threading.main_thread():
+            return None  # SIGALRM unavailable off the main thread; no-op
+        return _orig_signal_signal(signalnum, handler)
+
+    def _threadsafe_alarm(seconds):
+        if _threading.current_thread() is not _threading.main_thread():
+            return 0
+        return _orig_signal_alarm(seconds)
+
+    _signal.signal = _threadsafe_signal
+    _signal.alarm = _threadsafe_alarm
+    _signal._metacot_threadsafe_patch = True
+
 # Math verification via sympy (same as Open-R1)
 try:
     from math_verify import parse, verify
