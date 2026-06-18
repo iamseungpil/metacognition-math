@@ -92,5 +92,12 @@ def redirect_train_spans(
     returned span is degenerate and ``build_segment_loss_mask`` will mask the
     whole sequence.
     """
+    # FAIL-CLOSED (intent-check w4udybnbv M2): a negative prompt_len/prefix_len
+    # (e.g. a -1 locate-failure sentinel) would make `start` negative, which
+    # build_segment_loss_mask clamps UP to 0 -> trains loss on the ENTIRE sequence
+    # incl. prompt + wrong prefix (the exact "teach performative struggling" outcome
+    # this mask prevents). Refuse: return [] -> mask everything (safe).
+    if prompt_len < 0 or prefix_len < 0 or total_len < 0:
+        return []
     start = int(prompt_len) + int(prefix_len)
     return [(start, int(total_len))]

@@ -86,10 +86,18 @@ def beats_placebo(rows, min_len: int = 20, llm_judge=None, regex_only: bool = Fa
     n = len(usable)
     if n == 0:
         return False
-    acc_r = sum(bool(r["R"]["correct"]) for r in usable) / n
     acc_b = sum(bool(r["Bprime"]["correct"]) for r in usable) / n
     acc_p = sum(bool(r["P"]["correct"]) for r in usable) / n
-    return (acc_r - acc_b) > (acc_r - acc_p)
+    # R's advantage over B' must exceed its advantage over the placebo P
+    # (acc_R - acc_B') > (acc_R - acc_P)  <=>  acc_P > acc_B'.
+    ok = acc_p > acc_b
+    # M3 (intent-check w4udybnbv): also require beating the compute-matched
+    # NON-meta control Nc when present, so a generic second-attempt-resampling
+    # effect is controlled before SIGNIFICANT. (acc_R-acc_B') > (acc_R-acc_Nc) <=> acc_Nc > acc_B'.
+    if usable and all("Nc" in r for r in usable):
+        acc_nc = sum(bool(r["Nc"]["correct"]) for r in usable) / n
+        ok = ok and (acc_nc > acc_b)
+    return ok
 
 
 def is_monotone_saturating(effects_by_bias) -> bool:
