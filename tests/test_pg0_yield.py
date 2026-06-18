@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.pg0_yield_pilot import pg0_verdict
+from scripts.pg0_yield_pilot import pg0_verdict, _load_pool
 
 
 def test_high_accept_is_go():
@@ -59,3 +59,25 @@ def test_payload_shape():
                 "projected_accepted", "target", "verdict"):
         assert key in r
     assert r["verdict"] in ("GO", "STOP")
+
+
+def test_load_pool_handles_ndarray_prompt(tmp_path):
+    """Regression: pandas reads the verl ``prompt`` list-of-dict column back as a
+    numpy ndarray, which the old ``isinstance(prompt, (list, tuple))`` missed ->
+    the pilot pool loaded 0 problems and PG0 STOPped before any GPU work. The
+    loader must normalise ndarray -> list and still extract (question, gold)."""
+    import pandas as pd
+
+    df = pd.DataFrame([
+        {"prompt": [{"role": "user", "content": "What is 2+2?"}],
+         "reward_model": {"style": "rule", "ground_truth": "4"}},
+        {"prompt": [{"role": "user", "content": "What is 3+5?"}],
+         "reward_model": {"style": "rule", "ground_truth": "8"}},
+    ])
+    p = tmp_path / "mini.parquet"
+    df.to_parquet(p)
+    # round-tripping through parquet is what turns prompt into an ndarray
+    pool = _load_pool(str(p), pool_size=10)
+    assert len(pool) == 2
+    assert pool[0]["question"] == "What is 2+2?"
+    assert pool[0]["gold"] == "4"

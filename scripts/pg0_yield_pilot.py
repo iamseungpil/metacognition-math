@@ -114,11 +114,21 @@ def _load_pool(parquet_path: str, pool_size: int) -> list[dict]:  # pragma: no c
     pool: list[dict] = []
     for row in rows:
         prompt = row.get("prompt")
+        # pandas returns the verl prompt list-of-dict column as a numpy ndarray,
+        # which `isinstance(..., (list, tuple))` misses -> question would be empty
+        # and the whole pilot pool loads 0 problems. Normalise ndarray -> list.
+        if hasattr(prompt, "tolist") and not isinstance(prompt, (list, tuple, str)):
+            prompt = prompt.tolist()
         if isinstance(prompt, (list, tuple)) and len(prompt):
             question = str(prompt[0].get("content", "")).strip()
         else:
             question = str(row.get("question") or row.get("problem") or "").strip()
         rm = row.get("reward_model") or {}
+        if not isinstance(rm, dict) and hasattr(rm, "item"):
+            try:
+                rm = rm.item()
+            except Exception:
+                rm = {}
         gold = str(
             (rm.get("ground_truth") if isinstance(rm, dict) else None)
             or row.get("gold_answer")
