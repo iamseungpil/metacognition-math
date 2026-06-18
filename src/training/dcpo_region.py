@@ -381,6 +381,110 @@ def _validate_replacement(out, ids, rmask, decode_fn, meta_open, meta_close,
     return out
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# REDIRECT-PRIMING v2 (ADDITIVE, spec 2026-06-18 §3) — CONTINUOUS counterfactual
+# R_meta over k≥1 suppressed draws. PURE helper: NOT wired into the live call site
+# (dcpo_region_rewards' R_meta = c_with - c_without is UNCHANGED). The Stage-C
+# producer opts in by calling this directly; default behavior is byte-identical.
+# It COMPOSES the already-built primitives (does NOT reimplement them):
+#   - detect_redirect (src.eval.redirect_behavior_detector) — a suppressed draw
+#     that STILL redirects in prose is not a meta-free continuation (review I-2);
+#   - degeneracy_flags (src.eval.cf_stats) — a garbled / looped / no-answer draw
+#     must NOT be scored as "meta saved it" (review round-5 I-2).
+# ─────────────────────────────────────────────────────────────────────────────
+def redirect_cf_rmeta(
+    c_with: int,
+    c_without_draws: list,
+    emit_switch: bool,
+    cf_texts: list,
+    in_hard_band: bool,
+    lam: float = 0.25,
+    min_len: int = 20,
+    llm_judge=None,
+    regex_only: bool = True,
+) -> float:
+    """Continuous counterfactual R_meta for the redirect-priming regime (spec §3).
+
+    Aggregates k≥1 suppressed CF draws into a CONTINUOUS c_without ∈ [0,1] and
+    returns R_meta = (c_with − c_without) with a small negative term for an
+    UNNECESSARY redirect, credited as POSITIVE only on a frozen hard-band row.
+
+    Args:
+        c_with: 0/1 correctness of the WITH-meta (redirect-allowed) main rollout.
+        c_without_draws: per-draw raw correctness (0/1) of the k suppressed CF
+            continuations. len == len(cf_texts).
+        emit_switch: True iff the main rollout actually emitted a redirect (the
+            `<|switch|>` token / behavior) — gates the negative (unnecessary) term.
+        cf_texts: per-draw text of the suppressed CF continuations (for the
+            degeneracy + still-redirecting-in-prose health checks).
+        in_hard_band: True iff this row is in the frozen hard `<|switch|>` band.
+            Positive R_meta is credited ONLY here; an easy row can still take the
+            penalty but never a reward (spec §3 band gate).
+        lam: magnitude of the unnecessary-redirect negative term (default 0.25,
+            small & subordinate to recovery — spec §3 / M4).
+        min_len: token-count floor passed to degeneracy_flags (default 20).
+        llm_judge / regex_only: forwarded to detect_redirect. regex_only=True is
+            the cheap pre-filter path; the live producer passes a judge with
+            regex_only=False (spec §5.3 — judge is primary on the live path).
+
+    Returns:
+        float R_meta. base = c_with − c_without_continuous; with the negative term
+        subtracted; clamped to ≤0 (penalty-only) when not in_hard_band.
+
+    c_without_continuous = mean over draws that are SUCCESSFUL suppressed
+    continuations = (correct == 1) AND NOT degeneracy-flagged AND NOT
+    still-redirecting-in-prose. A draw failing any of those three counts as 0
+    (it did NOT independently solve the problem without meta), so it cannot
+    inflate c_without and let a genuine redirect be scored as unnecessary
+    (review round-5 I-2). No draws → c_without_continuous = 0.0.
+    """
+    # Lazy import (keeps this module importable without the eval package present
+    # for callers that never touch the redirect path).
+    from src.eval.redirect_behavior_detector import detect_redirect
+    from src.eval.cf_stats import degeneracy_flags
+
+    draws = list(c_without_draws or [])
+    texts = list(cf_texts or [])
+    n = min(len(draws), len(texts))
+    successes = []
+    for i in range(n):
+        correct = bool(draws[i])
+        text = texts[i]
+        flags = degeneracy_flags(text, min_len=min_len)
+        degenerate = bool(flags.get("repetition") or flags.get("too_short") or flags.get("no_answer"))
+        still_redirecting = detect_redirect(text, llm_judge=llm_judge, regex_only=regex_only)
+        # A draw counts as a successful suppressed continuation ONLY when it
+        # solved the problem AND did so cleanly AND without re-redirecting.
+        successes.append(1.0 if (correct and not degenerate and not still_redirecting) else 0.0)
+
+    c_without_continuous = (sum(successes) / len(successes)) if successes else 0.0
+
+    base = float(c_with) - c_without_continuous
+
+    # NEGATIVE term: an emitted redirect was UNNECESSARY when the suppressed arm
+    # would also have been (mostly) correct (threshold c_without ≥ 0.5).
+    r = base
+    if emit_switch and c_without_continuous >= 0.5:
+        r = base - lam
+
+    # BAND gate: reward redirect only on frozen hard rows; elsewhere penalty-only.
+    if not in_hard_band:
+        return min(0.0, base)
+    return r
+
+
+def rmeta_pos(r: float, thr: float = 0.25) -> bool:
+    """Continuous-regime POSITIVE-R_meta classifier (spec §3 — replaces the old
+    >0.5 threshold for this path). r ≥ thr → the redirect net-HELPED."""
+    return r >= thr
+
+
+def rmeta_neg(r: float, thr: float = 0.25) -> bool:
+    """Continuous-regime NEGATIVE-R_meta classifier (spec §3 — replaces the old
+    <−0.5 threshold for this path). r ≤ −thr → the redirect net-HURT."""
+    return r <= -thr
+
+
 def cf_answer_from_prefix(text: str):
     """TEXT-fallback counterfactual answer = extract from the pre-(first-)meta
     prefix only. Used by dcpo_region_rewards ONLY when no real regenerated cf
