@@ -1,0 +1,35 @@
+# Redirect-Priming v2 (Counterfactual) Stage-C config — spec 2026-06-18 REV-6 §3, plan T10.
+# Thin override of the s3b config: turns ON the counterfactual reward path and the
+# redirect-cf knobs. ★NOT runnable until T9 live wiring lands (cf_prefix_agent ->
+# SwitchBanLogitsProcessor, verl_sdc k-reshape + C7 tripwires + redirect_cf_rmeta).
+# Until then sdc_counterfactual=true would activate the OLD (rejected) CF path, so
+# this file is a DRAFT that documents the intended knobs and must be validated by
+# PG2/PG5 before the full run.
+defaults:
+  - triobj_dcpo_v4_stage3b_h100_4x4k
+  - _self_
+
+algorithm:
+  # ── counterfactual correctness reward (replaces PMI as primary; review C-4) ──
+  sdc_counterfactual: true          # activate CF path (redirect_cf_rmeta once wired, T9)
+  dcpo_cf_suppress_signature: true  # leak guard (v3m); PG2 requires <50% ungrade
+  redirect_cf_enabled: true         # NEW flag: use redirect_cf.redirect_cf_rmeta (not legacy {-1,0,+1})
+  redirect_cf_k: 8                  # k>=4-8 suppressed CF draws -> continuous c_without (review I-6)
+  redirect_cf_lam: 0.25             # unnecessary-redirect negative term (small, subordinate; M4)
+  redirect_cf_rmeta_thr: 0.25       # continuous rmeta_pos/neg threshold (review I-3/I-7)
+
+  # ── PMI demoted to diagnostic only (weight 0): correctness-agnostic + length-inflating ──
+  dcpo_w_meta: 0.0                  # was 0.8 — PMI no longer the objective (diagnostic scalar only)
+
+  # ── length containment as a WARMUP RAMP, never full step-0 shock (review M-2; s2b/v3l collapse engine) ──
+  dcpo_len_cost: 0.05               # ramped via dcpo_w_meta_scale; adequate but not a step-0 spike
+  dcpo_w_meta_warmup_steps: 60      # Stage-1 format-hold ~50 (no CF) then Stage-2 CF; ramp len_cost over it
+  dcpo_meta_floor: 0.10             # modest (avoid hollow-emit reward-hacking)
+
+  # ── live tripwires (redirect_tripwires.any_halt every ~10 steps; verl_sdc T9) ──
+  redirect_cf_band_floor_frac: 0.3333   # halt if band-emission < 1/3 step-0 post-prime rate
+  redirect_cf_pg1_behavior_bound: 0.2   # halt if c_without-arm prose-redirect rate exceeds PG1 bound
+  redirect_cf_tripwire_every: 10        # check cadence (steps)
+
+trainer:
+  experiment_name: triobj_dcpo_v4_redirect_cf_h100_4x4k
