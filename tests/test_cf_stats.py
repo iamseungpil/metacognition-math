@@ -1,4 +1,23 @@
-from src.eval.cf_stats import mcnemar_exact_p, is_parsed, degeneracy_flags
+from src.eval.cf_stats import (
+    mcnemar_exact_p,
+    redirect_recovery_significant,
+    mcnemar_status,
+    is_parsed,
+    degeneracy_flags,
+)
+
+
+def test_directional_harmful_redirect_is_not_a_win():
+    # 3 saved, 20 broke: two-sided is "significant" but redirect HARMED -> not a win
+    assert mcnemar_exact_p(b=3, c=20) < 0.05
+    assert redirect_recovery_significant(b=3, c=20) is False
+    assert redirect_recovery_significant(b=20, c=3) is True
+
+
+def test_power_gate_underpowered():
+    assert mcnemar_status(b=2, c=0) == "UNDERPOWERED"        # n<10
+    assert mcnemar_status(b=20, c=3) == "SIGNIFICANT"
+    assert mcnemar_status(b=7, c=6) == "NOT_SIGNIFICANT"
 
 
 def test_mcnemar_saved_gt_broke_not_significant_rejects():

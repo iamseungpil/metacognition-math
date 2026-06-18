@@ -1,4 +1,12 @@
-from src.eval.redirect_behavior_detector import detect_redirect, measure_recall
+import pytest
+
+from src.eval.redirect_behavior_detector import (
+    detect_redirect,
+    emitted_switch,
+    regex_prefilter,
+    measure_recall,
+    measure_precision,
+)
 
 REDIRECTS = [
     "wait, that's wrong, let me try a different approach",
@@ -12,21 +20,35 @@ NON = [
 ]
 
 
-def test_detects_prose_redirect():
+def test_regex_prefilter_detects_prose_redirect():
     for t in REDIRECTS:
-        assert detect_redirect(t) is True
+        assert detect_redirect(t, regex_only=True) is True
 
 
-def test_does_not_flag_plain_continuation():
+def test_regex_prefilter_clean_continuation():
     for t in NON:
-        assert detect_redirect(t) is False
+        assert detect_redirect(t, regex_only=True) is False
 
 
-def test_switch_token_surface_form_detected():
-    assert detect_redirect("<|switch|> change method") is True
+def test_switch_token_is_NOT_a_behavior_signal():
+    # token alone, no prose redirect cue -> behavior detector must NOT fire
+    assert detect_redirect("<|switch|> change method", regex_only=True) is False
+    # but the separate token channel sees it
+    assert emitted_switch("<|switch|> change method") is True
+    assert emitted_switch("just continue normally") is False
 
 
-def test_measure_recall_reports_fraction():
-    # stub judge that never fires → recall driven by regex alone
-    r = measure_recall(REDIRECTS, llm_judge=lambda s: False)
-    assert 0.0 <= r <= 1.0 and r == 1.0  # all 3 caught by regex
+def test_live_path_requires_judge():
+    with pytest.raises(ValueError):
+        detect_redirect("wait, that's wrong", llm_judge=None)  # regex_only=False
+
+
+def test_judge_is_primary_on_live_path():
+    # judge decides; a prose-cue string the judge vetoes -> False
+    assert detect_redirect("wait, that's wrong", llm_judge=lambda s: False) is False
+    assert detect_redirect("subtle keyword-free restart", llm_judge=lambda s: True) is True
+
+
+def test_recall_and_precision():
+    assert measure_recall(REDIRECTS, regex_only=True) == 1.0
+    assert measure_precision(NON, regex_only=True) == 1.0

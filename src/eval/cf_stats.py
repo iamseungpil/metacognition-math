@@ -22,6 +22,23 @@ def mcnemar_exact_p(b: int, c: int) -> float:
     return min(1.0, 2.0 * tail)
 
 
+def redirect_recovery_significant(b: int, c: int, alpha: float = 0.05) -> bool:
+    """DIRECTIONAL win (intent-check wbitrlry0 A): redirect HELPED only if saved
+    (b, wrong->right) EXCEEDS broke (c, right->wrong) AND it is significant. A
+    two-sided p<alpha alone would score an accuracy-HARMING redirect (b<c) as a
+    win — the inversion of the north-star."""
+    return (b > c) and (mcnemar_exact_p(b, c) < alpha)
+
+
+def mcnemar_status(b: int, c: int, alpha: float = 0.05, min_discordant: int = 10) -> str:
+    """{SIGNIFICANT, NOT_SIGNIFICANT, UNDERPOWERED} (intent-check wbitrlry0 B):
+    a low-power null must not be mislabeled NOT_SIGNIFICANT/negative. Requires a
+    pre-registered minimum discordant-pair count (spec §5.5)."""
+    if (b + c) < min_discordant:
+        return "UNDERPOWERED"
+    return "SIGNIFICANT" if redirect_recovery_significant(b, c, alpha) else "NOT_SIGNIFICANT"
+
+
 def is_parsed(text: str) -> bool:
     """True if a final answer can be extracted (else the row is dropped before
     scoring, so a no-answer arm can't inflate `saved`). Delegates to the

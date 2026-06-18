@@ -27,13 +27,15 @@ def test_arm_rate():
     assert arm_rate([]) == 0.0
 
 
-def test_accept_only_when_redirect_beats_controls_by_margin():
-    # R causally flips: R high, both controls low -> accept
-    assert accept_redirect([1, 1, 1, 0, 1, 1, 0, 1], [0] * 8, [0] * 8, margin=0.5) is True
-    # control also recovers (compute confound) -> reject
-    assert accept_redirect([1, 1, 1, 1, 0, 0, 0, 0], [1, 1, 1, 0, 0, 0, 0, 0], [0] * 8, margin=0.5) is False
-    # margin not met -> reject
-    assert accept_redirect([1, 1, 0, 0, 0, 0, 0, 0], [0] * 8, [0] * 8, margin=0.5) is False
+def test_accept_only_when_redirect_beats_all_controls_by_lower_ci_margin():
+    # R causally flips strongly (8/8); all controls 0/8 -> lower-CI gap clears margin
+    assert accept_redirect([1] * 8, [0] * 8, [0] * 8, bprime_grades=[0] * 8, margin=0.5) is True
+    # B' (plain-prose 2nd attempt) ALSO recovers -> redirect content adds nothing -> reject
+    assert accept_redirect([1] * 8, [0] * 8, [0] * 8, bprime_grades=[1] * 8, margin=0.5) is False
+    # noisy small gap (2/8 vs 0/8): point diff 0.25 but lower-CI < margin -> reject
+    assert accept_redirect([1, 1, 0, 0, 0, 0, 0, 0], [0] * 8, [0] * 8, bprime_grades=[0] * 8, margin=0.5) is False
+    # too few samples -> reject (INSUFFICIENT)
+    assert accept_redirect([1, 1], [0, 0], [0, 0], bprime_grades=[0, 0], margin=0.5) is False
 
 
 def test_expected_yield_product():

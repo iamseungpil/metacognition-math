@@ -58,13 +58,37 @@ def arm_rate(grades) -> float:
     return (sum(grades) / len(grades)) if grades else 0.0
 
 
-def accept_redirect(r_grades, nprime_grades, nc_grades, margin: float = ACCEPT_MARGIN) -> bool:
-    """Counterfactual acceptance: redirect (R) must beat BOTH controls — the
-    null-meta placebo (N') and the compute-matched plain control (Nc) — by
-    `margin`. This rejects (a) compute-only recovery and (b) non-redirect-meta
-    effects, so an accepted pair is one where the redirect CONTENT causally
-    flipped wrong->right (spec round-4 C-1/C-2, round-5 I-1)."""
-    return (arm_rate(r_grades) - max(arm_rate(nprime_grades), arm_rate(nc_grades))) >= margin
+import math
+
+MIN_K = 4  # too-few samples => INSUFFICIENT, never accept (intent-check C)
+
+
+def lower_ci_diff(r_grades, ctrl_grades, z: float = 1.645) -> float:
+    """One-sided (95%) lower confidence bound on (rate_R - rate_ctrl), normal
+    approx. Used instead of a raw point estimate so a noisy small-k gap cannot
+    be accepted (intent-check wbitrlry0 C; spec §4.A.5 'lower-CI-bound ≥ margin')."""
+    nr, nc = len(r_grades), len(ctrl_grades)
+    if nr == 0 or nc == 0:
+        return float("-inf")
+    pr, pc = arm_rate(r_grades), arm_rate(ctrl_grades)
+    se = math.sqrt(pr * (1 - pr) / nr + pc * (1 - pc) / nc)
+    return (pr - pc) - z * se
+
+
+def accept_redirect(r_grades, nprime_grades, nc_grades, bprime_grades=None,
+                    margin: float = ACCEPT_MARGIN, min_k: int = MIN_K) -> bool:
+    """Counterfactual acceptance on the lower-CI bound of (R - best control).
+    Controls now INCLUDE B' (plain-prose backtracking, <|switch|> masked) so the
+    harvest estimand matches the eval's R-B' — crediting redirect CONTENT, not a
+    free second attempt (intent-check wbitrlry0 D). N'=null-meta, Nc=plain. Tiny
+    k => reject (INSUFFICIENT, intent-check C)."""
+    if len(r_grades) < min_k:
+        return False
+    controls = [nprime_grades, nc_grades]
+    if bprime_grades is not None:
+        controls.append(bprime_grades)
+    # worst case over controls = the smallest lower-CI gap must still clear margin
+    return min(lower_ci_diff(r_grades, ctrl) for ctrl in controls) >= margin
 
 
 def expected_yield(emission_rate: float, in_band_frac: float, accept_prob: float, pool_size: int) -> int:
