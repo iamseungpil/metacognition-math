@@ -49,6 +49,7 @@ from scripts.harvest_redirect_cf import (
     accept_redirect,
     arm_rate,
     expected_yield,
+    gap_by_attribute,
     raw_yield_stats,
     splice_index,
     SPLICE_LO,
@@ -136,8 +137,18 @@ def _load_pool(parquet_path: str, pool_size: int) -> list[dict]:  # pragma: no c
             or row.get("answer")
             or ""
         ).strip()
+        # split_tags (difficulty/scenario/trigger) for the per-attribute gap
+        # breakdown; same struct-column coercion as reward_model.
+        st = row.get("split_tags") or {}
+        if not isinstance(st, dict) and hasattr(st, "item"):
+            try:
+                st = st.item()
+            except Exception:
+                st = {}
+        tags = {k: str(st.get(k)) for k in ("difficulty", "scenario", "trigger")} \
+            if isinstance(st, dict) else {}
         if question and gold:
-            pool.append({"question": question, "gold": gold})
+            pool.append({"question": question, "gold": gold, "tags": tags})
         if len(pool) >= pool_size:
             break
     return pool
@@ -222,6 +233,7 @@ def main() -> None:  # pragma: no cover - GPU wiring; pure logic is unit-tested
             in_band.append({
                 "question": prob["question"], "gold": prob["gold"],
                 "prompt": prompt, "wrong_texts": wrong,
+                "tags": prob.get("tags", {}),
             })
     in_band_frac = len(in_band) / len(pool)
     print(f"[pg0] in-band problems = {len(in_band)}/{len(pool)} "
@@ -238,7 +250,8 @@ def main() -> None:  # pragma: no cover - GPU wiring; pure logic is unit-tested
             cut = splice_index(n_tok, frac)
             ids = tokenizer(wrong, add_special_tokens=False)["input_ids"][:cut]
             prefix = tokenizer.decode(ids, skip_special_tokens=False)
-            splice_jobs.append({"gold": prob["gold"], "base": prob["prompt"] + prefix})
+            splice_jobs.append({"gold": prob["gold"], "base": prob["prompt"] + prefix,
+                                "tags": prob.get("tags", {})})
     rng.shuffle(splice_jobs)
     splice_jobs = splice_jobs[: args.max_wrong_splices]
     print(f"[pg0] splicing {len(splice_jobs)} in-band wrong rollouts -> 3 arms "
@@ -261,6 +274,7 @@ def main() -> None:  # pragma: no cover - GPU wiring; pure logic is unit-tested
     accepted = 0
     emitted = 0
     grade_triples: list[tuple] = []  # (r,n',nc) grades per splice -> raw diagnostics
+    tagged_triples: list[tuple] = []  # (tags, r,n',nc) -> per-attribute gap breakdown
     for job, ro, no, co in zip(splice_jobs, r_out, n_out, c_out):
         gold = job["gold"]
         r_texts = [_REDIRECT_TAIL + s.text for s in ro.outputs]
@@ -274,6 +288,7 @@ def main() -> None:  # pragma: no cover - GPU wiring; pure logic is unit-tested
         c_grades = [1 if _check_correctness(t, gold) else 0 for t in c_texts]
         attempted += 1
         grade_triples.append((r_grades, n_grades, c_grades))
+        tagged_triples.append((job.get("tags", {}), r_grades, n_grades, c_grades))
         # Nc doubles as the plain-prose B' control for the pilot (spec instruction).
         if accept_redirect(r_grades, n_grades, c_grades,
                            bprime_grades=c_grades, margin=0.5):
@@ -299,6 +314,15 @@ def main() -> None:  # pragma: no cover - GPU wiring; pure logic is unit-tested
         print(f"[pg0-raw] lci(R-Nc) p90={raw['lci_rc_p90']:.3f} "
               f"max={raw['lci_rc_max']:.3f} | accept@margin={raw['accept_at_margin']}")
 
+    # ── PER-ATTRIBUTE breakdown: WHERE does forced redirect help? (localizes the
+    #    redirect-SFT data + difficulty band to the problem types that respond). ──
+    attr = gap_by_attribute(tagged_triples)
+    print("[pg0-attr] " + json.dumps(attr))
+    for a, groups in attr.items():
+        for v, st in groups.items():
+            print(f"[pg0-attr] {a}={v}: n={st['n']} mean_gap(R-Nc)={st['mean_gap_rc']:+.3f} "
+                  f"saves={st['saves_frac']:.2f} strong={st['strong']}")
+
     # ── Step 4: verdict ──
     result = pg0_verdict(
         emission_rate=emission_rate,
@@ -311,6 +335,7 @@ def main() -> None:  # pragma: no cover - GPU wiring; pure logic is unit-tested
     result["attempted"] = attempted
     result["accepted"] = accepted
     result["raw"] = raw
+    result["attr"] = attr
 
     print(json.dumps(result, indent=2))
     out_path = Path(args.output_dir) / "pg0_verdict.json"

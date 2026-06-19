@@ -161,6 +161,34 @@ def raw_yield_stats(grade_triples, margins=(0.5, 0.3, 0.2, 0.1, 0.0)):
     }
 
 
+def gap_by_attribute(tagged_triples, attrs=("difficulty", "scenario", "trigger")):
+    """Break the per-splice R-Nc redirect gap down by problem attribute value, to
+    localize WHERE forced redirect helps (the redirect effect is strongly
+    problem-dependent: median gap ~0 but a ~20% tail helps a lot). Targets the
+    redirect-SFT data + difficulty band at the responsive problem types.
+
+    ``tagged_triples`` = list of ``(tags, r_grades, nprime_grades, nc_grades)``,
+    ``tags`` a dict like {"difficulty": "medium", "scenario": "verify", ...}.
+    Returns ``{attr: {value: {n, mean_gap_rc, saves_frac, strong}}}``.
+    """
+    out = {}
+    for a in attrs:
+        groups = {}
+        for tags, r, _, c in tagged_triples:
+            v = str((tags or {}).get(a, "NA"))
+            groups.setdefault(v, []).append(arm_rate(r) - arm_rate(c))
+        out[a] = {
+            v: {
+                "n": len(gaps),
+                "mean_gap_rc": sum(gaps) / len(gaps),
+                "saves_frac": sum(1 for g in gaps if g > 0) / len(gaps),
+                "strong": sum(1 for g in gaps if g >= 0.25),
+            }
+            for v, gaps in sorted(groups.items())
+        }
+    return out
+
+
 def main():  # pragma: no cover - wires GPU generation; logic above is unit-tested
     raise SystemExit(
         "Wire generation via scripts/run_online_sdpo_regen.py: (1) roll out the SFT "

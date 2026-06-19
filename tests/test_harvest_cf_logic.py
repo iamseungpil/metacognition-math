@@ -5,7 +5,29 @@ from scripts.harvest_redirect_cf import (
     accept_redirect,
     expected_yield,
     raw_yield_stats,
+    gap_by_attribute,
 )
+
+
+def test_gap_by_attribute_localizes_where_redirect_helps():
+    """Redirect helps on some problem types, not others. The breakdown must
+    surface that: medium-difficulty splices where R=6/8 vs Nc=1/8 show a big
+    positive gap; hard ones where R=Nc show ~0."""
+    helps = [({"difficulty": "medium"}, [1, 1, 1, 1, 1, 1, 0, 0], [0] * 8,
+              [1, 0, 0, 0, 0, 0, 0, 0]) for _ in range(10)]
+    flat = [({"difficulty": "hard"}, [1, 0, 0, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0, 0, 0],
+             [1, 0, 0, 0, 0, 0, 0, 0]) for _ in range(10)]
+    out = gap_by_attribute(helps + flat, attrs=("difficulty",))
+    d = out["difficulty"]
+    assert d["medium"]["n"] == 10 and d["medium"]["mean_gap_rc"] > 0.4
+    assert d["medium"]["strong"] == 10
+    assert d["hard"]["n"] == 10 and abs(d["hard"]["mean_gap_rc"]) < 1e-9
+    assert d["hard"]["strong"] == 0
+
+
+def test_gap_by_attribute_missing_tag_is_na():
+    out = gap_by_attribute([({}, [1] * 8, [0] * 8, [0] * 8)], attrs=("difficulty",))
+    assert "NA" in out["difficulty"]
 
 
 def test_raw_yield_stats_distinguishes_warmup_from_gate():
