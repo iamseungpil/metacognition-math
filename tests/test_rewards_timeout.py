@@ -56,6 +56,20 @@ def test_check_correctness_main_thread_grades_symbolic_true():
     assert rewards._check_correctness("\\boxed{7}", "42") is False
 
 
+def test_alarm_shim_tolerates_none_seconds():
+    """Regression: newer math_verify calls signal.alarm(None) to DISABLE its
+    timeout. The real signal.alarm requires an int, so on the MAIN thread the
+    shim raised TypeError('NoneType ... integer') that aborted EVERY comparison
+    (even "2"=="2") -> pg0 pilot graded all 200 wrong -> spurious STOP. The shim
+    must coerce None -> 0 (cancel) without raising."""
+    import signal
+    # importing rewards installed the patch; alarm(None) must not raise
+    assert signal.alarm(None) == 0
+    signal.alarm(0)  # cleanup any pending alarm
+    # and grading a trivially-correct pair must return True on the main thread
+    assert rewards._check_correctness("2", "2") is True
+
+
 def test_verify_called_with_disabled_timeout(monkeypatch):
     """math_verify must be invoked with the SIGALRM timeout disabled (None) so
     it is thread-safe in Ray worker threads."""

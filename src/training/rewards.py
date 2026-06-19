@@ -43,7 +43,11 @@ if not getattr(_signal, "_metacot_threadsafe_patch", False):
     def _threadsafe_alarm(seconds):
         if _threading.current_thread() is not _threading.main_thread():
             return 0
-        return _orig_signal_alarm(seconds)
+        # Newer math_verify calls signal.alarm(None) to DISABLE its timeout, but
+        # the real signal.alarm requires an int -> TypeError that aborts EVERY
+        # comparison (even "2"=="2") in main-thread grading (e.g. pg0 pilot, eval
+        # scripts). Coerce None/float -> int; None -> 0 cancels any pending alarm.
+        return _orig_signal_alarm(int(seconds or 0))
 
     _signal.signal = _threadsafe_signal
     _signal.alarm = _threadsafe_alarm
