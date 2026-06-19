@@ -96,6 +96,71 @@ def expected_yield(emission_rate: float, in_band_frac: float, accept_prob: float
     return int(emission_rate * in_band_frac * accept_prob * pool_size)
 
 
+def _pct(xs, q):
+    """q-quantile of xs by nearest-rank (xs non-empty)."""
+    s = sorted(xs)
+    return s[min(len(s) - 1, max(0, int(round(q * (len(s) - 1)))))]
+
+
+def raw_yield_stats(grade_triples, margins=(0.5, 0.3, 0.2, 0.1, 0.0)):
+    """PRE-GATE diagnostics for the PG0 accept stage (no new generation — pure
+    arithmetic on grade lists already computed in the pilot loop).
+
+    ``grade_triples`` = list of ``(r_grades, nprime_grades, nc_grades)``, each a
+    list of 0/1 over the k answer-blind samples of one spliced wrong rollout.
+
+    The official verdict only keeps ``accepted`` = #(splices clearing the strict
+    margin=0.5 lower-CI gate), so a 0 is ambiguous. These stats separate:
+      * MODEL-CANNOT-REDIRECT (warmup needed): mean_gap_rc ~ 0, saves_rc_frac ~
+        0.5 (chance), lci_rc_max ~ 0  -> redirect changes nothing.
+      * GATE-TOO-STRICT: mean_gap_rc > 0, saves_rc_frac > 0.5, accepts appear at
+        margin 0.2-0.3  -> redirect helps, the 0.5 bar just clipped it.
+      * ANY-INJECTION (not redirect CONTENT): mean_gap_rc > 0 but mean_gap_rn ~ 0
+        -> R only matches the null-meta arm, the redirect text isn't what helped.
+
+    gap_rc = p_R - p_Nc (redirect vs plain continuation);
+    gap_rn = p_R - p_N'  (redirect vs null-meta injection);
+    lci_rc = one-sided 95% lower bound on (p_R - p_Nc).
+    ``accept_at_margin`` re-runs the real accept gate at each margin (margin 0.0
+    is degeneracy-prone: both-all-wrong gives SE=0 -> lci=0 -> counts; read 0.1+).
+    """
+    n = len(grade_triples)
+    if n == 0:
+        return {"n": 0}
+    pr = [arm_rate(r) for r, _, _ in grade_triples]
+    pn = [arm_rate(nn) for _, nn, _ in grade_triples]
+    pc = [arm_rate(c) for _, _, c in grade_triples]
+    gap_rc = [a - b for a, b in zip(pr, pc)]
+    gap_rn = [a - b for a, b in zip(pr, pn)]
+    lci_rc = [lower_ci_diff(r, c) for r, _, c in grade_triples]
+    saves_rc = sum(1 for g in gap_rc if g > 0)
+    saves_rc_strong = sum(1 for g in gap_rc if g >= 0.25)
+    accept_at = {
+        str(m): sum(
+            1 for r, nn, c in grade_triples
+            if accept_redirect(r, nn, c, bprime_grades=c, margin=m)
+        )
+        for m in margins
+    }
+    return {
+        "n": n,
+        "mean_r_rate": sum(pr) / n,
+        "mean_nprime_rate": sum(pn) / n,
+        "mean_nc_rate": sum(pc) / n,
+        "mean_gap_rc": sum(gap_rc) / n,
+        "mean_gap_rn": sum(gap_rn) / n,
+        "saves_rc": saves_rc,
+        "saves_rc_frac": saves_rc / n,
+        "saves_rc_strong": saves_rc_strong,
+        "gap_rc_p50": _pct(gap_rc, 0.5),
+        "gap_rc_p90": _pct(gap_rc, 0.9),
+        "gap_rc_max": max(gap_rc),
+        "lci_rc_p90": _pct(lci_rc, 0.9),
+        "lci_rc_max": max(lci_rc),
+        "accept_at_margin": accept_at,
+    }
+
+
 def main():  # pragma: no cover - wires GPU generation; logic above is unit-tested
     raise SystemExit(
         "Wire generation via scripts/run_online_sdpo_regen.py: (1) roll out the SFT "

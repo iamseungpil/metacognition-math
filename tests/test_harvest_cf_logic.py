@@ -4,7 +4,39 @@ from scripts.harvest_redirect_cf import (
     arm_rate,
     accept_redirect,
     expected_yield,
+    raw_yield_stats,
 )
+
+
+def test_raw_yield_stats_distinguishes_warmup_from_gate():
+    """The PG0 raw diagnostics must separate 'model cannot redirect' (no R-vs-Nc
+    separation) from 'accept gate too strict' (R beats Nc but lower-CI < 0.5)."""
+    k = 8
+    # MODEL-CANNOT-REDIRECT: R and Nc both ~2/8, redirect changes nothing.
+    warmup = [([1, 1, 0, 0, 0, 0, 0, 0], [1, 1, 0, 0, 0, 0, 0, 0],
+               [1, 1, 0, 0, 0, 0, 0, 0]) for _ in range(20)]
+    w = raw_yield_stats(warmup)
+    assert abs(w["mean_gap_rc"]) < 1e-9          # no separation
+    assert w["accept_at_margin"]["0.3"] == 0     # nothing clears even a soft gate
+    assert w["accept_at_margin"]["0.5"] == 0
+
+    # GATE-TOO-STRICT: R=6/8 vs Nc=1/8 -> raw gap 0.625 but lower-CI ~0.31 < 0.5.
+    gate = [([1, 1, 1, 1, 1, 1, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0],
+             [1, 0, 0, 0, 0, 0, 0, 0]) for _ in range(20)]
+    g = raw_yield_stats(gate)
+    assert g["mean_gap_rc"] > 0.4                 # redirect clearly helps (raw)
+    assert g["saves_rc_frac"] == 1.0
+    assert g["accept_at_margin"]["0.5"] == 0      # strict gate clips it to zero
+    assert g["accept_at_margin"]["0.2"] == 20     # a relaxed gate recovers yield
+
+    # STRONG: R=8/8 vs Nc=0/8 -> clears even the strict 0.5 gate.
+    strong = [([1] * k, [0] * k, [0] * k) for _ in range(5)]
+    s = raw_yield_stats(strong)
+    assert s["accept_at_margin"]["0.5"] == 5
+
+
+def test_raw_yield_stats_empty():
+    assert raw_yield_stats([]) == {"n": 0}
 
 
 def test_well_formed_requires_switch_and_low_conf():

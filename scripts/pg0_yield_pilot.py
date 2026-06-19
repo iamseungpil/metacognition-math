@@ -49,6 +49,7 @@ from scripts.harvest_redirect_cf import (
     accept_redirect,
     arm_rate,
     expected_yield,
+    raw_yield_stats,
     splice_index,
     SPLICE_LO,
     SPLICE_HI,
@@ -259,6 +260,7 @@ def main() -> None:  # pragma: no cover - GPU wiring; pure logic is unit-tested
     attempted = 0
     accepted = 0
     emitted = 0
+    grade_triples: list[tuple] = []  # (r,n',nc) grades per splice -> raw diagnostics
     for job, ro, no, co in zip(splice_jobs, r_out, n_out, c_out):
         gold = job["gold"]
         r_texts = [_REDIRECT_TAIL + s.text for s in ro.outputs]
@@ -271,6 +273,7 @@ def main() -> None:  # pragma: no cover - GPU wiring; pure logic is unit-tested
         n_grades = [1 if _check_correctness(t, gold) else 0 for t in n_texts]
         c_grades = [1 if _check_correctness(t, gold) else 0 for t in c_texts]
         attempted += 1
+        grade_triples.append((r_grades, n_grades, c_grades))
         # Nc doubles as the plain-prose B' control for the pilot (spec instruction).
         if accept_redirect(r_grades, n_grades, c_grades,
                            bprime_grades=c_grades, margin=0.5):
@@ -279,6 +282,22 @@ def main() -> None:  # pragma: no cover - GPU wiring; pure logic is unit-tested
     emission_rate = (emitted / attempted) if attempted else 0.0
     accept_prob = (accepted / attempted) if attempted else 0.0
     print(f"[pg0] attempted={attempted} emitted={emitted} accepted={accepted}")
+
+    # ── PRE-GATE raw diagnostics: separate 'model cannot redirect' (warmup) from
+    #    'accept gate too strict' WITHOUT a new GPU run (pure arithmetic on the
+    #    grades already computed above). A STOP with accepted=0 is ambiguous; this
+    #    block makes it interpretable. ──
+    raw = raw_yield_stats(grade_triples)
+    print("[pg0-raw] " + json.dumps(raw))
+    if raw.get("n"):
+        print(f"[pg0-raw] mean r_rate={raw['mean_r_rate']:.3f} "
+              f"nprime={raw['mean_nprime_rate']:.3f} nc={raw['mean_nc_rate']:.3f}")
+        print(f"[pg0-raw] mean_gap(R-Nc)={raw['mean_gap_rc']:.3f} "
+              f"mean_gap(R-N')={raw['mean_gap_rn']:.3f} "
+              f"saves(R>Nc)={raw['saves_rc']}/{raw['n']} "
+              f"strong(>=.25)={raw['saves_rc_strong']}")
+        print(f"[pg0-raw] lci(R-Nc) p90={raw['lci_rc_p90']:.3f} "
+              f"max={raw['lci_rc_max']:.3f} | accept@margin={raw['accept_at_margin']}")
 
     # ── Step 4: verdict ──
     result = pg0_verdict(
@@ -291,6 +310,7 @@ def main() -> None:  # pragma: no cover - GPU wiring; pure logic is unit-tested
     result["pool"] = len(pool)
     result["attempted"] = attempted
     result["accepted"] = accepted
+    result["raw"] = raw
 
     print(json.dumps(result, indent=2))
     out_path = Path(args.output_dir) / "pg0_verdict.json"
