@@ -32,13 +32,24 @@ from collections import Counter
 # Self-consistency thresholds for the action bucket (CONVERGED DESIGN).
 # pass_rate <= LO  -> low confidence -> redirect
 # pass_rate >= HI  -> high confidence -> verify (if any wrong sample to check)
-DEFAULT_LO = 0.30
-DEFAULT_HI = 0.70
+#
+# SINGLE SOURCE OF TRUTH: this module owns the confidence thresholds. The build
+# driver (scripts/build_confidence_redirect_verify_sft.py) IMPORTS CONF_LO /
+# CONF_HI / CONFWRONG_THR from here rather than re-declaring its own divergent
+# CONF_LOW=0.45 / CONF_HIGH=0.65 (that drift split the same problem into two
+# different buckets depending on which file you read).
+CONF_LO = 0.30
+CONF_HI = 0.70
 
 # Agreement threshold for "confidently wrong": the majority WRONG answer must
 # command at least this fraction of the samples for the student to count as
 # *confidently* (not merely incidentally) wrong.
-DEFAULT_CONFWRONG_THR = 0.60
+CONFWRONG_THR = 0.60
+
+# Backwards-compatible aliases (older callers / tests use the DEFAULT_* names).
+DEFAULT_LO = CONF_LO
+DEFAULT_HI = CONF_HI
+DEFAULT_CONFWRONG_THR = CONFWRONG_THR
 
 
 def _norm(ans):

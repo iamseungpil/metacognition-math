@@ -125,6 +125,77 @@ def test_appropriateness_no_actions_safe():
     assert r["verify_appropriate_rate"] is None
 
 
+def test_appropriateness_high_conf_redirect_is_misfire_not_free_credit():
+    # NORTH-STAR: redirect must be DECIDED FROM low confidence. A redirect that
+    # fires on a recoverable-wrong case while the model is HIGH-confident has
+    # decoupled its action from its confidence -- it did NOT redirect *because*
+    # it was unsure. recoverable_wrong (gold) alone must NOT buy free credit.
+    recs = [
+        _rec("redirect", 0.95, recoverable_wrong=True, flipped=True),
+    ]
+    r = action_appropriateness(recs, high_conf=0.7, low_conf=0.5)
+    # gold says recoverable, but conf 0.95 >= low_conf -> NOT appropriate
+    assert r["redirect_appropriate_rate"] == 0.0
+    assert r["redirect_misfire_rate"] == 1.0
+    assert r["n_redirect"] == 1
+
+
+def test_appropriateness_redirect_needs_both_recoverable_and_low_conf():
+    recs = [
+        # recoverable AND low-conf -> appropriate (decided from low confidence)
+        _rec("redirect", 0.2, recoverable_wrong=True, flipped=True),
+        # recoverable BUT high-conf -> misfire (action decoupled from conf)
+        _rec("redirect", 0.9, recoverable_wrong=True, flipped=True),
+        # low-conf BUT not recoverable -> misfire (nothing to fix)
+        _rec("redirect", 0.1, recoverable_wrong=False, flipped=False),
+    ]
+    r = action_appropriateness(recs, high_conf=0.7, low_conf=0.5)
+    assert math.isclose(r["redirect_appropriate_rate"], 1 / 3)
+    assert math.isclose(r["redirect_misfire_rate"], 2 / 3)
+
+
+def test_action_confidence_consistency_rate_reported():
+    # A redirect is conf-consistent when conf < low_conf; a verify when
+    # conf >= high_conf. Report this separately from gold-appropriateness.
+    recs = [
+        _rec("redirect", 0.2, recoverable_wrong=True),   # consistent
+        _rec("redirect", 0.95, recoverable_wrong=True),  # INconsistent (high conf)
+        _rec("verify", 0.9, recoverable_wrong=False),    # consistent
+        _rec("verify", 0.1, recoverable_wrong=False),    # INconsistent (low conf)
+        _rec("none", 0.5, recoverable_wrong=False),      # not an action, excluded
+    ]
+    r = action_appropriateness(recs, high_conf=0.7, low_conf=0.5)
+    # 2 consistent of 4 fired actions
+    assert math.isclose(r["action_confidence_consistency_rate"], 0.5)
+    assert r["n_consistent"] == 2
+    assert r["n_actions"] == 4
+
+
+def test_action_confidence_consistency_none_when_no_actions():
+    recs = [_rec("none", 0.5, recoverable_wrong=False)]
+    r = action_appropriateness(recs)
+    assert r["action_confidence_consistency_rate"] is None
+    assert r["n_actions"] == 0
+
+
+def test_shared_thresholds_are_importable_and_referenced():
+    # The eval's held-out bars are deliberately stricter than the build-time
+    # shared thresholds, but must REFERENCE them (not silently diverge).
+    from src.eval.redirect_verify_metrics import (
+        HELDOUT_LOW_CONF,
+        HELDOUT_HIGH_CONF,
+        SHARED_CONF_LO,
+        SHARED_CONF_HI,
+    )
+    from src.data.confidence_label import CONF_LO, CONF_HI
+
+    assert SHARED_CONF_LO == CONF_LO
+    assert SHARED_CONF_HI == CONF_HI
+    # stricter held-out bars: low bar no looser, high bar no looser
+    assert HELDOUT_LOW_CONF >= SHARED_CONF_LO
+    assert HELDOUT_HIGH_CONF >= SHARED_CONF_HI
+
+
 # ----------------------------------------------------------------------------
 # (3) redirect_causal_rate
 # ----------------------------------------------------------------------------

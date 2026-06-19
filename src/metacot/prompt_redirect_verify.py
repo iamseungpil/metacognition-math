@@ -52,6 +52,26 @@ Hard rules:
 """
 
 
+CONTROL_CONTINUATION_SYSTEM_PROMPT = """\
+You are continuing a STUDENT's partial solution to a math problem, in the
+student's OWN voice. This is a CONTROL continuation: your job is to carry the
+existing line of work to its natural conclusion WITHOUT any metacognition.
+
+Hard rules:
+1. Continue the student's existing approach exactly as it was going. Use the
+   SAME method/route the student already chose, even if it looks flawed.
+2. Do NOT open a meta block. Never write <|meta|>, `confidence:`, or <|switch|>.
+3. Do NOT switch to a different method, do NOT backtrack, do NOT second-guess.
+   No "wait", no "let me reconsider" — just keep going on the current route.
+4. Do not silently fix the student's mistakes. If the route leads to a wrong
+   answer, let it reach that wrong answer; carry it to its natural conclusion.
+5. End with a final \\boxed{answer} that follows from the SAME approach.
+
+This continuation is the counterfactual baseline: it shows what happens if the
+student keeps going WITHOUT redirecting. It must NOT recover by switching method.
+"""
+
+
 def _fmt_conf(conf: float) -> str:
     if not isinstance(conf, (int, float)):
         raise ValueError(f"conf must be a number, got {type(conf)!r}")
@@ -111,6 +131,49 @@ confidence is the student's value {c} and must not be inflated, and no decorativ
 filler.
 """
     return _messages(user)
+
+
+def build_control_continuation_prompt(problem: str, student_wrong_prefix: str):
+    """Teacher prompt for the no-redirect CONTROL arm of the causal filter.
+
+    This is the counterfactual baseline that makes ``redirect_ok and not
+    control_ok`` falsifiable: the teacher CONTINUES the student's wrong prefix
+    using the SAME flawed approach, with NO meta block, NO ``confidence:`` line,
+    NO {SWITCH_TOKEN}, and no method switch — carrying the (likely wrong) route
+    to its natural conclusion. If this control STILL recovers, the problem was
+    self-recovering and the redirect demo is not credited.
+
+    Uses ``CONTROL_CONTINUATION_SYSTEM_PROMPT`` (NOT the distill 'always end
+    correct' prompt, which is exactly what made the old control non-falsifiable).
+
+    Returns chat messages ``[system, user]``.
+    """
+    if not student_wrong_prefix or not student_wrong_prefix.strip():
+        raise ValueError("student_wrong_prefix must be non-empty for a control continuation")
+
+    user = f"""\
+Continue the student's partial solution below WITHOUT any metacognition.
+
+Problem:
+{problem}
+
+The student's work so far (continue from here, do not restart):
+---
+{student_wrong_prefix}
+---
+
+Continue this SAME approach to its natural conclusion:
+1. Stay on the student's current route/method. Do NOT switch methods, do NOT
+   backtrack, do NOT reconsider.
+2. Do NOT open a {META_START} block, do NOT write a `confidence:` line, and do
+   NOT emit {SWITCH_TOKEN}.
+3. Finish with a final \\boxed{{answer}} that follows from this same approach,
+   even if that approach leads to a wrong answer.
+"""
+    return [
+        {"role": "system", "content": CONTROL_CONTINUATION_SYSTEM_PROMPT},
+        {"role": "user", "content": user},
+    ]
 
 
 def build_verify_demo_prompt(problem: str, student_attempt: str, conf: float):

@@ -23,6 +23,32 @@ from __future__ import annotations
 
 from typing import Optional
 
+# SHARED build-time thresholds: single source of truth lives in the data layer
+# (src/data/confidence_label.py). We re-export them under SHARED_* names so the
+# eval references the SAME numbers the build buckets on, instead of redefining
+# its own divergent low=0.5/high=0.7.
+from src.data.confidence_label import CONF_LO as SHARED_CONF_LO
+from src.data.confidence_label import CONF_HI as SHARED_CONF_HI
+
+# DELIBERATELY STRICTER held-out eval bars (NOT a silent divergence from the
+# shared build thresholds above):
+#   * HELDOUT_LOW_CONF = 0.5 > SHARED_CONF_LO (0.30): at eval we demand the
+#     model was *clearly* low-confidence (conf < 0.5) before we credit a
+#     redirect as "decided from low confidence". The build can bucket a problem
+#     as redirect at the looser 0.30 self-consistency floor, but to PASS the
+#     held-out action<->confidence test the emitted confidence must clear the
+#     stricter 0.5 bar — a held-out model that merely squeaks under 0.30 is not
+#     given free credit.
+#   * HELDOUT_HIGH_CONF = SHARED_CONF_HI (0.70): the high bar matches the shared
+#     verify threshold exactly (no reason to be stricter on the high side).
+# These are intentionally >= the shared bars; an assertion below guards that we
+# never accidentally make the eval LOOSER than the build.
+HELDOUT_LOW_CONF = 0.5
+HELDOUT_HIGH_CONF = SHARED_CONF_HI
+
+assert HELDOUT_LOW_CONF >= SHARED_CONF_LO, "held-out low bar must not be looser than shared"
+assert HELDOUT_HIGH_CONF >= SHARED_CONF_HI, "held-out high bar must not be looser than shared"
+
 
 def _clamp01(x: float) -> float:
     if x < 0.0:
@@ -94,17 +120,34 @@ def confidence_calibration(emitted_confs, correct_flags, n_bins: int = 10) -> di
 # ----------------------------------------------------------------------------
 # (2) action appropriateness -- right action for the situation, vs misfire
 # ----------------------------------------------------------------------------
-def action_appropriateness(records, high_conf: float = 0.7,
-                           low_conf: float = 0.5) -> dict:
+def action_appropriateness(records, high_conf: float = HELDOUT_HIGH_CONF,
+                           low_conf: float = HELDOUT_LOW_CONF) -> dict:
     """Rate that the emitted action matched the situation.
 
+    NORTH-STAR (CLAUDE.md): the action must be DECIDED FROM the self-emitted
+    confidence. So appropriateness is conditioned on BOTH the situation (gold)
+    AND the emitted confidence -- a model whose confidence is decoupled from its
+    action must NOT score appropriate just because gold happened to agree.
+
     A REDIRECT is appropriate iff the case was actually recoverable-wrong
-    (a genuinely fixable wrong path) -- that is exactly when switching method
-    can help. Otherwise (e.g. high-conf-correct) it is a misfire.
+    (a genuinely fixable wrong path, gold-derived) AND the model was actually
+    low-confidence (emitted confidence < low_conf) -- i.e. it redirected
+    *because* it was unsure. A high-confidence redirect on a recoverable-wrong
+    case is a MISFIRE (decoupled action), not free credit: this is symmetric to
+    verify, which has always been confidence-gated.
 
     A VERIFY is appropriate iff confidence is high (>= high_conf) -- verify is
     the "confirm what I think is right" action. Firing verify on a low-conf
     (< low_conf) case is a misfire (it should have redirected).
+
+    Defaults come from the held-out bars (`HELDOUT_LOW_CONF`/`HELDOUT_HIGH_CONF`),
+    which are deliberately stricter than the build-time `SHARED_CONF_LO`/
+    `SHARED_CONF_HI` (see module docstring), not a silent divergence.
+
+    Also reports an action<->confidence CONSISTENCY rate (over ALL fired
+    redirect+verify actions): the fraction whose emitted confidence sits on the
+    side its action implies (redirect => conf < low_conf, verify =>
+    conf >= high_conf), measured independently of the gold situation.
 
     Returns appropriate/misfire rates per action plus counts. Undefined rates
     (action never fired) are None.
@@ -115,13 +158,27 @@ def action_appropriateness(records, high_conf: float = 0.7,
     n_red = len(redirects)
     n_ver = len(verifies)
 
-    red_appropriate = sum(1 for r in redirects if r.get("recoverable_wrong"))
+    # redirect now requires BOTH recoverable_wrong (situation) AND low-conf
+    # (decided-from-confidence) -- symmetric to verify's confidence gate.
+    red_appropriate = sum(
+        1 for r in redirects
+        if r.get("recoverable_wrong")
+        and float(r.get("confidence", 0.0)) < low_conf
+    )
     ver_appropriate = sum(
         1 for r in verifies if float(r.get("confidence", 0.0)) >= high_conf
     )
     # verify misfire is specifically: fired on a clearly LOW-conf case
     ver_misfire = sum(
         1 for r in verifies if float(r.get("confidence", 0.0)) < low_conf
+    )
+
+    # action<->confidence consistency: does the emitted confidence sit on the
+    # side the action implies, regardless of gold? (redirect=>low, verify=>high)
+    n_actions = n_red + n_ver
+    n_consistent = (
+        sum(1 for r in redirects if float(r.get("confidence", 0.0)) < low_conf)
+        + sum(1 for r in verifies if float(r.get("confidence", 0.0)) >= high_conf)
     )
 
     return {
@@ -131,6 +188,10 @@ def action_appropriateness(records, high_conf: float = 0.7,
         "redirect_misfire_rate": ((n_red - red_appropriate) / n_red) if n_red else None,
         "verify_appropriate_rate": (ver_appropriate / n_ver) if n_ver else None,
         "verify_misfire_rate": (ver_misfire / n_ver) if n_ver else None,
+        "n_actions": n_actions,
+        "n_consistent": n_consistent,
+        "action_confidence_consistency_rate": (
+            n_consistent / n_actions) if n_actions else None,
     }
 
 
@@ -224,7 +285,8 @@ def intent_report(emitted_confs, correct_flags, records,
                   meta_on_acc: float, meta_off_acc: float,
                   baseline: Optional[float] = None,
                   survival_steps=None,
-                  high_conf: float = 0.7, low_conf: float = 0.5,
+                  high_conf: float = HELDOUT_HIGH_CONF,
+                  low_conf: float = HELDOUT_LOW_CONF,
                   n_bins: int = 10) -> dict:
     """One structured verdict bundling all five intent metrics."""
     return {

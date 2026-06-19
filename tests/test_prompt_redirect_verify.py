@@ -15,8 +15,10 @@ from src.metacot.prompt_redirect_verify import (
     META_END,
     SWITCH_TOKEN,
     TEACHER_DISTILL_SYSTEM_PROMPT,
+    CONTROL_CONTINUATION_SYSTEM_PROMPT,
     build_redirect_demo_prompt,
     build_verify_demo_prompt,
+    build_control_continuation_prompt,
 )
 
 PROBLEM = "If 3x + 7 = 22, what is x?"
@@ -86,6 +88,47 @@ def test_redirect_prompt_says_confidence_is_student_not_teacher():
     assert "student" in text
     # must not let the teacher use its own (higher) confidence
     assert "not your own" in text or "not the teacher" in text or "do not inflate" in text
+
+
+# --------------------------------------------------------------------------- #
+# Control continuation prompt (the no-redirect CONTROL arm of the causal filter).
+# --------------------------------------------------------------------------- #
+def test_control_prompt_embeds_problem_and_prefix():
+    p = build_control_continuation_prompt(PROBLEM, WRONG_PREFIX)
+    text = _as_text(p)
+    assert PROBLEM in text
+    assert WRONG_PREFIX in text
+
+
+def test_control_prompt_forbids_meta_and_switch():
+    """The control arm must CONTINUE the same flawed approach: no meta block, no
+    method switch. Otherwise the control could also recover and the causal filter
+    'redirect_ok and not control_ok' becomes vacuous."""
+    text = _as_text(build_control_continuation_prompt(PROBLEM, WRONG_PREFIX)).lower()
+    assert "no meta" in text or "do not" in text
+    # it must tell the teacher NOT to switch / NOT to open a meta block
+    assert "switch" in text  # referenced only to forbid it
+    assert "same" in text  # carry the same (flawed) approach
+
+
+def test_control_prompt_uses_control_system_prompt_not_always_correct():
+    """The control arm must NOT use the 'always end correct' distill system prompt
+    (that is exactly what made the control non-falsifiable)."""
+    msgs = build_control_continuation_prompt(PROBLEM, WRONG_PREFIX)
+    assert msgs[0]["content"] == CONTROL_CONTINUATION_SYSTEM_PROMPT
+    assert msgs[0]["content"] != TEACHER_DISTILL_SYSTEM_PROMPT
+    # the control system prompt must NOT instruct "always reach the correct result"
+    assert "always reach the correct" not in CONTROL_CONTINUATION_SYSTEM_PROMPT.lower()
+
+
+def test_control_prompt_returns_system_and_user():
+    msgs = build_control_continuation_prompt(PROBLEM, WRONG_PREFIX)
+    assert [m["role"] for m in msgs] == ["system", "user"]
+
+
+def test_control_prompt_empty_prefix_rejected():
+    with pytest.raises(ValueError):
+        build_control_continuation_prompt(PROBLEM, "   ")
 
 
 # --------------------------------------------------------------------------- #
