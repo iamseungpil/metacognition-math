@@ -221,6 +221,10 @@ def accuracy_delta(meta_on_acc: float, meta_off_acc: float,
     """The headline: does turning meta on raise accuracy, and does it beat the
     base SFT baseline. meta_helps = (on > off). beats_baseline compares the
     meta-on accuracy to the base SFT (None when no baseline given).
+
+    North-star (CLAUDE.md): Meta-CoT must OUTPERFORM Base SFT, so beats_baseline
+    requires a STRICT improvement (meta_on_acc > baseline); an exact tie does NOT
+    count as beating the baseline.
     """
     delta_on_off = meta_on_acc - meta_off_acc
     if baseline is None:
@@ -228,7 +232,7 @@ def accuracy_delta(meta_on_acc: float, meta_off_acc: float,
         beats_baseline = None
     else:
         delta_vs_baseline = meta_on_acc - baseline
-        beats_baseline = meta_on_acc >= baseline
+        beats_baseline = meta_on_acc > baseline
     return {
         "meta_on_acc": meta_on_acc,
         "meta_off_acc": meta_off_acc,

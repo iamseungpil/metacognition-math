@@ -244,6 +244,14 @@ def test_accuracy_delta_baseline_optional():
     assert r["meta_helps"] is True
 
 
+def test_accuracy_delta_exact_tie_does_not_beat_baseline():
+    # NORTH-STAR (CLAUDE.md): Meta-CoT must OUTPERFORM Base SFT, not merely tie.
+    # An exact tie (meta_on_acc == baseline) does NOT beat the baseline.
+    r = accuracy_delta(meta_on_acc=0.786, meta_off_acc=0.70, baseline=0.786)
+    assert math.isclose(r["delta_vs_baseline"], 0.0)
+    assert r["beats_baseline"] is False
+
+
 # ----------------------------------------------------------------------------
 # (5) meta_survival
 # ----------------------------------------------------------------------------

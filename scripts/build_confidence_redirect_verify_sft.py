@@ -73,6 +73,8 @@ from src.data.confidence_label import (
     CONF_HI,
     CONFWRONG_THR,
     action_bucket as _label_action_bucket,
+    majority_answer,
+    _norm as _norm_ans,
 )
 
 # --------------------------------------------------------------------------- #
@@ -100,6 +102,36 @@ CONF_STATED_TOL = 0.15
 
 # `confidence: 0.xx` extractor (mirrors harvest_redirect_cf._CONF_RE).
 _CONF_LINE_RE = re.compile(r"confidence:\s*([0-9]*\.?[0-9]+)", re.IGNORECASE)
+
+# Independent-check cue for the VERIFY causal filter. A genuine verify performs an
+# INDEPENDENT check — substitute the candidate back, recompute by another route,
+# or re-derive — rather than merely restating "confidence high, answer correct".
+# The meta block must carry one of these cues; a decorative verify that only
+# asserts the answer is right (no check word) is dropped (symmetric to the
+# redirect filter, which requires a real <|switch|>, not a decorative conf line).
+_VERIFY_CHECK_RE = re.compile(
+    r"\b(substitut\w*|plug\w*\s+back|plug\w*\s+in|recomput\w*|recheck\w*|"
+    r"re-?check\w*|re-?deriv\w*|re-?work\w*|cross-?check\w*|"
+    r"verif\w*\s+by|by\s+another\s+(route|method)|independent\w*\s+check)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_independent_check_cue(text: str) -> bool:
+    """True iff the verify meta block describes a genuine INDEPENDENT check.
+
+    Reads only INSIDE the <|meta|>...<|/meta|> block (the same scoping used for
+    the stated confidence): a substitution / recompute / re-derive / cross-check
+    cue. A trace that just says 'confidence high, answer correct' has no cue and
+    is decorative -> dropped. This is the verify analog of requiring a real
+    <|switch|> for redirect (correctness alone is gameable: the teacher is told
+    to always end correct)."""
+    if not text:
+        return False
+    m = META_BLOCK_RE.search(text)
+    if not m:
+        return False
+    return bool(_VERIFY_CHECK_RE.search(m.group(1)))
 
 
 def _has_meta_block(text: str) -> bool:
@@ -268,6 +300,39 @@ def _pick_wrong_prefix(rollouts) -> str | None:
     return None
 
 
+def _pick_verify_attempt(rollouts):
+    """Pick the REAL student attempt the VERIFY demo is anchored on.
+
+    The verify scenario is high-confidence WITH a wrong sample. To make the
+    verify causally load-bearing (the slip the check must catch), PREFER a WRONG
+    sample with usable text — that sample's ``is_correct`` is the no-verify
+    CONTROL (the raw attempt committed as-is). If the drawn samples carry no
+    usable wrong text, fall back to the MAJORITY attempt (a correct sample whose
+    answer is the majority) so the anchor is still a REAL attempt, never the
+    empty string (the ungrounded / off-distribution bug we fixed for redirect).
+
+    Returns ``(attempt_text, control_is_correct)`` or ``None`` if no rollout has
+    usable text at all.
+    """
+    rs = [_unpack_rollout(r) for r in rollouts]
+    # 1) prefer a WRONG sample with usable (non-blank) text — this is the slip.
+    for text, correct, _answer in rs:
+        if not correct and text and text.strip():
+            return text, False
+    # 2) else anchor on the majority attempt (still a REAL attempt).
+    answers = [a for _, _, a in rs]
+    maj = majority_answer(answers)
+    if maj:
+        for text, correct, answer in rs:
+            if _norm_ans(answer) == maj and text and text.strip():
+                return text, bool(correct)
+    # 3) last resort: any sample with usable text.
+    for text, correct, _answer in rs:
+        if text and text.strip():
+            return text, bool(correct)
+    return None
+
+
 def _unpack_rollout(r):
     """Normalize a rollout tuple to (text, is_correct, answer).
 
@@ -319,10 +384,14 @@ def build_dataset(
         "n_problems": len(problems),
         "kept_redirect": 0,
         "kept_verify": 0,
+        "verify_catch": 0,
+        "verify_confirm": 0,
         "dropped_hard": 0,
         "dropped_bucket_none": 0,
         "dropped_decorative": 0,
+        "dropped_decorative_verify": 0,
         "dropped_no_wrong_prefix": 0,
+        "dropped_no_verify_attempt": 0,
         "dropped_control_recovers": 0,
         "dropped_conf_mismatch": 0,
     }
@@ -416,22 +485,48 @@ def build_dataset(
             summary["kept_redirect"] += 1
 
         else:  # BUCKET_VERIFY
-            # (3) TEACHER conditional verify. (4) keep only if it actually VERIFIES
-            # and confirms/corrects. Correctness alone is NOT a causal filter here:
-            # the teacher is instructed to "always end correct", so a hollow demo
-            # that emits a decorative confidence line and no real check would pass
-            # `_check_correctness` trivially. Require a structural verify step (a
-            # <|meta|> block) AND a correct final answer.
+            # (1') ANCHOR the verify demo on a REAL sampled student attempt (NOT
+            # the empty string — that ungrounded/OOD bug is exactly what we fixed
+            # for redirect). Prefer a WRONG sample (the slip the verify must
+            # catch); else the majority attempt. The picked sample's is_correct is
+            # the no-verify CONTROL (the raw attempt committed as-is).
+            picked = _pick_verify_attempt(rollouts)
+            if picked is None:
+                summary["dropped_no_verify_attempt"] += 1
+                continue
+            verify_attempt, control_correct = picked
+            # (3) TEACHER conditional verify, CONDITIONED on the real attempt
+            # (passed via wrong_prefix; the real teacher_fn routes it into
+            # build_verify_demo_prompt(question, attempt, confidence)).
             verify_text = teacher_fn(
-                _teacher_payload(question, gold, confidence, bucket, "verify", "")
+                _teacher_payload(question, gold, confidence, bucket, "verify", verify_attempt)
             )
-            if not (_has_meta_block(verify_text) and _check_correctness(verify_text, gold)):
-                summary["dropped_decorative"] += 1
+            # (4) CAUSAL FILTER symmetric to redirect. Correctness alone is NOT a
+            # filter (the teacher is told to always end correct), so require:
+            #  (a) a structural verify step (a <|meta|> block) AND a correct final
+            #      answer, AND
+            #  (b) a GENUINE independent-check cue (substitution / recompute /
+            #      re-derive) in the meta block — drop a decorative verify that
+            #      only restates 'confidence high, answer correct'.
+            verify_ok = _check_correctness(verify_text, gold)
+            if not (_has_meta_block(verify_text) and verify_ok
+                    and _has_independent_check_cue(verify_text)):
+                summary["dropped_decorative_verify"] += 1
                 continue
             # (4b) STATED confidence must match the student's MEASURED value.
             if not stated_conf_matches(verify_text, confidence):
                 summary["dropped_conf_mismatch"] += 1
                 continue
+            # (4c) CAUSALITY: anchored on a WRONG attempt (control WRONG) and the
+            # verified trace is CORRECT -> the check causally CAUGHT the slip
+            # (verify_catch). Anchored on a CORRECT attempt (control already
+            # right) -> a no-harm CONFIRM (verify_confirm); it still had to pass
+            # the independent-check gate above, so a confirm that does not really
+            # check was already dropped.
+            if not control_correct:
+                summary["verify_catch"] += 1
+            else:
+                summary["verify_confirm"] += 1
             messages, assistant = _build_messages(question, "", verify_text, bucket)
             # verify: no wrong prefix -> train the whole assistant target (split=0).
             scenario = BUCKET_VERIFY
@@ -492,7 +587,9 @@ def _real_teacher_fn():  # pragma: no cover - network
       * arm == 'redirect' -> prompt_redirect_verify.build_redirect_demo_prompt(
           question, wrong_prefix, confidence)   (distill 'always end correct' + switch)
       * arm == 'verify'   -> prompt_redirect_verify.build_verify_demo_prompt(
-          question, attempt, confidence)
+          question, attempt, confidence) where ``attempt = payload['wrong_prefix']``
+          is the REAL sampled student attempt the verify is anchored on (a wrong
+          slip when available, else the majority attempt) — NOT the empty string.
       * arm == 'control'  -> prompt_redirect_verify.build_control_continuation_prompt(
           question, wrong_prefix)               (CONTINUE the same flawed approach,
           NO meta, NO <|switch|>, do NOT switch method; uses

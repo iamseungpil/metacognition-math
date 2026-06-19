@@ -278,10 +278,10 @@ def test_verify_without_real_check_is_dropped(tmp_path: Path):
 
     def rollout(question, gold, n):  # 3/4 -> verify bucket, has a wrong sample
         return [
-            ("<think>a</think> The answer is $42$.", True),
-            ("<think>b</think> The answer is $42$.", True),
-            ("<think>c</think> The answer is $42$.", True),
-            ("<think>d</think> The answer is $41$.", False),
+            ("<think>a</think> The answer is $42$.", True, "42"),
+            ("<think>b</think> The answer is $42$.", True, "42"),
+            ("<think>c</think> The answer is $42$.", True, "42"),
+            ("<think>d</think> The answer is $41$.", False, "41"),
         ][:n]
 
     def hollow_teacher(payload):  # correct final answer, NO meta block / no check
@@ -292,7 +292,237 @@ def test_verify_without_real_check_is_dropped(tmp_path: Path):
         out_path=str(out), n_rollouts=4,
     )
     assert summary["kept_verify"] == 0
-    assert summary["dropped_decorative"] == 1
+    assert summary["dropped_decorative_verify"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# Fix #1 — the VERIFY demo must be ANCHORED on a REAL sampled student attempt
+# (not the empty string). The verify scenario is high-conf with a wrong sample;
+# the anchor should PREFER a WRONG sample (the slip the verify must catch).
+# --------------------------------------------------------------------------- #
+def test_verify_is_anchored_on_a_real_wrong_student_attempt(tmp_path: Path):
+    out = tmp_path / "verify_anchored.parquet"
+    prob = [{
+        "question": "VA checkable medium",
+        "gold": "42",
+        "tags": {"difficulty": "medium", "scenario": "verify", "trigger": "t"},
+    }]
+    seen = {}
+
+    def rollout(question, gold, n):  # 3/4 -> verify bucket; the slip text is unique
+        return [
+            ("<think>a</think> The answer is $42$.", True, "42"),
+            ("<think>b</think> The answer is $42$.", True, "42"),
+            ("<think>c</think> The answer is $42$.", True, "42"),
+            ("<think>THE SLIP forty one</think> The answer is $41$.", False, "41"),
+        ][:n]
+
+    def teacher(payload):
+        if payload["arm"] == "verify":
+            seen["attempt"] = payload.get("wrong_prefix", "")
+            return (
+                "<|meta|>\nconfidence: 0.75\n"
+                "Looks right but I must check; substitute back.\n<|/meta|>\n"
+                "Substituting recomputes 42. The answer is $42$."
+            )
+        raise AssertionError(f"unexpected arm {payload['arm']!r}")
+
+    summary = build_dataset(
+        problems=prob, rollout_fn=rollout, teacher_fn=teacher,
+        out_path=str(out), n_rollouts=4,
+    )
+    # the verify teacher was anchored on the REAL wrong sample's text (the slip),
+    # NOT the empty string.
+    assert seen.get("attempt", "") != ""
+    assert "THE SLIP" in seen["attempt"]
+    assert summary["kept_verify"] == 1
+
+
+def test_verify_anchors_on_majority_when_no_wrong_sample_drawn(tmp_path: Path):
+    """If the drawn samples carry no usable wrong sample, anchor on the majority
+    attempt (still a REAL attempt, never the empty string)."""
+    out = tmp_path / "verify_majority.parquet"
+    prob = [{
+        "question": "VM checkable medium",
+        "gold": "42",
+        "tags": {"difficulty": "medium", "scenario": "verify", "trigger": "t"},
+    }]
+    seen = {}
+
+    # high-conf with a wrong sample whose TEXT is empty (no usable wrong text):
+    # the verify bucket still fires (any_wrong) but there is no anchorable wrong
+    # attempt text -> fall back to the majority attempt text.
+    def rollout(question, gold, n):
+        return [
+            ("<think>maj</think> The answer is $42$.", True, "42"),
+            ("<think>maj</think> The answer is $42$.", True, "42"),
+            ("<think>maj</think> The answer is $42$.", True, "42"),
+            ("   ", False, "41"),  # wrong but no usable text to anchor on
+        ][:n]
+
+    def teacher(payload):
+        if payload["arm"] == "verify":
+            seen["attempt"] = payload.get("wrong_prefix", "")
+            return (
+                "<|meta|>\nconfidence: 0.75\n"
+                "Substitute to verify.\n<|/meta|>\n"
+                "Recomputing confirms it. The answer is $42$."
+            )
+        raise AssertionError(f"unexpected arm {payload['arm']!r}")
+
+    build_dataset(
+        problems=prob, rollout_fn=rollout, teacher_fn=teacher,
+        out_path=str(out), n_rollouts=4,
+    )
+    assert seen.get("attempt", "").strip() != ""
+    assert "maj" in seen["attempt"]
+
+
+# --------------------------------------------------------------------------- #
+# Fix #2 — VERIFY causal filter symmetric to redirect.
+#   * anchored on a WRONG attempt + verified CORRECT + control (raw attempt) WRONG
+#     + a genuine independent-check cue -> KEPT as verify_catch.
+#   * a DECORATIVE verify that only restates the answer (no real check cue) is
+#     dropped (dropped_decorative_verify).
+#   * anchored on a CORRECT attempt (control already right) -> kept only as
+#     verify_confirm, and only if it really checks.
+# --------------------------------------------------------------------------- #
+def test_decorative_verify_that_only_restates_answer_is_dropped(tmp_path: Path):
+    out = tmp_path / "decorative_verify.parquet"
+    prob = [{
+        "question": "DV checkable medium",
+        "gold": "42",
+        "tags": {"difficulty": "medium", "scenario": "verify", "trigger": "t"},
+    }]
+
+    def rollout(question, gold, n):  # 3/4 -> verify bucket, wrong slip present
+        return [
+            ("<think>a</think> The answer is $42$.", True, "42"),
+            ("<think>b</think> The answer is $42$.", True, "42"),
+            ("<think>c</think> The answer is $42$.", True, "42"),
+            ("<think>slip</think> The answer is $41$.", False, "41"),
+        ][:n]
+
+    def decorative_teacher(payload):
+        # has a meta block + ends correct, but NO independent-check cue: it just
+        # asserts "confidence high, answer correct" and restates the answer.
+        return (
+            "<|meta|>\nconfidence: 0.75\n"
+            "Confidence is high and the answer is correct.\n<|/meta|>\n"
+            "The answer is $42$."
+        )
+
+    summary = build_dataset(
+        problems=prob, rollout_fn=rollout, teacher_fn=decorative_teacher,
+        out_path=str(out), n_rollouts=4,
+    )
+    assert summary["kept_verify"] == 0
+    assert summary["dropped_decorative_verify"] == 1
+
+
+def test_verify_that_catches_a_wrong_attempt_is_kept_as_catch(tmp_path: Path):
+    out = tmp_path / "verify_catch.parquet"
+    prob = [{
+        "question": "VC checkable medium",
+        "gold": "42",
+        "tags": {"difficulty": "medium", "scenario": "verify", "trigger": "t"},
+    }]
+
+    def rollout(question, gold, n):  # 3/4 -> verify bucket, anchor on the WRONG slip
+        return [
+            ("<think>a</think> The answer is $42$.", True, "42"),
+            ("<think>b</think> The answer is $42$.", True, "42"),
+            ("<think>c</think> The answer is $42$.", True, "42"),
+            ("<think>slip is 41</think> The answer is $41$.", False, "41"),
+        ][:n]
+
+    def catch_teacher(payload):
+        # anchored on the wrong slip (control = the raw attempt, is_correct=False),
+        # the teacher independently re-derives and CORRECTS to 42.
+        return (
+            "<|meta|>\nconfidence: 0.75\n"
+            "Substituting back shows the slip; re-derive.\n<|/meta|>\n"
+            "Re-deriving gives 42, not 41. The answer is $42$."
+        )
+
+    summary = build_dataset(
+        problems=prob, rollout_fn=rollout, teacher_fn=catch_teacher,
+        out_path=str(out), n_rollouts=4,
+    )
+    assert summary["kept_verify"] == 1
+    assert summary["verify_catch"] == 1
+    assert summary["verify_confirm"] == 0
+
+
+def test_verify_on_already_correct_control_is_kept_only_as_confirm(tmp_path: Path):
+    """When the drawn samples carry no usable WRONG attempt, the verify anchors on
+    the (correct) majority attempt. The control (that raw correct attempt) is
+    already right, so this can only be credited as a no-harm CONFIRM — and only
+    if the trace really performs the independent check."""
+    out = tmp_path / "verify_confirm.parquet"
+    prob = [{
+        "question": "CF checkable medium",
+        "gold": "42",
+        "tags": {"difficulty": "medium", "scenario": "verify", "trigger": "t"},
+    }]
+
+    def rollout(question, gold, n):
+        # high-conf bucket, but the only wrong sample has no usable text -> anchor
+        # falls back to the (correct) majority attempt => control already correct.
+        return [
+            ("<think>maj solve</think> The answer is $42$.", True, "42"),
+            ("<think>maj solve</think> The answer is $42$.", True, "42"),
+            ("<think>maj solve</think> The answer is $42$.", True, "42"),
+            ("   ", False, "41"),
+        ][:n]
+
+    def confirm_teacher(payload):
+        return (
+            "<|meta|>\nconfidence: 0.75\n"
+            "Substitute back to confirm independently.\n<|/meta|>\n"
+            "Substitution confirms it. The answer is $42$."
+        )
+
+    summary = build_dataset(
+        problems=prob, rollout_fn=rollout, teacher_fn=confirm_teacher,
+        out_path=str(out), n_rollouts=4,
+    )
+    assert summary["kept_verify"] == 1
+    assert summary["verify_confirm"] == 1
+    assert summary["verify_catch"] == 0
+
+
+def test_verify_confirm_without_real_check_is_dropped(tmp_path: Path):
+    """A confirm-case verify (control already correct) that does NOT really check
+    (just restates) is decorative and dropped even though it ends correct."""
+    out = tmp_path / "confirm_no_check.parquet"
+    prob = [{
+        "question": "CN checkable medium",
+        "gold": "42",
+        "tags": {"difficulty": "medium", "scenario": "verify", "trigger": "t"},
+    }]
+
+    def rollout(question, gold, n):
+        return [
+            ("<think>maj</think> The answer is $42$.", True, "42"),
+            ("<think>maj</think> The answer is $42$.", True, "42"),
+            ("<think>maj</think> The answer is $42$.", True, "42"),
+            ("   ", False, "41"),
+        ][:n]
+
+    def no_check_teacher(payload):
+        return (
+            "<|meta|>\nconfidence: 0.75\n"
+            "Answer looks correct, confidence high.\n<|/meta|>\n"
+            "The answer is $42$."
+        )
+
+    summary = build_dataset(
+        problems=prob, rollout_fn=rollout, teacher_fn=no_check_teacher,
+        out_path=str(out), n_rollouts=4,
+    )
+    assert summary["kept_verify"] == 0
+    assert summary["dropped_decorative_verify"] == 1
 
 
 def test_redirect_without_switch_is_dropped(tmp_path: Path):
