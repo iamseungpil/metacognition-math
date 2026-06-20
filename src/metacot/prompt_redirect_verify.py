@@ -12,16 +12,18 @@ produces an on-distribution demo that
     recheck) for high-conf attempts,
   - and finishes correctly with a final \\boxed{} answer.
 
-The <|meta|>/<|/meta|>/`confidence:`/<|switch|> format mirrors
+The <|meta|>/<|/meta|>/`confidence:`/`decision:` format mirrors
 ``prompt_behavior.py`` and ``prompt_control_v4.py`` so the resulting demos
-assemble into the v8 SFT parquet format unchanged.
+assemble into the v8 SFT parquet format unchanged. The redirect-vs-verify choice
+is a TEXT field ``decision: redirect`` / ``decision: verify`` INSIDE the meta
+block (no special vocab token): causality is measured by ablating the whole meta
+block + the wrong->right flip, not by banning a token.
 
 Pure string builders: no network, no GPU. The TRAPI call happens elsewhere.
 """
 
 META_START = "<|meta|>"
 META_END = "<|/meta|>"
-SWITCH_TOKEN = "<|switch|>"
 
 
 TEACHER_DISTILL_SYSTEM_PROMPT = f"""\
@@ -38,17 +40,18 @@ Hard rules:
 1. Always reach the correct result and end with a final \\boxed{{answer}}.
 2. Use a {META_START} ... {META_END} block only when it changes behavior or
    checks behavior. Every meta block must contain an explicit `confidence: 0.xx`
-   line whose value is approximately the given student confidence.
+   line (approximately the given student confidence) AND an explicit
+   `decision: redirect` or `decision: verify` line stating the action taken.
 3. No decorative or filler meta. Never write fake doubt, "let me think again",
    or any meta that does not lead to a concrete action.
 4. The confidence you state is the STUDENT's measured confidence, not your own,
    and you must not inflate it above the value you were given.
 5. Meta text is natural language. Do not dump rigid templates like
    `trigger:`/`confidence_before:`/`confidence_after:`.
-6. A redirect demo is only valid if the later reasoning genuinely uses a
-   DIFFERENT method (marked with a {SWITCH_TOKEN} decision), not a rephrasing.
-7. A verify demo must perform a truly INDEPENDENT check (substitution or
-   recomputation by another route), then confirm or correct the answer.
+6. A redirect demo is only valid if it states `decision: redirect` AND the later
+   reasoning genuinely uses a DIFFERENT method, not a rephrasing.
+7. A verify demo states `decision: verify` and performs a truly INDEPENDENT check
+   (substitution or recomputation by another route), then confirms or corrects.
 """
 
 
@@ -60,7 +63,8 @@ existing line of work to its natural conclusion WITHOUT any metacognition.
 Hard rules:
 1. Continue the student's existing approach exactly as it was going. Use the
    SAME method/route the student already chose, even if it looks flawed.
-2. Do NOT open a meta block. Never write <|meta|>, `confidence:`, or <|switch|>.
+2. Do NOT open a meta block. Never write <|meta|>, `confidence:`, or
+   `decision:`. Do NOT switch method.
 3. Do NOT switch to a different method, do NOT backtrack, do NOT second-guess.
    No "wait", no "let me reconsider" — just keep going on the current route.
 4. Do not silently fix the student's mistakes. If the route leads to a wrong
@@ -92,8 +96,8 @@ def build_redirect_demo_prompt(problem: str, student_wrong_prefix: str, conf: fl
 
     The teacher continues FROM the student's wrong prefix, detects the path is
     weak, states confidence ~= ``conf`` (the student's measured value, low /
-    confidently-wrong), emits a {SWITCH_TOKEN} to a genuinely different method,
-    and solves correctly with \\boxed{{}}.
+    confidently-wrong), writes ``decision: redirect`` and switches to a genuinely
+    different method, and solves correctly with \\boxed{{}}.
 
     Returns chat messages ``[system, user]``.
     """
@@ -121,8 +125,8 @@ Write the continuation as a demonstration:
 2. Open a {META_START} ... {META_END} block. State `confidence: {c}` and, in
    natural language, diagnose the concrete reason the current route is weak
    (e.g. a failed substitution, a contradiction, an unsupported assumption).
-3. Inside the meta block, decide to switch: emit {SWITCH_TOKEN} and name a
-   genuinely different method (a different strategy, not a rephrasing).
+3. Inside the meta block, write the line `decision: redirect` and name a
+   genuinely different method to switch to (a different strategy, not a rephrasing).
 4. After the meta block, solve the problem correctly using that different method
    and end with the final \\boxed{{answer}}.
 
@@ -139,8 +143,8 @@ def build_control_continuation_prompt(problem: str, student_wrong_prefix: str):
     This is the counterfactual baseline that makes ``redirect_ok and not
     control_ok`` falsifiable: the teacher CONTINUES the student's wrong prefix
     using the SAME flawed approach, with NO meta block, NO ``confidence:`` line,
-    NO {SWITCH_TOKEN}, and no method switch — carrying the (likely wrong) route
-    to its natural conclusion. If this control STILL recovers, the problem was
+    NO ``decision:`` line, and no method switch — carrying the (likely wrong)
+    route to its natural conclusion. If this control STILL recovers, the problem was
     self-recovering and the redirect demo is not credited.
 
     Uses ``CONTROL_CONTINUATION_SYSTEM_PROMPT`` (NOT the distill 'always end
@@ -166,7 +170,7 @@ Continue this SAME approach to its natural conclusion:
 1. Stay on the student's current route/method. Do NOT switch methods, do NOT
    backtrack, do NOT reconsider.
 2. Do NOT open a {META_START} block, do NOT write a `confidence:` line, and do
-   NOT emit {SWITCH_TOKEN}.
+   NOT write a `decision:` line.
 3. Finish with a final \\boxed{{answer}} that follows from this same approach,
    even if that approach leads to a wrong answer.
 """
@@ -205,9 +209,9 @@ self-consistency value, NOT your own confidence. Report it at about {c} and do
 not inflate it above {c}.
 
 Write the demonstration:
-1. Open a {META_START} ... {META_END} block. State `confidence: {c}` and explain,
-   in natural language, that the answer looks right but must not be committed
-   without an INDEPENDENT check.
+1. Open a {META_START} ... {META_END} block. State `confidence: {c}`, write the
+   line `decision: verify`, and explain in natural language that the answer looks
+   right but must not be committed without an INDEPENDENT check.
 2. Perform a truly independent verification: substitute the candidate value back
    into the original problem, or recompute the answer by a different route. Do
    not simply repeat the same steps.

@@ -132,16 +132,16 @@ def _mock_teacher(payload: dict):
     if q.startswith("P1"):
         if arm == "redirect":
             return (
-                "<|meta|>\nconfidence: 0.25\n"
+                "<|meta|>\nconfidence: 0.25\ndecision: redirect\n"
                 "Something is off; I will switch to a different method.\n"
-                "<|switch|>\n<|/meta|>\n"
+                "<|/meta|>\n"
                 "Using the right method now. The answer is $7$."
             )
         if arm == "control":  # no-redirect control stays WRONG
             return "Continuing the same way. The answer is $3$."
     if q.startswith("P2") and arm == "verify":
         return (
-            "<|meta|>\nconfidence: 0.85\n"
+            "<|meta|>\nconfidence: 0.85\ndecision: verify\n"
             "This looks right; I will substitute to verify.\n"
             "<|/meta|>\n"
             "Substituting confirms it. The answer is $42$."
@@ -149,8 +149,8 @@ def _mock_teacher(payload: dict):
     if q.startswith("P4"):
         if arm == "redirect":  # teacher ALSO fails -> decorative, must be dropped
             return (
-                "<|meta|>\nconfidence: 0.2\n"
-                "Switching method.\n<|switch|>\n<|/meta|>\n"
+                "<|meta|>\nconfidence: 0.2\ndecision: redirect\n"
+                "Switching method.\n<|/meta|>\n"
                 "The answer is $8$."
             )
         if arm == "control":
@@ -267,8 +267,8 @@ def test_perfect_problem_is_not_a_decorative_verify(tmp_path: Path):
 
 def test_verify_without_real_check_is_dropped(tmp_path: Path):
     """A verify trace that ends correct but has NO meta block (no actual check)
-    is decorative and must be dropped (correctness alone is gameable: the teacher
-    is told to always end correct)."""
+    is dropped. With no meta block it is fatally malformed (no confidence/decision)
+    so the meta-structure VALIDATE drops it as malformed before the check gate."""
     out = tmp_path / "hollow_verify.parquet"
     prob = [{
         "question": "HV checkable medium",
@@ -292,7 +292,7 @@ def test_verify_without_real_check_is_dropped(tmp_path: Path):
         out_path=str(out), n_rollouts=4,
     )
     assert summary["kept_verify"] == 0
-    assert summary["dropped_decorative_verify"] == 1
+    assert summary["dropped_malformed"] == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -321,7 +321,7 @@ def test_verify_is_anchored_on_a_real_wrong_student_attempt(tmp_path: Path):
         if payload["arm"] == "verify":
             seen["attempt"] = payload.get("wrong_prefix", "")
             return (
-                "<|meta|>\nconfidence: 0.75\n"
+                "<|meta|>\nconfidence: 0.75\ndecision: verify\n"
                 "Looks right but I must check; substitute back.\n<|/meta|>\n"
                 "Substituting recomputes 42. The answer is $42$."
             )
@@ -364,7 +364,7 @@ def test_verify_anchors_on_majority_when_no_wrong_sample_drawn(tmp_path: Path):
         if payload["arm"] == "verify":
             seen["attempt"] = payload.get("wrong_prefix", "")
             return (
-                "<|meta|>\nconfidence: 0.75\n"
+                "<|meta|>\nconfidence: 0.75\ndecision: verify\n"
                 "Substitute to verify.\n<|/meta|>\n"
                 "Recomputing confirms it. The answer is $42$."
             )
@@ -407,7 +407,7 @@ def test_decorative_verify_that_only_restates_answer_is_dropped(tmp_path: Path):
         # has a meta block + ends correct, but NO independent-check cue: it just
         # asserts "confidence high, answer correct" and restates the answer.
         return (
-            "<|meta|>\nconfidence: 0.75\n"
+            "<|meta|>\nconfidence: 0.75\ndecision: verify\n"
             "Confidence is high and the answer is correct.\n<|/meta|>\n"
             "The answer is $42$."
         )
@@ -440,7 +440,7 @@ def test_verify_that_catches_a_wrong_attempt_is_kept_as_catch(tmp_path: Path):
         # anchored on the wrong slip (control = the raw attempt, is_correct=False),
         # the teacher independently re-derives and CORRECTS to 42.
         return (
-            "<|meta|>\nconfidence: 0.75\n"
+            "<|meta|>\nconfidence: 0.75\ndecision: verify\n"
             "Substituting back shows the slip; re-derive.\n<|/meta|>\n"
             "Re-deriving gives 42, not 41. The answer is $42$."
         )
@@ -478,7 +478,7 @@ def test_verify_on_already_correct_control_is_kept_only_as_confirm(tmp_path: Pat
 
     def confirm_teacher(payload):
         return (
-            "<|meta|>\nconfidence: 0.75\n"
+            "<|meta|>\nconfidence: 0.75\ndecision: verify\n"
             "Substitute back to confirm independently.\n<|/meta|>\n"
             "Substitution confirms it. The answer is $42$."
         )
@@ -512,7 +512,7 @@ def test_verify_confirm_without_real_check_is_dropped(tmp_path: Path):
 
     def no_check_teacher(payload):
         return (
-            "<|meta|>\nconfidence: 0.75\n"
+            "<|meta|>\nconfidence: 0.75\ndecision: verify\n"
             "Answer looks correct, confidence high.\n<|/meta|>\n"
             "The answer is $42$."
         )
@@ -525,9 +525,12 @@ def test_verify_confirm_without_real_check_is_dropped(tmp_path: Path):
     assert summary["dropped_decorative_verify"] == 1
 
 
-def test_redirect_without_switch_is_dropped(tmp_path: Path):
-    """A redirect trace that flips wrong->right but never switches method (no
-    <|switch|>) is decorative recovery, not a redirect, and must be dropped."""
+def test_redirect_without_decision_redirect_is_dropped(tmp_path: Path):
+    """A redirect-bucket trace that flips wrong->right but does NOT carry
+    'decision: redirect' (it never decided to redirect / switch method) is
+    decorative recovery, not a redirect, and must be dropped. It carries a valid
+    'decision: verify' so it passes meta-structure validation and is dropped by
+    the redirect keep-gate, not as malformed."""
     out = tmp_path / "hollow_redirect.parquet"
     prob = [{
         "question": "HR low easy",
@@ -541,9 +544,10 @@ def test_redirect_without_switch_is_dropped(tmp_path: Path):
     def no_switch_teacher(payload):
         if payload["arm"] == "control":
             return "Same way. The answer is $1$."
-        # redirect arm: correct + a confidence line but NO <|switch|> method change
+        # redirect arm: correct + a confidence line but the meta DECIDED 'verify',
+        # not 'redirect' -> no real redirect decision -> dropped (not malformed).
         return (
-            "<|meta|>\nconfidence: 0.1\nLooks weak.\n<|/meta|>\n"
+            "<|meta|>\nconfidence: 0.1\ndecision: verify\nLooks weak.\n<|/meta|>\n"
             "The answer is $7$."
         )
 
@@ -577,7 +581,7 @@ def test_always_correct_control_yields_zero_kept_redirects(tmp_path: Path):
             return "Continuing. The answer is $7$."
         # genuine redirect that flips wrong->right and states the right confidence
         return (
-            "<|meta|>\nconfidence: 0.0\nWeak route; switching.\n<|switch|>\n<|/meta|>\n"
+            "<|meta|>\nconfidence: 0.0\ndecision: redirect\nWeak route; switching.\n<|/meta|>\n"
             "Now correct. The answer is $7$."
         )
 
@@ -607,7 +611,7 @@ def test_genuinely_wrong_control_keeps_the_redirect(tmp_path: Path):
         if payload["arm"] == "control":
             return "Continuing the same way. The answer is $1$."  # stays wrong
         return (
-            "<|meta|>\nconfidence: 0.0\nWeak route; switching.\n<|switch|>\n<|/meta|>\n"
+            "<|meta|>\nconfidence: 0.0\ndecision: redirect\nWeak route; switching.\n<|/meta|>\n"
             "Now correct. The answer is $7$."
         )
 
@@ -637,7 +641,7 @@ def test_control_arm_drawn_k_times(tmp_path: Path):
             control_samples.append(payload.get("sample"))
             return "Same way. The answer is $1$."
         return (
-            "<|meta|>\nconfidence: 0.0\nSwitching.\n<|switch|>\n<|/meta|>\n"
+            "<|meta|>\nconfidence: 0.0\ndecision: redirect\nSwitching.\n<|/meta|>\n"
             "The answer is $7$."
         )
 
@@ -668,9 +672,9 @@ def test_inflated_stated_confidence_is_dropped(tmp_path: Path):
     def inflated_teacher(payload):
         if payload["arm"] == "control":
             return "Same way. The answer is $1$."
-        # flips to right + a real switch, BUT states an INFLATED 0.90 confidence
+        # flips to right + a real redirect decision, BUT states INFLATED 0.90 conf
         return (
-            "<|meta|>\nconfidence: 0.90\nSwitching.\n<|switch|>\n<|/meta|>\n"
+            "<|meta|>\nconfidence: 0.90\ndecision: redirect\nSwitching.\n<|/meta|>\n"
             "The answer is $7$."
         )
 
@@ -696,9 +700,10 @@ def test_missing_stated_confidence_is_dropped(tmp_path: Path):
     def no_conf_teacher(payload):
         if payload["arm"] == "control":
             return "Same way. The answer is $1$."
-        # real switch + flips, but NO `confidence:` line in the meta block
+        # decides redirect + flips, but NO `confidence:` line in the meta block ->
+        # the meta-structure VALIDATE drops it as malformed (missing confidence).
         return (
-            "<|meta|>\nSwitching to a better method.\n<|switch|>\n<|/meta|>\n"
+            "<|meta|>\ndecision: redirect\nSwitching to a better method.\n<|/meta|>\n"
             "The answer is $7$."
         )
 
@@ -707,7 +712,69 @@ def test_missing_stated_confidence_is_dropped(tmp_path: Path):
         out_path=str(out), n_rollouts=4,
     )
     assert summary["kept_redirect"] == 0
-    assert summary["dropped_conf_mismatch"] == 1
+    assert summary["dropped_malformed"] == 1
+
+
+def test_redirect_with_broken_close_tag_is_repaired_and_kept(tmp_path: Path):
+    """A real teacher demo that closed the meta block with '</|meta|>' (instead of
+    '<|/meta|>') must be REPAIRED by normalize_meta_format and KEPT, not dropped by
+    the strict structural checker. This is the inspect-and-substitute filter."""
+    out = tmp_path / "repaired_redirect.parquet"
+    prob = [{
+        "question": "RP low easy",
+        "gold": "7",
+        "tags": {"difficulty": "easy", "scenario": "redirect", "trigger": "t"},
+    }]
+
+    def rollout(question, gold, n):  # all wrong -> redirect bucket, conf 0.0
+        return [("<think>wrong</think> The answer is $1$.", False, "1") for _ in range(n)]
+
+    def broken_close_teacher(payload):
+        if payload["arm"] == "control":
+            return "Same way. The answer is $1$."
+        # BROKEN close tag '</|meta|>' that the strict regex would DROP.
+        return (
+            "<|meta|>\nconfidence: 0.0\ndecision: redirect\nWeak; switching.\n</|meta|>\n"
+            "Now correct. The answer is $7$."
+        )
+
+    summary = build_dataset(
+        problems=prob, rollout_fn=rollout, teacher_fn=broken_close_teacher,
+        out_path=str(out), n_rollouts=4,
+    )
+    assert summary["kept_redirect"] == 1
+    assert summary["repaired"] >= 1
+    df = pd.read_parquet(out)
+    assistant = json.loads(df.iloc[0]["messages"])[1]["content"]
+    # the persisted demo carries the CANONICAL close tag, not the broken one.
+    assert "<|/meta|>" in assistant
+    assert "</|meta|>" not in assistant
+
+
+def test_fatally_malformed_demo_is_dropped_as_malformed(tmp_path: Path):
+    """A redirect demo with NO meta block at all (unrepairable) is dropped and
+    counted as malformed (not as a structural/causal drop)."""
+    out = tmp_path / "malformed.parquet"
+    prob = [{
+        "question": "MF low easy",
+        "gold": "7",
+        "tags": {"difficulty": "easy", "scenario": "redirect", "trigger": "t"},
+    }]
+
+    def rollout(question, gold, n):
+        return [("<think>wrong</think> The answer is $1$.", False, "1") for _ in range(n)]
+
+    def no_meta_teacher(payload):
+        if payload["arm"] == "control":
+            return "Same way. The answer is $1$."
+        return "Now correct. The answer is $7$."  # NO meta block at all
+
+    summary = build_dataset(
+        problems=prob, rollout_fn=rollout, teacher_fn=no_meta_teacher,
+        out_path=str(out), n_rollouts=4,
+    )
+    assert summary["kept_redirect"] == 0
+    assert summary["dropped_malformed"] == 1
 
 
 def test_stated_conf_matches_helper():

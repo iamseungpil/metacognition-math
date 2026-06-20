@@ -50,8 +50,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import re
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,10 +61,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.build_v8_strict_paired_data import META_BLOCK_RE, dump_messages
-from src.metacot.prompt_redirect_verify import SWITCH_TOKEN
+from src.data.meta_format import normalize_meta_format, validate_meta_structure
 from scripts.harvest_redirect_cf import splice_index, lower_ci_diff
 from src.training.rewards import _check_correctness
-from src.training.segment_loss_mask import redirect_train_spans
+# NOTE: the TOKEN loss-mask spans (src.training.segment_loss_mask.redirect_train_spans)
+# are recomputed by the SFT collator from the persisted wrong_prefix + prefix_split_char,
+# NOT here — so this driver does not import/call redirect_train_spans (it would be dead).
 # SINGLE SOURCE OF TRUTH for the confidence thresholds + the action bucket.
 # This driver does NOT re-declare its own (previously divergent) CONF_LOW=0.45 /
 # CONF_HIGH=0.65; it imports the canonical values + the bucketer from
@@ -84,6 +88,17 @@ BUCKET_REDIRECT = "redirect"
 BUCKET_VERIFY = "verify"
 BUCKET_NONE = "none"
 
+# Map a SHARED-acceptance drop reason -> the build_dataset summary counter key.
+# (sample_generate uses the bare reason strings; build_dataset keeps the longer
+# 'dropped_*' names its tests assert on.)
+_DROP_SUMMARY_KEY = {
+    "malformed": "dropped_malformed",
+    "decorative": "dropped_decorative",
+    "decorative_verify": "dropped_decorative_verify",
+    "conf_mismatch": "dropped_conf_mismatch",
+    "control_recovers": "dropped_control_recovers",
+}
+
 # Anchor only on on-distribution difficulties (teacher capability-gap on hard).
 ANCHOR_DIFFICULTIES = {"easy", "medium"}
 
@@ -103,12 +118,15 @@ CONF_STATED_TOL = 0.15
 # `confidence: 0.xx` extractor (mirrors harvest_redirect_cf._CONF_RE).
 _CONF_LINE_RE = re.compile(r"confidence:\s*([0-9]*\.?[0-9]+)", re.IGNORECASE)
 
+# `decision: redirect|verify` extractor (the TEXT field that replaced <|switch|>).
+_DECISION_LINE_RE = re.compile(r"decision:\s*([A-Za-z]+)", re.IGNORECASE)
+
 # Independent-check cue for the VERIFY causal filter. A genuine verify performs an
 # INDEPENDENT check — substitute the candidate back, recompute by another route,
 # or re-derive — rather than merely restating "confidence high, answer correct".
 # The meta block must carry one of these cues; a decorative verify that only
 # asserts the answer is right (no check word) is dropped (symmetric to the
-# redirect filter, which requires a real <|switch|>, not a decorative conf line).
+# redirect filter, which requires a real `decision: redirect`, not a bare conf line).
 _VERIFY_CHECK_RE = re.compile(
     r"\b(substitut\w*|plug\w*\s+back|plug\w*\s+in|recomput\w*|recheck\w*|"
     r"re-?check\w*|re-?deriv\w*|re-?work\w*|cross-?check\w*|"
@@ -124,8 +142,8 @@ def _has_independent_check_cue(text: str) -> bool:
     the stated confidence): a substitution / recompute / re-derive / cross-check
     cue. A trace that just says 'confidence high, answer correct' has no cue and
     is decorative -> dropped. This is the verify analog of requiring a real
-    <|switch|> for redirect (correctness alone is gameable: the teacher is told
-    to always end correct)."""
+    `decision: redirect` for redirect (correctness alone is gameable: the teacher
+    is told to always end correct)."""
     if not text:
         return False
     m = META_BLOCK_RE.search(text)
@@ -142,6 +160,20 @@ def _has_meta_block(text: str) -> bool:
     accepted as a 'verify' demo (correctness alone is gameable — the teacher is
     told to always end correct)."""
     return bool(text) and bool(META_BLOCK_RE.search(text))
+
+
+def _meta_decision(text: str):
+    """Parse the `decision: redirect|verify` text field from the meta block, or
+    None. Reads only INSIDE the <|meta|>...<|/meta|> block (the TEXT field that
+    replaced the old <|switch|> token); a stray 'decision:' in the recovery prose
+    does not count. Returns the lower-cased value, else None."""
+    if not text:
+        return None
+    m = META_BLOCK_RE.search(text)
+    if not m:
+        return None
+    dm = _DECISION_LINE_RE.search(m.group(1))
+    return dm.group(1).lower() if dm else None
 
 
 def _stated_confidence(text: str):
@@ -218,6 +250,22 @@ def _teacher_payload(question, gold, confidence, bucket, arm, wrong_prefix):
         "arm": arm,
         "wrong_prefix": wrong_prefix,
     }
+
+
+def _draw_control_grades(teacher_fn, question, gold, confidence, wrong_prefix):
+    """Draw the no-redirect CONTROL arm: CONTROL_K samples that CONTINUE the SAME
+    flawed approach (arm='control', NO meta/switch), graded vs gold. The per-sample
+    index perturbs the teacher seed so the k draws are independent. Returns the list
+    of CONTROL_K correctness ints — the counterfactual the causal filter compares
+    redirect against. Shared by build_dataset AND sample_generate (one loop, not two)."""
+    grades = []
+    for k in range(CONTROL_K):
+        ctrl_text = teacher_fn(
+            _teacher_payload(question, gold, confidence, BUCKET_REDIRECT, "control", wrong_prefix)
+            | {"sample": k}
+        )
+        grades.append(1 if _check_correctness(ctrl_text, gold) else 0)
+    return grades
 
 
 # Final-answer / boxed line stripped off the tail before splicing so the wrong
@@ -362,6 +410,97 @@ def _build_messages(question: str, wrong_prefix: str, teacher_text: str, bucket:
 
 
 # --------------------------------------------------------------------------- #
+# SHARED acceptance filters (one source of truth for build_dataset AND
+# sample_generate — the normalize -> validate -> structural/causal gate).
+# Each returns an Outcome(row, reason, repaired, calibration_ok):
+#   * row != None  -> KEPT (reason is the keep kind: 'redirect'|'verify_catch'|
+#                     'verify_confirm'); else dropped (reason is the drop bucket).
+#   * repaired     -> normalize_meta_format changed the text (close-tag repair).
+#   * calibration_ok -> the STATED confidence matched the student's MEASURED value
+#                     (tracked even on drops so quality_report can report it).
+# --------------------------------------------------------------------------- #
+class _Outcome:
+    __slots__ = ("row", "reason", "repaired", "calibration_ok")
+
+    def __init__(self, row, reason, repaired, calibration_ok):
+        self.row = row
+        self.reason = reason
+        self.repaired = repaired
+        self.calibration_ok = calibration_ok
+
+
+def _normalize_and_validate(raw_text):
+    """Shared step (3.5): repair repairable close-tag variants, then validate.
+    Returns ``(text, repaired_bool, ok_struct)``."""
+    text = normalize_meta_format(raw_text)
+    repaired = text != raw_text
+    ok_struct, _reason = validate_meta_structure(text)
+    return text, repaired, ok_struct
+
+
+def _accept_redirect_demo(question, gold, confidence, wrong_prefix,
+                          raw_redirect, control_grades):
+    """Shared REDIRECT acceptance (structure + causality + calibration).
+
+    ``control_grades`` is the list of CONTROL-arm correctness ints (the no-redirect
+    counterfactual); the caller draws them so this function stays pure of the
+    teacher. Returns an ``_Outcome``; on keep, ``row`` is the assembled SFT row."""
+    redirect_text, repaired, ok_struct = _normalize_and_validate(raw_redirect)
+    cal_ok = stated_conf_matches(redirect_text, confidence)
+    if not ok_struct:
+        return _Outcome(None, "malformed", repaired, cal_ok)
+    # (a) a real redirect decision AND a wrong->right flip.
+    if not (_meta_decision(redirect_text) == "redirect"
+            and _check_correctness(redirect_text, gold)):
+        return _Outcome(None, "decorative", repaired, cal_ok)
+    # (b) STATED confidence must match the student's MEASURED value.
+    if not cal_ok:
+        return _Outcome(None, "conf_mismatch", repaired, cal_ok)
+    # (c) the no-redirect CONTROL must stay MAJORITY-wrong (lower-CI margin).
+    redirect_grades = [1] * len(control_grades)
+    if lower_ci_diff(redirect_grades, control_grades) < CONTROL_MARGIN:
+        return _Outcome(None, "control_recovers", repaired, cal_ok)
+    messages, _assistant = _build_messages(question, wrong_prefix, redirect_text,
+                                           BUCKET_REDIRECT)
+    row = {
+        "messages": messages,
+        "scenario": BUCKET_REDIRECT,
+        "confidence_label": float(confidence),
+        "wrong_prefix": wrong_prefix,
+        "prefix_split_char": len(wrong_prefix),
+    }
+    return _Outcome(row, "redirect", repaired, cal_ok)
+
+
+def _accept_verify_demo(question, gold, confidence, verify_attempt,
+                        control_correct, raw_verify):
+    """Shared VERIFY acceptance (symmetric to redirect). ``control_correct`` is the
+    correctness of the raw anchored attempt (the no-verify counterfactual): a wrong
+    attempt that the check corrects -> 'verify_catch'; an already-right attempt
+    -> 'verify_confirm'. Returns an ``_Outcome``."""
+    verify_text, repaired, ok_struct = _normalize_and_validate(raw_verify)
+    cal_ok = stated_conf_matches(verify_text, confidence)
+    if not ok_struct:
+        return _Outcome(None, "malformed", repaired, cal_ok)
+    # structure + correct final + a GENUINE independent-check cue.
+    if not (_has_meta_block(verify_text) and _check_correctness(verify_text, gold)
+            and _has_independent_check_cue(verify_text)):
+        return _Outcome(None, "decorative_verify", repaired, cal_ok)
+    if not cal_ok:
+        return _Outcome(None, "conf_mismatch", repaired, cal_ok)
+    messages, _assistant = _build_messages(question, "", verify_text, BUCKET_VERIFY)
+    row = {
+        "messages": messages,
+        "scenario": BUCKET_VERIFY,
+        "confidence_label": float(confidence),
+        "wrong_prefix": "",
+        "prefix_split_char": 0,
+    }
+    kind = "verify_confirm" if control_correct else "verify_catch"
+    return _Outcome(row, kind, repaired, cal_ok)
+
+
+# --------------------------------------------------------------------------- #
 # driver
 # --------------------------------------------------------------------------- #
 def build_dataset(
@@ -394,6 +533,8 @@ def build_dataset(
         "dropped_no_verify_attempt": 0,
         "dropped_control_recovers": 0,
         "dropped_conf_mismatch": 0,
+        "dropped_malformed": 0,
+        "repaired": 0,
     }
 
     for prob in problems:
@@ -435,54 +576,20 @@ def build_dataset(
                 summary["dropped_no_wrong_prefix"] += 1
                 continue
             # (3) TEACHER conditional redirect from the wrong prefix.
-            redirect_text = teacher_fn(
+            raw_redirect = teacher_fn(
                 _teacher_payload(question, gold, confidence, bucket, "redirect", wrong_prefix)
             )
-            # (4) CAUSAL FILTER (structure + confidence + causality):
-            # (a) a real method switch (a <|switch|> inside a meta block, not a
-            #     decorative confidence line that silently continues to the right
-            #     answer), and the trace must flip wrong->right;
-            redirect_ok = _check_correctness(redirect_text, gold)
-            has_switch = _has_meta_block(redirect_text) and (SWITCH_TOKEN in (redirect_text or ""))
-            if not (has_switch and redirect_ok):
-                summary["dropped_decorative"] += 1
-                continue
-            # (b) the STATED confidence must match the student's MEASURED value
-            #     (no inflated 0.90 on a pass_rate=0.10 redirect).
-            if not stated_conf_matches(redirect_text, confidence):
-                summary["dropped_conf_mismatch"] += 1
-                continue
-            # (c) the no-redirect CONTROL must stay MAJORITY-wrong. A single control
-            #     sample is noisy, so draw CONTROL_K samples (arm='control' ->
-            #     CONTROL-specific prompt that CONTINUES the same flawed approach,
-            #     NO meta / NO switch) and require redirect to beat the control
-            #     pass-rate by CONTROL_MARGIN on the lower 95% CI bound. With a
-            #     genuinely-wrong control this clears; with an 'always-correct'
-            #     control it never does (the filter is non-vacuous only then).
-            control_grades = []
-            for k in range(CONTROL_K):
-                ctrl_text = teacher_fn(
-                    _teacher_payload(question, gold, confidence, bucket, "control", wrong_prefix)
-                    | {"sample": k}
-                )
-                control_grades.append(1 if _check_correctness(ctrl_text, gold) else 0)
-            # redirect arm rate = 1.0 (it flipped to right, verified above).
-            redirect_grades = [1] * CONTROL_K
-            if lower_ci_diff(redirect_grades, control_grades) < CONTROL_MARGIN:
-                summary["dropped_control_recovers"] += 1
-                continue
-
-            messages, assistant = _build_messages(question, wrong_prefix, redirect_text, bucket)
-            # (5) LOSS-MASK the wrong prefix. We do NOT persist a CHAR mask as if it
-            # were a token mask (the old bug: a char-length mask applied at TOKEN
-            # positions could leave the bad prefix TRAINED). Instead carry the
-            # wrong_prefix text + split marker so the SFT collator recomputes the
-            # token mask with the REAL tokenizer via redirect_train_spans (which
-            # operates on TOKEN indices supplied at SFT time).
-            scenario = BUCKET_REDIRECT
-            wrong_prefix_text = wrong_prefix
-            prefix_split_char = len(wrong_prefix)
-            summary["kept_redirect"] += 1
+            # (3.5/4) The no-redirect CONTROL arm: draw CONTROL_K samples (arm=
+            # 'control' -> CONTINUE the same flawed approach, NO meta/switch) so the
+            # causal filter is non-vacuous. Drawn here because the SHARED acceptance
+            # helper stays pure of the teacher; the helper then runs normalize ->
+            # validate -> the structural/causal/calibration gate.
+            control_grades = _draw_control_grades(
+                teacher_fn, question, gold, confidence, wrong_prefix
+            )
+            outcome = _accept_redirect_demo(
+                question, gold, confidence, wrong_prefix, raw_redirect, control_grades
+            )
 
         else:  # BUCKET_VERIFY
             # (1') ANCHOR the verify demo on a REAL sampled student attempt (NOT
@@ -498,58 +605,42 @@ def build_dataset(
             # (3) TEACHER conditional verify, CONDITIONED on the real attempt
             # (passed via wrong_prefix; the real teacher_fn routes it into
             # build_verify_demo_prompt(question, attempt, confidence)).
-            verify_text = teacher_fn(
+            raw_verify = teacher_fn(
                 _teacher_payload(question, gold, confidence, bucket, "verify", verify_attempt)
             )
-            # (4) CAUSAL FILTER symmetric to redirect. Correctness alone is NOT a
-            # filter (the teacher is told to always end correct), so require:
-            #  (a) a structural verify step (a <|meta|> block) AND a correct final
-            #      answer, AND
-            #  (b) a GENUINE independent-check cue (substitution / recompute /
-            #      re-derive) in the meta block — drop a decorative verify that
-            #      only restates 'confidence high, answer correct'.
-            verify_ok = _check_correctness(verify_text, gold)
-            if not (_has_meta_block(verify_text) and verify_ok
-                    and _has_independent_check_cue(verify_text)):
-                summary["dropped_decorative_verify"] += 1
-                continue
-            # (4b) STATED confidence must match the student's MEASURED value.
-            if not stated_conf_matches(verify_text, confidence):
-                summary["dropped_conf_mismatch"] += 1
-                continue
-            # (4c) CAUSALITY: anchored on a WRONG attempt (control WRONG) and the
-            # verified trace is CORRECT -> the check causally CAUGHT the slip
-            # (verify_catch). Anchored on a CORRECT attempt (control already
-            # right) -> a no-harm CONFIRM (verify_confirm); it still had to pass
-            # the independent-check gate above, so a confirm that does not really
-            # check was already dropped.
-            if not control_correct:
-                summary["verify_catch"] += 1
-            else:
-                summary["verify_confirm"] += 1
-            messages, assistant = _build_messages(question, "", verify_text, bucket)
-            # verify: no wrong prefix -> train the whole assistant target (split=0).
-            scenario = BUCKET_VERIFY
-            wrong_prefix_text = ""
-            prefix_split_char = 0
+            outcome = _accept_verify_demo(
+                question, gold, confidence, verify_attempt, control_correct, raw_verify
+            )
+
+        # ----- shared bookkeeping: count repairs/drops, append a kept row. -----
+        if outcome.repaired:
+            summary["repaired"] += 1
+        if outcome.row is None:
+            summary[_DROP_SUMMARY_KEY[outcome.reason]] += 1
+            continue
+        if outcome.reason == BUCKET_REDIRECT:
+            summary["kept_redirect"] += 1
+        else:  # verify_catch | verify_confirm
+            summary[outcome.reason] += 1
             summary["kept_verify"] += 1
 
         tags.setdefault("difficulty", difficulty)
+        row = outcome.row
         kept_rows.append(
             {
-                "messages": dump_messages(messages),
-                "scenario": scenario,
-                "confidence_label": float(confidence),
+                "messages": dump_messages(row["messages"]),
+                "scenario": row["scenario"],
+                "confidence_label": row["confidence_label"],
                 # The SFT collator recomputes the TOKEN loss-mask from these with
                 # the real tokenizer (NOT a char mask masquerading as a token mask):
-                #   prefix_len = len(tokenize(wrong_prefix_text))
+                #   prefix_len = len(tokenize(wrong_prefix))
                 #   spans = redirect_train_spans(prompt_len, prefix_len, len(full_ids))
                 # so loss is masked on prompt+wrong_prefix and trained on
                 # meta+recovery. prefix_split_char is the CHAR boundary in the
                 # assistant string (a cheap split marker; the token boundary is
                 # recomputed, never assumed equal to this char index).
-                "wrong_prefix": wrong_prefix_text,
-                "prefix_split_char": int(prefix_split_char),
+                "wrong_prefix": row["wrong_prefix"],
+                "prefix_split_char": int(row["prefix_split_char"]),
                 "split_tags": json.dumps(tags, ensure_ascii=False),
             }
         )
@@ -568,6 +659,99 @@ def build_dataset(
 
 
 # --------------------------------------------------------------------------- #
+# sample-generate entry: run a hand-anchored (GPU-free) batch through the SAME
+# normalize -> validate -> structural/causal filter as build_dataset, and report
+# the demo QUALITY. Lets us inspect a small real-teacher batch before the full run.
+# --------------------------------------------------------------------------- #
+def sample_generate(anchors, teacher_fn):
+    """Generate + filter teacher demos for hand-anchored cases (no student rollout).
+
+    ``anchors`` is a list of dicts:
+        {problem, gold, wrong_prefix, conf, difficulty, action}
+      * action == 'redirect' -> wrong_prefix is the student's WRONG prefix; draws
+        the redirect arm + CONTROL_K control arms and runs ``_accept_redirect_demo``.
+      * action == 'verify'   -> wrong_prefix is the student's ATTEMPT; runs the
+        verify arm + ``_accept_verify_demo``. The anchor may carry
+        ``control_correct`` (default False = the attempt is a slip the check catches).
+
+    Shares the SAME filter helpers as ``build_dataset`` (no duplicated logic).
+    Returns ``(kept_rows, quality_report)`` where each kept row carries the LIST
+    ``messages`` (not a JSON dump) + scenario + confidence_label + wrong_prefix +
+    prefix_split_char, and ``quality_report`` has::
+
+        functional_rate     kept / n_demos (anchors that produced a teacher demo)
+        format_repaired_rate demos whose meta-format needed repair / n_demos
+        calibration_ok_rate  demos whose STATED conf matched the anchor conf / n_demos
+        n_redirect, n_verify kept counts by scenario
+        n_dropped_by_reason  {reason: count} over dropped demos
+    """
+    kept_rows = []
+    n_demos = 0
+    n_repaired = 0
+    n_cal_ok = 0
+    n_redirect = 0
+    n_verify = 0
+    dropped = {}
+
+    for a in anchors:
+        problem = a["problem"]
+        gold = a["gold"]
+        conf = float(a["conf"])
+        wrong_prefix = a["wrong_prefix"]
+        action = a["action"]
+
+        if action == BUCKET_REDIRECT:
+            raw = teacher_fn(
+                _teacher_payload(problem, gold, conf, BUCKET_REDIRECT, "redirect", wrong_prefix)
+            )
+            control_grades = _draw_control_grades(
+                teacher_fn, problem, gold, conf, wrong_prefix
+            )
+            outcome = _accept_redirect_demo(
+                problem, gold, conf, wrong_prefix, raw, control_grades
+            )
+        elif action == BUCKET_VERIFY:
+            raw = teacher_fn(
+                _teacher_payload(problem, gold, conf, BUCKET_VERIFY, "verify", wrong_prefix)
+            )
+            outcome = _accept_verify_demo(
+                problem, gold, conf, wrong_prefix,
+                bool(a.get("control_correct", False)), raw,
+            )
+        else:
+            raise ValueError(f"anchor action must be redirect|verify, got {action!r}")
+
+        n_demos += 1
+        if outcome.repaired:
+            n_repaired += 1
+        if outcome.calibration_ok:
+            n_cal_ok += 1
+        if outcome.row is None:
+            dropped[outcome.reason] = dropped.get(outcome.reason, 0) + 1
+            continue
+        if outcome.reason == BUCKET_REDIRECT:
+            n_redirect += 1
+        else:
+            n_verify += 1
+        kept_rows.append(outcome.row)
+
+    def _rate(num):
+        return (num / n_demos) if n_demos else 0.0
+
+    report = {
+        "n_demos": n_demos,
+        "n_kept": len(kept_rows),
+        "n_redirect": n_redirect,
+        "n_verify": n_verify,
+        "functional_rate": _rate(len(kept_rows)),
+        "format_repaired_rate": _rate(n_repaired),
+        "calibration_ok_rate": _rate(n_cal_ok),
+        "n_dropped_by_reason": dropped,
+    }
+    return kept_rows, report
+
+
+# --------------------------------------------------------------------------- #
 # real wiring (vLLM student rollout + TRAPI teacher) — not unit-tested
 # --------------------------------------------------------------------------- #
 def _real_rollout_fn(model_path):  # pragma: no cover - GPU
@@ -580,31 +764,121 @@ def _real_rollout_fn(model_path):  # pragma: no cover - GPU
     )
 
 
-def _real_teacher_fn():  # pragma: no cover - network
-    """Build a TRAPI-backed teacher_fn using generator.get_trapi_client (gpt-5.4).
+# Default TRAPI model fallback list (gpt-5.5 -> 404 not-deployed; gpt-5.4 ->
+# sometimes 503; gpt-5.4-mini works). Tried in order on 404/503/health errors.
+TRAPI_MODEL_FALLBACK = [
+    "gpt-5.4-mini_2026-03-17",
+    "gpt-5.3-chat_2026-03-03",
+    "gpt-5.4_2026-03-05",
+]
 
-    Branch the SYSTEM PROMPT on ``payload['arm']``:
-      * arm == 'redirect' -> prompt_redirect_verify.build_redirect_demo_prompt(
-          question, wrong_prefix, confidence)   (distill 'always end correct' + switch)
-      * arm == 'verify'   -> prompt_redirect_verify.build_verify_demo_prompt(
-          question, attempt, confidence) where ``attempt = payload['wrong_prefix']``
-          is the REAL sampled student attempt the verify is anchored on (a wrong
-          slip when available, else the majority attempt) — NOT the empty string.
-      * arm == 'control'  -> prompt_redirect_verify.build_control_continuation_prompt(
-          question, wrong_prefix)               (CONTINUE the same flawed approach,
-          NO meta, NO <|switch|>, do NOT switch method; uses
-          CONTROL_CONTINUATION_SYSTEM_PROMPT, NOT the 'always end correct' prompt —
-          this is what makes the causal filter falsifiable). For the control arm,
-          vary the sampling seed/temperature by ``payload['sample']`` so the k>=4
-          control draws are independent (the build driver requires the control to
-          be MAJORITY-wrong by a lower-CI margin).
-    """
-    raise NotImplementedError(
-        "Wire generator.get_trapi_client(model='gpt-5.4_2026-03-05'); branch the "
-        "SYSTEM PROMPT on payload['arm']: redirect=build_redirect_demo_prompt, "
-        "verify=build_verify_demo_prompt, control=build_control_continuation_prompt "
-        "(SAME flawed approach, NO meta/switch); vary control seed by payload['sample']."
+# Errors that mean "this MODEL is unavailable" -> advance the fallback list.
+_MODEL_UNAVAILABLE = ("404", "503", "not deployed", "not found", "unavailable")
+# Errors that mean "transient, retry the SAME model with backoff".
+_TRANSIENT = ("429", "403", "rate", "timeout", "500", "502")
+
+
+def _trapi_client_factory():  # pragma: no cover - network/credential
+    """Construct the AzureOpenAI TRAPI client via ENTRA (no static token):
+    ChainedTokenCredential(AzureCli, ManagedIdentity) -> bearer provider for
+    'api://trapi/.default'. Mirrors bestiary scripts/trapi_openai_proxy.py."""
+    from openai import AzureOpenAI
+    from azure.identity import (
+        AzureCliCredential,
+        ManagedIdentityCredential,
+        ChainedTokenCredential,
+        get_bearer_token_provider,
     )
+
+    cred = ChainedTokenCredential(AzureCliCredential(), ManagedIdentityCredential())
+    tp = get_bearer_token_provider(cred, "api://trapi/.default")
+    return AzureOpenAI(
+        azure_endpoint="https://trapi.research.microsoft.com/gcr/shared",
+        azure_ad_token_provider=tp,
+        api_version="2025-04-01-preview",
+    )
+
+
+def _arm_messages(payload):
+    """Build the chat messages for the teacher call, branching on payload['arm']:
+      * redirect -> build_redirect_demo_prompt(question, wrong_prefix, confidence)
+      * verify   -> build_verify_demo_prompt(question, attempt, confidence)
+                    (attempt = payload['wrong_prefix'], the REAL anchored attempt)
+      * control  -> build_control_continuation_prompt(question, wrong_prefix)
+                    (CONTINUE the same flawed approach, NO meta/decision/switch —
+                    CONTROL_CONTINUATION_SYSTEM_PROMPT, NOT 'always end correct';
+                    this is what makes the causal filter falsifiable)."""
+    from src.metacot.prompt_redirect_verify import (
+        build_redirect_demo_prompt,
+        build_verify_demo_prompt,
+        build_control_continuation_prompt,
+    )
+
+    arm = payload["arm"]
+    question = payload["question"]
+    if arm == "redirect":
+        return build_redirect_demo_prompt(question, payload["wrong_prefix"], payload["confidence"])
+    if arm == "verify":
+        return build_verify_demo_prompt(question, payload["wrong_prefix"], payload["confidence"])
+    if arm == "control":
+        return build_control_continuation_prompt(question, payload["wrong_prefix"])
+    raise ValueError(f"unknown teacher arm: {arm!r}")
+
+
+def make_trapi_teacher_fn(model_list=None, client_factory=None,
+                          max_retries=8, temperature=0.7):
+    """Build a TRAPI(Entra)-backed ``teacher_fn(payload) -> str``.
+
+    The AzureOpenAI client + Entra token provider are constructed LAZILY on the
+    first call and CACHED (one client for the whole run). ``client_factory`` is
+    injectable (tests pass a fake -> no network/credential); it defaults to the
+    Entra constructor above.
+
+    Per call: branch the prompt on ``payload['arm']`` (``_arm_messages``), then try
+    the MODEL FALLBACK LIST in order — advance to the next model on a 404/503/health
+    error (model not deployed), retry the SAME model with capped exponential backoff
+    on a transient 429/403/5xx. For the control arm the ``payload['sample']`` index
+    perturbs the seed so the k>=4 control draws are independent.
+
+    Returns the completion text (raises if every model is exhausted)."""
+    models = list(model_list or TRAPI_MODEL_FALLBACK)
+    factory = client_factory or _trapi_client_factory
+    state = {"client": None}
+
+    def _client():
+        if state["client"] is None:
+            state["client"] = factory()
+        return state["client"]
+
+    def teacher_fn(payload):
+        messages = _arm_messages(payload)
+        # control draws vary the seed so the k samples are independent.
+        seed = 1000 + int(payload.get("sample", 0)) if payload["arm"] == "control" else None
+        last_err = None
+        for model in models:
+            for attempt in range(max_retries):
+                try:
+                    kw = {"model": model, "input": messages, "temperature": temperature}
+                    if seed is not None:
+                        kw["seed"] = seed
+                    resp = _client().responses.create(**kw)
+                    text = resp.output_text
+                    if text:
+                        return text
+                    last_err = RuntimeError("empty completion")
+                except Exception as e:  # noqa: BLE001 - classify by message
+                    last_err = e
+                    msg = str(e).lower()
+                    if any(t in msg for t in _MODEL_UNAVAILABLE):
+                        break  # next model in the fallback list
+                    if any(t in msg for t in _TRANSIENT):
+                        wait = min(60.0, 2.0 * (2 ** attempt) + random.uniform(0, 2))
+                        time.sleep(wait)
+                        continue
+                    raise  # non-transient, non-model error -> surface immediately
+        raise RuntimeError(f"all TRAPI models exhausted ({models}); last error: {last_err}")
+
+    return teacher_fn
 
 
 def main():  # pragma: no cover - wires GPU + network; logic above is unit-tested
@@ -622,7 +896,7 @@ def main():  # pragma: no cover - wires GPU + network; logic above is unit-teste
     summary = build_dataset(
         problems=problems,
         rollout_fn=_real_rollout_fn(args.model_path),
-        teacher_fn=_real_teacher_fn(),
+        teacher_fn=make_trapi_teacher_fn(),
         out_path=args.out,
         n_rollouts=args.n_rollouts,
     )

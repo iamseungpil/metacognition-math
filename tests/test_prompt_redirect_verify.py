@@ -13,7 +13,6 @@ import pytest
 from src.metacot.prompt_redirect_verify import (
     META_START,
     META_END,
-    SWITCH_TOKEN,
     TEACHER_DISTILL_SYSTEM_PROMPT,
     CONTROL_CONTINUATION_SYSTEM_PROMPT,
     build_redirect_demo_prompt,
@@ -72,8 +71,8 @@ def test_redirect_prompt_demands_switch_method():
     # must instruct a genuine method switch
     assert "switch" in text
     assert "different method" in text or "different strategy" in text
-    # the switch token must be referenced as the decision marker
-    assert SWITCH_TOKEN in _as_text(p)
+    # the decision is now a TEXT field inside the meta block (no special token)
+    assert "decision: redirect" in _as_text(p)
 
 
 def test_redirect_prompt_instructs_continue_from_prefix():
@@ -159,6 +158,12 @@ def test_verify_prompt_does_not_demand_switch():
     p = build_verify_demo_prompt(PROBLEM, STUDENT_ATTEMPT, conf=0.88)
     text = _as_text(p).lower()
     assert "you must switch" not in text
+
+
+def test_verify_prompt_demands_decision_verify_field():
+    # the decision is a TEXT field inside the meta block (no special token)
+    p = build_verify_demo_prompt(PROBLEM, STUDENT_ATTEMPT, conf=0.88)
+    assert "decision: verify" in _as_text(p)
 
 
 # --------------------------------------------------------------------------- #

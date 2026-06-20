@@ -401,3 +401,28 @@ All tests run on CPU with `/home/v-seungplee/miniconda3/envs/metaprobe/bin/pytho
   unmeasured; too much distilled data risks over-firing meta (the v8 decorative
   failure mode), too little fails to form the behavior (v1 collapse). Ratio is a
   swept hyperparameter in the experiment, not a fixed constant.
+
+---
+
+## §10 RL reward — DECIDED (record only; NOT implemented here)
+
+The warm-up SFT checkpoint (§2–7) is the init for an RL stage whose reward is now
+fixed. **Decision:** reuse the existing **DCPO triobj** reward unchanged —
+`R = R_corr(correctness) + R_meta(PMI, with dcpo_w_meta turned back ON ~0.8) +
+R_cal(calibration)`. **Drop the contrastive / counterfactual reward** (it needs
+too many rollouts per step). No RL code is written in this task; this section is
+the recorded decision only.
+
+- **Why the same reward that collapsed v2 is expected to work now.** Hypothesis:
+  v2 collapsed because the **SFT meta was hollow** (decorative, not behavior-
+  bound), not because the reward was wrong. The confidence-conditioned distill +
+  causal filter (§3–4) makes the meta **functional** before RL starts; on a
+  warm-up where the meta already does work, the same `R_meta` PMI term *sustains*
+  the behavior instead of having to *create* it from nothing.
+- **Decisive monitored signal.** `acc_with - acc_without` (meta-ON minus
+  meta-block-ablated accuracy on fired problems) must **flip from NEGATIVE**
+  (v2: 0.71 < 0.81) **to POSITIVE and STAY positive** while `wellformed_rate`
+  does **not** collapse. This is the utility-conditioned gate of §8-S3: accuracy
+  must be *caused* by the firings, with `meta_emit` rate reported only to confirm
+  it sits between under-forming (~0) and over-forming (fires-on-everything),
+  never used as the pass criterion.
