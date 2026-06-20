@@ -73,7 +73,7 @@ def _mock_teacher(payload: dict):
         return (
             "<|meta|>\nconfidence: 0.75\ndecision: verify\n"
             "Looks right but I must check; substitute back.\n</|meta|>\n"
-            "Substituting recomputes 42. The answer is $42$."
+            "Substituting recomputes 6 * 7 = 42. The answer is $42$."
         )
     if p.startswith("A3"):
         if arm == "redirect":

@@ -128,15 +128,20 @@ _DECISION_LINE_RE = re.compile(r"decision:\s*([A-Za-z]+)", re.IGNORECASE)
 # Independent-check cue for the VERIFY causal filter. A genuine verify performs an
 # INDEPENDENT check — substitute the candidate back, recompute by another route,
 # or re-derive — rather than merely restating "confidence high, answer correct".
-# The meta block must carry one of these cues; a decorative verify that only
-# asserts the answer is right (no check word) is dropped (symmetric to the
-# redirect filter, which requires a real `decision: redirect`, not a bare conf line).
-_VERIFY_CHECK_RE = re.compile(
-    r"\b(substitut\w*|plug\w*\s+back|plug\w*\s+in|recomput\w*|recheck\w*|"
-    r"re-?check\w*|re-?deriv\w*|re-?work\w*|cross-?check\w*|"
-    r"verif\w*\s+by|by\s+another\s+(route|method)|independent\w*\s+check)\b",
+# A genuine independent check in the answer region needs BOTH a check-INTENT word
+# AND an actual re-COMPUTATION. A decorative verify that only asserts the answer is
+# right (intent word but no re-derivation) is dropped; a genuine check always
+# recomputes (so carries computation). This is the verify analog of the redirect
+# wrong->right flip — correctness alone is gameable (the teacher always ends correct).
+_VERIFY_INTENT_RE = re.compile(
+    r"\b(substitut\w*|plug\w*|recomput\w*|re-?check\w*|re-?deriv\w*|re-?work\w*|"
+    r"cross-?check\w*|verif\w*|independent\w*|consisten\w*|convers\w*|confirm\w*|"
+    r"check\w*|test\w*|another\s+(route|method|way|approach)|"
+    r"different\s+(route|method|way|approach))\b",
     re.IGNORECASE,
 )
+# a display-math block or a digit-bearing equation = an actual computation.
+_COMPUTATION_RE = re.compile(r"\\\[|\$\$|\d\s*[-+*/=×÷^]\s*\\?\d")
 
 
 def _has_independent_check_cue(text: str) -> bool:
@@ -154,7 +159,8 @@ def _has_independent_check_cue(text: str) -> bool:
         return False
     idx = text.find(META_END)
     answer_region = text[idx + len(META_END):] if idx != -1 else text
-    return bool(_VERIFY_CHECK_RE.search(answer_region))
+    return bool(_VERIFY_INTENT_RE.search(answer_region)) and bool(
+        _COMPUTATION_RE.search(answer_region))
 
 
 def _has_meta_block(text: str) -> bool:

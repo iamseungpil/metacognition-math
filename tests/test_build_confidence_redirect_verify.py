@@ -142,9 +142,9 @@ def _mock_teacher(payload: dict):
     if q.startswith("P2") and arm == "verify":
         return (
             "<|meta|>\nconfidence: 0.85\ndecision: verify\n"
-            "This looks right; I will substitute to verify.\n"
+            "This looks right but should be checked independently.\n"
             "<|/meta|>\n"
-            "Substituting confirms it. The answer is $42$."
+            "Substituting back to check: 6 * 7 = 42, which matches. The answer is $42$."
         )
     if q.startswith("P4"):
         if arm == "redirect":  # teacher ALSO fails -> decorative, must be dropped
@@ -323,7 +323,7 @@ def test_verify_is_anchored_on_a_real_wrong_student_attempt(tmp_path: Path):
             return (
                 "<|meta|>\nconfidence: 0.75\ndecision: verify\n"
                 "Looks right but I must check; substitute back.\n<|/meta|>\n"
-                "Substituting recomputes 42. The answer is $42$."
+                "Substituting recomputes 6 * 7 = 42. The answer is $42$."
             )
         raise AssertionError(f"unexpected arm {payload['arm']!r}")
 
@@ -366,7 +366,7 @@ def test_verify_anchors_on_majority_when_no_wrong_sample_drawn(tmp_path: Path):
             return (
                 "<|meta|>\nconfidence: 0.75\ndecision: verify\n"
                 "Substitute to verify.\n<|/meta|>\n"
-                "Recomputing confirms it. The answer is $42$."
+                "Recomputing 6 * 7 = 42 confirms it. The answer is $42$."
             )
         raise AssertionError(f"unexpected arm {payload['arm']!r}")
 
@@ -442,7 +442,7 @@ def test_verify_that_catches_a_wrong_attempt_is_kept_as_catch(tmp_path: Path):
         return (
             "<|meta|>\nconfidence: 0.75\ndecision: verify\n"
             "Substituting back shows the slip; re-derive.\n<|/meta|>\n"
-            "Re-deriving gives 42, not 41. The answer is $42$."
+            "Re-deriving 6 * 7 = 42, not 41. The answer is $42$."
         )
 
     summary = build_dataset(
@@ -480,7 +480,7 @@ def test_verify_on_already_correct_control_is_kept_only_as_confirm(tmp_path: Pat
         return (
             "<|meta|>\nconfidence: 0.75\ndecision: verify\n"
             "Substitute back to confirm independently.\n<|/meta|>\n"
-            "Substitution confirms it. The answer is $42$."
+            "Substitution 6 * 7 = 42 confirms it. The answer is $42$."
         )
 
     summary = build_dataset(
