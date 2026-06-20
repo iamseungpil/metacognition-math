@@ -24,7 +24,6 @@ scripts/launch_sft_remote.sh export-ignore
 scripts/relaunch_verl_base_redirect_0410.sh export-ignore
 scripts/relaunch_verl_e21r_0410.sh export-ignore
 scripts/relaunch_verl_e21_0410.sh export-ignore
-scripts/push_models_hf.py export-ignore
 scripts/rebuild_eval_node.sh export-ignore
 scripts/launch_e21_vs_base_matched_0410.sh export-ignore
 scripts/setup_node.sh export-ignore
