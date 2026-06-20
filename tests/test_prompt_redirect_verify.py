@@ -75,10 +75,14 @@ def test_redirect_prompt_demands_switch_method():
     assert "decision: redirect" in _as_text(p)
 
 
-def test_redirect_prompt_instructs_continue_from_prefix():
+def test_redirect_prompt_begins_at_meta_and_forbids_repeating_prefix():
+    # New design: the wrong prefix is ALREADY written and precedes the teacher's
+    # continuation, so the teacher must NOT restate it and must begin at <|meta|>
+    # (prevents the prefix-duplication seen in the first real sample).
     p = build_redirect_demo_prompt(PROBLEM, WRONG_PREFIX, conf=0.23)
     text = _as_text(p).lower()
-    assert "continue" in text or "from the student" in text
+    assert "begin" in text and "<|meta|>" in text
+    assert "do not repeat" in text or "do not restate" in text
 
 
 def test_redirect_prompt_says_confidence_is_student_not_teacher():

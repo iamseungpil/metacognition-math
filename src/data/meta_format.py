@@ -99,3 +99,47 @@ def validate_meta_structure(text):
         return False, f"invalid decision value: {dm.group(1)!r}"
 
     return True, ""
+
+
+# Markers that unambiguously mean SOLVING (a calculation or the final answer) leaked
+# INTO the meta block. The meta block must hold only the judgment (confidence +
+# reason + decision); all solving belongs AFTER <|/meta|> so the region-routed RL
+# reward (R_meta on meta, R_corr on the answer) is not confounded.
+_SOLVING_IN_META = (r"\boxed", r"\[", r"\]", "$$")
+
+
+def meta_is_pure_judgment(text):
+    """Return ``(ok, reason)``: the meta block must be JUDGMENT ONLY.
+
+    Rejects when the meta body contains a solving marker (``\\boxed``, display math
+    ``\\[`` / ``\\]`` / ``$$``) — i.e. a calculation or the final answer leaked into
+    the meta block. Prose strategy is NOT caught here (handled by the teacher
+    prompt); this is the unambiguous backstop. A text with no parseable single meta
+    block returns ``(False, ...)`` (validate_meta_structure runs first upstream).
+    """
+    if not text or META_START not in text or META_END not in text:
+        return False, "no meta block"
+    start = text.index(META_START) + len(META_START)
+    end = text.index(META_END)
+    if end <= start:
+        return False, "malformed meta block"
+    body = text[start:end]
+    for marker in _SOLVING_IN_META:
+        if marker in body:
+            return False, f"solving leaked into meta block ({marker!r})"
+    return True, ""
+
+
+def strip_preamble_before_meta(text):
+    """Drop any text BEFORE the first ``<|meta|>`` so the teacher's continuation
+    begins at the meta block.
+
+    A redirect demo is assembled as ``wrong_prefix + teacher_text``; if the teacher
+    restates the prefix before opening the meta block, the assistant carries the
+    prefix twice (the masked copy + the teacher's trained copy). Returning the text
+    from the first ``<|meta|>`` removes that duplicate (and any teacher preamble).
+    ``None`` / no-meta text passes through unchanged.
+    """
+    if not text or META_START not in text:
+        return text
+    return text[text.index(META_START):]

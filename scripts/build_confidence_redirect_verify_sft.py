@@ -61,7 +61,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.build_v8_strict_paired_data import META_BLOCK_RE, dump_messages
-from src.data.meta_format import normalize_meta_format, validate_meta_structure
+from src.data.meta_format import (
+    normalize_meta_format, validate_meta_structure,
+    meta_is_pure_judgment, strip_preamble_before_meta, META_END,
+)
 from scripts.harvest_redirect_cf import splice_index, lower_ci_diff
 from src.training.rewards import _check_correctness
 # NOTE: the TOKEN loss-mask spans (src.training.segment_loss_mask.redirect_train_spans)
@@ -93,6 +96,7 @@ BUCKET_NONE = "none"
 # 'dropped_*' names its tests assert on.)
 _DROP_SUMMARY_KEY = {
     "malformed": "dropped_malformed",
+    "solving_in_meta": "dropped_solving_in_meta",
     "decorative": "dropped_decorative",
     "decorative_verify": "dropped_decorative_verify",
     "conf_mismatch": "dropped_conf_mismatch",
@@ -136,20 +140,21 @@ _VERIFY_CHECK_RE = re.compile(
 
 
 def _has_independent_check_cue(text: str) -> bool:
-    """True iff the verify meta block describes a genuine INDEPENDENT check.
+    """True iff the verify demo performs a genuine INDEPENDENT check in the ANSWER
+    region (the text AFTER ``<|/meta|>``): a substitution / recompute / re-derive /
+    cross-check cue.
 
-    Reads only INSIDE the <|meta|>...<|/meta|> block (the same scoping used for
-    the stated confidence): a substitution / recompute / re-derive / cross-check
-    cue. A trace that just says 'confidence high, answer correct' has no cue and
-    is decorative -> dropped. This is the verify analog of requiring a real
-    `decision: redirect` for redirect (correctness alone is gameable: the teacher
-    is told to always end correct)."""
+    The meta block now holds only the JUDGMENT (confidence + 'check it' + decision),
+    so the actual check lives in the answer region — scoping the cue there. A verify
+    that merely states 'looks correct' with no real check in the answer region has no
+    cue and is decorative -> dropped. This is the verify analog of requiring a real
+    wrong->right flip for redirect (correctness alone is gameable: the teacher is
+    told to always end correct)."""
     if not text:
         return False
-    m = META_BLOCK_RE.search(text)
-    if not m:
-        return False
-    return bool(_VERIFY_CHECK_RE.search(m.group(1)))
+    idx = text.find(META_END)
+    answer_region = text[idx + len(META_END):] if idx != -1 else text
+    return bool(_VERIFY_CHECK_RE.search(answer_region))
 
 
 def _has_meta_block(text: str) -> bool:
@@ -432,8 +437,9 @@ class _Outcome:
 def _normalize_and_validate(raw_text):
     """Shared step (3.5): repair repairable close-tag variants, then validate.
     Returns ``(text, repaired_bool, ok_struct)``."""
-    text = normalize_meta_format(raw_text)
-    repaired = text != raw_text
+    normed = normalize_meta_format(raw_text)
+    repaired = normed != raw_text  # close-tag/casing repair (NOT the preamble strip)
+    text = strip_preamble_before_meta(normed)  # drop teacher prefix-repeat / preamble
     ok_struct, _reason = validate_meta_structure(text)
     return text, repaired, ok_struct
 
@@ -449,6 +455,9 @@ def _accept_redirect_demo(question, gold, confidence, wrong_prefix,
     cal_ok = stated_conf_matches(redirect_text, confidence)
     if not ok_struct:
         return _Outcome(None, "malformed", repaired, cal_ok)
+    # meta must be JUDGMENT ONLY (no calculation/answer leaked inside the block).
+    if not meta_is_pure_judgment(redirect_text)[0]:
+        return _Outcome(None, "solving_in_meta", repaired, cal_ok)
     # (a) a real redirect decision AND a wrong->right flip.
     if not (_meta_decision(redirect_text) == "redirect"
             and _check_correctness(redirect_text, gold)):
@@ -482,6 +491,9 @@ def _accept_verify_demo(question, gold, confidence, verify_attempt,
     cal_ok = stated_conf_matches(verify_text, confidence)
     if not ok_struct:
         return _Outcome(None, "malformed", repaired, cal_ok)
+    # meta must be JUDGMENT ONLY (no calculation/answer leaked inside the block).
+    if not meta_is_pure_judgment(verify_text)[0]:
+        return _Outcome(None, "solving_in_meta", repaired, cal_ok)
     # structure + correct final + a GENUINE independent-check cue.
     if not (_has_meta_block(verify_text) and _check_correctness(verify_text, gold)
             and _has_independent_check_cue(verify_text)):
@@ -527,6 +539,7 @@ def build_dataset(
         "verify_confirm": 0,
         "dropped_hard": 0,
         "dropped_bucket_none": 0,
+        "dropped_solving_in_meta": 0,
         "dropped_decorative": 0,
         "dropped_decorative_verify": 0,
         "dropped_no_wrong_prefix": 0,

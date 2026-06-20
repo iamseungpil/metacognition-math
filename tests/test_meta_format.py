@@ -132,3 +132,31 @@ def test_repaired_close_tag_demo_passes_validation():
     assert validate_meta_structure(raw)[0] is False
     repaired = normalize_meta_format(raw)
     assert validate_meta_structure(repaired)[0] is True
+
+
+from src.data.meta_format import meta_is_pure_judgment, strip_preamble_before_meta
+
+
+def test_meta_is_pure_judgment_accepts_judgment_only():
+    t = ("<|meta|>\nconfidence: 0.20\nThe route is weak: it ignores a constraint.\n"
+         "decision: redirect\n<|/meta|>\nNow solve: 19 / 3 = 6. \\boxed{6}")
+    assert meta_is_pure_judgment(t)[0] is True  # \boxed is OUTSIDE the meta block
+
+
+def test_meta_is_pure_judgment_rejects_boxed_or_displaymath_in_meta():
+    boxed_in = "<|meta|>\nconfidence: 0.2\ndecision: redirect\n\\boxed{6}\n<|/meta|>\nx"
+    assert meta_is_pure_judgment(boxed_in)[0] is False
+    disp_in = "<|meta|>\nconfidence: 0.2\ndecision: redirect\n\\[ 19/3 = 6 \\]\n<|/meta|>\nx"
+    assert meta_is_pure_judgment(disp_in)[0] is False
+
+
+def test_strip_preamble_before_meta_removes_prefix_repeat():
+    raw = "19 / 2 = some restated prefix <|meta|>\nconfidence: 0.2\ndecision: redirect\n<|/meta|>\nok"
+    out = strip_preamble_before_meta(raw)
+    assert out.startswith("<|meta|>")
+    assert "restated prefix" not in out
+
+
+def test_strip_preamble_passthrough_when_no_meta():
+    assert strip_preamble_before_meta("no meta here") == "no meta here"
+    assert strip_preamble_before_meta("") == ""

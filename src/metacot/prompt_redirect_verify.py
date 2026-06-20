@@ -52,6 +52,11 @@ Hard rules:
    reasoning genuinely uses a DIFFERENT method, not a rephrasing.
 7. A verify demo states `decision: verify` and performs a truly INDEPENDENT check
    (substitution or recomputation by another route), then confirms or corrects.
+8. The meta block holds ONLY your JUDGMENT: the `confidence:` line, a one/two
+   sentence reason, and the `decision:` line. Put NO calculations, NO equations,
+   NO `\\boxed`, NO description of the method you will use, and NO answer inside the
+   meta block. ALL solving (naming the method, the arithmetic, the final answer)
+   goes AFTER {META_END}.
 """
 
 
@@ -106,33 +111,41 @@ def build_redirect_demo_prompt(problem: str, student_wrong_prefix: str, conf: fl
     c = _fmt_conf(conf)
 
     user = f"""\
-Scenario: redirect (low-confidence / confidently-wrong path).
+Scenario: redirect (the student's current path is weak — a low-confidence or
+confidently-wrong attempt).
 
 Problem:
 {problem}
 
-The student already started solving and produced this WRONG prefix:
+The student already produced this WRONG partial work. It is ALREADY written and
+will precede your continuation — do NOT repeat it:
 ---
 {student_wrong_prefix}
 ---
 
-The student's MEASURED confidence on this attempt is {c}. This is the STUDENT's
-self-consistency value, NOT your own confidence. Do not inflate it above {c}.
+The student's MEASURED confidence is {c} (the STUDENT's self-consistency value,
+NOT yours; do not inflate above {c}).
 
-Write the continuation as a demonstration:
-1. Continue FROM the student's wrong prefix (do not restart from scratch; pick up
-   where the student left off and react to that work).
-2. Open a {META_START} ... {META_END} block. State `confidence: {c}` and, in
-   natural language, diagnose the concrete reason the current route is weak
-   (e.g. a failed substitution, a contradiction, an unsupported assumption).
-3. Inside the meta block, write the line `decision: redirect` and name a
-   genuinely different method to switch to (a different strategy, not a rephrasing).
-4. After the meta block, solve the problem correctly using that different method
-   and end with the final \\boxed{{answer}}.
+Write ONLY the continuation. It MUST begin with {META_START} and follow this shape:
 
-Remember: the meta block must change behavior (a real method switch), the
-confidence is the student's value {c} and must not be inflated, and no decorative
-filler.
+{META_START}
+confidence: {c}
+<one or two sentences: the concrete reason the current route is weak — a JUDGMENT
+only (a wrong assumption, a unit mismatch, a failed step). Do NOT do any
+calculation here, do NOT name or describe the method you will switch to, do NOT
+state any answer.>
+decision: redirect
+{META_END}
+<Now, OUTSIDE the meta block, solve the problem correctly with a genuinely
+DIFFERENT method: introduce and carry out that method with its calculation, and end
+with the final \\boxed{{answer}}.>
+
+Strict rules:
+- Begin your output at {META_START}; do NOT restate the problem or the prior work.
+- The meta block holds ONLY the confidence line, the one/two-sentence judgment, and
+  the decision line — NO equations, NO method steps, NO \\boxed, NO answer.
+- The confidence is the student's value {c}; do not inflate it.
+- The post-meta solution must use a genuinely different method, not a rephrasing.
 """
     return _messages(user)
 
@@ -194,31 +207,38 @@ def build_verify_demo_prompt(problem: str, student_attempt: str, conf: float):
     c = _fmt_conf(conf)
 
     user = f"""\
-Scenario: verify (high-confidence attempt that should be independently checked).
+Scenario: verify (a high-confidence attempt that should be independently checked).
 
 Problem:
 {problem}
 
-The student produced this attempt:
+The student produced this attempt. It is ALREADY written — do NOT repeat it:
 ---
 {student_attempt}
 ---
 
-The student's MEASURED confidence on this attempt is {c}. This is the STUDENT's
-self-consistency value, NOT your own confidence. Report it at about {c} and do
-not inflate it above {c}.
+The student's MEASURED confidence is {c} (the STUDENT's self-consistency value,
+NOT yours; report it at about {c} and do not inflate above {c}).
 
-Write the demonstration:
-1. Open a {META_START} ... {META_END} block. State `confidence: {c}`, write the
-   line `decision: verify`, and explain in natural language that the answer looks
-   right but must not be committed without an INDEPENDENT check.
-2. Perform a truly independent verification: substitute the candidate value back
-   into the original problem, or recompute the answer by a different route. Do
-   not simply repeat the same steps.
-3. If the check confirms the attempt, finalize it; if the check reveals an error,
-   correct it. Either way end with the final \\boxed{{answer}}.
+Write ONLY the continuation. It MUST begin with {META_START} and follow this shape:
 
-Remember: the confidence is the student's value {c} and must not be inflated, the
-check must be genuinely independent, and no decorative filler.
+{META_START}
+confidence: {c}
+<one sentence: the answer looks plausible but must not be committed without an
+INDEPENDENT check — a JUDGMENT only. Do NOT do the check here and do NOT write any
+calculation or answer inside the meta block.>
+decision: verify
+{META_END}
+<Now, OUTSIDE the meta block, perform a truly INDEPENDENT verification: substitute
+the candidate value back into the problem, or recompute by a different route (not a
+repeat of the same steps). Confirm if it holds, correct it if it does not, and end
+with the final \\boxed{{answer}}.>
+
+Strict rules:
+- Begin your output at {META_START}; do NOT restate the attempt.
+- The meta block holds ONLY the confidence line, the one-sentence judgment, and the
+  decision line — NO calculation, NO \\boxed, NO answer.
+- The confidence is the student's value {c}; do not inflate it.
+- The check must be genuinely independent, by a different route.
 """
     return _messages(user)
