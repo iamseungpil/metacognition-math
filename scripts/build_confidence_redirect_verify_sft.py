@@ -552,12 +552,125 @@ def _accept_verify_demo(question, gold, confidence, verify_attempt,
 # --------------------------------------------------------------------------- #
 # driver
 # --------------------------------------------------------------------------- #
+def _process_problem(prob, rollout_fn, teacher_fn, n_rollouts):
+    """Per-problem worker. Returns ``(kept_rows, counts)`` — NO shared state, so the
+    driver can run it sequentially OR across a thread pool (the full build is ~1.6e4
+    teacher calls; problems are independent). ``counts`` maps summary keys to deltas.
+
+    Mirrors the inline loop body exactly: hard-drop -> rollout -> action bucket ->
+    (multi-anchor redirect | verify) -> structural/causal/calibration gate."""
+    counts: dict = {}
+    kept_rows: list = []
+
+    def bump(key):
+        counts[key] = counts.get(key, 0) + 1
+
+    question = prob["question"]
+    gold = prob["gold"]
+    tags = dict(prob.get("tags") or {})
+    difficulty = str(tags.get("difficulty", "")).lower()
+
+    # (2) ANCHOR easy/medium only — drop hard BEFORE any teacher call.
+    if difficulty not in ANCHOR_DIFFICULTIES:
+        bump("dropped_hard")
+        return kept_rows, counts
+
+    # (1) STUDENT self-consistency rollout -> confidence label.
+    rollouts = list(rollout_fn(question, gold, n_rollouts))
+    unpacked = [_unpack_rollout(r) for r in rollouts]
+    grades = [1 if c else 0 for _, c, _ in unpacked]
+    answers = [a for _, _, a in unpacked]
+    confidence = confidence_from_grades(grades)
+
+    # (2) ACTION BUCKET via the single source of truth (confidently_wrong + hard-
+    # exclusion applied inside the labeler, not re-implemented here).
+    bucket = _label_action_bucket(
+        grades, answers, difficulty=difficulty,
+        lo=CONF_LO, hi=CONF_HI, confwrong_thr=CONFWRONG_THR,
+    )
+
+    if bucket == BUCKET_NONE:
+        bump("dropped_bucket_none")
+        return kept_rows, counts
+
+    if bucket == BUCKET_REDIRECT:
+        # MULTI-ANCHOR: one redirect demo per DISTINCT wrong approach (up to
+        # REDIRECT_MAX_ANCHORS) — redirect is rare, so a single anchor/problem under-
+        # yields. Each anchor runs the full causal filter independently.
+        wrong_prefixes = _pick_wrong_prefixes(rollouts, REDIRECT_MAX_ANCHORS)
+        if not wrong_prefixes:
+            bump("dropped_no_wrong_prefix")
+            return kept_rows, counts
+        outcomes = []
+        for wrong_prefix in wrong_prefixes:
+            # (3) TEACHER conditional redirect + (3.5/4) the no-redirect CONTROL arm
+            # (CONTINUE the same flawed approach) so the causal filter is non-vacuous.
+            raw_redirect = teacher_fn(
+                _teacher_payload(question, gold, confidence, bucket, "redirect", wrong_prefix)
+            )
+            control_grades = _draw_control_grades(
+                teacher_fn, question, gold, confidence, wrong_prefix
+            )
+            outcomes.append(_accept_redirect_demo(
+                question, gold, confidence, wrong_prefix, raw_redirect, control_grades
+            ))
+
+    else:  # BUCKET_VERIFY
+        # (1') ANCHOR the verify demo on a REAL sampled student attempt (prefer a
+        # WRONG sample — the slip the verify must catch). The picked sample's
+        # is_correct is the no-verify CONTROL (the raw attempt committed as-is).
+        picked = _pick_verify_attempt(rollouts)
+        if picked is None:
+            bump("dropped_no_verify_attempt")
+            return kept_rows, counts
+        verify_attempt, control_correct = picked
+        raw_verify = teacher_fn(
+            _teacher_payload(question, gold, confidence, bucket, "verify", verify_attempt)
+        )
+        outcomes = [_accept_verify_demo(
+            question, gold, confidence, verify_attempt, control_correct, raw_verify
+        )]
+
+    # ----- bookkeeping: count repairs/drops, collect kept rows. One outcome for
+    # verify; up to REDIRECT_MAX_ANCHORS for multi-anchor redirect. -----
+    tags.setdefault("difficulty", difficulty)
+    for outcome in outcomes:
+        if outcome.repaired:
+            bump("repaired")
+        if outcome.row is None:
+            bump(_DROP_SUMMARY_KEY[outcome.reason])
+            continue
+        if outcome.reason == BUCKET_REDIRECT:
+            bump("kept_redirect")
+        else:  # verify_catch | verify_confirm
+            bump(outcome.reason)
+            bump("kept_verify")
+
+        row = outcome.row
+        kept_rows.append(
+            {
+                "messages": dump_messages(row["messages"]),
+                "scenario": row["scenario"],
+                "confidence_label": row["confidence_label"],
+                # The SFT collator recomputes the TOKEN loss-mask from these with the
+                # real tokenizer (prefix_len = len(tokenize(wrong_prefix)); spans =
+                # redirect_train_spans(...)) — prefix_split_char is only a cheap CHAR
+                # split marker, never assumed equal to the token boundary.
+                "wrong_prefix": row["wrong_prefix"],
+                "prefix_split_char": int(row["prefix_split_char"]),
+                "split_tags": json.dumps(tags, ensure_ascii=False),
+            }
+        )
+    return kept_rows, counts
+
+
 def build_dataset(
     problems,
     rollout_fn,
     teacher_fn,
     out_path: str,
     n_rollouts: int = 8,
+    max_workers: int = 1,
 ):
     """Orchestrate the full pipeline (see module docstring). Returns a summary dict
     and writes the SFT parquet to ``out_path``.
@@ -588,120 +701,23 @@ def build_dataset(
         "repaired": 0,
     }
 
-    for prob in problems:
-        question = prob["question"]
-        gold = prob["gold"]
-        tags = dict(prob.get("tags") or {})
-        difficulty = str(tags.get("difficulty", "")).lower()
+    # Each problem is independent -> sequential (max_workers=1, deterministic order)
+    # OR a thread pool for the ~1.6e4-teacher-call full build. Aggregation happens in
+    # the driver thread so the summary + kept_rows stay race-free.
+    def _run(prob):
+        return _process_problem(prob, rollout_fn, teacher_fn, n_rollouts)
 
-        # (2) ANCHOR easy/medium only — drop hard BEFORE any teacher call.
-        if difficulty not in ANCHOR_DIFFICULTIES:
-            summary["dropped_hard"] += 1
-            continue
+    if max_workers > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            results = list(ex.map(_run, problems))
+    else:
+        results = [_run(prob) for prob in problems]
 
-        # (1) STUDENT self-consistency rollout -> confidence label.
-        # Contract: rollout_fn -> [(text, is_correct, answer), ...]; the per-sample
-        # answer strings feed confidently_wrong (gates redirect minting).
-        rollouts = list(rollout_fn(question, gold, n_rollouts))
-        unpacked = [_unpack_rollout(r) for r in rollouts]
-        grades = [1 if c else 0 for _, c, _ in unpacked]
-        answers = [a for _, _, a in unpacked]
-        confidence = confidence_from_grades(grades)
-
-        # (2) ACTION BUCKET via the single source of truth: pass the ANSWER strings
-        # AND the difficulty so confidently_wrong + the hard-exclusion are applied
-        # here (not re-implemented). The labeler's 'redirect' covers low-pass-rate
-        # OR confidently-wrong; 'verify' covers high-pass-rate-with-a-wrong-sample.
-        bucket = _label_action_bucket(
-            grades, answers, difficulty=difficulty,
-            lo=CONF_LO, hi=CONF_HI, confwrong_thr=CONFWRONG_THR,
-        )
-
-        if bucket == BUCKET_NONE:
-            summary["dropped_bucket_none"] += 1
-            continue
-
-        if bucket == BUCKET_REDIRECT:
-            # MULTI-ANCHOR: one redirect demo per DISTINCT wrong approach (up to
-            # REDIRECT_MAX_ANCHORS) — redirect is rare, so a single anchor/problem
-            # under-yields. Each anchor runs the full causal filter independently.
-            wrong_prefixes = _pick_wrong_prefixes(rollouts, REDIRECT_MAX_ANCHORS)
-            if not wrong_prefixes:
-                summary["dropped_no_wrong_prefix"] += 1
-                continue
-            outcomes = []
-            for wrong_prefix in wrong_prefixes:
-                # (3) TEACHER conditional redirect from the wrong prefix.
-                raw_redirect = teacher_fn(
-                    _teacher_payload(question, gold, confidence, bucket, "redirect", wrong_prefix)
-                )
-                # (3.5/4) The no-redirect CONTROL arm: draw CONTROL_K samples (arm=
-                # 'control' -> CONTINUE the same flawed approach, NO meta/switch) so
-                # the causal filter is non-vacuous. Drawn here because the SHARED
-                # acceptance helper stays pure of the teacher; the helper then runs
-                # normalize -> validate -> the structural/causal/calibration gate.
-                control_grades = _draw_control_grades(
-                    teacher_fn, question, gold, confidence, wrong_prefix
-                )
-                outcomes.append(_accept_redirect_demo(
-                    question, gold, confidence, wrong_prefix, raw_redirect, control_grades
-                ))
-
-        else:  # BUCKET_VERIFY
-            # (1') ANCHOR the verify demo on a REAL sampled student attempt (NOT
-            # the empty string — that ungrounded/OOD bug is exactly what we fixed
-            # for redirect). Prefer a WRONG sample (the slip the verify must
-            # catch); else the majority attempt. The picked sample's is_correct is
-            # the no-verify CONTROL (the raw attempt committed as-is).
-            picked = _pick_verify_attempt(rollouts)
-            if picked is None:
-                summary["dropped_no_verify_attempt"] += 1
-                continue
-            verify_attempt, control_correct = picked
-            # (3) TEACHER conditional verify, CONDITIONED on the real attempt
-            # (passed via wrong_prefix; the real teacher_fn routes it into
-            # build_verify_demo_prompt(question, attempt, confidence)).
-            raw_verify = teacher_fn(
-                _teacher_payload(question, gold, confidence, bucket, "verify", verify_attempt)
-            )
-            outcomes = [_accept_verify_demo(
-                question, gold, confidence, verify_attempt, control_correct, raw_verify
-            )]
-
-        # ----- shared bookkeeping: count repairs/drops, append kept rows. One
-        # outcome for verify; up to REDIRECT_MAX_ANCHORS for multi-anchor redirect.
-        tags.setdefault("difficulty", difficulty)
-        for outcome in outcomes:
-            if outcome.repaired:
-                summary["repaired"] += 1
-            if outcome.row is None:
-                summary[_DROP_SUMMARY_KEY[outcome.reason]] += 1
-                continue
-            if outcome.reason == BUCKET_REDIRECT:
-                summary["kept_redirect"] += 1
-            else:  # verify_catch | verify_confirm
-                summary[outcome.reason] += 1
-                summary["kept_verify"] += 1
-
-            row = outcome.row
-            kept_rows.append(
-                {
-                    "messages": dump_messages(row["messages"]),
-                    "scenario": row["scenario"],
-                    "confidence_label": row["confidence_label"],
-                    # The SFT collator recomputes the TOKEN loss-mask from these with
-                    # the real tokenizer (NOT a char mask masquerading as a token mask):
-                    #   prefix_len = len(tokenize(wrong_prefix))
-                    #   spans = redirect_train_spans(prompt_len, prefix_len, len(full_ids))
-                    # so loss is masked on prompt+wrong_prefix and trained on
-                    # meta+recovery. prefix_split_char is the CHAR boundary in the
-                    # assistant string (a cheap split marker; the token boundary is
-                    # recomputed, never assumed equal to this char index).
-                    "wrong_prefix": row["wrong_prefix"],
-                    "prefix_split_char": int(row["prefix_split_char"]),
-                    "split_tags": json.dumps(tags, ensure_ascii=False),
-                }
-            )
+    for rows, counts in results:
+        for key, delta in counts.items():
+            summary[key] = summary.get(key, 0) + delta
+        kept_rows.extend(rows)
 
     out_path_p = Path(out_path)
     out_path_p.parent.mkdir(parents=True, exist_ok=True)

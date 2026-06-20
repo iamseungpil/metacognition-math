@@ -221,6 +221,28 @@ def test_smoke_end_to_end(tmp_path: Path):
     assert summary["dropped_decorative_norecover"] >= 1
 
 
+def test_concurrent_build_matches_sequential(tmp_path: Path):
+    """max_workers>1 must yield the SAME summary + the SAME kept rows (same order,
+    since ex.map preserves input order) as the sequential build — the full build
+    parallelizes ~1.6e4 teacher calls and must stay a pure refactor."""
+    seq = build_dataset(
+        problems=_toy_problems(), rollout_fn=_mock_rollout, teacher_fn=_mock_teacher,
+        out_path=str(tmp_path / "seq.parquet"), n_rollouts=4, max_workers=1,
+    )
+    par = build_dataset(
+        problems=_toy_problems(), rollout_fn=_mock_rollout, teacher_fn=_mock_teacher,
+        out_path=str(tmp_path / "par.parquet"), n_rollouts=4, max_workers=4,
+    )
+    # summaries identical except the out_path string.
+    seq.pop("out_path"); par.pop("out_path")
+    assert seq == par, (seq, par)
+    # kept rows identical (incl. order).
+    a = pd.read_parquet(tmp_path / "seq.parquet")
+    b = pd.read_parquet(tmp_path / "par.parquet")
+    assert a["scenario"].tolist() == b["scenario"].tolist()
+    assert a["wrong_prefix"].tolist() == b["wrong_prefix"].tolist()
+
+
 def test_hard_problems_never_query_teacher(tmp_path: Path):
     """A hard problem must be dropped BEFORE any teacher call (capability-gap OOD)."""
     out = tmp_path / "hard_only.parquet"
