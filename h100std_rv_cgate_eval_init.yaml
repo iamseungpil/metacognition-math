@@ -89,7 +89,7 @@ jobs:
         # 2. counterfactual 2-arm eval (vLLM, greedy, meta-open banned in arm B).
         $${PYBIN} -m src.eval.eval_counterfactual_difficulty \
           --model_path $${MODEL} --val_parquet $${VAL} --out $${OUT} \
-          --tp_size 4 --max_new_tokens 2048 \
+          --tp_size 4 --max_new_tokens 16384 \
           2>&1 | tee /scratch/eval_results/cf_rv_eval.log
         EVAL_RC=$$?
         if [ "$${EVAL_RC}" -ne 0 ]; then echo "[YAML] cf eval FAILED rc=$${EVAL_RC}"; exit 1; fi
