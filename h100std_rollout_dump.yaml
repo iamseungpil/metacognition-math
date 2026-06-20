@@ -24,7 +24,7 @@ jobs:
         HF_TOKEN: ${HF_TOKEN}
         HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
         GH_TOKEN: ${GH_TOKEN}
-        CODE_TAR_REVISION: "452709189"
+        CODE_TAR_REVISION: "452719381"
         WANDB_API_KEY: ${WANDB_API_KEY}
         WANDB_KEY: ${WANDB_API_KEY}
         HF_HUB_DISABLE_XET: "1"
@@ -62,6 +62,9 @@ jobs:
         export CONDA_PREFIX="$${SIMPLERL_DIR}"
         PYBIN=$${SIMPLERL_DIR}/bin/python
         pip uninstall -y hf_xet 2>&1 | tail -1 || true
+        # env flag + pip uninstall are INSUFFICIENT (memory hf-xet-upload-pitfall):
+        # find_spec stays True -> hard-remove the package dir to force classic LFS.
+        find $${SIMPLERL_DIR}/lib -maxdepth 3 -name "hf_xet*" -exec rm -rf {} + 2>/dev/null || true
         $${PYBIN} /scratch/metacognition/scripts/pull_parquets.py 2>&1 | tail -3
 
         # ── stage the SFT init (v8_meta_inside_strict_sft) from the HF dataset ──
@@ -90,7 +93,7 @@ jobs:
             --rollout_k 8 \
             --tp_size 4 \
             --out_path /scratch/eval_results/rv_rollout_dump.parquet \
-            --hf_repo iamseungpil/metacot \
+            --hf_repo iamseungpil/metacot-rv \
             --hf_path data/rv_rollout_dump.parquet \
             2>&1 | tee /scratch/logs/rv_rollout_dump.log
         echo "[YAML] rv_rollout_dump DONE"

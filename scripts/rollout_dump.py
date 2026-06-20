@@ -61,7 +61,7 @@ def main() -> None:  # pragma: no cover - GPU wiring; pure helpers are unit-test
     parser.add_argument("--max_model_len", type=int, default=8192)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out_path", default="/scratch/eval_results/rv_rollout_dump.parquet")
-    parser.add_argument("--hf_repo", default="iamseungpil/metacot")
+    parser.add_argument("--hf_repo", default="iamseungpil/metacot-rv")
     parser.add_argument("--hf_path", default="data/rv_rollout_dump.parquet")
     args = parser.parse_args()
 
