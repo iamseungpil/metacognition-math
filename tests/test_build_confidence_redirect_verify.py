@@ -172,11 +172,17 @@ def test_smoke_end_to_end(tmp_path: Path):
     assert out.exists(), "parquet must be written"
     df = pd.read_parquet(out)
 
-    # exactly two functional rows: P1 redirect + P2 verify. P3 (hard) and P4
-    # (decorative) dropped.
+    # MULTI-ANCHOR: P1 has 3 DISTINCT wrong rollouts -> 3 redirect rows (one per
+    # flawed approach). P2 -> 1 verify. P3 (hard) and P4 (decorative) dropped.
     scenarios = sorted(df["scenario"].tolist())
-    assert scenarios == ["redirect", "verify"], scenarios
-    assert len(df) == 2
+    assert scenarios == ["redirect", "redirect", "redirect", "verify"], scenarios
+    assert len(df) == 4
+    assert summary["kept_redirect"] == 3
+    assert summary["kept_verify"] == 1
+    # the 3 redirect anchors are DISTINCT wrong prefixes (de-duped, not the same one
+    # minted thrice).
+    rp = df[df["scenario"] == "redirect"]["wrong_prefix"].tolist()
+    assert len(set(rp)) == 3, rp
 
     # schema mirrors build_v8: messages JSON (user+assistant), split_tags present
     for _, row in df.iterrows():
@@ -207,8 +213,8 @@ def test_smoke_end_to_end(tmp_path: Path):
     verify_row = df[df["scenario"] == "verify"].iloc[0]
     assert verify_row["confidence_label"] >= 0.65
 
-    # summary accounting
-    assert summary["kept_redirect"] == 1
+    # summary accounting (multi-anchor: P1 mints 3 redirect; P4 decorative drops 4)
+    assert summary["kept_redirect"] == 3
     assert summary["kept_verify"] == 1
     assert summary["dropped_hard"] >= 1
     assert summary["dropped_decorative"] >= 1

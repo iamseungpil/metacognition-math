@@ -113,6 +113,13 @@ ANCHOR_DIFFICULTIES = {"easy", "medium"}
 CONTROL_K = 4
 CONTROL_MARGIN = 0.50
 
+# Multi-anchor: mint up to this many redirect demos per redirect-band problem (one
+# per DISTINCT wrong approach). redirect is rare (only ~18% of easy/medium land in
+# the band, and the causal filter kills most), so a single anchor/problem under-
+# yields; distinct wrong rollouts are genuinely different redirects (recognize THIS
+# flawed path + switch). verify stays single-anchor (it is already abundant).
+REDIRECT_MAX_ANCHORS = 4
+
 # Tolerance for the teacher's STATED confidence vs the student's MEASURED value.
 # The meta block must carry a `confidence: 0.xx` line within this of the
 # student's pass-rate; otherwise the demo states a confidence the student does
@@ -343,20 +350,39 @@ def _strip_final_answer(text: str) -> str:
     return out.rstrip()
 
 
-def _pick_wrong_prefix(rollouts) -> str | None:
-    """First WRONG rollout text spliced at a fraction within [SPLICE_LO,SPLICE_HI]
-    (the moment the trace went bad), AFTER stripping any trailing boxed / final-
-    answer line. Returns None if there is no wrong rollout (nothing to redirect
-    from) or nothing survives the strip."""
+def _pick_wrong_prefixes(rollouts, max_n: int = 1) -> list[str]:
+    """Up to ``max_n`` DISTINCT wrong-rollout prefixes (each a different flawed
+    approach), spliced at 0.5 (the moment the trace went bad) and final-answer-
+    stripped. Multi-anchor: a redirect-band problem has several wrong rollouts, so
+    minting one redirect demo per DISTINCT wrong approach multiplies genuine
+    redirect yield without touching the causal filter. De-dupes by stripped text."""
+    out: list[str] = []
+    seen: set[str] = set()
     for r in rollouts:
         text, correct, _answer = _unpack_rollout(r)
-        if not correct:
-            stripped = _strip_final_answer(text)
-            if not stripped.strip():
-                continue
-            cut = splice_index(len(stripped), 0.5)
-            return stripped[:cut]
-    return None
+        if correct:
+            continue
+        stripped = _strip_final_answer(text)
+        if not stripped.strip():
+            continue
+        cut = splice_index(len(stripped), 0.5)
+        prefix = stripped[:cut]
+        key = prefix.strip()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(prefix)
+        if len(out) >= max_n:
+            break
+    return out
+
+
+def _pick_wrong_prefix(rollouts) -> str | None:
+    """First WRONG rollout prefix (back-compat single-anchor wrapper). Returns None
+    if there is no wrong rollout (nothing to redirect from) or nothing survives the
+    strip."""
+    picks = _pick_wrong_prefixes(rollouts, 1)
+    return picks[0] if picks else None
 
 
 def _pick_verify_attempt(rollouts):
@@ -590,25 +616,30 @@ def build_dataset(
             continue
 
         if bucket == BUCKET_REDIRECT:
-            wrong_prefix = _pick_wrong_prefix(rollouts)
-            if wrong_prefix is None:
+            # MULTI-ANCHOR: one redirect demo per DISTINCT wrong approach (up to
+            # REDIRECT_MAX_ANCHORS) — redirect is rare, so a single anchor/problem
+            # under-yields. Each anchor runs the full causal filter independently.
+            wrong_prefixes = _pick_wrong_prefixes(rollouts, REDIRECT_MAX_ANCHORS)
+            if not wrong_prefixes:
                 summary["dropped_no_wrong_prefix"] += 1
                 continue
-            # (3) TEACHER conditional redirect from the wrong prefix.
-            raw_redirect = teacher_fn(
-                _teacher_payload(question, gold, confidence, bucket, "redirect", wrong_prefix)
-            )
-            # (3.5/4) The no-redirect CONTROL arm: draw CONTROL_K samples (arm=
-            # 'control' -> CONTINUE the same flawed approach, NO meta/switch) so the
-            # causal filter is non-vacuous. Drawn here because the SHARED acceptance
-            # helper stays pure of the teacher; the helper then runs normalize ->
-            # validate -> the structural/causal/calibration gate.
-            control_grades = _draw_control_grades(
-                teacher_fn, question, gold, confidence, wrong_prefix
-            )
-            outcome = _accept_redirect_demo(
-                question, gold, confidence, wrong_prefix, raw_redirect, control_grades
-            )
+            outcomes = []
+            for wrong_prefix in wrong_prefixes:
+                # (3) TEACHER conditional redirect from the wrong prefix.
+                raw_redirect = teacher_fn(
+                    _teacher_payload(question, gold, confidence, bucket, "redirect", wrong_prefix)
+                )
+                # (3.5/4) The no-redirect CONTROL arm: draw CONTROL_K samples (arm=
+                # 'control' -> CONTINUE the same flawed approach, NO meta/switch) so
+                # the causal filter is non-vacuous. Drawn here because the SHARED
+                # acceptance helper stays pure of the teacher; the helper then runs
+                # normalize -> validate -> the structural/causal/calibration gate.
+                control_grades = _draw_control_grades(
+                    teacher_fn, question, gold, confidence, wrong_prefix
+                )
+                outcomes.append(_accept_redirect_demo(
+                    question, gold, confidence, wrong_prefix, raw_redirect, control_grades
+                ))
 
         else:  # BUCKET_VERIFY
             # (1') ANCHOR the verify demo on a REAL sampled student attempt (NOT
@@ -627,42 +658,44 @@ def build_dataset(
             raw_verify = teacher_fn(
                 _teacher_payload(question, gold, confidence, bucket, "verify", verify_attempt)
             )
-            outcome = _accept_verify_demo(
+            outcomes = [_accept_verify_demo(
                 question, gold, confidence, verify_attempt, control_correct, raw_verify
-            )
+            )]
 
-        # ----- shared bookkeeping: count repairs/drops, append a kept row. -----
-        if outcome.repaired:
-            summary["repaired"] += 1
-        if outcome.row is None:
-            summary[_DROP_SUMMARY_KEY[outcome.reason]] += 1
-            continue
-        if outcome.reason == BUCKET_REDIRECT:
-            summary["kept_redirect"] += 1
-        else:  # verify_catch | verify_confirm
-            summary[outcome.reason] += 1
-            summary["kept_verify"] += 1
-
+        # ----- shared bookkeeping: count repairs/drops, append kept rows. One
+        # outcome for verify; up to REDIRECT_MAX_ANCHORS for multi-anchor redirect.
         tags.setdefault("difficulty", difficulty)
-        row = outcome.row
-        kept_rows.append(
-            {
-                "messages": dump_messages(row["messages"]),
-                "scenario": row["scenario"],
-                "confidence_label": row["confidence_label"],
-                # The SFT collator recomputes the TOKEN loss-mask from these with
-                # the real tokenizer (NOT a char mask masquerading as a token mask):
-                #   prefix_len = len(tokenize(wrong_prefix))
-                #   spans = redirect_train_spans(prompt_len, prefix_len, len(full_ids))
-                # so loss is masked on prompt+wrong_prefix and trained on
-                # meta+recovery. prefix_split_char is the CHAR boundary in the
-                # assistant string (a cheap split marker; the token boundary is
-                # recomputed, never assumed equal to this char index).
-                "wrong_prefix": row["wrong_prefix"],
-                "prefix_split_char": int(row["prefix_split_char"]),
-                "split_tags": json.dumps(tags, ensure_ascii=False),
-            }
-        )
+        for outcome in outcomes:
+            if outcome.repaired:
+                summary["repaired"] += 1
+            if outcome.row is None:
+                summary[_DROP_SUMMARY_KEY[outcome.reason]] += 1
+                continue
+            if outcome.reason == BUCKET_REDIRECT:
+                summary["kept_redirect"] += 1
+            else:  # verify_catch | verify_confirm
+                summary[outcome.reason] += 1
+                summary["kept_verify"] += 1
+
+            row = outcome.row
+            kept_rows.append(
+                {
+                    "messages": dump_messages(row["messages"]),
+                    "scenario": row["scenario"],
+                    "confidence_label": row["confidence_label"],
+                    # The SFT collator recomputes the TOKEN loss-mask from these with
+                    # the real tokenizer (NOT a char mask masquerading as a token mask):
+                    #   prefix_len = len(tokenize(wrong_prefix))
+                    #   spans = redirect_train_spans(prompt_len, prefix_len, len(full_ids))
+                    # so loss is masked on prompt+wrong_prefix and trained on
+                    # meta+recovery. prefix_split_char is the CHAR boundary in the
+                    # assistant string (a cheap split marker; the token boundary is
+                    # recomputed, never assumed equal to this char index).
+                    "wrong_prefix": row["wrong_prefix"],
+                    "prefix_split_char": int(row["prefix_split_char"]),
+                    "split_tags": json.dumps(tags, ensure_ascii=False),
+                }
+            )
 
     out_path_p = Path(out_path)
     out_path_p.parent.mkdir(parents=True, exist_ok=True)
