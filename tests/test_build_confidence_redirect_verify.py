@@ -217,7 +217,8 @@ def test_smoke_end_to_end(tmp_path: Path):
     assert summary["kept_redirect"] == 3
     assert summary["kept_verify"] == 1
     assert summary["dropped_hard"] >= 1
-    assert summary["dropped_decorative"] >= 1
+    # P4 emits decision: redirect but a WRONG recovery ($8 != 5) -> norecover.
+    assert summary["dropped_decorative_norecover"] >= 1
 
 
 def test_hard_problems_never_query_teacher(tmp_path: Path):
@@ -562,7 +563,8 @@ def test_redirect_without_decision_redirect_is_dropped(tmp_path: Path):
         out_path=str(out), n_rollouts=4,
     )
     assert summary["kept_redirect"] == 0
-    assert summary["dropped_decorative"] == 1
+    # no decision: redirect emitted -> decorative_decision (the prompt-fixable mode).
+    assert summary["dropped_decorative_decision"] == 1
 
 
 # --------------------------------------------------------------------------- #

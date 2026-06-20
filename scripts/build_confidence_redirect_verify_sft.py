@@ -97,7 +97,8 @@ BUCKET_NONE = "none"
 _DROP_SUMMARY_KEY = {
     "malformed": "dropped_malformed",
     "solving_in_meta": "dropped_solving_in_meta",
-    "decorative": "dropped_decorative",
+    "decorative_decision": "dropped_decorative_decision",
+    "decorative_norecover": "dropped_decorative_norecover",
     "decorative_verify": "dropped_decorative_verify",
     "conf_mismatch": "dropped_conf_mismatch",
     "control_recovers": "dropped_control_recovers",
@@ -490,10 +491,14 @@ def _accept_redirect_demo(question, gold, confidence, wrong_prefix,
     # meta must be JUDGMENT ONLY (no calculation/answer leaked inside the block).
     if not meta_is_pure_judgment(redirect_text)[0]:
         return _Outcome(None, "solving_in_meta", repaired, cal_ok)
-    # (a) a real redirect decision AND a wrong->right flip.
-    if not (_meta_decision(redirect_text) == "redirect"
-            and _check_correctness(redirect_text, gold)):
-        return _Outcome(None, "decorative", repaired, cal_ok)
+    # (a) a real redirect decision AND a wrong->right flip. Split the two failure
+    # modes: decorative_decision (the teacher did not emit decision: redirect —
+    # PROMPT-fixable) vs decorative_norecover (decision ok but the recovery answer is
+    # wrong — the TEACHER could not solve it, a capability cap multi-anchor amplifies).
+    if _meta_decision(redirect_text) != "redirect":
+        return _Outcome(None, "decorative_decision", repaired, cal_ok)
+    if not _check_correctness(redirect_text, gold):
+        return _Outcome(None, "decorative_norecover", repaired, cal_ok)
     # (b) STATED confidence must match the student's MEASURED value.
     if not cal_ok:
         return _Outcome(None, "conf_mismatch", repaired, cal_ok)
@@ -572,7 +577,8 @@ def build_dataset(
         "dropped_hard": 0,
         "dropped_bucket_none": 0,
         "dropped_solving_in_meta": 0,
-        "dropped_decorative": 0,
+        "dropped_decorative_decision": 0,
+        "dropped_decorative_norecover": 0,
         "dropped_decorative_verify": 0,
         "dropped_no_wrong_prefix": 0,
         "dropped_no_verify_attempt": 0,

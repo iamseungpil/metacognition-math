@@ -103,7 +103,7 @@ def test_sample_generate_repairs_keeps_and_drops():
     # A3 decorative redirect dropped.
     assert report["n_redirect"] == 1
     assert report["n_verify"] == 1
-    assert report["n_dropped_by_reason"]["decorative"] == 1
+    assert report["n_dropped_by_reason"]["decorative_decision"] == 1
 
     # quality_report numbers.
     # functional_rate = kept / (anchors that produced a teacher demo) = 2/3.
