@@ -9,6 +9,8 @@ import pandas as pd
 import yaml
 from datasets import Dataset
 
+from src.training.segment_loss_mask import build_segment_loss_mask, redirect_train_spans
+
 try:
     import torch
 except ImportError:  # pragma: no cover - dataset prep should still be testable without torch
@@ -100,10 +102,21 @@ def prepare_sft_dataset(
         if len(full_ids) > max_len:
             full_ids = full_ids[:max_len]
 
-        # Mask prompt tokens with -100 so model only learns assistant output
+        # Mask prompt tokens with -100 so the model only learns the assistant output.
+        # REDIRECT rows additionally carry the student's wrong_prefix at the HEAD of
+        # the assistant target — mask it too (train ONLY the meta block + recovery,
+        # never teach the model to PRODUCE the flawed prefix). VERIFY / plain rows
+        # have an empty wrong_prefix and keep the prompt-only boundary mask.
         labels = full_ids.copy()
-        for i in range(min(prompt_len, len(labels))):
-            labels[i] = -100
+        wrong_prefix = str(row.get("wrong_prefix", "") or "")
+        if wrong_prefix:
+            prefix_len = len(tokenizer.encode(wrong_prefix, add_special_tokens=False))
+            spans = redirect_train_spans(prompt_len, prefix_len, len(full_ids))
+            keep = build_segment_loss_mask(len(full_ids), spans)
+            labels = [tok if k == 1 else -100 for tok, k in zip(full_ids, keep)]
+        else:
+            for i in range(min(prompt_len, len(labels))):
+                labels[i] = -100
 
         attention_mask = [1] * len(full_ids)
         num_target_tokens = sum(1 for token in labels if token != -100)
