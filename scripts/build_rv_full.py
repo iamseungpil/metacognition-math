@@ -16,9 +16,13 @@ uploader so a silent-404 cannot masquerade as success.
 """
 from __future__ import annotations
 
+import os
+# sympy caches every expression it builds in an unbounded GLOBAL cache; over ~1.6e4
+# grades that alone accumulates. Disable it BEFORE any import pulls sympy/math_verify.
+os.environ.setdefault("SYMPY_USE_CACHE", "no")
+
 import gc
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -89,6 +93,11 @@ def main() -> None:
                f"| cum_r={agg.get('kept_redirect', 0)} cum_v={agg.get('kept_verify', 0)}")
 
         del dump, problems, teacher, sub
+        try:  # belt-and-suspenders: drop any sympy cache that slipped through
+            from sympy.core.cache import clear_cache
+            clear_cache()
+        except Exception:
+            pass
         gc.collect()
 
     # concat all chunks -> final corpus.

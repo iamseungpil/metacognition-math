@@ -283,7 +283,7 @@ def _draw_control_grades(teacher_fn, question, gold, confidence, wrong_prefix):
             _teacher_payload(question, gold, confidence, BUCKET_REDIRECT, "control", wrong_prefix)
             | {"sample": k}
         )
-        grades.append(1 if _check_correctness(ctrl_text, gold) else 0)
+        grades.append(1 if _grade_answer(ctrl_text, gold) else 0)
     return grades
 
 
@@ -349,6 +349,82 @@ def _strip_final_answer(text: str) -> str:
     out = _strip_boxed(text)
     out = _FINAL_ANS_RE.sub("", out)
     return out.rstrip()
+
+
+# --------------------------------------------------------------------------- #
+# SAFE grading: parse ONLY the extracted SHORT final answer, never the full essay.
+# Feeding the whole teacher output to math_verify (whose SIGALRM timeout is disabled
+# in worker threads) let a pathological intermediate expression (e.g. a control sample
+# that "continues a flawed approach" and emits a huge exponent/factorial) make sympy
+# allocate unboundedly -> the full build grew to ~117GB RSS and was OOM-killed.
+# --------------------------------------------------------------------------- #
+_DANGEROUS_MATH = re.compile(
+    r"\d\s*\^\s*[({]?\s*-?\d*\s*\^"   # nested exponent a^b^c
+    r"|\^\s*[({]?\s*-?\d{4,}"          # exponent >= 1000
+    r"|\d{6,}\s*!"                      # factorial of a large number
+)
+
+
+def _last_boxed_value(text: str) -> str:
+    """Inner argument of the LAST ``\\boxed{...}`` / ``\\fbox{...}`` (brace-balanced),
+    or '' if none. Mirrors _strip_boxed's balanced scan but KEEPS the argument."""
+    if not text:
+        return ""
+    last = ""
+    i, n = 0, len(text)
+    while i < n:
+        macro = "\\boxed" if text.startswith("\\boxed", i) else (
+            "\\fbox" if text.startswith("\\fbox", i) else "")
+        if macro:
+            j = i + len(macro)
+            while j < n and text[j] in " \t":
+                j += 1
+            if j < n and text[j] == "{":
+                depth, k = 0, j
+                while k < n:
+                    if text[k] == "{":
+                        depth += 1
+                    elif text[k] == "}":
+                        depth -= 1
+                        if depth == 0:
+                            last = text[j + 1:k]
+                            break
+                    k += 1
+                i = k + 1
+                continue
+        i += 1
+    return last.strip()
+
+
+def _extract_final_answer(text: str) -> str:
+    """A SHORT final-answer string: the last ``\\boxed{...}``, else the 'answer is X'
+    tail, else ''."""
+    if not text:
+        return ""
+    b = _last_boxed_value(text)
+    if b:
+        return b
+    m = list(re.finditer(r"(?i)answer\s+is\s*[:=]?\s*\$?([^\n$.]+)", text))
+    return m[-1].group(1).strip() if m else ""
+
+
+def _numeq(a: str, b: str) -> bool:
+    try:
+        return abs(float(a) - float(b)) < 1e-6
+    except (ValueError, TypeError):
+        return False
+
+
+def _grade_answer(text: str, gold) -> bool:
+    """SAFELY grade whether ``text`` reaches ``gold``. Parse only the EXTRACTED final
+    answer (short) with math_verify; a long or pathological candidate (nested/huge
+    exponent, big factorial) skips sympy and uses plain/numeric equality. NEVER hands
+    the full essay to math_verify (the OOM path)."""
+    cand = _extract_final_answer(text)
+    g = str(gold).strip()
+    if cand and len(cand) <= 80 and not _DANGEROUS_MATH.search(cand):
+        return _check_correctness(cand, gold)
+    return bool(cand) and (cand.strip() == g or _numeq(cand, g))
 
 
 def _pick_wrong_prefixes(rollouts, max_n: int = 1) -> list[str]:
@@ -497,7 +573,7 @@ def _accept_redirect_demo(question, gold, confidence, wrong_prefix,
     # wrong — the TEACHER could not solve it, a capability cap multi-anchor amplifies).
     if _meta_decision(redirect_text) != "redirect":
         return _Outcome(None, "decorative_decision", repaired, cal_ok)
-    if not _check_correctness(redirect_text, gold):
+    if not _grade_answer(redirect_text, gold):
         return _Outcome(None, "decorative_norecover", repaired, cal_ok)
     # (b) STATED confidence must match the student's MEASURED value.
     if not cal_ok:
@@ -532,7 +608,7 @@ def _accept_verify_demo(question, gold, confidence, verify_attempt,
     if not meta_is_pure_judgment(verify_text)[0]:
         return _Outcome(None, "solving_in_meta", repaired, cal_ok)
     # structure + correct final + a GENUINE independent-check cue.
-    if not (_has_meta_block(verify_text) and _check_correctness(verify_text, gold)
+    if not (_has_meta_block(verify_text) and _grade_answer(verify_text, gold)
             and _has_independent_check_cue(verify_text)):
         return _Outcome(None, "decorative_verify", repaired, cal_ok)
     if not cal_ok:
