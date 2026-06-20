@@ -773,6 +773,7 @@ TRAPI_MODEL_FALLBACK = [
 ]
 
 # Errors that mean "this MODEL is unavailable" -> advance the fallback list.
+_MAX_COMPLETION_TOKENS = 4000
 _MODEL_UNAVAILABLE = ("404", "503", "not deployed", "not found", "unavailable")
 # Errors that mean "transient, retry the SAME model with backoff".
 _TRANSIENT = ("429", "403", "rate", "timeout", "500", "502")
@@ -825,8 +826,7 @@ def _arm_messages(payload):
     raise ValueError(f"unknown teacher arm: {arm!r}")
 
 
-def make_trapi_teacher_fn(model_list=None, client_factory=None,
-                          max_retries=8, temperature=0.7):
+def make_trapi_teacher_fn(model_list=None, client_factory=None, max_retries=8):
     """Build a TRAPI(Entra)-backed ``teacher_fn(payload) -> str``.
 
     The AzureOpenAI client + Entra token provider are constructed LAZILY on the
@@ -837,8 +837,9 @@ def make_trapi_teacher_fn(model_list=None, client_factory=None,
     Per call: branch the prompt on ``payload['arm']`` (``_arm_messages``), then try
     the MODEL FALLBACK LIST in order — advance to the next model on a 404/503/health
     error (model not deployed), retry the SAME model with capped exponential backoff
-    on a transient 429/403/5xx. For the control arm the ``payload['sample']`` index
-    perturbs the seed so the k>=4 control draws are independent.
+    on a transient 429/403/5xx. Uses ``chat.completions`` (the API TRAPI serves these
+    deployments on); ``seed``/``temperature`` are intentionally NOT sent — the proven
+    call is ``chat.completions.create(model, messages, max_completion_tokens)``.
 
     Returns the completion text (raises if every model is exhausted)."""
     models = list(model_list or TRAPI_MODEL_FALLBACK)
@@ -852,17 +853,14 @@ def make_trapi_teacher_fn(model_list=None, client_factory=None,
 
     def teacher_fn(payload):
         messages = _arm_messages(payload)
-        # control draws vary the seed so the k samples are independent.
-        seed = 1000 + int(payload.get("sample", 0)) if payload["arm"] == "control" else None
         last_err = None
         for model in models:
             for attempt in range(max_retries):
                 try:
-                    kw = {"model": model, "input": messages, "temperature": temperature}
-                    if seed is not None:
-                        kw["seed"] = seed
-                    resp = _client().responses.create(**kw)
-                    text = resp.output_text
+                    resp = _client().chat.completions.create(
+                        model=model, messages=messages,
+                        max_completion_tokens=_MAX_COMPLETION_TOKENS)
+                    text = resp.choices[0].message.content
                     if text:
                         return text
                     last_err = RuntimeError("empty completion")

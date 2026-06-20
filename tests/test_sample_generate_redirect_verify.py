@@ -184,18 +184,18 @@ def test_sample_generate_empty_anchors_safe():
 # --------------------------------------------------------------------------- #
 class _FakeResp:
     def __init__(self, text):
-        self.output_text = text
+        self.choices = [type("C", (), {"message": type("M", (), {"content": text})()})()]
 
 
-class _FakeResponses:
+class _FakeChatCompletions:
     def __init__(self, parent):
         self.parent = parent
 
-    def create(self, *, model, input, **kw):
-        self.parent.calls.append({"model": model, "input": input})
+    def create(self, *, model, messages, **kw):
+        self.parent.calls.append({"model": model, "messages": messages})
         # echo back which arm's SYSTEM prompt was used so the test can assert
-        # the branch; the system prompt is input[0].
-        system = input[0]["content"]
+        # the branch; the system prompt is messages[0].
+        system = messages[0]["content"]
         return _FakeResp(f"<|meta|>\nconfidence: 0.00\ndecision: redirect\n"
                          f"SYS={system[:24]}\n<|/meta|>\nThe answer is $7$.")
 
@@ -203,7 +203,7 @@ class _FakeResponses:
 class _FakeClient:
     def __init__(self):
         self.calls = []
-        self.responses = _FakeResponses(self)
+        self.chat = type("Chat", (), {"completions": _FakeChatCompletions(self)})()
 
 
 def test_make_trapi_teacher_fn_branches_on_arm_and_caches_client():
@@ -225,21 +225,21 @@ def test_make_trapi_teacher_fn_branches_on_arm_and_caches_client():
     })
     assert META_START in out_r and META_END in out_r
     # the redirect SYSTEM prompt (TEACHER_DISTILL) was used, not the control one.
-    assert "math teacher" in fake.calls[-1]["input"][0]["content"].lower()
+    assert "math teacher" in fake.calls[-1]["messages"][0]["content"].lower()
 
     # control arm -> the CONTROL continuation system prompt
     teacher({
         "question": "P", "gold": "7", "confidence": 0.0, "arm": "control",
         "wrong_prefix": "started wrong so", "sample": 0,
     })
-    assert "control continuation" in fake.calls[-1]["input"][0]["content"].lower()
+    assert "control continuation" in fake.calls[-1]["messages"][0]["content"].lower()
 
     # verify arm -> verify prompt on the attempt (wrong_prefix carries the attempt)
     teacher({
         "question": "P", "gold": "42", "confidence": 0.8, "arm": "verify",
         "wrong_prefix": "the student attempt text",
     })
-    assert "verify" in fake.calls[-1]["input"][1]["content"].lower()
+    assert "verify" in fake.calls[-1]["messages"][1]["content"].lower()
 
     # client built ONCE (lazy + cached), reused across all three calls.
     assert built["n"] == 1
@@ -248,13 +248,13 @@ def test_make_trapi_teacher_fn_branches_on_arm_and_caches_client():
 def test_make_trapi_teacher_fn_falls_back_on_404():
     fake = _FakeClient()
 
-    class _Flaky(_FakeResponses):
-        def create(self, *, model, input, **kw):
+    class _Flaky(_FakeChatCompletions):
+        def create(self, *, model, messages, **kw):
             if model == "m1":
                 raise RuntimeError("Error code: 404 - model not deployed")
-            return super().create(model=model, input=input, **kw)
+            return super().create(model=model, messages=messages, **kw)
 
-    fake.responses = _Flaky(fake)
+    fake.chat.completions = _Flaky(fake)
 
     teacher = make_trapi_teacher_fn(
         model_list=["m1", "m2"], client_factory=lambda: fake, max_retries=2,
@@ -274,14 +274,14 @@ def test_make_trapi_teacher_fn_retries_429_then_succeeds(monkeypatch):
     fake = _FakeClient()
     state = {"n": 0}
 
-    class _RateLimited(_FakeResponses):
-        def create(self, *, model, input, **kw):
+    class _RateLimited(_FakeChatCompletions):
+        def create(self, *, model, messages, **kw):
             state["n"] += 1
             if state["n"] == 1:
                 raise RuntimeError("Error code: 429 - rate limit")
-            return super().create(model=model, input=input, **kw)
+            return super().create(model=model, messages=messages, **kw)
 
-    fake.responses = _RateLimited(fake)
+    fake.chat.completions = _RateLimited(fake)
     teacher = make_trapi_teacher_fn(
         model_list=["m1"], client_factory=lambda: fake, max_retries=3,
     )
