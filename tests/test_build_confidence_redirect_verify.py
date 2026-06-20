@@ -243,6 +243,24 @@ def test_concurrent_build_matches_sequential(tmp_path: Path):
     assert a["wrong_prefix"].tolist() == b["wrong_prefix"].tolist()
 
 
+def test_teacher_error_drops_one_problem_not_the_batch(tmp_path: Path):
+    """A per-problem teacher failure (e.g. a 400 content-filter on the problem text)
+    must DROP that problem and CONTINUE — never kill the whole concurrent batch."""
+    def flaky_teacher(payload):
+        if payload["question"].startswith("P2"):  # the verify problem 400s
+            raise RuntimeError("Error code: 400 - invalid_prompt (content filter)")
+        return _mock_teacher(payload)
+
+    summary = build_dataset(
+        problems=_toy_problems(), rollout_fn=_mock_rollout, teacher_fn=flaky_teacher,
+        out_path=str(tmp_path / "o.parquet"), n_rollouts=4, max_workers=4,
+    )
+    # P2 dropped as a teacher error; P1 redirects still minted (batch survived).
+    assert summary["dropped_teacher_error"] == 1
+    assert summary["kept_redirect"] == 3
+    assert summary["kept_verify"] == 0
+
+
 def test_hard_problems_never_query_teacher(tmp_path: Path):
     """A hard problem must be dropped BEFORE any teacher call (capability-gap OOD)."""
     out = tmp_path / "hard_only.parquet"

@@ -593,43 +593,51 @@ def _process_problem(prob, rollout_fn, teacher_fn, n_rollouts):
         bump("dropped_bucket_none")
         return kept_rows, counts
 
-    if bucket == BUCKET_REDIRECT:
-        # MULTI-ANCHOR: one redirect demo per DISTINCT wrong approach (up to
-        # REDIRECT_MAX_ANCHORS) — redirect is rare, so a single anchor/problem under-
-        # yields. Each anchor runs the full causal filter independently.
-        wrong_prefixes = _pick_wrong_prefixes(rollouts, REDIRECT_MAX_ANCHORS)
-        if not wrong_prefixes:
-            bump("dropped_no_wrong_prefix")
-            return kept_rows, counts
-        outcomes = []
-        for wrong_prefix in wrong_prefixes:
-            # (3) TEACHER conditional redirect + (3.5/4) the no-redirect CONTROL arm
-            # (CONTINUE the same flawed approach) so the causal filter is non-vacuous.
-            raw_redirect = teacher_fn(
-                _teacher_payload(question, gold, confidence, bucket, "redirect", wrong_prefix)
-            )
-            control_grades = _draw_control_grades(
-                teacher_fn, question, gold, confidence, wrong_prefix
-            )
-            outcomes.append(_accept_redirect_demo(
-                question, gold, confidence, wrong_prefix, raw_redirect, control_grades
-            ))
+    try:
+        if bucket == BUCKET_REDIRECT:
+            # MULTI-ANCHOR: one redirect demo per DISTINCT wrong approach (up to
+            # REDIRECT_MAX_ANCHORS) — redirect is rare, so a single anchor/problem
+            # under-yields. Each anchor runs the full causal filter independently.
+            wrong_prefixes = _pick_wrong_prefixes(rollouts, REDIRECT_MAX_ANCHORS)
+            if not wrong_prefixes:
+                bump("dropped_no_wrong_prefix")
+                return kept_rows, counts
+            outcomes = []
+            for wrong_prefix in wrong_prefixes:
+                # (3) TEACHER conditional redirect + (3.5/4) the no-redirect CONTROL
+                # arm (CONTINUE the same flawed approach) so the filter is non-vacuous.
+                raw_redirect = teacher_fn(
+                    _teacher_payload(question, gold, confidence, bucket, "redirect", wrong_prefix)
+                )
+                control_grades = _draw_control_grades(
+                    teacher_fn, question, gold, confidence, wrong_prefix
+                )
+                outcomes.append(_accept_redirect_demo(
+                    question, gold, confidence, wrong_prefix, raw_redirect, control_grades
+                ))
 
-    else:  # BUCKET_VERIFY
-        # (1') ANCHOR the verify demo on a REAL sampled student attempt (prefer a
-        # WRONG sample — the slip the verify must catch). The picked sample's
-        # is_correct is the no-verify CONTROL (the raw attempt committed as-is).
-        picked = _pick_verify_attempt(rollouts)
-        if picked is None:
-            bump("dropped_no_verify_attempt")
-            return kept_rows, counts
-        verify_attempt, control_correct = picked
-        raw_verify = teacher_fn(
-            _teacher_payload(question, gold, confidence, bucket, "verify", verify_attempt)
-        )
-        outcomes = [_accept_verify_demo(
-            question, gold, confidence, verify_attempt, control_correct, raw_verify
-        )]
+        else:  # BUCKET_VERIFY
+            # (1') ANCHOR the verify demo on a REAL sampled student attempt (prefer a
+            # WRONG sample — the slip the verify must catch). The picked sample's
+            # is_correct is the no-verify CONTROL (the raw attempt committed as-is).
+            picked = _pick_verify_attempt(rollouts)
+            if picked is None:
+                bump("dropped_no_verify_attempt")
+                return kept_rows, counts
+            verify_attempt, control_correct = picked
+            raw_verify = teacher_fn(
+                _teacher_payload(question, gold, confidence, bucket, "verify", verify_attempt)
+            )
+            outcomes = [_accept_verify_demo(
+                question, gold, confidence, verify_attempt, control_correct, raw_verify
+            )]
+    except Exception:
+        # A per-problem teacher failure (e.g. a 400 content-filter on the problem text,
+        # or transient errors exhausted inside make_trapi_teacher_fn) must DROP this one
+        # problem, NOT kill the whole concurrent batch. The count surfaces the magnitude
+        # (a few = content filter; thousands = systemic -> investigate, do not mask).
+        bump("dropped_teacher_error")
+        return kept_rows, counts
 
     # ----- bookkeeping: count repairs/drops, collect kept rows. One outcome for
     # verify; up to REDIRECT_MAX_ANCHORS for multi-anchor redirect. -----
@@ -698,6 +706,7 @@ def build_dataset(
         "dropped_control_recovers": 0,
         "dropped_conf_mismatch": 0,
         "dropped_malformed": 0,
+        "dropped_teacher_error": 0,
         "repaired": 0,
     }
 
