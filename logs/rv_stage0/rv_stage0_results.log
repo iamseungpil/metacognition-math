@@ -1,0 +1,44 @@
+[confidence-redirect/verify Stage-0 — data-gen pipeline, 2026-06-20]
+
+# Intent / north-star
+Train a model that self-emits a STUDENT-calibrated confidence and DECIDES
+redirect (low-conf / confidently-wrong) vs verify (high-conf, checkable) vs none.
+Useful metacognition -> accuracy, useful ONLY. Calibration is a sub-signal.
+
+# Student rollout dump (vLLM, H100x4, v8_meta_inside_strict_sft, n=8 temp 0.8)
+[dump] 300 problems  | mean pass_rate=0.640 | in-band[0.125,0.5]=0.190
+[dump] 4171 problems | mean pass_rate=0.641 | in-band[0.125,0.5]=0.200   (full easy/medium pool N_em=4171)
+
+# H1: redirect yields enough at single-anchor (target B1 redirect>=600, B2 verify>=300)
+# PG-build pilot, 25-problem slice (TRAPI teacher, causal+structural filter)
+[pgbuild] SLICE=25 kept_redirect=1 kept_verify=8 dropped_bucket_none=11 dropped_control_recovers=3 dropped_decorative=1
+[pgbuild] PROJECTED N_em=4171: redirect=167 verify=1335  VERDICT=STOP (B1 LOW, B2 OK)
+
+# H2: multi-anchor (one redirect demo per DISTINCT wrong approach, max 4) lifts redirect to >=600
+# 60-problem slice
+[pgbuild] SLICE=60 kept_redirect=6 kept_verify=18 dropped_bucket_none=27 dropped_decorative=30 dropped_control_recovers=20
+[pgbuild] PROJECTED N_em=4171: redirect=417 verify=1251  VERDICT=STOP (B1 LOW, B2 OK)
+
+# H3: the decorative wall is prompt-fixable (decision-field) vs teacher-capability (recovery wrong)
+# decorative split, 40-problem slice
+[pgbuild] SLICE=40 kept_redirect=2 kept_verify=12 dropped_decorative_decision=0 dropped_decorative_norecover=13 dropped_control_recovers=17
+[pgbuild] PROJECTED N_em=4171: redirect=209 verify=1251  VERDICT=STOP
+# decision-field failures = 0 (prompt is fine); 100% of decorative = teacher could not solve (norecover)
+# control_recovers ~53% of redirect anchors = the "stuck" wrong path self-recovers (redirect not causally needed)
+
+# Decision (user-delegated): VERIFY-LED full build. redirect is CAUSALLY rare (3x confirmed:
+# PG0 + decorative-split + control-recovers). Build the ~250 genuine redirects + ~1251 verifies,
+# NO padding (padding = v8 hollow-redirect that RL cut, v1=0.651 < baseline 0.786). DCPO triobj RL
+# (R_corr + R_meta(PMI) + R_cal) then selects whichever metacognition raises accuracy.
+
+# Infra incident: full local teacher build OOM-killed at 117GB RSS (dump is only 12MB).
+# Root cause = NOT the TRAPI API: _check_correctness fed the WHOLE teacher essay (<=4000 tok) to
+# math_verify(parsing_timeout=None, disabled for thread-safety); a control sample's pathological
+# expression (huge nested exponent/factorial) made sympy allocate unboundedly + the global sympy
+# cache compounded over ~1.6e4 grades.
+# Fix = _grade_answer parses ONLY the extracted short final answer (last \boxed / 'answer is X');
+# long/pathological candidates skip sympy. SYMPY_USE_CACHE=no + clear_cache() per chunk +
+# chunked/resumable build (CHUNK_SIZE=250, max_workers=6). Pathological-essay test: <1s, correct.
+# After fix: build RSS flat at 0.36GB (was climbing past several GB by this elapsed time pre-fix).
+
+# Tests: 41 (build + grade-safety + sft redirect-mask + concurrency-equivalence) green.
