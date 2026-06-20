@@ -116,11 +116,26 @@ def main() -> None:  # pragma: no cover - GPU wiring; pure helpers are unit-test
     print(f"[dump] wrote {args.out_path}: {len(df)} problems | "
           f"mean pass_rate={pr.mean():.3f} | in-band[0.125,0.5]={in_band:.3f}")
 
-    from huggingface_hub import HfApi
-    HfApi(token=os.environ["HF_TOKEN"]).upload_file(
-        path_or_fileobj=args.out_path, path_in_repo=args.hf_path,
-        repo_id=args.hf_repo, repo_type="dataset")
+    _upload_verified(args.out_path, args.hf_repo, args.hf_path)
     print(f"[dump] uploaded -> hf://{args.hf_repo}/{args.hf_path}")
+
+
+def _upload_verified(local_path: str, repo: str, path_in_repo: str, retries: int = 4) -> None:
+    """Upload + CONFIRM the blob landed. hf_xet silently 404s large LFS files —
+    the commit appears in history but resolve/ 404s (see memory hf-xet-upload-pitfall).
+    Disable xet in-process and assert the path is in the repo tree after each try."""
+    os.environ["HF_HUB_DISABLE_XET"] = "1"
+    from huggingface_hub import HfApi
+    api = HfApi(token=os.environ["HF_TOKEN"])
+    for attempt in range(1, retries + 1):
+        api.upload_file(path_or_fileobj=local_path, path_in_repo=path_in_repo,
+                        repo_id=repo, repo_type="dataset")
+        files = api.list_repo_files(repo, repo_type="dataset")
+        if path_in_repo in files:
+            return
+        print(f"[dump] upload attempt {attempt}/{retries}: '{path_in_repo}' NOT in tree "
+              f"(hf_xet silent-404) — retrying")
+    raise SystemExit(f"[dump] FATAL: '{path_in_repo}' never landed after {retries} uploads")
 
 
 if __name__ == "__main__":
