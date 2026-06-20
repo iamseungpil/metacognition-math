@@ -1,0 +1,110 @@
+description: "Stage-1 WARM-UP SFT for the confidence redirect/verify corpus. Init = staged v8_meta_inside_strict_sft/checkpoint-254. Trains on metacot-rv/data/rv_confidence_sft.parquet (teacher-distilled redirect + verify demos anchored on the student's OWN rollouts); sft.py masks prompt+wrong_prefix on redirect rows (segment_loss_mask) and trains only meta+recovery; teacher_kl OFF. 3 epochs, lr 1e-5. Pushes checkpoints/v8_rv_confidence_warmup to the CLEAN iamseungpil/metacot-rv under models/v8_rv_confidence_warmup/ (metacot is hf_xet-tainted). This is the warm start the DCPO triobj RL builds on. H100x4 Standard."
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: rv_warmup_sft
+    sku: 80G4-H100
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 604800
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        CODE_TAR_REVISION: "REPLACED_AT_SUBMIT"
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        WANDB_API_KEY: ${WANDB_API_KEY}
+        WANDB_KEY: ${WANDB_API_KEY}
+        WANDB_PROJECT: metacot-math
+        WANDB_RUN_GROUP: rv_confidence
+        WANDB_NAME: v8_rv_confidence_warmup
+        WANDB_TAGS: rv,warmup-sft,redirect,verify,confidence
+        HF_HUB_DISABLE_XET: "1"
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints /scratch/models
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        # inline GPU spinner (close the Singularity suspend-on-idle window from t~0).
+        nohup python -c "
+        import torch, time
+        g = torch.cuda.device_count()
+        ts = [torch.randn(2048, 2048, device=f'cuda:{i}', dtype=torch.float16) for i in range(g)]
+        while True:
+            for i in range(g): ts[i] = (ts[i] @ ts[i]) * 0.5
+            time.sleep(2)
+        " > /scratch/logs/gpu_keeper_inline.log 2>&1 &
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper_early.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        # env flag + pip uninstall are INSUFFICIENT -> hard-remove hf_xet (memory hf-xet-pitfall).
+        pip uninstall -y hf_xet 2>&1 | tail -1 || true
+        find $${SIMPLERL_DIR}/lib -maxdepth 3 -name "hf_xet*" -exec rm -rf {} + 2>/dev/null || true
+        python -c "import deepspeed" 2>/dev/null || pip install -q deepspeed 2>&1 | tail -1
+
+        # ── stage the v8_strict SFT as the warm-up init checkpoint (read from metacot) ──
+        python -c "
+        from huggingface_hub import snapshot_download
+        import os, shutil
+        snapshot_download(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/v8_meta_inside_strict_sft/checkpoint-254/*\"], local_dir=\"/scratch/models_dl\")
+        src=\"/scratch/models_dl/models/v8_meta_inside_strict_sft/checkpoint-254\"; dst=\"/scratch/models/v8_meta_inside_strict_sft\"
+        shutil.rmtree(dst, ignore_errors=True); shutil.copytree(src, dst); print(\"warm-up init staged\")
+        "
+        python -c "
+        import json; p=\"/scratch/models/v8_meta_inside_strict_sft/tokenizer_config.json\"
+        cfg=json.load(open(p)); cfg.pop(\"extra_special_tokens\", None); json.dump(cfg, open(p,\"w\"), indent=2); print(\"tokenizer patched\")
+        "
+        # ── stage the rv confidence corpus from the CLEAN metacot-rv repo ──
+        python -c "
+        from huggingface_hub import hf_hub_download
+        import os, shutil
+        p = hf_hub_download(\"iamseungpil/metacot-rv\", \"data/rv_confidence_sft.parquet\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"])
+        os.makedirs(\"/scratch/metacognition/data\", exist_ok=True)
+        shutil.copy(p, \"/scratch/metacognition/data/rv_confidence_sft.parquet\"); print(\"rv corpus staged\")
+        "
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/v8_rv_confidence_warmup --repo_id iamseungpil/metacot-rv --token $${HF_TOKEN} --interval 90 --config_name v8_rv_confidence_warmup > /scratch/logs/push_warmup_sft.log 2>&1 &
+
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+        python -m accelerate.commands.launch --config_file configs/accelerate_sft.yaml \
+            src/training/sft.py --config configs/sft_rv_confidence_warmup.yaml
+        SFT_RC=$$?
+        echo "[YAML] rv warmup-sft rc=$${SFT_RC}"
+        # push the final model to the CLEAN metacot-rv repo at models/v8_rv_confidence_warmup/
+        # with a shard-verify loop (HF 429 can silently drop LFS shards).
+        for i in 1 2 3 4 5 6 7 8; do
+            python /scratch/metacognition/scripts/push_models_hf.py --model_path /scratch/checkpoints/v8_rv_confidence_warmup --model_name v8_rv_confidence_warmup --repo_id iamseungpil/metacot-rv 2>&1 | tail -8
+            N=$$(python -c "from huggingface_hub import HfApi;import os;fs=HfApi().list_repo_files('iamseungpil/metacot-rv',repo_type='dataset',token=os.environ['HF_TOKEN']);print(sum(1 for f in fs if 'v8_rv_confidence_warmup/model-' in f and f.endswith('.safetensors')))")
+            echo "[YAML][push] attempt $$i: shards_on_hf=$$N/4"
+            [ "$$N" = "4" ] && echo "[YAML][push] all 4 shards durable on metacot-rv models/" && break
+            sleep 90
+        done
+        sleep 86400
+        '
