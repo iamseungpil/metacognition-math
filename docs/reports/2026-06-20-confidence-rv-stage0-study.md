@@ -10,8 +10,9 @@
 | H2: multi-anchor lifts redirect ≥600 | redirect demos (proj.) | ≥600 | **417** (×2.5 vs H1) | ✗ refuted |
 | H3: the redirect wall is prompt-fixable | decorative_decision / norecover | decision-dominant | **decision=0, norecover=13** | ✗ refuted (cause = teacher-cap + self-recovery) |
 | verify availability | verify demos (proj.) | ≥300 | **1251–1335** | ✓ confirmed |
+| **full build (actual)** | redirect / verify kept | — | **562 / 1219** | redirect borderline (≈B1), verify abundant |
 
-**Conclusion.** Genuine *redirect* metacognition is **causally rare** (triple-confirmed), so we pivot to a **verify-led** corpus: build the ~250 genuine redirects + ~1251 verifies with **no padding**, and let the downstream DCPO triobj RL select whichever metacognition raises accuracy. A 117 GB OOM during the full build was root-caused to math-grading (not the API) and fixed.
+**Conclusion (revised after the build).** The PG-build "redirect is causally rare" verdict was **partly a grading artifact**: the slice projections used `_check_correctness` on the *full* teacher essay, which spuriously matched intermediate expressions in the no-redirect control and inflated `control_recovers`, dropping genuine redirects. Grading only the **extracted final answer** raised the actual harvest to **562 redirect + 1219 verify** (vs the 167–417 projection) — redirect is *less* rare than feared, landing just under B1 = 600. We still build **verify-led, no padding**, and let the downstream DCPO triobj RL select whichever metacognition raises accuracy. The same fix resolved a 117 GB OOM (math-grading on the full essay, not the API).
 
 ---
 
@@ -68,10 +69,9 @@ def _grade_answer(text, gold):           # SAFE causal-filter grade
 
 ## 6. Next Steps
 
-### E1: Stage-0 full build (running)
-- **Tests**: corpus realizes the projected redirect≈250 + verify≈1251.
-- **Output**: `metacot-rv/data/rv_confidence_sft.parquet`.
-- **Expected**: kept_redirect ~200–300, kept_verify ~1200, dropped_teacher_error small.
+### E1: Stage-0 full build (DONE)
+- **Output**: `metacot-rv/data/rv_confidence_sft.parquet` (1781 rows).
+- **Actual**: kept_redirect **562**, kept_verify **1219** (verify_catch=1219), dropped_control_recovers=2443, dropped_decorative_norecover=839, dropped_decorative_decision=0, teacher_error=1. Memory flat 0.31 GB (chunked, OOM-fixed).
 
 ### E2: Stage-1 warm-up SFT (prepared)
 - **Config**: init `v8_meta_inside_strict_sft`, 3 epochs, lr 1e-5, teacher_kl off; `sft.py` masks prompt+wrong_prefix on redirect rows (train only meta+recovery).
