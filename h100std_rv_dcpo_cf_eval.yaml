@@ -1,4 +1,4 @@
-description: "Counterfactual Δ eval for an rv DCPO RL checkpoint (global_step ${GS}). Pulls the verl FSDP checkpoint checkpoints/triobj_dcpo_v4_rv_h100_4x4k/global_step_${GS}/actor from metacot-h200-triobj-dcpo-v3, merges FSDP->HF (verl.model_merger), then runs eval_counterfactual_difficulty on the held-out meta-mix val: each problem decoded TWICE (arm A normal vs arm B with <|meta|> open banned), at 16k (train-4k/eval-16k convention). Reports acc_with - acc_without stratified by difficulty x scenario — does the RL'd meta CAUSALLY raise accuracy (D-gate Δ>0). vLLM. Standard 80G4-H100. GS set at submit. Tokens via env only."
+description: "Counterfactual Δ eval for an rv DCPO RL checkpoint (global_step $${GS}). Pulls the verl FSDP checkpoint checkpoints/triobj_dcpo_v4_rv_h100_4x4k/global_step_$${GS}/actor from metacot-h200-triobj-dcpo-v3, merges FSDP->HF (verl.model_merger), then runs eval_counterfactual_difficulty on the held-out meta-mix val: each problem decoded TWICE (arm A normal vs arm B with <|meta|> open banned), at 16k (train-4k/eval-16k convention). Reports acc_with - acc_without stratified by difficulty x scenario — does the RL'd meta CAUSALLY raise accuracy (D-gate Δ>0). vLLM. Standard 80G4-H100. GS set at submit. Tokens via env only."
 
 target:
   service: sing
@@ -66,7 +66,7 @@ jobs:
         VAL=/scratch/metacognition/data/verl_val_meta_mix.parquet
         ls -la $${VAL} || { echo "[YAML] val parquet missing"; exit 1; }
 
-        # 1. download the verl FSDP checkpoint global_step_${GS}.
+        # 1. download the verl FSDP checkpoint global_step_$${GS}.
         $${PYBIN} -c "
         from huggingface_hub import snapshot_download
         import os
@@ -101,7 +101,7 @@ jobs:
         EVAL_RC=$$?
         if [ "$${EVAL_RC}" -ne 0 ]; then echo "[YAML] cf eval FAILED rc=$${EVAL_RC}"; exit 1; fi
 
-        echo "================ RV DCPO gs${GS} CF SUMMARY ================"
+        echo "================ RV DCPO gs$${GS} CF SUMMARY ================"
         $${PYBIN} -m src.eval.eval_counterfactual_difficulty_summarize --jsonl $${OUT} 2>&1 | tee /scratch/eval_results/cf_rv_dcpo_gs$${GS}_summary.txt
         echo "=========================================================="
 
@@ -116,6 +116,6 @@ jobs:
             except Exception as e: print(\"upload skip\", fn, str(e)[:80])
         print(\"rv dcpo cf eval uploaded\")
         " || echo "[YAML] upload skipped"
-        echo "[YAML] rv_dcpo_cf_eval gs${GS} DONE"
+        echo "[YAML] rv_dcpo_cf_eval gs$${GS} DONE"
         sleep 600
         '
