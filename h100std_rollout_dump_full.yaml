@@ -1,4 +1,4 @@
-description: "Stage-0a rollout DUMP for confidence-redirect/verify teacher-distill. Roll out the SFT-init student (v8_meta_inside_strict_sft) n=8 on easy/medium problems from the RL meta_mix parquet, grade with rewards._check_correctness, and dump per-problem (rollouts, grades, answers, pass_rate) to a parquet uploaded to HF (data/rv_rollout_dump.parquet). The local teacher build (Stage-0b, TRAPI on host) consumes this; this is the only GPU touch for data-gen. Standard 80G4-H100, vLLM (mirrors pg0_yield_pilot). Tokens via env only."
+description: "Stage-0 FULL rollout DUMP (all easy/medium) for confidence-redirect/verify teacher-distill. Roll out the SFT-init student (v8_meta_inside_strict_sft) n=8 on easy/medium problems from the RL meta_mix parquet, grade with rewards._check_correctness, and dump per-problem (rollouts, grades, answers, pass_rate) to a parquet uploaded to HF (data/rv_rollout_full.parquet). The local teacher build (Stage-0b, TRAPI on host) consumes this; this is the only GPU touch for data-gen. Standard 80G4-H100, vLLM (mirrors pg0_yield_pilot). Tokens via env only."
 
 target:
   service: sing
@@ -85,16 +85,16 @@ jobs:
         export PYTHONPATH=/scratch/metacognition
         cd /scratch/metacognition
 
-        # ════════ rollout dump (vLLM) — uploads data/rv_rollout_dump.parquet to HF ════════
+        # ════════ rollout dump (vLLM) — uploads data/rv_rollout_full.parquet to HF ════════
         $${PYBIN} scripts/rollout_dump.py \
             --model_path /scratch/models/v8_meta_inside_strict_sft \
             --train_parquet /scratch/metacognition/data/verl_train_meta_mix.parquet \
-            --n_problems 300 \
+            --n_problems 4171 \
             --rollout_k 8 \
             --tp_size 4 \
-            --out_path /scratch/eval_results/rv_rollout_dump.parquet \
+            --out_path /scratch/eval_results/rv_rollout_full.parquet \
             --hf_repo iamseungpil/metacot-rv \
-            --hf_path data/rv_rollout_dump.parquet \
+            --hf_path data/rv_rollout_full.parquet \
             2>&1 | tee /scratch/logs/rv_rollout_dump.log
         echo "[YAML] rv_rollout_dump DONE"
         sleep 86400

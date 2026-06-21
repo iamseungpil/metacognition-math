@@ -24,7 +24,7 @@ jobs:
         HF_TOKEN: ${HF_TOKEN}
         HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
         GH_TOKEN: ${GH_TOKEN}
-        CODE_TAR_REVISION: "451394122"
+        CODE_TAR_REVISION: "451815126"
         WANDB_API_KEY: ${WANDB_API_KEY}
         WANDB_KEY: ${WANDB_API_KEY}
         HF_HUB_DISABLE_XET: "1"
@@ -41,6 +41,18 @@ jobs:
         cd /scratch
         source /opt/conda/etc/profile.d/conda.sh
         conda activate ptca
+        # ── inline GPU spinner from t~0: Singularity suspend-on-idle was killing PG0
+        #    during conda+curl+tar, because scripts/gpu_keeper.py lives INSIDE the
+        #    not-yet-downloaded tarball so the GPU sat idle until after download.
+        #    ptca already has torch; spin every GPU immediately to close that window. ──
+        nohup python -c "
+        import torch, time
+        g = torch.cuda.device_count()
+        ts = [torch.randn(2048, 2048, device=f'cuda:{i}', dtype=torch.float16) for i in range(g)]
+        while True:
+            for i in range(g): ts[i] = (ts[i] @ ts[i]) * 0.5
+            time.sleep(2)
+        " > /scratch/logs/gpu_keeper_inline.log 2>&1 &
         pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
 
         curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}

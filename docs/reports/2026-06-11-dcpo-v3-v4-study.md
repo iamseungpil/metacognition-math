@@ -156,3 +156,72 @@ Across v2→v4 the constant is the region-routing architecture; the variable is 
 - RLT: "Reinforcement Learning Teachers of Test Time Scaling" (arXiv:2506.08388) — dense student-likelihood teacher rewards; basis of the v4 two-round + PMI design.
 - RLSD/SDPO line (memory `rlsd-vs-sdpo-reference`) — warning that gold-conditioned teachers suppress epistemic content; motivated gold-free v4 scoring.
 - Spec: `docs/superpowers/specs/2026-06-11-dcpo-v4-likelihood-rmeta-design.md` (review findings C1–C3/I1–I5/M1–M4).
+
+---
+
+## 8. [NEW] Stage-3b: Meta-Format Priming and the Forming Cliff (2026-06-17)
+
+Stage-3b runs the v4 reward stack (PMI content reward + conflict-free composition, all unchanged from §3) from a **format-primed** SFT checkpoint: the `<|meta|>…<|/meta|>` block is rebuilt to a short fixed template and the meta-token embeddings are transplanted from `<think>`/`</think>` before a brief SFT, so that the meta channel is *well-formed* at RL start and PMI can grade its usefulness. The headline metric is `wellformed_rate` (**wf** — the fraction of rollouts that emit a parseable meta block; wf is the precondition for PMI coverage) and the held-out per-benchmark `correctness/mean@1` delta vs a fixed step-0 baseline (`net +P/-N` = benchmarks moved beyond ±0.02 on the reward-shaped scale). A grading bug was fixed first: `math_verify` called `signal.signal(SIGALRM)` unconditionally, which raises in Ray reward worker threads, so symbolic answers were mis-graded — a thread-safe monkeypatch (`src/training/rewards.py`, commit `41c9f00`) restores correct grading.
+
+### H8 — "Meta forming survives RL when primed" → FALSIFIED for the baseline schedule; the failure is a diagnosable reward-balance cliff
+
+The primed checkpoint *does* start well-formed — both runs open at wf = 0.695 (source: `logs/s3b_export/v1_train.csv`, `v2_train.csv` step 1). But under the **baseline** schedule (warmup 80, len_cost 0.08, floor 0.05) wf does not survive: it holds a noisy ~0.66 through step 29 (mean 0.657), erodes to ~0.41 by step 50, sits at **0.406 at step 80** (the warmup end — not yet collapsed), then falls below 0.2 from **step 91** and reaches the **~0.10 floor by step 102** (0.107), decaying to **0.012** by step 145 (source: `logs/s3b_export/v1_train.csv`; first wf < 0.2 at step 91, first < 0.15 at step 102). The terminal floor (~0.10) is reached by several preempted lineages, the fingerprint of a deterministic pressure rather than noise.
+
+**Mechanism (root cause).** The decline transitions to *terminal* collapse immediately after the `dcpo_w_meta_warmup_steps = 80` boundary — wf is still 0.41 at step 80 but drops below 0.2 within ~10 steps — because `dcpo_len_cost` is warmed up on the *same* `dcpo_w_meta_scale` (config L152, `configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml`). At step 80 both the length penalty (0.08) and the PMI content reward (w_meta 0.8, with a strict usefulness gate `dcpo_pmi_clip_gate = 0.1085`) reach full weight simultaneously. For any meta emission that does not clear the PMI bar, the added tokens now cost more R_corr (via length) than they earn, so the policy sheds meta down to the ~10% that clears PMI, held off zero only by `meta_floor 0.05`. The decode guard `DCPO_META_CLOSE_FORCE=1` forces the *closing* token but cannot force *emission*, so it does not arrest this. This is the same "incentives only reschedule collapse" pattern as H3/H4, now located at the warmup-end: the schedule sets the timer, the warmup boundary fires it.
+
+![Figure 8.1: Meta forming under RL — baseline collapse vs sustain prescription](figures/s3b_wf_trajectory.png)
+
+**Figure 8.1 해석**: v1 (orange) holds wf ~0.66 then erodes through ~0.41 at its warmup end (step 80), after which the decline steepens to ~0.10 by step 102 and toward 0.01 by step 145; v2 (blue) oscillates ~0.63-0.74 through step 33 then holds ~0.70-0.82 through step 57. The two vertical dashed lines mark each run's warmup end — v1's terminal collapse follows immediately after its line (80), and v2's warmup end (150) has not yet been reached, so v2's true durability test is still pending. The gray bar at 0.4 is the "measurable forming" threshold below which PMI loses coverage; v1 crosses below it around step 50 and stays there, while v2 stays far above through step 57.
+
+### The v2 prescription: three reward-balance overrides, isolated A/B
+
+The fix changes only the *balance*, not the data, composition, or PMI head: `dcpo_len_cost 0.08→0.03` (stop over-punishing meta length), `dcpo_meta_floor 0.05→0.15` (hold a measurable forming floor), `dcpo_w_meta_warmup_steps 80→150` (turn the step-80 cliff into a ramp). These are CLI overrides on the verl launch (`h100std_s3b_v2_chain.yaml`) reusing the same signal-fix code release (asset 448947726) and the same primed SFT init; experiment_name / checkpoint dir / HF push path all carry a `_v2` suffix so v1 and v2 never collide. v1 (no overrides) and v2 ran in parallel on separate `msrresrchbasicvc` H100 nodes.
+
+![Figure 8.2: Same-step forming divergence, step 35-50](figures/s3b_divergence_zoom.png)
+
+**Figure 8.2 해석**: at the same RL step, v2's wf exceeds v1's by a *widening* margin across the step 35-50 window (all values from `logs/s3b_export/v1_train.csv`, `v2_train.csv`). At step 35 the gap is +0.18 (v1 0.533, v2 0.711); at step 40 +0.17 (v1 0.578, v2 0.746); at step 45 +0.34 (v1 0.459, v2 0.799); at step 50 +0.37 (v1 0.408, v2 0.781). v1 is in active erosion here (0.58 → 0.41 over steps 40-50) while v2 holds and climbs (0.75 → 0.81 at step 41). The gap roughly doubles within 15 steps, and v1 continues to ~0.10 by step 102 while v2 stays ~0.78 — the prescription holds forming through and well past the window where the baseline begins shedding it.
+
+![Figure 8.3: Held-out accuracy — net direction over training, and per-benchmark Δ at step 50](figures/s3b_heldout.png)
+
+**Figure 8.3 해석**: the left panel shows v1's held-out net is *noisy*, not robustly positive — it swings 0/+3/+2/+5/+7/+2 across steps 25-125 (source: `logs/s3b_export/v1_heldout.csv`), with the apparent "+7" being a single step-100 peak that decays to +2 by step 125. v2's two available points are +3 (step 25) and +4 (step 50). The right panel decomposes the step-50 deltas: v2 maintains meta (wf 0.78) *and* reverses v1's worst regressions — `number_theory` goes from v1's −0.143 to v2's **+0.143**, `precalculus` from v1's −0.351 to v2's −0.297, `geometry` from v1's −0.091 to v2's +0.030. v2's negatives (`counting` −0.057, `prealgebra` −0.064) are small in magnitude. The reading is **comparable-to-cleaner accuracy with the meta channel alive**, not a trade.
+
+**Status of the A/B (honest):** v1 reached step 149 and shows the full cliff; v2 reached step 57 with forming intact (wf 0.72 at step 57, having peaked 0.78-0.82 over steps 50-52) before the node preempted. v2 auto-resumes from its HF step-50 checkpoint (`resume_mode=auto`) but each restart redoes the ~40-min format-SFT, and `msrresrchbasicvc` Standard-tier preempts on a ~30-60-min cycle, so v2 has been oscillating near step 50-57 and **has not yet reached its own warmup end (150)** — the decisive durability test. What is *established* is the cliff diagnosis and that the prescription holds forming through the exact window where the baseline collapses (steps 35-57), while keeping held-out accuracy ≥ baseline.
+
+### 8.1 Limitations
+
+- **v2 has not crossed step 150.** The prescription is proven to *eliminate the step-80 cliff*, but whether v2 holds at *its own* warmup end (150) — i.e. whether the softened len_cost+floor removes the cliff or only moves it — is unverified due to preemption (infra, not code). Reaching it requires a preempt-resilient resume that skips the redundant SFT redo.
+- **Accuracy attribution remains indirect.** `acc_with/acc_without` is an artifact here (`sdc_counterfactual=false`), so "meta causes the accuracy" cannot be proven directly. The supporting evidence is correlational: v1's net advantage thins (+6→+4 at one transition) as its meta vanishes, and v2 holds net positive with meta alive — consistent with, but not proof of, a causal contribution.
+- **Held-out metric is noisy at n≈30-50/benchmark.** v1's ±5-benchmark swings between adjacent val checkpoints show the per-checkpoint net count is low-powered; single-point comparisons should not be over-read.
+
+### 8.2 Next Experiments
+
+#### E-s3b-resume: preempt-resilient v2 to step 150
+- **Tests**: H8′ — "the softened schedule removes the cliff, not just delays it" → v2 wf stays > 0.4 through and past step 150.
+- **Config changes**:
+  ```yaml
+  # resume-only launch: skip the format-SFT stage on restart (init from the
+  # step-50 RL checkpoint's own weights), so each ~60-min preempt window spends
+  # all of its time on RL and crosses save_freq boundaries.
+  trainer.save_freq: 10 -> 5     # checkpoint twice as often => less lost per preempt
+  # + a resume yaml that bypasses Stage-1 SFT when an RL checkpoint exists on HF
+  ```
+- **Expected**: if H8′ holds, v2 wf flat ~0.7 through step 150 and beyond, net ≥ baseline; if the cliff merely moved, wf drops at ~150 (then the floor/len_cost need further softening, or w_format raised).
+
+#### E-s3b-causal: turn the counterfactual head on for one eval
+- **Tests**: H8″ — "the surviving meta is load-bearing for accuracy" → acc_with > acc_without at a fixed v2 checkpoint.
+- **Config changes**:
+  ```yaml
+  sdc_counterfactual: true   # eval-only pass: regrade each rollout with meta masked
+  ```
+- **Expected**: a positive acc_with − acc_without gap at v2's step-50 checkpoint would convert the correlational attribution into direct evidence.
+
+### 8.3 Infra lesson (carried)
+
+The HF Xet backend silently 404s large LFS shards ("OK" returned, blob uncommitted); `HF_HUB_DISABLE_XET=1` is insufficient — the package must be `pip uninstall`-ed *and* its files removed, and a Xet-poisoned repo's content-hash dedup is per-repo permanent, so a fresh repo is required (memory `hf-xet-upload-pitfall-and-chain-fix`). The s3b chains sidestep this entirely with a local SFT→RL handoff on one node; HF is used only for durable RL-checkpoint resume.
+
+## References (§8)
+
+- s3b design spec: `docs/superpowers/specs/2026-06-15-s3b-meta-format-priming-design.md`; RL-data-regime spec: `docs/superpowers/specs/2026-06-15-rl-data-regime-redesign-design.md`.
+- DAPO (clip-higher, dynamic sampling) and the self-distill-degrade solve-rate band — basis of the §3/s3 data-regime redesign carried into s3b.
+- Data sources: `logs/s3b_export/{v1,v2}_{train,heldout}.csv` (wandb `gistdslab/metacot-dcpo-v4`, experiment_name `triobj_dcpo_v4_stage3b_h100_4x4k` and `…_v2_…`). The held-out `net +P/-N` is computed against the fixed **step-0 `val_before_train`** per-benchmark baseline of the v1 run (gsm8k 0.859, algebra 0.553, counting 0.771, geometry −0.091, intermediate_algebra 0.167, number_theory 0.619, prealgebra 0.677, precalculus −0.405, omni-math −0.587; `val-aux/<bench>/correctness/mean@1` at global_step 0); the held-out CSVs store the raw per-step `cur` values, deltas are `cur − base`.
+- Grading fix + infra: memory `s3b-forming-cliff-and-v2-fix`, `hf-xet-upload-pitfall-and-chain-fix`; commit `41c9f00` (signal-safe `math_verify`), code release asset 448947726.
