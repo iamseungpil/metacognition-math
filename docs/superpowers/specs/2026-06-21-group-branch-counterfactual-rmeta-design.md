@@ -121,7 +121,10 @@ acc_without is graded, and no NaN/guard explosions — NOT a stripped harness.
   group-split surrogate tracks true ΔP(correct).
 - Cross-model causal check (Spurious-Rewards safeguard) before trusting Δ>0.
 
-## Open questions for review
-- Split fraction 4/4 vs 6/2 (more with-meta samples vs tighter counterfactual baseline)?
-- Should R_trans route onto ANSWER region (outcome locus) or META_CONTENT (decision locus)?
-- Keep a small PMI dense-shaping term alongside cf_group (combine), or fully replace?
+## Resolved decisions (user, 2026-06-21)
+- **Split fraction = 4/4** (`dcpo_cf_branch_frac: 0.5`): tighter counterfactual baseline
+  over more with-meta samples.
+- **R_trans (and cf_group R_meta) route onto ANSWER region** (outcome locus) — the
+  counterfactual answer-delta is an outcome signal; credit/blame the answer tokens.
+- **Fully replace PMI** with `cf_group` (no combined dense PMI term). `dcpo_rmeta_source:
+  pmi → cf_group`; the PMI populator path is bypassed for this run.
