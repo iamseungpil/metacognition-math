@@ -1038,21 +1038,65 @@ def make_trapi_teacher_fn(model_list=None, client_factory=None, max_retries=8):
     return teacher_fn
 
 
+def _parquet_rollout_setup(rollout_parquet, pool_size):  # pragma: no cover - IO
+    """GPU-FREE rollout source: read PRE-COMPUTED student rollouts from a parquet
+    instead of generating them on a vLLM node. Expects columns
+    question / gold / difficulty / rollouts[list[str]] / grades[list[0|1]] /
+    answers[list[str]] (the rv_rollout_full.parquet schema). Returns
+    ``(problems, rollout_fn)`` wired EXACTLY like the GPU path, so build_dataset is
+    unchanged — the whole teacher-distill then runs on a login node (no H100): the
+    only network is the TRAPI teacher_fn. The confidence label is still the
+    student's own pass_rate (computed from `grades` inside the pipeline), leak-free.
+    """
+    import pandas as pd
+
+    df = pd.read_parquet(rollout_parquet)
+    by_q: dict = {}
+    problems: list = []
+    for _, r in df.iterrows():
+        q = str(r["question"])
+        rolls = [str(t) for t in list(r["rollouts"])]
+        grades = [bool(int(g)) for g in list(r["grades"])]
+        answers = [str(a) for a in list(r["answers"])]
+        by_q[q] = list(zip(rolls, grades, answers))  # (text, is_correct, answer)
+        problems.append({
+            "question": q,
+            "gold": str(r["gold"]),
+            "tags": {"difficulty": str(r["difficulty"]).lower()},
+        })
+    if pool_size and pool_size > 0:
+        problems = problems[:pool_size]
+
+    def rollout_fn(question, gold, n):
+        rolls = by_q.get(str(question), [])
+        return rolls[:n] if n else rolls
+
+    return problems, rollout_fn
+
+
 def main():  # pragma: no cover - wires GPU + network; logic above is unit-tested
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model_path", default="/scratch/models/v8_meta_inside_strict_sft")
     parser.add_argument("--train_parquet", default="/scratch/metacognition/data/verl_train_meta_mix.parquet")
+    parser.add_argument("--rollout_parquet", default=None,
+                        help="GPU-FREE: read pre-computed student rollouts from this "
+                             "parquet (question/gold/difficulty/rollouts/grades/answers) "
+                             "instead of generating them on vLLM. Enables a login-node run.")
     parser.add_argument("--out", default="data/v8_confidence_redirect_verify.parquet")
     parser.add_argument("--pool_size", type=int, default=2000)
     parser.add_argument("--n_rollouts", type=int, default=8)
     args = parser.parse_args()
 
-    from scripts.pg0_yield_pilot import _load_pool
+    if args.rollout_parquet:
+        problems, rollout_fn = _parquet_rollout_setup(args.rollout_parquet, args.pool_size)
+    else:
+        from scripts.pg0_yield_pilot import _load_pool
+        problems = _load_pool(args.train_parquet, args.pool_size)
+        rollout_fn = _real_rollout_fn(args.model_path)
 
-    problems = _load_pool(args.train_parquet, args.pool_size)
     summary = build_dataset(
         problems=problems,
-        rollout_fn=_real_rollout_fn(args.model_path),
+        rollout_fn=rollout_fn,
         teacher_fn=make_trapi_teacher_fn(),
         out_path=args.out,
         n_rollouts=args.n_rollouts,
