@@ -1245,6 +1245,85 @@ def compute_cf_group_heads(
     }
 
 
+def cfgroup_scalar_summary(
+    *,
+    with_meta_flag,
+    c_with,
+    group_index,
+    R_ans_meta,
+    ans_meta_member,
+):
+    """PURE wandb-scalar summary of the cf_group counterfactual (no wandb dep).
+
+    The legacy `dcpo/acc_without` trend scalar reads `heads["c_without"]` — the
+    PMI/cf-path second-decode field that cf_group NEVER populates (cf_group's
+    without-arm rows are real GRPO group members; their correctness lives in
+    `c_with`). So under cf_group that scalar is structurally NaN and the true
+    counterfactual is INVISIBLE. This summarises the ARM-split signal directly:
+
+      dcpo/cfgroup/acc_with_arm     mean c_with over with-meta arm rows (true, unblended)
+      dcpo/cfgroup/acc_without_arm  mean c_with over without-meta arm rows
+      dcpo/cfgroup/delta            acc_with_arm - acc_without_arm (batch net meta effect)
+      dcpo/cfgroup/mixed_group_rate fraction of groups with within-group c_with
+                                    variance (RL-level headroom: 0<sum<n). delta is
+                                    structurally 0 for non-mixed groups, so this is
+                                    the ceiling on any counterfactual gradient.
+      dcpo/cfgroup/both_arm_group_rate  groups carrying BOTH arms (delta defined)
+      dcpo/cfgroup/ans_meta_pos_rate    with-arm member rows with R_ans_meta>0 (meta saved)
+      dcpo/cfgroup/ans_meta_neg_rate    with-arm member rows with R_ans_meta<0 (meta hurt)
+      dcpo/cfgroup/member_rate          fraction of rows that are with-arm members
+
+    Args mirror the populator's in-scope values (no recompute — production parity).
+    Returns a flat dict[str, float] (NaN where an arm/group is empty).
+    """
+    from collections import defaultdict
+
+    wm = np.asarray(with_meta_flag, dtype=np.float32).reshape(-1)
+    cw = np.asarray(c_with, dtype=np.float32).reshape(-1)
+    ram = np.asarray(R_ans_meta, dtype=np.float32).reshape(-1)
+    mem = np.asarray(ans_meta_member, dtype=np.float32).reshape(-1)
+    B = int(cw.shape[0])
+    gid = [
+        str(g)
+        for g in (group_index.tolist() if hasattr(group_index, "tolist") else group_index)
+    ]
+    with_mask = wm > 0.5
+    without_mask = ~with_mask
+    acc_with = float(cw[with_mask].mean()) if with_mask.any() else float("nan")
+    acc_without = float(cw[without_mask].mean()) if without_mask.any() else float("nan")
+    delta = (
+        acc_with - acc_without
+        if (with_mask.any() and without_mask.any())
+        else float("nan")
+    )
+    groups: dict = defaultdict(list)
+    for i in range(B):
+        groups[gid[i]].append(i)
+    n_groups = max(1, len(groups))
+    mixed = both = 0
+    for members in groups.values():
+        s = float(sum(cw[i] for i in members))
+        if 0.0 < s < len(members):
+            mixed += 1
+        has_w = any(wm[i] > 0.5 for i in members)
+        has_o = any(wm[i] <= 0.5 for i in members)
+        if has_w and has_o:
+            both += 1
+    memb = mem > 0.5
+    pos = int(((ram > 1e-6) & memb).sum())
+    neg = int(((ram < -1e-6) & memb).sum())
+    return {
+        "dcpo/cfgroup/acc_with_arm": acc_with,
+        "dcpo/cfgroup/acc_without_arm": acc_without,
+        "dcpo/cfgroup/delta": delta,
+        "dcpo/cfgroup/mixed_group_rate": mixed / n_groups,
+        "dcpo/cfgroup/both_arm_group_rate": both / n_groups,
+        "dcpo/cfgroup/ans_meta_pos_rate": pos / max(1, B),
+        "dcpo/cfgroup/ans_meta_neg_rate": neg / max(1, B),
+        "dcpo/cfgroup/member_rate": float(memb.mean()) if B else 0.0,
+    }
+
+
 def compose_dcpo_region_advantage(
     *,
     response_mask,

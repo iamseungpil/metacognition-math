@@ -69,6 +69,7 @@ from src.training.dcpo_region import (
     cf_answer_from_prefix,
     cf_group_arm_split,
     cf_group_route_row,
+    cfgroup_scalar_summary,
     compute_cf_group_heads,
     TRUSTED_META_CLASSES,
     signature_suppression_ids,
@@ -485,6 +486,21 @@ def _populate_dcpo_region_keys(data) -> None:
                 np.asarray(data.non_tensor_batch["correctness"], dtype=np.float32)
                 - np.asarray(_cfg["over_penalty"], dtype=np.float32)
             ).astype(np.float32)
+            # OBSERVABILITY (2026-06-22): the legacy dcpo/acc_without scalar reads
+            # heads["c_without"] which cf_group never fills (NaN). Chart the TRUE
+            # arm-split counterfactual instead — acc_with_arm/acc_without_arm/delta
+            # + the mixed-group headroom rate — from the SAME _arm/_cfg the reward
+            # uses (no recompute). Crash-proof: observability never kills training.
+            try:
+                import wandb as _wb
+                if _wb.run is not None:
+                    _summ = cfgroup_scalar_summary(
+                        with_meta_flag=_arm, c_with=_heads["c_with"],
+                        group_index=_uid, R_ans_meta=_cfg["R_ans_meta"],
+                        ans_meta_member=_cfg["ans_meta_member"])
+                    _wb.log(_summ, step=int(_step))
+            except Exception as _e:  # pragma: no cover — diagnostics never raise
+                print(f"[DCPO-CFGROUP] scalar-summary skipped: {_e}", flush=True)
         # 'cf' (explicit opt-in): no-op — the dcpo_region_rewards value stands.
         # Invalid values already raised inside _v4_rmeta_source_strict.
         if _rmeta_src in ("pmi", "none", "cf_group"):
@@ -545,6 +561,7 @@ def _populate_dcpo_region_keys(data) -> None:
     _log_dcpo_rollout_table(
         step=_step, uid=_uid, completions=completions, ground_truths=ground_truths,
         cf_texts=_cf_texts, heads=_heads,
+        arm=data.non_tensor_batch.get("dcpo_cf_with_meta"),  # cf_group arm; None elsewhere
     )
     # INTENT-TREND scalars (one wandb chart each): emission rate, the R_meta
     # decomposition over meta-bearing rows, CF pipeline health, and the batch
@@ -709,7 +726,8 @@ def _log_dcpo_trend_scalars(*, step, heads, cf_texts):
         print(f"[DCPO] trend-scalar log skipped: {type(_e).__name__}: {_e}", flush=True)
 
 
-def _log_dcpo_rollout_table(*, step, uid, completions, ground_truths, cf_texts, heads):
+def _log_dcpo_rollout_table(*, step, uid, completions, ground_truths, cf_texts, heads,
+                            arm=None):
     """Log the whole batch as a wandb Table under 'dcpo/rollouts'.
 
     Env knobs: DCPO_WANDB_ROLLOUTS=1 (default ON), DCPO_WANDB_ROLLOUTS_EVERY=5
@@ -731,10 +749,12 @@ def _log_dcpo_rollout_table(*, step, uid, completions, ground_truths, cf_texts, 
         B = len(completions)
         _uid_l = list(uid.tolist() if hasattr(uid, "tolist") else (uid or range(B)))
         from src.training.rewards import _get_text as _gt_text
-        cols = ["step", "row", "group", "gt", "answer", "c_with", "c_without",
+        cols = ["step", "row", "group", "arm", "gt", "answer", "c_with", "c_without",
                 "R_corr", "R_meta", "R_cal", "conf", "has_meta", "unclosed",
                 "fmt_class", "replaced", "main_tail", "cf_tail"]
         table = wandb.Table(columns=cols)
+        # cf_group arm flag (1.0=with-meta / 0.0=without-meta arm); "" off cf_group.
+        _arm_l = list(arm.tolist() if hasattr(arm, "tolist") else arm) if arm is not None else None
         _unc = heads.get("meta_unclosed", None)  # .get-guarded (older stashes)
         _fc = heads.get("fmt_class", None)       # v3k class column (None pre-k / v2)
         _tier1 = ("swapped", "dup_open", "reversed")
@@ -742,8 +762,10 @@ def _log_dcpo_rollout_table(*, step, uid, completions, ground_truths, cf_texts, 
             main = _gt_text(completions[i]) or ""
             cf = (cf_texts[i] if (cf_texts is not None and i < len(cf_texts)) else None) or ""
             _fci = str(_fc[i]) if (_fc is not None and i < len(_fc)) else ""
+            _armi = ("" if _arm_l is None or i >= len(_arm_l)
+                     else float(_arm_l[i]))
             table.add_data(
-                int(step), i, str(_uid_l[i] if i < len(_uid_l) else i),
+                int(step), i, str(_uid_l[i] if i < len(_uid_l) else i), _armi,
                 str(ground_truths[i])[:80], str(heads["answer"][i])[:80],
                 float(heads["c_with"][i]), float(heads["c_without"][i]),
                 float(heads["R_corr"][i]), float(heads["R_meta"][i]), float(heads["R_cal"][i]),

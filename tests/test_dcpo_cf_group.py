@@ -277,3 +277,66 @@ def test_T7_placebo_response_prefix_tokens():
     placebo_ids = tok.encode("<think>\n" + PLACEBO_META + "\n", add_special_tokens=False)
     assert placebo_ids == tok.encode(opener, add_special_tokens=False)
     assert len(placebo_ids) > 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T8 — cfgroup_scalar_summary: makes the arm-split counterfactual VISIBLE in wandb
+# (the gs50/step-65 diagnosis: acc_without=NaN was a logging artifact; the true
+# signal is acc_with_arm - acc_without_arm + the mixed-group headroom rate).
+# ─────────────────────────────────────────────────────────────────────────────
+def test_T8_scalar_summary_arm_acc_and_delta():
+    from src.training.dcpo_region import cfgroup_scalar_summary
+
+    # one group: with-arm [1,1,1,1] (acc 1.0), without-arm [0,1,0,1] (acc 0.5)
+    c_with = np.asarray([1, 1, 1, 1, 0, 1, 0, 1], dtype=np.float32)
+    with_meta = np.asarray([1, 1, 1, 1, 0, 0, 0, 0], dtype=np.float32)
+    h = compute_cf_group_heads(
+        c_with=c_with, with_meta_flag=with_meta, group_index=["g"] * 8, w_over=0.0)
+    s = cfgroup_scalar_summary(
+        with_meta_flag=with_meta, c_with=c_with, group_index=["g"] * 8,
+        R_ans_meta=h["R_ans_meta"], ans_meta_member=h["ans_meta_member"])
+    assert np.isclose(s["dcpo/cfgroup/acc_with_arm"], 1.0)
+    assert np.isclose(s["dcpo/cfgroup/acc_without_arm"], 0.5)
+    assert np.isclose(s["dcpo/cfgroup/delta"], 0.5)
+    assert np.isclose(s["dcpo/cfgroup/both_arm_group_rate"], 1.0)
+    # with-arm members all have R_ans_meta = +0.5 -> all positive
+    assert np.isclose(s["dcpo/cfgroup/ans_meta_pos_rate"], 4 / 8)
+    assert np.isclose(s["dcpo/cfgroup/ans_meta_neg_rate"], 0.0)
+    assert np.isclose(s["dcpo/cfgroup/member_rate"], 4 / 8)
+
+
+def test_T8_mixed_group_rate_is_headroom_ceiling():
+    from src.training.dcpo_region import cfgroup_scalar_summary
+
+    # mirror step-65 reality: most groups all-correct (delta structurally 0),
+    # only a minority MIXED -> mixed_group_rate is the counterfactual headroom.
+    # g_easy: all 8 correct ; g_mix: within-group variance.
+    c_with = np.asarray(
+        [1, 1, 1, 1, 1, 1, 1, 1,   # g_easy (no signal possible)
+         1, 1, 0, 1, 0, 0, 0, 1],  # g_mix  (variance present)
+        dtype=np.float32)
+    with_meta = np.asarray([1, 1, 1, 1, 0, 0, 0, 0] * 2, dtype=np.float32)
+    gid = ["g_easy"] * 8 + ["g_mix"] * 8
+    h = compute_cf_group_heads(
+        c_with=c_with, with_meta_flag=with_meta, group_index=gid, w_over=0.0)
+    s = cfgroup_scalar_summary(
+        with_meta_flag=with_meta, c_with=c_with, group_index=gid,
+        R_ans_meta=h["R_ans_meta"], ans_meta_member=h["ans_meta_member"])
+    # 1 of 2 groups is mixed -> headroom rate 0.5
+    assert np.isclose(s["dcpo/cfgroup/mixed_group_rate"], 0.5)
+    assert np.isclose(s["dcpo/cfgroup/both_arm_group_rate"], 1.0)
+
+
+def test_T8_empty_arm_is_nan_not_crash():
+    from src.training.dcpo_region import cfgroup_scalar_summary
+
+    # degenerate: every row is with-meta (no without-arm) -> acc_without NaN,
+    # delta NaN, but the call must NOT raise (crash-proof observability).
+    c_with = np.asarray([1, 0, 1, 1, 0, 1, 1, 0], dtype=np.float32)
+    with_meta = np.ones(8, dtype=np.float32)
+    s = cfgroup_scalar_summary(
+        with_meta_flag=with_meta, c_with=c_with, group_index=["g"] * 8,
+        R_ans_meta=[0.0] * 8, ans_meta_member=[0.0] * 8)
+    assert np.isnan(s["dcpo/cfgroup/acc_without_arm"])
+    assert np.isnan(s["dcpo/cfgroup/delta"])
+    assert np.isclose(s["dcpo/cfgroup/both_arm_group_rate"], 0.0)
