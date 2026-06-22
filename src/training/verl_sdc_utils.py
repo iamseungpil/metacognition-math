@@ -408,6 +408,37 @@ def _compute_dcpo_region_advantage(
         ).view(-1, 1)
         _trunc_kwargs = dict(trunc_penalty=_trunc_pen, trunc_open_mask=_tm * _mem)
 
+    # GROUP-BRANCH COUNTERFACTUAL R_meta + SCoRe R_trans (design 2026-06-21,
+    # dcpo_rmeta_source: cf_group). The populator (only on the cf_group path)
+    # writes dcpo_ans_meta / dcpo_r_trans (the counterfactual answer-delta heads)
+    # + their with-arm member masks; we thread them onto the ANSWER region inside
+    # compose. Presence-gated on dcpo_ans_meta (mirror of _trunc_kwargs): when the
+    # cf_group populator did not write it (every pre-existing pmi/none/v2/v3
+    # config), the dict stays empty -> compose byte-identical. cf_group reuses the
+    # meta weight knob (dcpo_w_meta) for the answer-delta R_meta head; R_trans
+    # uses dcpo_w_score_alpha (default 1.5 in the cf_group yaml, 0.0 here ->
+    # off). The head reaching compose via THIS forward is the anti-inert gate.
+    _cfgroup_kwargs = {}
+    _r_ans_meta = non_tensor_batch.get("dcpo_ans_meta", None)
+    if _r_ans_meta is not None:
+        _r_trans = non_tensor_batch.get("dcpo_r_trans", None)
+        _ans_member = non_tensor_batch.get("dcpo_ans_member", None)
+        _trans_member = non_tensor_batch.get("dcpo_trans_member", None)
+        _cfgroup_kwargs = dict(
+            R_ans_meta=_head("dcpo_ans_meta"),
+            w_ans_meta=_w_meta,
+            ans_meta_member_mask=(
+                np.asarray(_ans_member, dtype=np.float32)
+                if _ans_member is not None else None
+            ),
+            R_trans=(_head("dcpo_r_trans") if _r_trans is not None else None),
+            w_score_alpha=float(config.get("dcpo_w_score_alpha", 0.0)),
+            trans_member_mask=(
+                np.asarray(_trans_member, dtype=np.float32)
+                if _trans_member is not None else None
+            ),
+        )
+
     return compose_dcpo_region_advantage(
         response_mask=response_mask.float(),
         index=index,
@@ -437,6 +468,7 @@ def _compute_dcpo_region_advantage(
         **_anchor_kwargs,
         **_emit_route_kwargs,
         **_trunc_kwargs,
+        **_cfgroup_kwargs,
     )
 
 

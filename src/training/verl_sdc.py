@@ -67,6 +67,8 @@ from src.training.dcpo_region import (
     dcpo_region_rewards,
     first_meta_token_index,
     cf_answer_from_prefix,
+    cf_group_arm_split,
+    compute_cf_group_heads,
     TRUSTED_META_CLASSES,
     signature_suppression_ids,
 )
@@ -147,7 +149,7 @@ def _compute_dcpo_heads_stash(
 # open onto the deprecated CF-regeneration path (plausible nonzero values, no
 # log line) whenever the knob was missing OR the algorithm config was
 # unreadable (the reader swallows exceptions into its default).
-_V4_RMETA_SOURCES = ("cf", "pmi", "none")
+_V4_RMETA_SOURCES = ("cf", "pmi", "none", "cf_group")
 _V4_RMETA_MISSING = object()
 
 
@@ -424,9 +426,67 @@ def _populate_dcpo_region_keys(data) -> None:
         elif _rmeta_src == "none":
             data.non_tensor_batch["meta_region_utility"] = np.zeros(bs, dtype=np.float32)
             data.non_tensor_batch["dcpo_rmeta_member"] = np.zeros(bs, dtype=np.float32)
+        elif _rmeta_src == "cf_group":
+            # GROUP-BRANCH COUNTERFACTUAL R_meta + SCoRe/AdaCoT (design 2026-06-21).
+            # The without-meta sub-arm rows are REAL GRPO group members generated in
+            # the MAIN rollout with the meta-open token banned (logit_bias). Their
+            # standard c_with IS correct_without — no cf_texts, no second decode.
+            # Arm membership comes from the gen-wrap stash dcpo_cf_with_meta (1.0
+            # with / 0.0 without); it survives balance_batch reshuffle (per-row,
+            # not ordinal). Fallback to the positional i%n split with a loud warn
+            # if the wrap did not stash it (e.g. wrap not installed).
+            _arm = data.non_tensor_batch.get("dcpo_cf_with_meta", None)
+            if _arm is None:
+                _n_roll = int(
+                    getattr(getattr(getattr(_config, "actor_rollout_ref", None),
+                                    "rollout", None), "n", 8) or 8
+                ) if _config is not None else 8
+                _frac = float(_v4_read("dcpo_cf_branch_frac", 0.5) or 0.5)
+                _arm, _ = cf_group_arm_split(bs, n=_n_roll, branch_frac=_frac)
+                _arm = np.asarray(_arm, dtype=np.float32)
+                print(
+                    "[DCPO-CFGROUP] WARN dcpo_cf_with_meta absent — falling back "
+                    f"to positional i%{_n_roll} arm split (frac={_frac}). The "
+                    "gen-wrap stash is missing; without-arm meta may NOT be banned.",
+                    flush=True,
+                )
+            else:
+                _arm = np.asarray(_arm, dtype=np.float32)
+            _cfg = compute_cf_group_heads(
+                c_with=_heads["c_with"],
+                with_meta_flag=_arm,
+                group_index=_uid,
+                w_over=float(_v4_read("dcpo_w_over", 0.0) or 0.0),
+                over_threshold=1.0,
+                adaptthink_floor=True,
+            )
+            # cf_group routes R_meta onto ANSWER (locked decision), so the
+            # META_CONTENT channel carries NOTHING: hard-zero the legacy R_meta key
+            # + its centering membership so no stale value double-counts.
+            data.non_tensor_batch["meta_region_utility"] = np.zeros(bs, dtype=np.float32)
+            data.non_tensor_batch["dcpo_rmeta_member"] = np.zeros(bs, dtype=np.float32)
+            # NEW diagnostic-style keys (NOT gdpo_reward_keys — FIVE-WAY SYNC lists
+            # untouched, like dcpo_rmeta_member): the answer-routed counterfactual
+            # delta R_meta + SCoRe R_trans + their with-arm member masks. Threaded
+            # to compose by verl_sdc_utils._cfgroup_kwargs.
+            data.non_tensor_batch["dcpo_ans_meta"] = np.asarray(
+                _cfg["R_ans_meta"], dtype=np.float32)
+            data.non_tensor_batch["dcpo_ans_member"] = np.asarray(
+                _cfg["ans_meta_member"], dtype=np.float32)
+            data.non_tensor_batch["dcpo_r_trans"] = np.asarray(
+                _cfg["R_trans"], dtype=np.float32)
+            data.non_tensor_batch["dcpo_trans_member"] = np.asarray(
+                _cfg["trans_member"], dtype=np.float32)
+            # AdaCoT over-trigger penalty folds onto R_corr's ANSWER routing (no
+            # new GDPO key): subtract w_over from correctness for with-meta rows
+            # whose without-arm was already correct.
+            data.non_tensor_batch["correctness"] = (
+                np.asarray(data.non_tensor_batch["correctness"], dtype=np.float32)
+                - np.asarray(_cfg["over_penalty"], dtype=np.float32)
+            ).astype(np.float32)
         # 'cf' (explicit opt-in): no-op — the dcpo_region_rewards value stands.
         # Invalid values already raised inside _v4_rmeta_source_strict.
-        if _rmeta_src in ("pmi", "none"):
+        if _rmeta_src in ("pmi", "none", "cf_group"):
             # Observability truth: the rollout table + trend scalars below must
             # chart the R_meta that actually ROUTES, not the stale CF/text-
             # fallback stash value. REASSIGN (not mutate): _DCPO_HEAD_STASH
@@ -434,6 +494,12 @@ def _populate_dcpo_region_keys(data) -> None:
             # feed the logging-only summed rm_scores) are untouched.
             _heads = dict(_heads)
             _heads["R_meta"] = [float(x) for x in data.non_tensor_batch["meta_region_utility"]]
+            if _rmeta_src == "cf_group":
+                # cf_group folded the AdaCoT over-penalty into correctness; chart
+                # the R_corr that actually ROUTES (same observability rule).
+                _heads["R_corr"] = [
+                    float(x) for x in data.non_tensor_batch["correctness"]
+                ]
         # w_meta warmup (review M4): linear 0 -> dcpo_w_meta over
         # dcpo_w_meta_warmup_steps; transported to the advantage stage via the
         # diagnostic-style key (absence-tolerant there; 0 steps -> scale 1.0).
@@ -2859,6 +2925,19 @@ class SDCRayPPOTrainer(RayPPOTrainer):
             _sdc_mode in ("TRIOBJ_DCPO_V3", "TRIOBJ_DCPO_V4")
             and bool(getattr(_algo, "dcpo_format_replace", True))
         )
+        # GROUP-BRANCH COUNTERFACTUAL R_meta (design 2026-06-21): when
+        # dcpo_rmeta_source=='cf_group' the main rollout is split into with-meta /
+        # without-meta sub-arms (meta-open+close banned on the without-arm via
+        # per-row logit_bias) so the counterfactual answer-delta is free. Gated +
+        # default-OFF: every other source (cf/pmi/none) leaves this False and the
+        # rollout path byte-identical. Only meaningful under TRIOBJ_DCPO_V4.
+        self._dcpo_cf_group = (
+            _sdc_mode == "TRIOBJ_DCPO_V4"
+            and str(getattr(_algo, "dcpo_rmeta_source", "")) == "cf_group"
+        )
+        self._dcpo_cf_group_orig_generate = None
+        self._dcpo_cf_branch_frac = float(
+            getattr(_algo, "dcpo_cf_branch_frac", 0.5) or 0.5)
         if self._bci_inject_conf:
             from .meta_inject import default_conf_bins
             _n = int(self.config.actor_rollout_ref.rollout.n)
@@ -2926,6 +3005,30 @@ class SDCRayPPOTrainer(RayPPOTrainer):
             mgr.generate_sequences = self._dcpo_cf_generate_sequences
             print("[DCPO-V3] counterfactual generate_sequences wrap INSTALLED.")
 
+        # ─── GROUP-BRANCH COUNTERFACTUAL wrap (ADDITIVE, gated) ───────────────
+        # When dcpo_rmeta_source=='cf_group', split each GRPO group into with-meta
+        # / without-meta sub-arms in the MAIN rollout (the without-arm bans the
+        # meta-open+close tokens via per-row logit_bias). Additive-chained after
+        # any BCI/CF wrap (wraps the SAME bound generate_sequences). Byte-identical
+        # when the flag is off (every cf/pmi/none source).
+        if getattr(self, "_dcpo_cf_group", False):
+            mgr = getattr(self, "async_rollout_manager", None)
+            if mgr is None:
+                raise RuntimeError(
+                    "cf_group: async_rollout_manager is None after init_workers — "
+                    "cannot install the group-branch generate_sequences wrap."
+                )
+            # Import the agent loop so its @register fires in this process too
+            # (the Ray rollout workers resolve cf_groupban_agent via its yaml on
+            # actor_rollout_ref.rollout.agent.agent_loop_config_path).
+            try:
+                import src.training.cf_groupban_agent  # noqa: F401  (registers cf_groupban_agent)
+            except Exception as _e:  # pragma: no cover
+                print(f"[DCPO-CFGROUP] cf_groupban_agent import warning: {_e}", flush=True)
+            self._dcpo_cf_group_orig_generate = mgr.generate_sequences
+            mgr.generate_sequences = self._dcpo_cf_group_generate_sequences
+            print("[DCPO-CFGROUP] group-branch generate_sequences wrap INSTALLED.")
+
     def _bci_build_seed_ids(self):
         """Tokenize each bin's confidence seed into a list of token-id lists (one
         per bin). The agent-loop-native injection (BCIConfAgentLoop) prepends the
@@ -2967,6 +3070,51 @@ class SDCRayPPOTrainer(RayPPOTrainer):
             seed_arr[i] = list(seeds[i % n])
         gen_batch.non_tensor_batch["bci_conf_seed_ids"] = seed_arr
         return self._bci_orig_generate(gen_batch)
+
+    def _dcpo_cf_group_generate_sequences(self, gen_batch: "DataProto"):
+        """Gated wrap of generate_sequences for cf_group (design 2026-06-21).
+
+        Split each GRPO group (n rollouts of one prompt) into a with-meta sub-arm
+        (normal single_turn) and a without-meta sub-arm (meta-open+close banned
+        via per-row logit_bias = the eval mechanism, inside the MAIN rollout). No
+        second decode: the without-arm rows are real group members whose standard
+        c_with is correct_without. fit() repeats gen_batch n× with interleave=True
+        (verl_sdc:2946), so row r belongs to replica (r % n); a row is WITHOUT-META
+        iff (r % n) >= n_with where n_with = round(n*(1 - branch_frac)).
+
+        No-op on validation: _validate() does NOT repeat n×, so splitting would ban
+        meta on half of eval and corrupt the acc/emission gates (same guard as BCI).
+        """
+        if gen_batch.meta_info.get("validate", False):
+            return self._dcpo_cf_group_orig_generate(gen_batch)
+        import numpy as _np
+        n = int(self.config.actor_rollout_ref.rollout.n)
+        B = len(gen_batch)
+        arm, bias = cf_group_arm_split(
+            B, n=n, branch_frac=float(getattr(self, "_dcpo_cf_branch_frac", 0.5)))
+        # Route without-meta rows to the cf_groupban agent loop (keeps the NORMAL
+        # chat-template path, only injects the meta-open+close logit_bias). With
+        # rows keep the default single_turn agent.
+        agent = _np.empty(B, dtype=object)
+        bias_arr = _np.empty(B, dtype=object)
+        with_meta = _np.empty(B, dtype=object)
+        for i in range(B):
+            if arm[i] > 0.5:
+                agent[i] = "single_turn_agent"
+                bias_arr[i] = None
+                with_meta[i] = 1.0
+            else:
+                agent[i] = "cf_groupban_agent"
+                bias_arr[i] = bias[i]
+                with_meta[i] = 0.0
+        gen_batch.non_tensor_batch["agent_name"] = agent
+        gen_batch.non_tensor_batch["cf_logit_bias"] = bias_arr
+        # Stash the arm membership BEFORE generate (like BCI stashes seeds) so it
+        # survives onto the returned batch for the populator to read directly
+        # (per-row, survives balance_batch reshuffle).
+        gen_batch.non_tensor_batch["dcpo_cf_with_meta"] = _np.asarray(
+            [float(x) for x in with_meta], dtype=_np.float32)
+        return self._dcpo_cf_group_orig_generate(gen_batch)
 
     # ─── TRIOBJ_DCPO_V3 counterfactual 2nd-generation (spec §3) ────────────────
     def _dcpo_cf_generate_sequences(self, gen_batch: "DataProto"):

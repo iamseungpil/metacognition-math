@@ -1,0 +1,10 @@
+# COMBINED custom agent-loop registry: registers BOTH cf_prefix_agent (CF 2nd-gen
+# continuation, sdc_counterfactual=true) AND cf_groupban_agent (cf_group without-
+# meta sub-arm, dcpo_rmeta_source=cf_group). agent_loop_config_path is a single
+# yaml listing every custom loop the Ray rollout workers must resolve by _target_;
+# point it here when a run needs both. ADDITIVE — the default single_turn_agent
+# loop is untouched. Selected per-row by non_tensor_batch["agent_name"].
+- name: cf_prefix_agent
+  _target_: src.training.cf_prefix_agent.CFPrefixAgentLoop
+- name: cf_groupban_agent
+  _target_: src.training.cf_groupban_agent.CFGroupBanAgentLoop

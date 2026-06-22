@@ -1103,6 +1103,125 @@ def group_mean_subtract(values, index, member=None):
     return out.unsqueeze(1)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# GROUP-BRANCH COUNTERFACTUAL R_meta + SCoRe/AdaCoT shaping (design 2026-06-21).
+# Pure-python/numpy (no torch dep) so it is importable + testable under the
+# minimal unit env. Computes the counterfactual answer-delta heads from the
+# rollout group split (with-meta vs without-meta sub-arms) — NO second decode.
+# ─────────────────────────────────────────────────────────────────────────────
+def cf_group_arm_split(
+    B: int,
+    *,
+    n: int,
+    branch_frac: float,
+    meta_open: int = META_OPEN_DEFAULT,
+    meta_close: int = META_CLOSE_DEFAULT,
+):
+    """Positional with/without-meta arm assignment for a gen_batch repeated n×.
+
+    fit() repeats gen_batch n× with interleave=True, so row r belongs to GRPO
+    replica (r % n). A row is WITHOUT-META iff (r % n) >= n_with where
+    n_with = round(n*(1 - branch_frac)). For n=8, branch_frac=0.5 -> 4 with / 4
+    without per group. Returns:
+      arm  : list[float] length B — 1.0 = with-meta, 0.0 = without-meta.
+      bias : list[dict|None] length B — {meta_open:-100.0, meta_close:-100.0}
+             for without-meta rows (ban BOTH tags, matching the eval mechanism
+             eval_counterfactual_difficulty.py:93-95), None for with-meta rows.
+    """
+    n_with = int(round(n * (1.0 - float(branch_frac))))
+    arm = [0.0] * B
+    bias = [None] * B
+    for r in range(B):
+        if (r % n) < n_with:
+            arm[r] = 1.0
+        else:
+            arm[r] = 0.0
+            bias[r] = {int(meta_open): -100.0, int(meta_close): -100.0}
+    return arm, bias
+
+
+def compute_cf_group_heads(
+    *,
+    c_with,
+    with_meta_flag,
+    group_index,
+    w_over: float = 0.0,
+    over_threshold: float = 1.0,
+    adaptthink_floor: bool = True,
+):
+    """Group-branch counterfactual answer-delta heads (design 2026-06-21).
+
+    For each prompt group g (`group_index`), split rows by `with_meta_flag`
+    (1.0 = with-meta sub-arm, 0.0 = without-meta sub-arm). `c_with` is the
+    standard final-answer correctness (0/1) for EVERY row — the without-arm rows
+    are real GRPO group members graded for free, so c_with on a without-arm row
+    IS correct_without. Then:
+      acc_without(g) = mean(c_with over with_meta_flag==0 rows in g)
+      acc_with(g)    = mean(c_with over with_meta_flag==1 rows in g)
+      delta_i (with-meta rows) = c_with[i] - acc_without(g)   (the counterfactual
+            answer-delta; routes onto ANSWER, outcome locus — user decision)
+    R_ans_meta and R_trans both carry delta_i (alpha applied later via the
+    compose weight w_score_alpha, keeping the head a clean delta — mirror of how
+    w_corr scales R_corr). Without-meta rows get 0 / member 0.
+
+    over_penalty[i] = w_over for with-meta rows whose group acc_without >=
+    over_threshold (AdaCoT P_over: meta fired on an already-correct problem),
+    else 0. Folded onto R_corr's answer routing by the populator (no new key).
+
+    adaptthink_floor: for groups where acc_with(g) < acc_without(g) (meta net-
+    harmful), clamp that group's POSITIVE with-arm deltas to 0 — meta-emission
+    cannot be pushed up where it lowers the group's pre-measured accuracy
+    (guard, not a head). Groups with no without-arm sibling -> member 0 (delta
+    undefined; conservative no-gradient).
+
+    Returns dict of length-B lists: R_ans_meta, R_trans, ans_meta_member,
+    trans_member, over_penalty.
+    """
+    cw = np.asarray(c_with, dtype=np.float32).reshape(-1)
+    wm = np.asarray(with_meta_flag, dtype=np.float32).reshape(-1)
+    B = cw.shape[0]
+    gid = list(
+        group_index.tolist() if hasattr(group_index, "tolist") else group_index
+    )
+    gid = [str(g) for g in gid]
+
+    R_ans_meta = [0.0] * B
+    R_trans = [0.0] * B
+    member = [0.0] * B
+    over_penalty = [0.0] * B
+
+    groups: dict = {}
+    for i in range(B):
+        groups.setdefault(gid[i], []).append(i)
+
+    for members in groups.values():
+        with_rows = [i for i in members if wm[i] > 0.5]
+        without_rows = [i for i in members if wm[i] <= 0.5]
+        if not without_rows or not with_rows:
+            # no counterfactual sibling -> delta undefined, member 0 (skip)
+            continue
+        acc_without = float(np.mean([cw[i] for i in without_rows]))
+        acc_with = float(np.mean([cw[i] for i in with_rows]))
+        _harmful = adaptthink_floor and (acc_with < acc_without)
+        for i in with_rows:
+            delta = float(cw[i]) - acc_without
+            if _harmful and delta > 0.0:
+                delta = 0.0  # AdaptThink: never push up net-harmful meta
+            R_ans_meta[i] = delta
+            R_trans[i] = delta
+            member[i] = 1.0
+            if w_over and acc_without >= over_threshold:
+                over_penalty[i] = float(w_over)
+
+    return {
+        "R_ans_meta": R_ans_meta,
+        "R_trans": R_trans,
+        "ans_meta_member": member,
+        "trans_member": list(member),
+        "over_penalty": over_penalty,
+    }
+
+
 def compose_dcpo_region_advantage(
     *,
     response_mask,
@@ -1127,6 +1246,12 @@ def compose_dcpo_region_advantage(
     trunc_penalty: float = 0.0,
     trunc_open_mask=None,
     rmeta_member_mask=None,
+    R_ans_meta=None,
+    w_ans_meta: float = 0.0,
+    ans_meta_member_mask=None,
+    R_trans=None,
+    w_score_alpha: float = 0.0,
+    trans_member_mask=None,
     R_emit=None,
     w_emit: float = 0.0,
     emit_route: str = "global",
@@ -1238,6 +1363,29 @@ def compose_dcpo_region_advantage(
         + w_meta * A_meta * meta_c
         + w_cal * A_cal * conf
     ) * rm
+
+    # GROUP-BRANCH COUNTERFACTUAL R_meta + SCoRe R_trans (design 2026-06-21,
+    # OPTIONAL). cf_group routes the counterfactual answer-delta R_meta AND the
+    # SCoRe transition head onto the ANSWER region (the outcome locus — user
+    # decision: the answer-delta is an outcome signal, credit/blame the answer
+    # tokens, NOT the META_CONTENT channel which PMI used). Each head is
+    # group-mean-subtracted INDEPENDENTLY over its with-arm member mask (the
+    # delta is defined only for with-meta rows), then routed onto the SAME `ans`
+    # (ANSWER) and `rm` (response) tensors R_corr rides, added into the
+    # advantages accumulator HERE (not a sidecar) so the head physically reaches
+    # compose — the project's recurring inert trap is closed by this being an
+    # explicit compose param, not a key computed-but-unread. w_score_alpha>1
+    # (default config 1.5) makes right->wrong the most-penalized transition
+    # (SCoRe). R_ans_meta/R_trans=None or weight 0.0 -> term skipped ->
+    # byte-identical to every pre-existing config (cf_group never set).
+    if R_ans_meta is not None and w_ans_meta:
+        A_am = group_mean_subtract(
+            R_ans_meta, index, member=ans_meta_member_mask).to(device)  # [B,1]
+        advantages = advantages + float(w_ans_meta) * A_am * ans * rm
+    if R_trans is not None and w_score_alpha:
+        A_trans = group_mean_subtract(
+            R_trans, index, member=trans_member_mask).to(device)  # [B,1]
+        advantages = advantages + float(w_score_alpha) * A_trans * ans * rm
 
     if R_format is not None and format_violation_mask is not None:
         A_format = group_mean_subtract(R_format, index).to(device)  # [B,1]

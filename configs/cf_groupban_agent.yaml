@@ -1,0 +1,14 @@
+# GROUP-BRANCH COUNTERFACTUAL without-meta agent-loop registry (design 2026-06-21).
+# Loaded by AgentLoopManager via actor_rollout_ref.rollout.agent.agent_loop_config_path:
+# _agent_loop_registry["cf_groupban_agent"] = this entry, then
+# hydra.utils.instantiate(config=entry, ...) builds it by _target_ in the Ray
+# rollout workers. ADDITIVE — the default single_turn_agent loop (registered via
+# @register) is untouched. Selected per-row by non_tensor_batch["agent_name"]
+# = "cf_groupban_agent", set by the gated cf_group gen wrap in verl_sdc only when
+# dcpo_rmeta_source=='cf_group'.
+#
+# NOTE: a yaml lists ALL custom loops the rollout workers must resolve. If a run
+# ALSO uses cf_prefix_agent (sdc_counterfactual=true), point
+# agent_loop_config_path at configs/cf_agents_combined.yaml which registers both.
+- name: cf_groupban_agent
+  _target_: src.training.cf_groupban_agent.CFGroupBanAgentLoop

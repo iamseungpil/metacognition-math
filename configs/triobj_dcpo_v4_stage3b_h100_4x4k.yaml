@@ -82,9 +82,11 @@ actor_rollout_ref:
     # GDPO/Dr.GRPO advantage is non-zero on more rows (spec 2026-06-15 §3.5).
     n: 8
     agent:
-      # Same agent-loop registry as v3 (path parity; the CF agent only ever
-      # activates under sdc_counterfactual=true, which v4 keeps false).
-      agent_loop_config_path: /scratch/metacognition/configs/cf_prefix_agent.yaml
+      # cf_group needs the cf_groupban_agent loop resolvable in the Ray rollout
+      # workers (without-meta sub-arm = meta-tag logit_bias on the normal chat-
+      # template path). The combined registry also keeps cf_prefix_agent for path
+      # parity (only activates under sdc_counterfactual=true, which v4 keeps false).
+      agent_loop_config_path: /scratch/metacognition/configs/cf_agents_combined.yaml
 
 algorithm:
   sdc_mode: TRIOBJ_DCPO_V4
@@ -133,7 +135,10 @@ algorithm:
   # broadcast PER-TOKEN on the response mask (chain5 lesson: row-length-
   # normalized spread dilutes to noise vs the format head in token-mean PG).
   dcpo_format_neg: 0.2
-  dcpo_w_emit: 0.15        # s2 0.4 -> 0.15: w_emit is the BOILERPLATE ENGINE
+  dcpo_w_emit: 0.1         # cf_group (2026-06-21) 0.15 -> 0.1: the counterfactual
+                           # answer-delta now provides the emit-when-useful
+                           # gradient, so the blunt anti-silence floor is reduced.
+                           # (historic note below) w_emit is the BOILERPLATE ENGINE
                            # (rewards ANY emission incl. malformed, which PMI
                            # can't reach). Lower it so quality drives the meta
                            # tokens; emission is held up by w_format's wellformed
@@ -147,14 +152,34 @@ algorithm:
   # FLOOR STAYS (review I1), reduced 0.1 -> 0.05: stage 1 already taught the
   # habit; stage 2 only needs to hold the channel open under the length/format
   # pressure while the centered delta grades content.
-  dcpo_meta_floor: 0.05
+  dcpo_meta_floor: 0.0     # cf_group (2026-06-21) 0.05 -> 0.0: the counterfactual
+                           # answer-delta is the emit-when-useful gradient; drop
+                           # the blunt always-on floor that props unconditional meta.
   # Mild LENGTH COST (spec §2; "weak" per the RLT warning => small coef): a
   # FULL-LENGTH response costs 0.02 R_corr at warmup end; warmed up alongside
   # w_meta (M4) via dcpo_w_meta_scale. 0.0 disables (stage-1/v4-off identity).
   dcpo_len_cost: 0.08      # s2b 0.03 -> 0.08: stage-C length containment (spec
                            # 2026-06-15; stops the s2b length ratchet).
-  # ── v4 R_meta source: PMI (dense likelihood delta, frozen ref @ T=1.0) ─────
-  dcpo_rmeta_source: pmi
+  # ── v4 R_meta source: GROUP-BRANCH COUNTERFACTUAL (design 2026-06-21) ──────
+  # cf_group FULLY REPLACES PMI (user decision, no combined dense term). Each
+  # GRPO group of n=8 is split into 4 with-meta + 4 without-meta sub-arms
+  # (meta-open+close banned on the without-arm via per-row logit_bias, IN the
+  # main rollout — no second decode). The counterfactual answer-delta
+  #   delta_i = correct_with[i] - mean(correct_without over the group)
+  # is the new R_meta; it + the SCoRe transition head R_trans = delta route onto
+  # the ANSWER region (outcome locus, user decision) — NOT META_CONTENT. The
+  # legacy meta_region_utility / META_CONTENT channel is HARD-ZEROED. AdaCoT
+  # over-trigger penalty (dcpo_w_over) folds onto R_corr's answer routing when
+  # meta fires on an already-correct (without-arm) problem; AdaptThink floor
+  # clamps positive deltas on groups where meta is net-harmful. The PMI knobs
+  # below (dcpo_pmi_*) are now DORMANT (kept, harmless).
+  dcpo_rmeta_source: cf_group
+  dcpo_cf_branch_frac: 0.5   # 4/4 split: tighter counterfactual baseline over
+                             # more with-meta samples (n_with = round(8*0.5) = 4).
+  dcpo_w_score_alpha: 1.5    # SCoRe transition weight; alpha>1 makes right->wrong
+                             # the most-penalized transition (breaks>saves cure).
+  dcpo_w_over: 0.1           # AdaCoT P_over: penalty for meta firing on a problem
+                             # whose without-meta arm was already correct.
   # I4 conf carve-out: dense delta routes onto META_CONTENT \ CONF (the conf
   # token stays Brier-only — dense PMI there rewards "stating a confidence the
   # continuation echoes", fighting R_cal).
