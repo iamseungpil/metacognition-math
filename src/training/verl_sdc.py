@@ -68,6 +68,7 @@ from src.training.dcpo_region import (
     first_meta_token_index,
     cf_answer_from_prefix,
     cf_group_arm_split,
+    cf_group_route_row,
     compute_cf_group_heads,
     TRUSTED_META_CLASSES,
     signature_suppression_ids,
@@ -2938,6 +2939,15 @@ class SDCRayPPOTrainer(RayPPOTrainer):
         self._dcpo_cf_group_orig_generate = None
         self._dcpo_cf_branch_frac = float(
             getattr(_algo, "dcpo_cf_branch_frac", 0.5) or 0.5)
+        # WITHOUT-ARM mechanism (design 2026-06-22): 'ban' (DEFAULT, byte-identical
+        # to today = cf_groupban_agent meta-tag logit_bias) or 'placebo' (fix =
+        # cf_placebo_agent forces a contentless placebo meta block so the without-
+        # arm solves on-distribution; the ban degenerated to empty <think></think>
+        # on the SFT init -> acc_without~0 -> invalid Δ). Only chooses placebo-vs-ban
+        # WITHIN cf_group; whole-feature default-OFF is still guaranteed by
+        # _dcpo_cf_group itself (TRIOBJ_DCPO_V4 + rmeta_source=='cf_group').
+        self._dcpo_cf_without_mode = str(
+            getattr(_algo, "dcpo_cf_without_mode", "ban") or "ban")
         if self._bci_inject_conf:
             from .meta_inject import default_conf_bins
             _n = int(self.config.actor_rollout_ref.rollout.n)
@@ -3023,8 +3033,9 @@ class SDCRayPPOTrainer(RayPPOTrainer):
             # actor_rollout_ref.rollout.agent.agent_loop_config_path).
             try:
                 import src.training.cf_groupban_agent  # noqa: F401  (registers cf_groupban_agent)
+                import src.training.cf_placebo_agent  # noqa: F401  (registers cf_placebo_agent, placebo without-mode)
             except Exception as _e:  # pragma: no cover
-                print(f"[DCPO-CFGROUP] cf_groupban_agent import warning: {_e}", flush=True)
+                print(f"[DCPO-CFGROUP] cf agent import warning: {_e}", flush=True)
             self._dcpo_cf_group_orig_generate = mgr.generate_sequences
             mgr.generate_sequences = self._dcpo_cf_group_generate_sequences
             print("[DCPO-CFGROUP] group-branch generate_sequences wrap INSTALLED.")
@@ -3095,18 +3106,19 @@ class SDCRayPPOTrainer(RayPPOTrainer):
         # Route without-meta rows to the cf_groupban agent loop (keeps the NORMAL
         # chat-template path, only injects the meta-open+close logit_bias). With
         # rows keep the default single_turn agent.
+        # Per-row routing. mode='ban' (DEFAULT) is byte-identical to today
+        # (without-arm -> cf_groupban_agent + meta-tag logit_bias). mode='placebo'
+        # (the 2026-06-22 fix) routes without-arm rows to cf_placebo_agent with NO
+        # logit_bias — it forces a contentless placebo meta block as the trained
+        # response prefix so the without-arm SOLVES on-distribution (the ban
+        # degenerated to empty <think></think> on the SFT init -> invalid Δ).
+        _mode = str(getattr(self, "_dcpo_cf_without_mode", "ban") or "ban")
         agent = _np.empty(B, dtype=object)
         bias_arr = _np.empty(B, dtype=object)
         with_meta = _np.empty(B, dtype=object)
         for i in range(B):
-            if arm[i] > 0.5:
-                agent[i] = "single_turn_agent"
-                bias_arr[i] = None
-                with_meta[i] = 1.0
-            else:
-                agent[i] = "cf_groupban_agent"
-                bias_arr[i] = bias[i]
-                with_meta[i] = 0.0
+            agent[i], bias_arr[i], with_meta[i] = cf_group_route_row(
+                arm[i], bias[i], mode=_mode)
         gen_batch.non_tensor_batch["agent_name"] = agent
         gen_batch.non_tensor_batch["cf_logit_bias"] = bias_arr
         # Stash the arm membership BEFORE generate (like BCI stashes seeds) so it

@@ -16,6 +16,7 @@ T4 abstention: all-easy group -> delta 0 + over_penalty fires -> net emit adv <=
 import numpy as np
 import torch
 
+from src.training.dcpo_pmi import PLACEBO_META
 from src.training.dcpo_region import (
     compose_dcpo_region_advantage,
     compute_cf_group_heads,
@@ -212,3 +213,67 @@ def test_T4_useful_meta_positive_and_adaptthink_clamp():
     # so delta = 1-1 = 0 already; the wrong with-row delta = 0-1 = -1 (negative kept).
     assert np.all(Ram2[:4] <= 0.0)
     assert np.isclose(Ram2[3], -1.0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T5-T7 — PLACEBO without-arm routing (design 2026-06-22)
+#
+# The without-arm BAN degenerates on the SFT init (banning meta-open yields empty
+# <think></think> -> ans2='' -> acc_without~0 -> Δ collapses to "always emit
+# meta"). The fix routes without-arm rows to cf_placebo_agent (forced contentless
+# placebo meta prefix, model solves on-distribution) when dcpo_cf_without_mode=
+# 'placebo'; default 'ban' is byte-identical to today (T6 guards that).
+# cf_group_route_row is the PURE per-row routing decision (no verl/DataProto).
+# ─────────────────────────────────────────────────────────────────────────────
+def test_T5_placebo_mode_routing():
+    from src.training.dcpo_region import cf_group_route_row
+
+    # without-arm (arm 0.0) under placebo -> cf_placebo_agent, NO logit_bias, flag 0
+    agent, bias, wm = cf_group_route_row(
+        arm_i=0.0, bias_i={151669: -100.0, 151670: -100.0}, mode="placebo")
+    assert agent == "cf_placebo_agent"
+    assert bias is None
+    assert wm == 0.0
+
+    # with-arm (arm 1.0) under placebo -> single_turn, no bias, flag 1
+    agent, bias, wm = cf_group_route_row(arm_i=1.0, bias_i=None, mode="placebo")
+    assert agent == "single_turn_agent"
+    assert bias is None
+    assert wm == 1.0
+
+
+def test_T6_ban_mode_routing_byte_identical():
+    from src.training.dcpo_region import cf_group_route_row
+
+    # without-arm under ban (DEFAULT) -> cf_groupban_agent, BOTH-tag bias, flag 0
+    bias_in = {151669: -100.0, 151670: -100.0}
+    agent, bias, wm = cf_group_route_row(arm_i=0.0, bias_i=bias_in, mode="ban")
+    assert agent == "cf_groupban_agent"
+    assert bias == {151669: -100.0, 151670: -100.0}
+    assert wm == 0.0
+
+    # with-arm under ban -> single_turn, no bias, flag 1 (unchanged from today)
+    agent, bias, wm = cf_group_route_row(arm_i=1.0, bias_i=None, mode="ban")
+    assert agent == "single_turn_agent"
+    assert bias is None
+    assert wm == 1.0
+
+    # DEFAULT mode (no mode arg) == 'ban' (the byte-identical guarantee)
+    agent_d, bias_d, wm_d = cf_group_route_row(arm_i=0.0, bias_i=bias_in)
+    assert (agent_d, bias_d, wm_d) == ("cf_groupban_agent", bias_in, 0.0)
+
+
+def test_T7_placebo_response_prefix_tokens():
+    # The placebo path's response prefix tokens == encode of the opener string
+    # exactly; with-arm rows are untouched (None prefix).
+    from src.training.cf_placebo_agent import placebo_opener_str
+
+    class _FakeTok:
+        def encode(self, text, add_special_tokens=False):
+            return [hash(w) % 100000 for w in text.split(" ") if w != ""]
+
+    tok = _FakeTok()
+    opener = placebo_opener_str()
+    placebo_ids = tok.encode("<think>\n" + PLACEBO_META + "\n", add_special_tokens=False)
+    assert placebo_ids == tok.encode(opener, add_special_tokens=False)
+    assert len(placebo_ids) > 0

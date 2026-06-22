@@ -176,6 +176,12 @@ algorithm:
   dcpo_rmeta_source: cf_group
   dcpo_cf_branch_frac: 0.5   # 4/4 split: tighter counterfactual baseline over
                              # more with-meta samples (n_with = round(8*0.5) = 4).
+  # WITHOUT-ARM mechanism (design 2026-06-22): 'placebo' FORCES a contentless
+  # placebo meta block as the without-arm response prefix so it SOLVES on-
+  # distribution. The prior 'ban' degenerated on the SFT init (banning meta-open
+  # -> empty <think></think> -> acc_without~0 -> Δ collapsed to "always emit
+  # meta"). 'ban' (default elsewhere) stays byte-identical for non-cf_group runs.
+  dcpo_cf_without_mode: placebo
   dcpo_w_score_alpha: 1.5    # SCoRe transition weight; alpha>1 makes right->wrong
                              # the most-penalized transition (breaks>saves cure).
   dcpo_w_over: 0.1           # AdaCoT P_over: penalty for meta firing on a problem

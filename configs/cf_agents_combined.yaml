@@ -8,3 +8,5 @@
   _target_: src.training.cf_prefix_agent.CFPrefixAgentLoop
 - name: cf_groupban_agent
   _target_: src.training.cf_groupban_agent.CFGroupBanAgentLoop
+- name: cf_placebo_agent
+  _target_: src.training.cf_placebo_agent.CFPlaceboAgentLoop

@@ -1140,6 +1140,29 @@ def cf_group_arm_split(
     return arm, bias
 
 
+def cf_group_route_row(arm_i, bias_i, mode: str = "ban"):
+    """PURE per-row routing decision for the cf_group without-arm (design 2026-06-22).
+
+    Factored out of the gen-wrap so it is unit-testable without verl/DataProto.
+    Returns (agent_name, logit_bias_or_None, with_meta_flag) for one row given:
+      arm_i  : 1.0 = with-meta sub-arm, 0.0 = without-meta sub-arm (cf_group_arm_split).
+      bias_i : the {meta_open:-100, meta_close:-100} dict for without rows (or None).
+      mode   : 'ban'     (DEFAULT, byte-identical to today) — without-arm rows route
+                          to cf_groupban_agent carrying bias_i (BAN the meta tags).
+               'placebo' (the fix) — without-arm rows route to cf_placebo_agent with
+                          NO logit_bias (the loop forces a contentless placebo meta
+                          block as the trained response prefix and solves on-dist).
+
+    The with-arm (arm_i > 0.5) is UNCHANGED in BOTH modes: single_turn, no bias,
+    with_meta=1.0. So 'ban' is the exact current behaviour; only 'placebo' differs.
+    """
+    if arm_i > 0.5:
+        return "single_turn_agent", None, 1.0
+    if str(mode) == "placebo":
+        return "cf_placebo_agent", None, 0.0
+    return "cf_groupban_agent", bias_i, 0.0
+
+
 def compute_cf_group_heads(
     *,
     c_with,
