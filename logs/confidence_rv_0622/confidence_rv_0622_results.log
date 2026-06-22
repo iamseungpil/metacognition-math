@@ -1,0 +1,43 @@
+# confidence-rv 2026-06-22 new experiments (post 00:05 report)
+
+## EXP-A: pass@k headroom eval (rv-passk-headroom-2, warm-up SFT, k=8 T=0.8, 594 held-out)
+================ pass@k HEADROOM ================
+OVERALL                      n= 594  pass@1=0.672  pass@8=0.801  maj@8=0.717  | HEADROOM(passk-pass1)=+0.129  selfconsist(majk-pass1)=+0.045
+--- by difficulty ---
+easy                         n= 198  pass@1=0.867  pass@8=0.965  maj@8=0.929  | HEADROOM(passk-pass1)=+0.097  selfconsist(majk-pass1)=+0.062
+hard                         n= 135  pass@1=0.328  pass@8=0.541  maj@8=0.356  | HEADROOM(passk-pass1)=+0.213  selfconsist(majk-pass1)=+0.028
+medium                       n= 261  pass@1=0.702  pass@8=0.812  maj@8=0.743  | HEADROOM(passk-pass1)=+0.110  selfconsist(majk-pass1)=+0.041
+--- by data_source ---
+gsm8k                        n= 198  pass@1=0.867  pass@8=0.965  maj@8=0.929  | HEADROOM(passk-pass1)=+0.097  selfconsist(majk-pass1)=+0.062
+hendrycks_math/algebra       n=  76  pass@1=0.727  pass@8=0.803  maj@8=0.724  | HEADROOM(passk-pass1)=+0.076  selfconsist(majk-pass1)=-0.003
+hendrycks_math/counting_and_probability n=  35  pass@1=0.850  pass@8=0.943  maj@8=0.857  | HEADROOM(passk-pass1)=+0.093  selfconsist(majk-pass1)=+0.007
+hendrycks_math/geometry      n=  33  pass@1=0.492  pass@8=0.636  maj@8=0.515  | HEADROOM(passk-pass1)=+0.144  selfconsist(majk-pass1)=+0.023
+hendrycks_math/intermediate_algebra n=  48  pass@1=0.500  pass@8=0.625  maj@8=0.521  | HEADROOM(passk-pass1)=+0.125  selfconsist(majk-pass1)=+0.021
+hendrycks_math/number_theory n=  42  pass@1=0.661  pass@8=0.905  maj@8=0.786  | HEADROOM(passk-pass1)=+0.244  selfconsist(majk-pass1)=+0.125
+hendrycks_math/prealgebra    n=  62  pass@1=0.786  pass@8=0.903  maj@8=0.823  | HEADROOM(passk-pass1)=+0.117  selfconsist(majk-pass1)=+0.036
+hendrycks_math/precalculus   n=  37  pass@1=0.297  pass@8=0.432  maj@8=0.351  | HEADROOM(passk-pass1)=+0.135  selfconsist(majk-pass1)=+0.054
+omni-math                    n=  63  pass@1=0.234  pass@8=0.476  maj@8=0.286  | HEADROOM(passk-pass1)=+0.242  selfconsist(majk-pass1)=+0.052
+=================================================
+ERROR 06-22 08:56:54 [core_client.py:564] Engine core proc EngineCore_DP0 died unexpectedly, shutting down client.
+
+
+## EXP-B: cf_group RL counterfactual eval baselines (594 held-out, acc_with/acc_without/Delta)
+### WARMUP SFT init (RL start) (rv_cgate_warmup)
+### cf_group gs50 (emission->0 abstention) (rv_dcpo_gs50)
+### PMI gs100 always-meta (rv_dcpo_gs100)
+### PMI gs190 always-meta (rv_dcpo_gs190)
+WARMUP SFT init: acc_with 0.660 acc_without 0.668 Delta -0.008 emission 1.000
+cf_group gs50:   acc_with 0.685 acc_without 0.692 Delta -0.007 emission 0.000  (faithful reward -> abstention)
+PMI gs100:       acc_with 0.710 acc_without 0.724 Delta -0.013 emission 1.000  (always-meta net-harm)
+PMI gs190:       acc_with 0.741 acc_without 0.749 Delta -0.008 emission 1.000  (always-meta net-harm)
+
+## EXP-C: cf_group step-65 rollout-table forensics (rv-cfgroup-3, 512 rows=64 groups x 8)
+groups: 45 all-correct, 7 all-wrong, 12 MIXED -> mixed_group_rate=0.1875 (counterfactual headroom ceiling)
+placebo arm injected (134/512 'Let me continue' detected); arm-stash WARN 0; response_length/min 84
+dcpo/acc_without=NaN diagnosed = logging artifact (cf_group never fills heads c_without); new cfgroup_scalar_summary instrumentation added (commit 4dbf583)
+
+## EXP-D: GPU-free teacher-distill data generation (login node, rv_rollout_full.parquet 4171 problems)
+TRAPI teacher validated: wrong-prefix '2+2=5' -> functional redirect (confidence 0.20, counting method, boxed 4)
+rollout pool: mixed 2659 (medium 1554/easy 1105), band[0.125,0.5] 834, hard 0
+generation progress (pool 600, max_workers 4):
+[build] 20/600 problems done, kept_rows=5

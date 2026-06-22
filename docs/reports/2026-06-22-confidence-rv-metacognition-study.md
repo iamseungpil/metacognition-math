@@ -255,6 +255,115 @@ inert-reward trap).
 
 ---
 
+## 8. [NEW] Update 2026-06-22 — Headroom, cf_group Forensics, and the GPU-Free Data Pivot
+
+This update adds four results obtained after the H3 implementation landed. Together they
+answer the question the report left open ("does metacognition have room, or is this a
+task-fit ceiling?"), diagnose why the live cf_group run *looked* broken, and record a
+strategic pivot that unblocks data generation from the cluster-capacity bottleneck.
+
+### 8.1 EXP-A — Headroom is real: a perfect selector could add +12.9% accuracy
+
+**Definition.** *Headroom* is `pass@k − pass@1`: the accuracy a perfect verifier/selector
+could recover by choosing among the model's own k samples. *Selection-headroom* is
+`pass@k − maj@k`: the part that naive majority voting (self-consistency) leaves on the table.
+Both are measured on the warm-up SFT (k=8, T=0.8, 594 held-out problems)
+(source: logs/confidence_rv_0622/confidence_rv_0622_results.log EXP-A).
+
+![Figure 8.1: pass@k headroom by difficulty, and the captured-vs-selection split](figures/fig_headroom.png)
+
+| Stratum | pass@1 | maj@8 | pass@8 | **headroom** | **selection-headroom** |
+|---|---|---|---|---|---|
+| OVERALL | 0.672 | 0.717 | 0.801 | **+0.129** | **+0.084** |
+| easy | 0.867 | 0.929 | 0.965 | +0.097 | +0.036 |
+| medium | 0.702 | 0.743 | 0.812 | +0.110 | +0.069 |
+| **hard** | 0.328 | 0.356 | 0.541 | **+0.213** | **+0.185** |
+
+**Figure 8.1 interpretation.** The overall +12.9% headroom **refutes the "task-fit ceiling"
+hypothesis**: the model already *produces* a correct answer among 8 samples far more often
+than it expresses one. The decisive detail is panel (b): majority voting captures only
++4.5% of the +12.9%, leaving a **+8.4% selection-headroom** overall and **+18.5% on hard**.
+On hard problems the correct answer is a *minority* among the 8 samples (maj@8 captures
++2.8% of a +21.3% ceiling), so a model that could *verify/select* its own correct sample —
+not just vote — would capture what self-consistency cannot. This is the precise opening
+that useful metacognition targets.
+
+### 8.2 EXP-B — Neither PMI nor cf_group achieves useful meta; PMI has higher raw accuracy
+
+Plotting every checkpoint's counterfactual eval on the same 594-problem held-out set
+(source: logs/confidence_rv_0622/confidence_rv_0622_results.log EXP-B) corrects an earlier
+framing: PMI's absolute accuracy is in fact *higher* than cf_group's.
+
+![Figure 8.2: accuracy across checkpoints and the meta-usefulness Delta](figures/fig_checkpoints.png)
+
+| Checkpoint | acc_with | acc_without | Δ | emission | reading |
+|---|---|---|---|---|---|
+| warm-up SFT (RL init) | 0.660 | 0.668 | −0.008 | 1.00 | baseline |
+| cf_group gs50 | 0.685 | 0.692 | −0.007 | **0.00** | faithful reward → abstention |
+| PMI gs100 | 0.710 | 0.724 | −0.013 | 1.00 | always-meta, net-harm |
+| PMI gs190 | 0.741 | 0.749 | −0.008 | 1.00 | always-meta, net-harm |
+
+**Figure 8.2 interpretation.** Both arms raise accuracy off the 0.660 baseline, but the gain
+is the *correctness* reward improving the answer region — **not** useful meta: every Δ stays
+≤ 0 (PMI's meta is net-harmful dead weight; cf_group's faithful reward drives emission to 0,
+so meta is simply absent). PMI gs190 (0.741) exceeds cf_group gs50 (0.685), but the
+comparison is confounded by training length (190 vs 50 steps; cf_group runs kept dying) —
+interpolating PMI to gs50 gives ~0.69, essentially tied. The honest summary: **plain RL on
+correctness already captures ~60% of the headroom with vestigial meta; the remaining gap to
+the 0.801 ceiling is where useful meta must earn its place.** cf_group's value here is
+*diagnostic* (it proves the v8 meta is causally useless by killing it), not accuracy.
+
+### 8.3 EXP-C — The live cf_group run was healthy; `acc_without=NaN` was a logging artifact
+
+The live run alarmed on `dcpo/acc_without = NaN`, suggesting the counterfactual was broken.
+Forensics on the step-65 rollout table (512 rows = 64 groups × 8) showed otherwise
+(source: logs/confidence_rv_0622/confidence_rv_0622_results.log EXP-C).
+
+![Figure 8.3: cf_group group-correctness variance at step 65](figures/fig_cfgroup_variance.png)
+
+**Figure 8.3 interpretation.** The NaN is a **logging artifact**: the trend scalar reads
+`heads["c_without"]` (the PMI-era second-decode field) which cf_group never fills — its
+without-arm rows are real GRPO group members whose correctness lives in `c_with`, with the
+delta routed to `dcpo_ans_meta`. The run itself is healthy (placebo arm injected,
+arm-stash WARN = 0, response_length/min = 84). The *real* finding is structural:
+**only 12 of 64 groups are mixed-correctness** (`mixed_group_rate = 0.19`); the other 52 are
+all-correct or all-wrong, so their counterfactual delta is exactly zero. This is the same
+~15–19% slice EXP-A flagged, and it bounds how much signal the cf_group reward can ever
+produce. We added `cfgroup_scalar_summary` (commit 4dbf583) charting
+`dcpo/cfgroup/{delta, acc_with_arm, acc_without_arm, mixed_group_rate}` so the true signal
+is observable on the next run.
+
+### 8.4 EXP-D — The data fix runs GPU-free; the capacity bottleneck is irrelevant to it
+
+The three results above converge on one diagnosis: the v8 SFT meta is *hollow form, not
+behavior* (a directly-read v8 "redirect" dismisses a strawman around an already-correct
+solution), so the fix is a **functional-redirect SFT** anchored on the student's real errors.
+The pivot is that this data does **not** need the contended H100 cluster (source:
+logs/confidence_rv_0622/confidence_rv_0622_results.log EXP-D).
+
+- The student rollouts already exist — `rv_rollout_full.parquet`, **4171 problems** with
+  per-sample text + grade + gold (2659 mixed; 834 in the [0.125, 0.5] band; difficulty
+  medium 1554 / easy 1105 / **hard 0**, since hard is mostly all-wrong with no recoverable
+  signal).
+- The teacher is **TRAPI (GPT-class) over an API** — it runs on a login node, no GPU. A live
+  probe confirmed it: given the wrong prefix "2 + 2 = 5 because", the teacher emits a
+  *functional* redirect — `confidence: 0.20` (the student's value, not inflated),
+  `decision: redirect`, judgment-only inside the meta block, then a genuine method switch
+  (counting) to `\boxed{4}`. This is exactly what the hollow v8 redirect was not.
+
+We wired a `--rollout_parquet` path (reads the pre-computed rollouts instead of a vLLM node)
+and launched generation on the login node. First progress: **20/600 problems → 5 kept demos
+(~25% yield)** through the full causal/calibration filter, no errors — projecting ~150 demos
+at pool 600 and ~1000+ over the full 4171, against the ~1500 target. The on-policy harvest
+(which PG0 already showed yields only ~141) is dropped in favor of this.
+
+**Updated verdict on H3.** The counterfactual reward is *correct* but starved: with a hollow
+SFT it has no genuine redirect to amplify (Gandhi 2503.01307 — RL amplifies latent behaviors,
+it does not create them). The decisive lever is therefore the **functional-redirect SFT**
+(EXP-D), with cf_group RL as the *second* stage on top of it.
+
+---
+
 ## References
 
 - Math-Shepherd (2312.08935); Let's Verify Step by Step / PRM800K (2305.20050);
