@@ -1,0 +1,115 @@
+description: "C-gate eval for the rv warm-up SFT model (v8_rv_confidence_warmup). Downloads the HF-format warm-up checkpoint from the CLEAN metacot-rv repo (no verl merge needed — sft.py already saves HF), then runs the counterfactual 2-arm eval on the held-out meta-mix val set: each problem decoded TWICE under identical weights/greedy, arm A normal vs arm B with the <|meta|> open token logit-biased to -inf. Reports acc_with - acc_without STRATIFIED by difficulty x scenario — the C-gate test that the warm-started model (a) preserves accuracy (acc_with >= baseline ~0.786) and (b) emits the redirect/verify meta. vLLM (minutes). Standard 80G4-H100. Tokens via env only."
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: rv_cgate_eval
+    sku: 80G4-H100
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 43200
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        CODE_TAR_REVISION: "454364884"
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        VLLM_WORKER_MULTIPROC_METHOD: spawn
+        HF_HUB_DISABLE_XET: "1"
+        WARMUP_MODEL: v8_rv_confidence_warmup
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -o pipefail
+        set -x
+        mkdir -p /scratch/logs /scratch/models /scratch/eval_results
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        nohup python -c "
+        import torch, time
+        g = torch.cuda.device_count()
+        ts = [torch.randn(2048, 2048, device=f\"cuda:{i}\", dtype=torch.float16) for i in range(g)]
+        while True:
+            for i in range(g): ts[i] = (ts[i] @ ts[i]) * 0.5
+            time.sleep(2)
+        " > /scratch/logs/gpu_keeper_inline.log 2>&1 &
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        PYBIN=$${SIMPLERL_DIR}/bin/python
+        pip uninstall -y hf_xet 2>&1 | tail -1 || true
+
+        # 0. pull the meta-mix val parquet (split_tags.difficulty/scenario + ground_truth).
+        $${PYBIN} /scratch/metacognition/scripts/pull_parquets.py 2>&1 | tail -3
+        VAL=/scratch/metacognition/data/verl_val_meta_mix.parquet
+        ls -la $${VAL} || { echo "[YAML] val parquet missing"; exit 1; }
+
+        # 1. download the HF-format warm-up model from the CLEAN metacot-rv repo.
+        $${PYBIN} -c "
+        from huggingface_hub import snapshot_download
+        import os, shutil
+        m=os.environ[\"WARMUP_MODEL\"]
+        snapshot_download(repo_id=\"iamseungpil/metacot-rv\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/\"+m+\"/**\"], local_dir=\"/scratch/models_dl\")
+        src=\"/scratch/models_dl/models/\"+m; dst=\"/scratch/models/\"+m
+        shutil.rmtree(dst, ignore_errors=True); shutil.copytree(src, dst); print(\"warm-up model staged\")
+        "
+        MODEL=/scratch/models/$${WARMUP_MODEL}
+        $${PYBIN} -c "
+        import json, os
+        p=\"$${MODEL}/tokenizer_config.json\"
+        if os.path.exists(p):
+            c=json.load(open(p)); c.pop(\"extra_special_tokens\", None); json.dump(c, open(p,\"w\"), indent=2); print(\"tok patched\")
+        "
+
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+        OUT=/scratch/eval_results/passk_headroom.jsonl
+        # 2. counterfactual 2-arm eval (vLLM, greedy, meta-open banned in arm B).
+        $${PYBIN} -m src.eval.eval_passk_headroom \
+          --model_path $${MODEL} --val_parquet $${VAL} --out $${OUT} \
+          --tp_size 4 --max_new_tokens 16384 --k 8 --temperature 0.8 \
+          2>&1 | tee /scratch/eval_results/cf_rv_eval.log
+        EVAL_RC=$$?
+        if [ "$${EVAL_RC}" -ne 0 ]; then echo "[YAML] cf eval FAILED rc=$${EVAL_RC}"; exit 1; fi
+
+        echo "================ C-GATE CF SUMMARY ================"
+        grep -A40 "pass@k HEADROOM" /scratch/eval_results/cf_rv_eval.log | tee /scratch/eval_results/passk_summary.txt
+        echo "=================================================="
+
+        # 3. upload jsonl + summary to the CLEAN metacot-rv for durable retrieval.
+        $${PYBIN} -c "
+        from huggingface_hub import HfApi
+        import os
+        api=HfApi(token=os.environ[\"HF_TOKEN\"])
+        for fn in [\"$${OUT}\", \"/scratch/eval_results/passk_summary.txt\", \"/scratch/eval_results/cf_rv_eval.log\"]:
+            try:
+                api.upload_file(path_or_fileobj=fn, path_in_repo=\"eval/passk_headroom/\"+os.path.basename(fn),
+                    repo_id=\"iamseungpil/metacot-rv\", repo_type=\"dataset\")
+            except Exception as e: print(\"upload skip\", fn, str(e)[:80])
+        print(\"c-gate eval uploaded\")
+        " || echo "[YAML] upload skipped"
+        echo "[YAML] rv_cgate_eval DONE"
+        sleep 600
+        '
