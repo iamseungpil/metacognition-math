@@ -30,7 +30,7 @@ jobs:
         HF_HUB_DISABLE_XET: "1"
         CONFIG_NAME: triobj_dcpo_v4_rv_h100_4x4k
         REPO: iamseungpil/metacot-h200-triobj-dcpo-v3
-        GS: "100"
+        GS: "190"
     command:
       - nvidia-smi
       - |
