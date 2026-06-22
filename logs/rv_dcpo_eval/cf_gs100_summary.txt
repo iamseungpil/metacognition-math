@@ -1,0 +1,34 @@
+total 594 problems
+OVERALL acc_with 0.710 | acc_without 0.724 | Δ -0.013 | saved 12 broke 20
+meta-emission rate (with arm): 1.000
+
+=== by DIFFICULTY ===
+stratum                   n  acc_with    acc_wo        Δ  saved  broke
+0.easy                  198     0.909     0.924   -0.015      1      4
+1.medium                261     0.739     0.747   -0.008      4      6
+2.hard                  135     0.363     0.385   -0.022      7     10
+
+=== by SCENARIO ===
+stratum                   n  acc_with    acc_wo        Δ  saved  broke
+redirect                309     0.602     0.612   -0.010      9     12
+verify                  285     0.828     0.846   -0.018      3      8
+
+=== by DIFFICULTY x SCENARIO ===
+stratum                   n  acc_with    acc_wo        Δ  saved  broke
+0.easy/verify           198     0.909     0.924   -0.015      1      4
+1.medium/redirect       196     0.724     0.740   -0.015      3      6
+1.medium/verify          65     0.785     0.769   +0.015      1      0
+2.hard/redirect         113     0.389     0.389   +0.000      6      6
+2.hard/verify            22     0.227     0.364   -0.136      1      4
+
+=== by DATA_SOURCE ===
+stratum                   n  acc_with    acc_wo        Δ  saved  broke
+gsm8k                   198     0.909     0.924   -0.015      1      4
+hendrycks_math/algebra   76     0.789     0.789   +0.000      1      1
+hendrycks_math/counting_and_probability   35     0.914     0.943   -0.029      0      1
+hendrycks_math/geometry   33     0.515     0.515   +0.000      1      1
+hendrycks_math/intermediate_algebra   48     0.542     0.542   +0.000      3      3
+hendrycks_math/number_theory   42     0.714     0.762   -0.048      0      2
+hendrycks_math/prealgebra   62     0.806     0.839   -0.032      0      2
+hendrycks_math/precalculus   37     0.324     0.324   +0.000      2      2
+omni-math                63     0.238     0.238   +0.000      4      4
