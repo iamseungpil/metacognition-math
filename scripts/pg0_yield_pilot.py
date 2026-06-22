@@ -188,6 +188,10 @@ def main() -> None:  # pragma: no cover - GPU wiring; pure logic is unit-tested
     parser.add_argument("--max_model_len", type=int, default=8192)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output_dir", default="/scratch/eval_results/pg0_yield_pilot")
+    parser.add_argument("--out", default=None,
+                        help="if set, write accepted functional-redirect SFT examples "
+                             "(prompt + spliced wrong prefix + redirect continuation that "
+                             "CAUSALLY flipped wrong->right) to this parquet path")
     args = parser.parse_args()
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
@@ -251,7 +255,8 @@ def main() -> None:  # pragma: no cover - GPU wiring; pure logic is unit-tested
             ids = tokenizer(wrong, add_special_tokens=False)["input_ids"][:cut]
             prefix = tokenizer.decode(ids, skip_special_tokens=False)
             splice_jobs.append({"gold": prob["gold"], "base": prob["prompt"] + prefix,
-                                "tags": prob.get("tags", {})})
+                                "prompt": prob["prompt"], "prefix": prefix,
+                                "question": prob["question"], "tags": prob.get("tags", {})})
     rng.shuffle(splice_jobs)
     splice_jobs = splice_jobs[: args.max_wrong_splices]
     print(f"[pg0] splicing {len(splice_jobs)} in-band wrong rollouts -> 3 arms "
@@ -275,9 +280,11 @@ def main() -> None:  # pragma: no cover - GPU wiring; pure logic is unit-tested
     emitted = 0
     grade_triples: list[tuple] = []  # (r,n',nc) grades per splice -> raw diagnostics
     tagged_triples: list[tuple] = []  # (tags, r,n',nc) -> per-attribute gap breakdown
+    accepted_rows: list[dict] = []  # accepted functional-redirect SFT examples (--out)
     for job, ro, no, co in zip(splice_jobs, r_out, n_out, c_out):
         gold = job["gold"]
-        r_texts = [_REDIRECT_TAIL + s.text for s in ro.outputs]
+        r_raw = [s.text for s in ro.outputs]
+        r_texts = [_REDIRECT_TAIL + t for t in r_raw]
         n_texts = [_NULL_TAIL + s.text for s in no.outputs]
         c_texts = [s.text for s in co.outputs]
         # Emission = redirect BEHAVIOR present in any arm-R sample (regex-only).
@@ -293,6 +300,28 @@ def main() -> None:  # pragma: no cover - GPU wiring; pure logic is unit-tested
         if accept_redirect(r_grades, n_grades, c_grades,
                            bprime_grades=c_grades, margin=0.5):
             accepted += 1
+            if args.out:
+                # Persist ONE functional-redirect SFT example per accepted splice:
+                # the original prompt + the spliced WRONG prefix + the redirect meta
+                # tail + the arm-R continuation that actually flipped wrong->right.
+                # Pick the first CORRECT arm-R sample (the causal-flip witness).
+                flip_idx = next((i for i, g in enumerate(r_grades) if g == 1), 0)
+                completion = job["prefix"] + _REDIRECT_TAIL + r_raw[flip_idx]
+                accepted_rows.append({
+                    "prompt": job["prompt"],
+                    "question": job["question"],
+                    "completion": completion,
+                    "spliced_prefix": job["prefix"],
+                    "redirect_tail": _REDIRECT_TAIL,
+                    "redirect_continuation": r_raw[flip_idx],
+                    "gold": gold,
+                    "r_rate": arm_rate(r_grades),
+                    "nprime_rate": arm_rate(n_grades),
+                    "nc_rate": arm_rate(c_grades),
+                    "difficulty": str(job.get("tags", {}).get("difficulty", "NA")),
+                    "scenario": str(job.get("tags", {}).get("scenario", "NA")),
+                    "trigger": str(job.get("tags", {}).get("trigger", "NA")),
+                })
 
     emission_rate = (emitted / attempted) if attempted else 0.0
     accept_prob = (accepted / attempted) if attempted else 0.0
@@ -341,6 +370,19 @@ def main() -> None:  # pragma: no cover - GPU wiring; pure logic is unit-tested
     out_path = Path(args.output_dir) / "pg0_verdict.json"
     out_path.write_text(json.dumps(result, indent=2))
     print(f"[pg0] wrote {out_path}")
+
+    # Write accepted functional-redirect SFT examples to a parquet (--out).
+    if args.out:
+        import pandas as pd
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        df = pd.DataFrame(accepted_rows)
+        df.to_parquet(args.out, index=False)
+        print(f"[pg0] wrote {len(accepted_rows)} accepted functional-redirect "
+              f"examples -> {args.out}")
+        result["harvest_out"] = args.out
+        result["harvest_n"] = len(accepted_rows)
+        out_path.write_text(json.dumps(result, indent=2))
+
     if result["verdict"] == "STOP":
         raise SystemExit(
             f"[pg0] STOP: projected {result['projected_accepted']} < target {args.target}"
