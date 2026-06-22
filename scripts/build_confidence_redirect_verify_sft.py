@@ -793,11 +793,24 @@ def build_dataset(
         return _process_problem(prob, rollout_fn, teacher_fn, n_rollouts)
 
     if max_workers > 1:
-        from concurrent.futures import ThreadPoolExecutor
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        results = []
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            results = list(ex.map(_run, problems))
+            futs = [ex.submit(_run, prob) for prob in problems]
+            for i, fut in enumerate(as_completed(futs), 1):
+                results.append(fut.result())
+                if i % 20 == 0 or i == len(problems):
+                    _kr = sum(len(r) for r, _ in results)
+                    print(f"[build] {i}/{len(problems)} problems done, kept_rows={_kr}",
+                          flush=True)
     else:
-        results = [_run(prob) for prob in problems]
+        results = []
+        for i, prob in enumerate(problems, 1):
+            results.append(_run(prob))
+            if i % 20 == 0 or i == len(problems):
+                _kr = sum(len(r) for r, _ in results)
+                print(f"[build] {i}/{len(problems)} problems done, kept_rows={_kr}",
+                      flush=True)
 
     for rows, counts in results:
         for key, delta in counts.items():
@@ -1085,6 +1098,10 @@ def main():  # pragma: no cover - wires GPU + network; logic above is unit-teste
     parser.add_argument("--out", default="data/v8_confidence_redirect_verify.parquet")
     parser.add_argument("--pool_size", type=int, default=2000)
     parser.add_argument("--n_rollouts", type=int, default=8)
+    parser.add_argument("--max_workers", type=int, default=1,
+                        help="thread pool size for parallel TRAPI teacher calls "
+                             "(login-node run: 4-6 balances speed vs the 403 'unusual "
+                             "behavior' rate block).")
     args = parser.parse_args()
 
     if args.rollout_parquet:
