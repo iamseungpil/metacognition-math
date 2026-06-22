@@ -3112,9 +3112,23 @@ class SDCRayPPOTrainer(RayPPOTrainer):
         # Stash the arm membership BEFORE generate (like BCI stashes seeds) so it
         # survives onto the returned batch for the populator to read directly
         # (per-row, survives balance_batch reshuffle).
-        gen_batch.non_tensor_batch["dcpo_cf_with_meta"] = _np.asarray(
-            [float(x) for x in with_meta], dtype=_np.float32)
-        return self._dcpo_cf_group_orig_generate(gen_batch)
+        _with_meta_arr = _np.asarray([float(x) for x in with_meta], dtype=_np.float32)
+        gen_batch.non_tensor_batch["dcpo_cf_with_meta"] = _with_meta_arr
+        _out = self._dcpo_cf_group_orig_generate(gen_batch)
+        # BUGFIX (0622): verl's generate output does NOT carry gen_batch's custom
+        # non_tensor keys, so the arm-membership stash was lost and the reward
+        # populator fell back to positional i%n — which balance_batch reshuffle
+        # breaks, corrupting acc_without (the counterfactual). Re-attach the stash
+        # onto the RETURNED batch (same B rows / order, pre-reshuffle) so it rides
+        # per-row through union + balance_batch into the populator.
+        try:
+            if len(_out) == len(_with_meta_arr) and (
+                "dcpo_cf_with_meta" not in _out.non_tensor_batch
+            ):
+                _out.non_tensor_batch["dcpo_cf_with_meta"] = _with_meta_arr
+        except Exception:
+            pass
+        return _out
 
     # ─── TRIOBJ_DCPO_V3 counterfactual 2nd-generation (spec §3) ────────────────
     def _dcpo_cf_generate_sequences(self, gen_batch: "DataProto"):
