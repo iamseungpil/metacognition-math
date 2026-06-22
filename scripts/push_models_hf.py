@@ -29,7 +29,7 @@ from typing import List
 # ---------------------------------------------------------------------------
 HF_REPO_ID = "iamseungpil/metacot"
 HF_REPO_TYPE = "dataset"
-HF_TOKEN = os.environ.get("HF_TOKEN", "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")
+HF_TOKEN = os.environ.get("HF_TOKEN")  # env-only; never hardcode a token (ships in tarball)
 
 # Files to skip when uploading (training artifacts, not needed for inference)
 IGNORE_PATTERNS = [
