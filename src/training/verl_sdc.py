@@ -33,6 +33,31 @@ from tensordict import TensorDict
 from verl import DataProto
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer, ResourcePoolManager, Role
 
+# ── DEADLOCK DIAGNOSTIC (gated; off by default — zero effect on normal runs) ──
+# When DCPO_FAULTHANDLER_SEC is set, dump EVERY thread's Python stack on a
+# repeating timer to /scratch/logs/faulthandler_trainer.log. A hung run (the
+# cf_group async agent-loop + vLLM deadlock: GPU 0% util, no step) then leaves the
+# deadlocked stack on disk even when amlt log capture is empty — retrieve via
+# `amlt ssh :job -c "tail -300 /scratch/logs/faulthandler_*.log"` (interactive
+# jobs only). This file is the TRAINER process; cf_placebo_agent dumps the ROLLOUT
+# Ray-actor process (where the await likely hangs).
+def _dcpo_install_faulthandler(tag: str):  # pragma: no cover — node-only diagnostic
+    import faulthandler
+    sec = os.environ.get("DCPO_FAULTHANDLER_SEC")
+    if not sec:
+        return
+    try:
+        os.makedirs("/scratch/logs", exist_ok=True)
+        fh = open(f"/scratch/logs/faulthandler_{tag}.log", "a", buffering=1)
+        faulthandler.dump_traceback_later(int(sec), repeat=True, file=fh)
+        print(f"[DCPO] faulthandler self-dump every {sec}s -> "
+              f"/scratch/logs/faulthandler_{tag}.log", flush=True)
+    except Exception as _e:
+        print(f"[DCPO] faulthandler setup skipped ({tag}): {_e}", flush=True)
+
+
+_dcpo_install_faulthandler("trainer")
+
 from src.metacot.prompt import META_END, META_START
 from src.training.rewards import (
     compute_degeneration_penalty,

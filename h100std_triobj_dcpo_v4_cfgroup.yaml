@@ -37,6 +37,12 @@ jobs:
         DCPO_META_CLOSE_N: "96"
         SIMPLERL_DIR: /scratch/conda_envs/simplerl
         DCPO_DEBUG: "1"
+        # deadlock diagnostic: dump all-thread stacks every 120s to
+        # /scratch/logs/faulthandler_{trainer,rollout}.log so a hung run (cf_group
+        # vLLM async-agent-loop deadlock) leaves the stuck await on disk. Retrieve
+        # via `amlt ssh :triobj_dcpo_v4_rv -c "tail -300 /scratch/logs/faulthandler_*.log"`
+        # — REQUIRES the run launched with `amlt run -i` (managed-mode SSH gate).
+        DCPO_FAULTHANDLER_SEC: "120"
     command:
       - nvidia-smi
       - |

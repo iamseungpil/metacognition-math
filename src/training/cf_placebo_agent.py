@@ -103,6 +103,26 @@ try:  # pragma: no cover — exercised only on the verl/vLLM node, not in metapr
 
     from verl.experimental.agent_loop.agent_loop import AgentLoopOutput, register
     from verl.experimental.agent_loop.single_turn_agent_loop import SingleTurnAgentLoop
+
+    # DEADLOCK DIAGNOSTIC (gated): this module loads inside the Ray ROLLOUT actor —
+    # the process whose `await server_manager.generate()` is the prime deadlock
+    # suspect (cf_group hangs at GPU 0% util / no step; PMI's sync rollout never
+    # does). When DCPO_FAULTHANDLER_SEC is set, dump every thread's stack on a timer
+    # to /scratch/logs/faulthandler_rollout.log so a hung run leaves the stuck await
+    # on disk (amlt log capture is empty on these hangs). Off by default.
+    def _install_rollout_faulthandler():  # pragma: no cover — node-only
+        import faulthandler
+        sec = os.environ.get("DCPO_FAULTHANDLER_SEC")
+        if not sec:
+            return
+        try:
+            os.makedirs("/scratch/logs", exist_ok=True)
+            fh = open("/scratch/logs/faulthandler_rollout.log", "a", buffering=1)
+            faulthandler.dump_traceback_later(int(sec), repeat=True, file=fh)
+        except Exception:
+            pass
+
+    _install_rollout_faulthandler()
     from verl.utils.profiler import simple_timer
     from verl.workers.rollout.replica import TokenOutput
 
