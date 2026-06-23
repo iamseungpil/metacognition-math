@@ -145,12 +145,26 @@ try:  # pragma: no cover — exercised only on the verl/vLLM node, not in metapr
 
             # 3. continue raw from prompt + placebo (no logit_bias). vLLM continues
             #    the forced placebo block then the model solves on-distribution.
+            #    CAP max_tokens by the placebo length: the placebo is the response
+            #    PREFIX (response = placebo + gen, capped at response_length), so the
+            #    real gen budget is response_length - len(placebo). Without the cap the
+            #    request length is prompt + placebo + response_length — for prompts near
+            #    the prompt/response boundary that exceeds max_model_len, an over-length
+            #    edge case in the async agent loop that the with-arm (prompt +
+            #    response_length) never hits (the only cf_group-vs-PMI rollout diff, and
+            #    only on long prompts -> the intermittent hang). This makes the placebo
+            #    request length EXACTLY match the with-arm, and stops wasting tokens that
+            #    get truncated anyway.
+            _sp = dict(sampling_params)
+            _cap = max(1, int(self.response_length) - len(placebo_ids))
+            if _sp.get("max_tokens") is None or int(_sp.get("max_tokens") or 0) > _cap:
+                _sp["max_tokens"] = _cap
             metrics: dict[str, Any] = {}
             with simple_timer("generate_sequences", metrics):
                 output: TokenOutput = await self.server_manager.generate(
                     request_id=uuid4().hex,
                     prompt_ids=list(prompt_ids) + list(placebo_ids),
-                    sampling_params=sampling_params,
+                    sampling_params=_sp,
                     image_data=images,
                     video_data=videos,
                 )
