@@ -103,8 +103,9 @@ jobs:
         # TRIOBJ_DCPO_V4 (stage-3b config) initialized from the rv warm-up SFT.
         # `amlt run -i` sets LOCAL_RANK='' (empty) in the job env; verl worker init
         # does int(os.getenv("LOCAL_RANK","0")) which crashes on '' (the "0" default
-        # only applies when UNSET). Unset it so verl gets the default.
-        unset LOCAL_RANK
+        # only applies when UNSET). EXPORT a valid "0" (not unset) so Ray worker
+        # actors inherit a valid value when spawned (incl. late respawns).
+        export LOCAL_RANK=0
         WANDB_NAME=dcpo_v4_func_cf /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
             --config-name=triobj_dcpo_v4_stage3b_h100_4x4k \
             trainer.experiment_name=triobj_dcpo_v4_func_cf_h100_4x4k \
