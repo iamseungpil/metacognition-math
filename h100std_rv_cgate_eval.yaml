@@ -24,11 +24,11 @@ jobs:
         HF_TOKEN: ${HF_TOKEN}
         HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
         GH_TOKEN: ${GH_TOKEN}
-        CODE_TAR_REVISION: "453075039"
+        CODE_TAR_REVISION: "455872112"
         SIMPLERL_DIR: /scratch/conda_envs/simplerl
         VLLM_WORKER_MULTIPROC_METHOD: spawn
         HF_HUB_DISABLE_XET: "1"
-        WARMUP_MODEL: v8_rv_confidence_warmup
+        WARMUP_MODEL: v8_rv_functional_sft
     command:
       - nvidia-smi
       - |
