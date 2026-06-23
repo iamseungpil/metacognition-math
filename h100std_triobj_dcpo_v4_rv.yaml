@@ -95,6 +95,11 @@ jobs:
         # RESUME-FROM-HF durability for this RL run.
         python /scratch/metacognition/scripts/pull_resume_ckpt.py --repo iamseungpil/metacot-h200-triobj-dcpo-v3 --config_name triobj_dcpo_v4_func_pmi_h100_4x4k --local_dir /scratch/checkpoints/triobj_dcpo_v4_func_pmi_h100_4x4k --token $${HF_TOKEN} 2>&1 | tail -5
         # TRIOBJ_DCPO_V4 (stage-3b config) initialized from the rv warm-up SFT.
+        # `amlt run -i` sets LOCAL_RANK='' (empty) in the job env; verl worker init
+        # does int(os.getenv("LOCAL_RANK","0")) which crashes on '' (the "0" default
+        # only applies when UNSET). Unset it so verl gets the default — confirmed by
+        # the offline repro that ran clean to step 1 with LOCAL_RANK unset.
+        unset LOCAL_RANK
         WANDB_NAME=dcpo_v4_func_pmi /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
             --config-name=triobj_dcpo_v4_stage3b_h100_4x4k \
             trainer.experiment_name=triobj_dcpo_v4_func_pmi_h100_4x4k \
