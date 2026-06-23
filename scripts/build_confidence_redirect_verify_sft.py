@@ -508,14 +508,14 @@ def _unpack_rollout(r):
     return text, correct, answer
 
 
-def _build_messages(question: str, wrong_prefix: str, teacher_text: str, bucket: str):
-    """Assistant target = [wrong_prefix][teacher meta + recovery]. For verify there
-    is no wrong prefix to keep (the student was right), so the assistant is just the
-    teacher's verify trace."""
-    if bucket == BUCKET_REDIRECT:
-        assistant = f"{wrong_prefix}{teacher_text}"
-    else:
-        assistant = teacher_text
+def _build_messages(question: str, prefix: str, teacher_text: str, bucket: str):
+    """Assistant target = [prefix][teacher meta + recovery]. The prefix is the
+    student's REAL attempt — a FLAWED solve for redirect, the CORRECT solve for
+    verify — which the SFT collator loss-masks, so only the meta + recovery is
+    trained. BOTH buckets prepend it so the demo is self-contained: the candidate
+    the meta judges is actually *derived* in the trace, not materialized from
+    nowhere (the verify-without-solve bug found in the 0622 review)."""
+    assistant = f"{prefix}{teacher_text}"
     messages = [
         {"role": "user", "content": question},
         {"role": "assistant", "content": assistant},
@@ -613,13 +613,19 @@ def _accept_verify_demo(question, gold, confidence, verify_attempt,
         return _Outcome(None, "decorative_verify", repaired, cal_ok)
     if not cal_ok:
         return _Outcome(None, "conf_mismatch", repaired, cal_ok)
-    messages, _assistant = _build_messages(question, "", verify_text, BUCKET_VERIFY)
+    # 0622 review fix: prepend the student's CORRECT solve (the teacher prompt told
+    # the teacher the attempt is "already written" and to emit ONLY the verify, so
+    # without this the candidate the verify checks materializes from nowhere). Strip
+    # the student's own (hollow) meta so the masked context is a clean derivation;
+    # the SFT collator loss-masks it (prefix_split_char), training only meta+check.
+    verify_prefix = META_BLOCK_RE.sub("", verify_attempt or "").rstrip() + "\n\n"
+    messages, _assistant = _build_messages(question, verify_prefix, verify_text, BUCKET_VERIFY)
     row = {
         "messages": messages,
         "scenario": BUCKET_VERIFY,
         "confidence_label": float(confidence),
-        "wrong_prefix": "",
-        "prefix_split_char": 0,
+        "wrong_prefix": verify_prefix,
+        "prefix_split_char": len(verify_prefix),
     }
     kind = "verify_confirm" if control_correct else "verify_catch"
     return _Outcome(row, kind, repaired, cal_ok)
@@ -793,11 +799,14 @@ def build_dataset(
         return _process_problem(prob, rollout_fn, teacher_fn, n_rollouts)
 
     if max_workers > 1:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from concurrent.futures import ThreadPoolExecutor
         results = []
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            # Submit all (work runs in parallel), then COLLECT in submission order so
+            # the result order is deterministic (== sequential), while still logging
+            # progress as each ordered result lands.
             futs = [ex.submit(_run, prob) for prob in problems]
-            for i, fut in enumerate(as_completed(futs), 1):
+            for i, fut in enumerate(futs, 1):
                 results.append(fut.result())
                 if i % 20 == 0 or i == len(problems):
                     _kr = sum(len(r) for r, _ in results)
