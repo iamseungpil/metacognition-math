@@ -282,6 +282,43 @@ def test_aggregate_topk_mean_fraction_knob():
     assert pmi_aggregate(_DELTA, "topk_mean", topk_frac=1.0) == pytest.approx(1.0)
 
 
+def test_aggregate_mean_min_alpha_zero_is_clipped_mean():
+    # RLT-faithful mean + alpha*min, on the per-token-CLIPPED deltas. alpha=0
+    # reduces to the clipped mean (NOT the unclipped "mean" method): clip_c=2
+    # bounds the 3.0 outlier -> [1, -0.5, 2, 0.5], mean = 0.75.
+    assert pmi_aggregate(_DELTA, "mean_min", clip_c=2.0, alpha=0.0) == pytest.approx(0.75)
+    # alpha weights the worst (clipped) token: 0.75 + 0.5 * min([1,-0.5,2,0.5]) =
+    # 0.75 + 0.5*(-0.5) = 0.5.
+    assert pmi_aggregate(_DELTA, "mean_min", clip_c=2.0, alpha=0.5) == pytest.approx(0.5)
+
+
+def test_aggregate_mean_min_penalizes_worst_token_at_equal_mean():
+    # SELECTIVITY: two metas with the SAME mean lift, but the "tanked" one drops
+    # a single token. mean+alpha*min must rank the uniform one strictly higher —
+    # this is what punishes generic verify that fails the hard token (Gandhi).
+    uniform = [0.4, 0.4, 0.4, 0.4]  # mean 0.4, min 0.4
+    tanked = [0.6, 0.6, 0.6, -0.2]  # mean 0.4, min -0.2
+    u = pmi_aggregate(uniform, "mean_min", clip_c=2.0, alpha=0.5)
+    t = pmi_aggregate(tanked, "mean_min", clip_c=2.0, alpha=0.5)
+    assert u == pytest.approx(0.6)
+    assert t == pytest.approx(0.3)
+    assert u > t
+
+
+def test_aggregate_mean_min_clip_bounds_outlier_min():
+    # A single catastrophic token must NOT swamp the aggregate: clip_c saturates
+    # the min so -100 and -1000 give the IDENTICAL result (the swamping fix).
+    a = pmi_aggregate([0.5, 0.5, 0.5, -100.0], "mean_min", clip_c=2.0, alpha=0.5)
+    b = pmi_aggregate([0.5, 0.5, 0.5, -1000.0], "mean_min", clip_c=2.0, alpha=0.5)
+    assert a == pytest.approx(b)
+    # value: clip -> [0.5,0.5,0.5,-2], mean=-0.125, min=-2 -> -0.125 + 0.5*(-2) = -1.125
+    assert a == pytest.approx(-1.125)
+
+
+def test_mean_min_in_agg_methods():
+    assert "mean_min" in PMI_AGG_METHODS
+
+
 def test_aggregate_max_minus_min_rejected():
     with pytest.raises(ValueError, match="direction-blind"):
         pmi_aggregate(_DELTA, "max_minus_min")

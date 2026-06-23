@@ -41,7 +41,7 @@ PLACEBO_META = f"{META_START}\nLet me continue.\n{META_END}"
 # Aggregation menu the offline probe decides among (spec §2). max-minus-min is NOT
 # here on purpose: it scores a meta that makes the continuation LESS likely the same
 # as one that makes it MORE likely (direction-blind, rejected in review).
-PMI_AGG_METHODS = ("sum_clip", "topk_mean", "mean", "max")
+PMI_AGG_METHODS = ("sum_clip", "topk_mean", "mean", "max", "mean_min")
 
 
 class SpliceAlignmentError(ValueError):
@@ -152,7 +152,7 @@ def splice_and_align(tokenizer, prefix_text: str, meta_text: str, continuation_t
 # §2 aggregation + sign gate (review M3)
 # ─────────────────────────────────────────────────────────────────────────────
 def pmi_aggregate(delta_per_token, method: str, topk_frac: float = 0.25,
-                  clip_c: float = 2.0) -> float:
+                  clip_c: float = 2.0, alpha: float = 0.0) -> float:
     """Aggregate per-token deltas (logP_with - logP_without over the C-span).
 
     Methods (spec §2 probe menu):
@@ -160,6 +160,16 @@ def pmi_aggregate(delta_per_token, method: str, topk_frac: float = 0.25,
       topk_mean  mean of the top ceil(topk_frac * T) deltas (>= 1 token)
       mean       plain average
       max        single best token
+      mean_min   RLT (arXiv 2506.08388 r^SS = avg + alpha*min) on the per-token
+                 CLIPPED deltas: mean(clip(d)) + alpha*min(clip(d)). The clip is
+                 LOAD-BEARING — our delta is a real-vs-placebo DIFFERENCE that can
+                 swing far negative on a single noisy token, so an unclipped min
+                 would swamp the mean (sign_gate would zero every correct row).
+                 Clipping bounds the worst token so the term measures "does the
+                 meta also support the HARDEST token", not "find one outlier".
+                 alpha=0 reduces to the clipped mean. Under placebo_correct the
+                 placebo arm goes through the SAME reduction, so the worst-case
+                 term is itself placebo-corrected (min_real - min_placebo).
     max-minus-min is rejected explicitly (direction-blind).
     """
     d = np.asarray(delta_per_token, dtype=np.float64).reshape(-1)
@@ -174,6 +184,9 @@ def pmi_aggregate(delta_per_token, method: str, topk_frac: float = 0.25,
         return float(d.mean())
     if method == "max":
         return float(d.max())
+    if method == "mean_min":
+        dc = np.clip(d, -clip_c, clip_c)
+        return float(dc.mean() + alpha * dc.min())
     if method in ("max_minus_min", "max-min", "maxmin"):
         raise ValueError("max-minus-min is direction-blind — rejected by spec §2")
     raise ValueError(f"unknown aggregation method {method!r}; use one of {PMI_AGG_METHODS}")
@@ -267,7 +280,7 @@ def split_first_meta(text):
 def compute_pmi_rows(rows, method: str = "sum_clip", topk_frac: float = 0.25,
                      clip_c_token: float = 2.0, clip_c_gate: float = 2.0,
                      ngram_n: int = 8, ngram_threshold: float = 0.25,
-                     placebo_correct: bool = False):
+                     placebo_correct: bool = False, alpha: float = 0.0):
     """Turn scored rows into gated R_meta values + probe diagnostics.
 
     The module does NOT load models: each row carries the two arms' per-token
@@ -351,7 +364,8 @@ def compute_pmi_rows(rows, method: str = "sum_clip", topk_frac: float = 0.25,
                 _fail_row(placebo_failed=True)
                 continue  # fail closed: no raw-delta fallback inside the group
             placebo_agg = pmi_aggregate(logp_p - logp_pwo, method,
-                                        topk_frac=topk_frac, clip_c=clip_c_token)
+                                        topk_frac=topk_frac, clip_c=clip_c_token,
+                                        alpha=alpha)
         diagnostics["nonfinite"].append(False)
         diagnostics["placebo_failures"].append(False)
         for m in PMI_AGG_METHODS:
@@ -363,7 +377,8 @@ def compute_pmi_rows(rows, method: str = "sum_clip", topk_frac: float = 0.25,
         diagnostics["guard_hits"].append(invalid)
         if invalid:
             continue  # guard hit: delta invalid, R_meta stays 0
-        agg = pmi_aggregate(delta, method, topk_frac=topk_frac, clip_c=clip_c_token)
+        agg = pmi_aggregate(delta, method, topk_frac=topk_frac, clip_c=clip_c_token,
+                            alpha=alpha)
         if placebo_agg is not None:
             agg -= placebo_agg
         r_meta[i] = sign_gate(agg, bool(row["correct"]), clip_c_gate)

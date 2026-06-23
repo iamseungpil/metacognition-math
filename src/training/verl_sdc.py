@@ -2002,6 +2002,10 @@ def _compute_dcpo_v4_pmi_rmeta(
     topk_frac = float(read_knob("dcpo_pmi_topk_frac", 0.25))
     clip_c_token = float(read_knob("dcpo_pmi_clip_token", 2.0))
     clip_c_gate = float(read_knob("dcpo_pmi_clip_gate", 2.0))
+    # RLT (2506.08388) worst-token coefficient for method='mean_min': agg =
+    # mean(clip(delta)) + alpha*min(clip(delta)). 0.0 => clipped mean (no-op for
+    # other methods). Default OFF so non-mean_min runs stay byte-identical.
+    pmi_alpha = float(read_knob("dcpo_pmi_alpha", 0.0))
     ngram_n = int(read_knob("dcpo_pmi_ngram_n", 8))
     ngram_threshold = float(read_knob("dcpo_pmi_ngram_threshold", 0.25))
     # Cross-shuffle amendment (report 2026-06-11 §4.1): subtract the placebo
@@ -2137,7 +2141,7 @@ def _compute_dcpo_v4_pmi_rmeta(
     scored, diag = compute_pmi_rows(
         rows, method=method, topk_frac=topk_frac, clip_c_token=clip_c_token,
         clip_c_gate=clip_c_gate, ngram_n=ngram_n, ngram_threshold=ngram_threshold,
-        placebo_correct=placebo_correct,
+        placebo_correct=placebo_correct, alpha=pmi_alpha,
     )
     for j, (i, _row, _sp, _psp) in enumerate(attempted):
         r_meta[i] = scored[j]
