@@ -102,12 +102,18 @@ jobs:
             trainer.project_name=metacot-dcpo-v4 \
             actor_rollout_ref.model.path=/scratch/models/v8_rv_functional_sft \
             trainer.resume_mode=auto \
+            ++trainer.val_before_train=False \
             ++algorithm.dcpo_rmeta_source=pmi \
             ++actor_rollout_ref.rollout.agent.agent_loop_config_path=null \
             ++algorithm.dcpo_pmi_agg=mean_min \
             ++algorithm.dcpo_pmi_alpha=0.5 \
-            ++hydra.searchpath=[pkg://verl/trainer/config]
+            ++hydra.searchpath=[pkg://verl/trainer/config] \
+            > /scratch/logs/verl_main.log 2>&1
         VERL_RC=$$?
+        # -i pty swallows verl stdout; the file capture above keeps the full
+        # traceback on disk (retrieve via amlt ssh tail) when a run dies early.
+        echo "[YAML] verl exited rc=$${VERL_RC}; tail of verl_main.log:"
+        tail -40 /scratch/logs/verl_main.log 2>/dev/null
         echo "[YAML] verl_sdc rv rc=$${VERL_RC}"
         sleep 86400
         '
