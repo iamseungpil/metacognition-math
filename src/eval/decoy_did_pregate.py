@@ -86,6 +86,49 @@ def did(lp_gold_meta: float, lp_decoy_meta: float,
     return (lp_gold_meta - lp_decoy_meta) - (lp_gold_plac - lp_decoy_plac)
 
 
+# ----------------------------------------------------------------------------
+# mg (meta|gold) direction — pure helpers
+# ----------------------------------------------------------------------------
+# The mg direction scores the META tokens themselves, conditioned on a gold vs a
+# decoy ANSWER HINT injected into the context. A meta whose CONTENT is made more
+# probable by knowing the gold answer (vs a decoy) is one that genuinely "points
+# at" the gold reasoning. The hint is injected ONLY at reward/scoring time — the
+# model never sees it at inference, so this is leak-free w.r.t. generation.
+#
+#   δ_tok = logp(meta_tok | prompt + GOLD_HINT  + body_before_meta)
+#         − logp(meta_tok | prompt + DECOY_HINT + body_before_meta)
+#
+# (gm scores the ANSWER given the meta; mg scores the META given the answer.)
+GOLD_HINT_TMPL = "[Reference: the answer is {ans}]\n"
+
+
+def build_hint(answer: str) -> str:
+    """Construct the answer HINT injected into the mg scoring context.
+
+    GOLD_HINT injects the gold answer; DECOY_HINT injects _rule_based_decoy(gold)
+    via the SAME template (the caller picks which answer to pass). Identical in
+    structure apart from the answer value, so the only thing distinguishing the
+    gold and decoy arms is the answer the meta is conditioned on."""
+    return GOLD_HINT_TMPL.format(ans=str(answer).strip())
+
+
+def mg_token_deltas(meta_gold_lp: list, meta_decoy_lp: list) -> list:
+    """Per-META-token δ = logp(meta_tok | gold_hint) − logp(meta_tok | decoy_hint),
+    aligned position-wise to the min length. Returns the list of per-token δ."""
+    n = min(len(meta_gold_lp), len(meta_decoy_lp))
+    return [meta_gold_lp[t] - meta_decoy_lp[t] for t in range(n)]
+
+
+def max_token_mg(meta_gold_lp: list, meta_decoy_lp: list) -> float:
+    """mg row score = MAX over META tokens of the per-token δ (the EVAL/detection
+    metric). Max isolates the single meta token most lifted by the gold hint; the
+    REWARD variant (out of scope here) would use mean_min instead."""
+    deltas = mg_token_deltas(meta_gold_lp, meta_decoy_lp)
+    if not deltas:
+        return 0.0
+    return max(deltas)
+
+
 def rank_auc(scores: list[float], labels: list[int]) -> Optional[float]:
     """AUC via Mann-Whitney U with tie-averaged ranks. labels: 1=positive."""
     pos = [s for s, y in zip(scores, labels) if y == 1]
@@ -189,10 +232,26 @@ def main():
         lp_dp, pt_dp = _score_logp(model, tok, body_plac, decoy_c, device)
         d = did(lp_gm, lp_dm, lp_gp, lp_dp)              # sequence-sum DiD
         d_max = max_token_did(pt_gm, pt_dm, pt_gp, pt_dp)  # worst/max-token DiD
+
+        # mg (meta|gold): score the META tokens under a gold vs decoy answer hint
+        # injected into the context (leak-free — hint only at scoring time). The
+        # prompt is [hint]+body-before-<|meta|>+<|meta|>; the scored continuation
+        # is the meta inner + close tag (the META tokens).
+        k_open = body_meta.rfind(META_OPEN)
+        body_before_meta = body_meta[:k_open]          # everything before <|meta|>
+        meta_cont = META_OPEN + inner + META_CLOSE      # the META tokens to score
+        gold_hint = build_hint(gt)
+        decoy_hint = build_hint(decoy)
+        _, pt_meta_gold = _score_logp(
+            model, tok, gold_hint + body_before_meta, meta_cont, device)
+        _, pt_meta_decoy = _score_logp(
+            model, tok, decoy_hint + body_before_meta, meta_cont, device)
+        mg_max = max_token_mg(pt_meta_gold, pt_meta_decoy)  # EVAL/detection metric
+
         results.append({
             "group": r.get("group", ""),
             "correct": int(float(r.get("c_with", 0) or 0) >= 0.5),
-            "did": d, "did_max": d_max,
+            "did": d, "did_max": d_max, "mg_max": mg_max,
             "decoy": decoy, "gt": gt,
         })
 
@@ -224,17 +283,25 @@ def main():
 
     s_sum = _stats("did")        # sequence-sum DiD (diluted)
     s_max = _stats("did_max")    # worst/max-token DiD (user's point — answer token)
+    s_mg = _stats("mg_max")      # mg (meta|gold) max-token — parallel direction
 
     # verdict on the TOKEN-LEVEL (max-token) signal — the un-diluted one.
     sig = bool(s_max["t"] == s_max["t"] and s_max["t"] > 2.0)
     disc = bool(s_max["within_auc"] is not None and s_max["within_auc"] >= 0.60)
+    # mg gate (parallel to gm): within-problem AUC of mg-score predicting correct.
+    mg_sig = bool(s_mg["t"] == s_mg["t"] and s_mg["t"] > 2.0)
+    mg_disc = bool(s_mg["within_auc"] is not None and s_mg["within_auc"] >= 0.60)
     summary = {
         "n_metas_scored": n,
         "TOKEN_LEVEL_max_did": s_max,
         "sequence_sum_did": s_sum,
+        "MG_direction": s_mg,
         "gate_maxtok_mean_gt0": sig,
         "gate_maxtok_within_auc_ge_060": disc,
+        "gate_mg_mean_gt0": mg_sig,
+        "gate_mg_within_auc_ge_060": mg_disc,
         "verdict": "PASS" if (sig and disc) else ("MARGINAL" if (sig or disc) else "FAIL"),
+        "mg_verdict": "PASS" if (mg_sig and mg_disc) else ("MARGINAL" if (mg_sig or mg_disc) else "FAIL"),
     }
 
     json.dump({"summary": summary, "rows": results}, open(args.out, "w"), indent=2)

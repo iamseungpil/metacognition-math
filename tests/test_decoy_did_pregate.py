@@ -3,7 +3,8 @@ import math
 
 from src.eval.decoy_did_pregate import (
     parse_body_meta, make_placebo, build_continuation, did, rank_auc,
-    max_token_did, META_OPEN, META_CLOSE, PLACEBO_INNER,
+    max_token_did, build_hint, mg_token_deltas, max_token_mg,
+    META_OPEN, META_CLOSE, PLACEBO_INNER, GOLD_HINT_TMPL,
 )
 
 
@@ -73,6 +74,54 @@ def test_rank_auc_perfect_and_chance():
 def test_rank_auc_ties_average_to_half():
     # all identical scores -> AUC 0.5 (tie-averaged)
     assert abs(rank_auc([0.5, 0.5, 0.5, 0.5], [0, 1, 0, 1]) - 0.5) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# mg (meta|gold) direction — new pure helpers
+# ---------------------------------------------------------------------------
+def test_build_hint_injects_answer_and_differs_only_in_value():
+    g = build_hint("15")
+    d = build_hint("16")
+    assert "15" in g and "16" in d
+    # identical structure apart from the answer value
+    assert g.replace("15", "X") == d.replace("16", "X")
+    # uses the documented template
+    assert g == GOLD_HINT_TMPL.format(ans="15")
+
+
+def test_build_hint_strips_answer_whitespace():
+    assert build_hint("  7 ") == GOLD_HINT_TMPL.format(ans="7")
+
+
+def test_mg_token_deltas_per_token_difference():
+    gold = [-0.5, -1.0, -2.0]
+    decoy = [-1.5, -1.0, -0.5]
+    # δ = gold - decoy per token
+    assert mg_token_deltas(gold, decoy) == [1.0, 0.0, -1.5]
+
+
+def test_mg_token_deltas_aligns_to_min_length():
+    # extra trailing token in the gold arm is dropped (position-aligned to min)
+    assert mg_token_deltas([-0.5, -1.0, -9.0], [-1.5, -1.0]) == [1.0, 0.0]
+
+
+def test_max_token_mg_picks_biggest_lifted_token():
+    # token 0 = +1.0, token 1 = 0.0, token 2 = -1.5 -> max = +1.0 (most lifted)
+    gold = [-0.5, -1.0, -2.0]
+    decoy = [-1.5, -1.0, -0.5]
+    assert abs(max_token_mg(gold, decoy) - 1.0) < 1e-9
+
+
+def test_max_token_mg_empty_is_zero():
+    assert max_token_mg([], []) == 0.0
+    assert max_token_mg([-1.0], []) == 0.0
+
+
+def test_max_token_mg_gold_hint_lifts_meta_positive():
+    # a meta the gold hint makes MORE probable than the decoy hint -> mg > 0
+    gold = [-0.2, -0.3]   # higher logp under gold hint
+    decoy = [-2.0, -2.5]  # lower logp under decoy hint
+    assert max_token_mg(gold, decoy) > 0
 
 
 if __name__ == "__main__":
