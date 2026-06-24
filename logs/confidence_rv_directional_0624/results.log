@@ -1,0 +1,85 @@
+# confidence-rv Directional Self-Distillation — Session Results Log (2026-06-24)
+# For update-study. Perspective: INTENT → HYPOTHESIS → METHOD → RESULT → INTERPRETATION.
+# All numbers are from held-out 2-arm counterfactual evals (acc_with vs acc_without, <|meta|> open
+# token banned in the without-arm) or from cheap signal pre-gates. McNemar z = |saved-broke|/sqrt(saved+broke).
+
+## INTENT
+North-star: the model self-emits STUDENT-calibrated metacognition (redirect / verify / abstain) and it
+RAISES accuracy ONLY when useful. Reward useful metacognition causally; never reward form alone. gold is
+used ONLY for correctness/causality, never to measure confidence (no-leak invariant). Base for all RL =
+functional SFT v8_rv_functional_sft (selective meta-emission 0.448, student-error-anchored).
+
+## HYPOTHESES
+H1 (causal-reward): a causal/counterfactual meta reward (does the meta change correctness/answer-reachability)
+   makes meta net-positive where outcome-RL does not.
+H2 (direction): scoring the ANSWER given the meta [gm = gold|meta] discriminates useful metas; scoring the
+   META given the answer [mg = meta|gold, the old SDC/RLSD teacher direction] does not.
+H3 (selectivity): a SELECTIVE meta policy (emit only when useful) beats an always-on one.
+H4 (structure): an ADDITIVE independent reward head beats a MULTIPLICATIVE-on-correctness (RLSD) weight.
+H5 (epistemic): a self-distillation REWARD preserves epistemic verbalization (= our meta), whereas KL-imitation
+   self-distillation (SDPO, arXiv 2603.24472) SUPPRESSES it and degrades reasoning.
+
+## METHOD
+- DCPO (verl RayPPOTrainer, GRPO-variant): independent multi-head region-routed advantage
+  (compose_dcpo_region_advantage): R_corr -> ANSWER, R_meta -> META_CONTENT, R_cal -> CONF; each head
+  independently Dr.GRPO-centered, additively routed; anchor_norm head-scale balance.
+- R_meta sources compared: pmi (logp(answer|meta)-logp(answer|placebo), one-sided, mean_min);
+  cf_group (counterfactual c_with - c_without via placebo without-arm, + over-emission penalty, routed to ANSWER);
+  decoy_did_gm (NEW: [logp(gold|meta)-logp(gold|placebo)] - [decoy], token-level mean_min over divergent answer tokens).
+- Signal pre-gate (cheap, no RL): per-meta gm/mg score, within-problem AUC predicting rollout correctness.
+- Held-out eval: 594 meta-mix problems, decoded twice (normal vs <|meta|>-banned), 16k tokens.
+
+## RESULT R1 — PMI mean_min RL (functional SFT), held-out
+acc_with 0.709 vs acc_without 0.699; OVERALL Delta = +0.010 (gs50). Stratified: easy/verify +0.045
+(saved15 broke6), verify +0.014, redirect +0.006; hard -0.030. Meta-emission rate = 0.96 (ALWAYS-ON).
+Confidence frozen ~0.88. gs190 from an earlier (cold-start) PMI run: Delta -0.013 -> -0.008 (net-harmful, flat).
+INTERPRETATION: the meta content is GENUINE independent checks (substitute x=-1, quotient rule; rollout
+c_with=1/c_without=0) and on functional SFT it flips net-harm -> net-help, BUT it is NON-SELECTIVE
+(emit 0.96) and hurts hard problems. Mechanism = mode-collapse to always-verify (RLVR narrowing).
+
+## RESULT R2 — cf_group (counterfactual, selective) RL (functional SFT), held-out
+gs50/60 Delta +0.012; gs100 OVERALL acc_with 0.702 vs acc_without 0.662, Delta = +0.040, saved 43 broke 19,
+McNemar z = 3.05 (SIGNIFICANT, p<0.01). Meta-emission rate = 0.197 (SELECTIVE). Stratified: easy +0.081,
+medium +0.004, hard +0.052 (POSITIVE), redirect +0.016, verify +0.067, hard/verify +0.091.
+Trend gs60 +0.012 -> gs100 +0.040 (3x with training, selectivity preserved).
+INTERPRETATION: the SELECTIVE counterfactual reward (over-emission penalty preserves epistemic choice) is the
+FIRST statistically-significant net-positive result, the current best, and hard problems are now positive.
+Supports H1 (causal reward), H3 (selective > always-on; cf 0.197 selective +0.040 vs PMI 0.96 always-on +0.010).
+
+## RESULT R3 — decoy-DiD signal pre-gate, gm (gold|meta) direction, functional SFT
+Sequence-sum (verbose continuation) within-problem AUC 0.578 (diluted). Token-level MAX on minimal \boxed{ans}
+continuation: within-problem AUC = 0.685, t = 18.06, mean DiD = +1.34. Verdict PASS (gate >= 0.60).
+INTERPRETATION: the functional-SFT meta carries REAL gold-over-decoy reachability signal once the structural
+(prose) tokens are excluded and the answer token is read. Dilution (the earlier MARGINAL 0.578) was a
+measurement artifact of summing over shared tokens, not absence of signal. Validates H2 (gm side).
+
+## RESULT R4 — mg (meta|gold) direction, same functional SFT, same 7 mixed groups
+Token-level MAX within-problem AUC = 0.391 (BELOW chance 0.5), t = 16.83, mean = +1.20. Verdict FAIL.
+INTERPRETATION: scoring the META given the answer (the OLD SDC/RLSD teacher direction) does NOT discriminate
+useful metas — on the SAME groups gm = 0.685 and mg = 0.391. The meta is on average more gold-consistent
+(mean +1.20) but that consistency does not track usefulness. Empirically confirms H2 (mg fails) AND the
+2026-06-01 contrastive-teacher-confound finding (meta|gold = answer-coupling, weak 0.56; here even lower).
+
+## RESULT R5 — SDPO line-by-line comparison (subagent, file:line)
+Our gold-conditioned teacher T+ (verl_sdc.py:1779 teacher_prompt = prompt + gold) is BYTE-IDENTICAL to the
+SDPO mechanism (ray_trainer.py:721) that the paper "Why Does Self-Distillation Degrade Reasoning" (arXiv
+2603.24472) shows SUPPRESSES epistemic verbalization (wait/hmm/perhaps = our meta) via KL(T+||S) imitation.
+Our only divergence = an added decoy T- (contrast). Our conf_free variant already routes around this leak.
+The SDPO reference is ENTIRELY input-conditioned KL; output-scored decoy-DiD exists only in ours.
+INTERPRETATION: the gold-teacher / meta|gold path (R4) is the documented degradation mechanism. The
+leak-free output-scored gm reward + selectivity (R2/R3) is the epistemic-preserving alternative. Supports H5.
+
+## RESULT R6 — H6 reward-flow audit (live PMI run, file:line + wandb)
+R_meta is correctly computed and routed (rmeta_mean 0.032 != 0, pmi_member_rate 0.916, routed to META via
+compose_dcpo_region_advantage; anchor_norm rescales to corr scale). NOT inert. The flat/weak signal is due to
+(1) PMI lacking an over-emission penalty (always-on optimum) and (2) in-train acc_with 0.89 (training problems
+too easy -> counterfactual contrast structurally weak). INTERPRETATION: the bottleneck is data difficulty +
+reward selectivity, not a routing bug.
+
+## DECISION / NEXT (running)
+Direction DECIDED: gm (R3 PASS) wins, mg (R4 FAIL) dropped. Final 2-arm experiment isolates STRUCTURE with the
+gm direction fixed: Arm DCPO (gm contrast ADDITIVE R_meta head) vs Arm RLSD (gm contrast MULTIPLICATIVE weight
+on correctness). Prediction (H4): additive wins (multiplicative shackles to correctness sign -> punishes a
+good meta on a wrong rollout). Both on functional SFT, 2 nodes, measure accuracy Delta AND epistemic
+verbalization (a direction that raises accuracy by SUPPRESSING epistemic is rejected). Baselines PMI/CF to 300.
+NOTE: the gm-RL reward implementation + RLSD multiplicative arm are under ultracode implementation (not yet RL-run).
