@@ -76,7 +76,10 @@ if [ "${ENV_OK}" -eq 0 ]; then
 
     if [ ! -d "${SIMPLERL_DIR}/bin" ] && [ -n "${HF_TOKEN}" ]; then
         echo "[bootstrap] fast-path: pulling conda-pack env from HF -> ${SIMPLERL_DIR}"
-        if curl -sfL -H "Authorization: Bearer ${HF_TOKEN}" -o "${PACK_PATH}" "${PACK_URL}"; then
+        if curl -sfL --retry 6 --retry-delay 15 --retry-all-errors \
+                --connect-timeout 30 --max-time 2400 \
+                -H "Authorization: Bearer ${HF_TOKEN}" -o "${PACK_PATH}" "${PACK_URL}" \
+           && [ -s "${PACK_PATH}" ]; then
             echo "[bootstrap] extracting env (~5GB → ${SIMPLERL_DIR})"
             mkdir -p "${SIMPLERL_DIR}"
             tar -xzf "${PACK_PATH}" -C "${SIMPLERL_DIR}"
@@ -92,10 +95,14 @@ if [ "${ENV_OK}" -eq 0 ]; then
 
     if [ ! -d "${SIMPLERL_DIR}/bin" ]; then
         echo "[bootstrap] slow-path: creating simplerl conda env + pip install"
-        if ! conda env list | grep -qE '^simplerl\b'; then
-            conda create -n simplerl python=3.10 -y
+        # Create at the PREFIX the YAML hardcodes (${SIMPLERL_DIR}=/scratch/conda_envs/simplerl),
+        # NOT a named env (-n simplerl lands in /opt/conda/envs/simplerl, which the
+        # YAML's /scratch/conda_envs/simplerl/bin/python can't find — the gm-RL
+        # bootstrap-fail root cause when the conda-pack download missed).
+        if [ ! -x "${SIMPLERL_DIR}/bin/python" ]; then
+            conda create -p "${SIMPLERL_DIR}" python=3.10 -y
         fi
-        conda activate simplerl
+        conda activate "${SIMPLERL_DIR}"
 
         pip install --upgrade pip setuptools wheel
 
