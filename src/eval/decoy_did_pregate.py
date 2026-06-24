@@ -69,9 +69,15 @@ def make_placebo(body_through: str, meta_inner: str) -> str:
 
 
 def build_continuation(answer: str) -> str:
-    """Fixed gold/decoy continuation differing only in the answer value."""
-    a = str(answer).strip()
-    return f"\nTherefore the final answer is {a}.\n\\boxed{{{a}}}{ '' }"
+    """MINIMAL gold/decoy continuation: just the boxed answer, NO shared prose.
+
+    A verbose continuation ("Therefore the final answer is X. \\boxed{X}") buries
+    the gold-vs-decoy signal — only the answer token differs, the ~10 shared
+    prose tokens contribute DiD~=0 yet add noise, diluting the sum (the user's
+    point). The minimal form concentrates the contrast on the answer tokens so
+    the per-token MAX (worst/biggest-difference token) is read cleanly.
+    """
+    return f"\\boxed{{{str(answer).strip()}}}"
 
 
 def did(lp_gold_meta: float, lp_decoy_meta: float,
@@ -105,8 +111,8 @@ def rank_auc(scores: list[float], labels: list[int]) -> Optional[float]:
 # ----------------------------------------------------------------------------
 # GPU path
 # ----------------------------------------------------------------------------
-def _score_logp(model, tok, prompt: str, continuation: str, device) -> float:
-    """Sum log p(continuation | prompt) over the continuation tokens only."""
+def _score_logp(model, tok, prompt: str, continuation: str, device):
+    """Return (sum_logp, per_token_logp_list) over the continuation tokens only."""
     import torch
     p_ids = tok(prompt, return_tensors="pt", add_special_tokens=False).input_ids
     full_ids = tok(prompt + continuation, return_tensors="pt",
@@ -119,7 +125,18 @@ def _score_logp(model, tok, prompt: str, continuation: str, device) -> float:
     tgt = full_ids[0, 1:]
     tok_lp = logp[range(tgt.shape[0]), tgt]
     cont_lp = tok_lp[n_prompt - 1:]  # tokens predicting the continuation
-    return float(cont_lp.sum().item())
+    return float(cont_lp.sum().item()), [float(x) for x in cont_lp.tolist()]
+
+
+def max_token_did(gm: list, dm: list, gp: list, dp: list) -> float:
+    """Per-token DiD = (gold_meta - gold_plac) - (decoy_meta - decoy_plac),
+    aligned position-wise to the min length; return the MAX (the biggest-
+    difference token = typically the answer token). Isolates the answer signal
+    from shared structural tokens (the user's worst/max-token point)."""
+    n = min(len(gm), len(dm), len(gp), len(dp))
+    if n == 0:
+        return 0.0
+    return max(((gm[t] - gp[t]) - (dm[t] - dp[t])) for t in range(n))
 
 
 def main():
@@ -166,57 +183,59 @@ def main():
         decoy = _rule_based_decoy(gt, seed=args.decoy_seed, checker=checker)
         gold_c = build_continuation(gt)
         decoy_c = build_continuation(decoy)
-        lp_gm = _score_logp(model, tok, body_meta, gold_c, device)
-        lp_dm = _score_logp(model, tok, body_meta, decoy_c, device)
-        lp_gp = _score_logp(model, tok, body_plac, gold_c, device)
-        lp_dp = _score_logp(model, tok, body_plac, decoy_c, device)
-        d = did(lp_gm, lp_dm, lp_gp, lp_dp)
+        lp_gm, pt_gm = _score_logp(model, tok, body_meta, gold_c, device)
+        lp_dm, pt_dm = _score_logp(model, tok, body_meta, decoy_c, device)
+        lp_gp, pt_gp = _score_logp(model, tok, body_plac, gold_c, device)
+        lp_dp, pt_dp = _score_logp(model, tok, body_plac, decoy_c, device)
+        d = did(lp_gm, lp_dm, lp_gp, lp_dp)              # sequence-sum DiD
+        d_max = max_token_did(pt_gm, pt_dm, pt_gp, pt_dp)  # worst/max-token DiD
         results.append({
             "group": r.get("group", ""),
             "correct": int(float(r.get("c_with", 0) or 0) >= 0.5),
-            "did": d,
-            "score_meta": lp_gm - lp_dm,
-            "score_plac": lp_gp - lp_dp,
+            "did": d, "did_max": d_max,
             "decoy": decoy, "gt": gt,
         })
 
     # aggregate ----------------------------------------------------------------
-    dids = [x["did"] for x in results]
-    n = len(dids)
-    mean_did = sum(dids) / n if n else float("nan")
-    pos_frac = sum(1 for d in dids if d > 0) / n if n else float("nan")
-    sd = (sum((d - mean_did) ** 2 for d in dids) / (n - 1)) ** 0.5 if n > 1 else float("nan")
-    t_stat = mean_did / (sd / math.sqrt(n)) if n > 1 and sd > 0 else float("nan")
-
-    pooled_auc = rank_auc(dids, [x["correct"] for x in results])
-    # within-problem AUC: per group with both classes, then average
     from collections import defaultdict
-    g = defaultdict(list)
+    labels = [x["correct"] for x in results]
+    n = len(results)
+    groups = defaultdict(list)
     for x in results:
-        g[x["group"]].append(x)
-    wp_aucs = []
-    for k, xs in g.items():
-        labs = [x["correct"] for x in xs]
-        if 0 < sum(labs) < len(labs):
-            a = rank_auc([x["did"] for x in xs], labs)
-            if a is not None:
-                wp_aucs.append(a)
-    within_auc = sum(wp_aucs) / len(wp_aucs) if wp_aucs else None
+        groups[x["group"]].append(x)
 
+    def _stats(key):
+        vals = [x[key] for x in results]
+        m = sum(vals) / n if n else float("nan")
+        sd = (sum((d - m) ** 2 for d in vals) / (n - 1)) ** 0.5 if n > 1 else float("nan")
+        t = m / (sd / math.sqrt(n)) if n > 1 and sd > 0 else float("nan")
+        pooled = rank_auc(vals, labels)
+        wp = []
+        for _, xs in groups.items():
+            labs = [x["correct"] for x in xs]
+            if 0 < sum(labs) < len(labs):
+                a = rank_auc([x[key] for x in xs], labs)
+                if a is not None:
+                    wp.append(a)
+        within = sum(wp) / len(wp) if wp else None
+        return {"mean": m, "sd": sd, "t": t,
+                "pos_frac": sum(1 for d in vals if d > 0) / n if n else float("nan"),
+                "pooled_auc": pooled, "within_auc": within, "n_mixed": len(wp)}
+
+    s_sum = _stats("did")        # sequence-sum DiD (diluted)
+    s_max = _stats("did_max")    # worst/max-token DiD (user's point — answer token)
+
+    # verdict on the TOKEN-LEVEL (max-token) signal — the un-diluted one.
+    sig = bool(s_max["t"] == s_max["t"] and s_max["t"] > 2.0)
+    disc = bool(s_max["within_auc"] is not None and s_max["within_auc"] >= 0.60)
     summary = {
         "n_metas_scored": n,
-        "mean_did": mean_did, "did_sd": sd, "did_t": t_stat,
-        "did_pos_frac": pos_frac,
-        "pooled_auc_did_vs_correct": pooled_auc,
-        "within_problem_auc": within_auc,
-        "n_mixed_groups": len(wp_aucs),
-        "gate_mean_did_gt0": bool(n > 1 and t_stat == t_stat and t_stat > 2.0),
-        "gate_within_auc_ge_060": bool(within_auc is not None and within_auc >= 0.60),
-        "verdict": None,
+        "TOKEN_LEVEL_max_did": s_max,
+        "sequence_sum_did": s_sum,
+        "gate_maxtok_mean_gt0": sig,
+        "gate_maxtok_within_auc_ge_060": disc,
+        "verdict": "PASS" if (sig and disc) else ("MARGINAL" if (sig or disc) else "FAIL"),
     }
-    sig = summary["gate_mean_did_gt0"]
-    disc = summary["gate_within_auc_ge_060"]
-    summary["verdict"] = "PASS" if (sig and disc) else ("MARGINAL" if (sig or disc) else "FAIL")
 
     json.dump({"summary": summary, "rows": results}, open(args.out, "w"), indent=2)
     print(json.dumps(summary, indent=2))

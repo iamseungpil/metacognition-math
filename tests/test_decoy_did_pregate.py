@@ -3,8 +3,22 @@ import math
 
 from src.eval.decoy_did_pregate import (
     parse_body_meta, make_placebo, build_continuation, did, rank_auc,
-    META_OPEN, META_CLOSE, PLACEBO_INNER,
+    max_token_did, META_OPEN, META_CLOSE, PLACEBO_INNER,
 )
+
+
+def test_max_token_did_picks_biggest_difference_token():
+    # token 0 shared (DiD 0), token 1 = answer (meta favours gold strongly)
+    gm = [-1.0, -0.5]   # gold under meta
+    gp = [-1.0, -2.0]   # gold under placebo  -> PMI_gold = [0, +1.5]
+    dm = [-1.0, -3.0]   # decoy under meta
+    dp = [-1.0, -2.5]   # decoy under placebo -> PMI_decoy = [0, -0.5]
+    # per-token DiD = [0, +2.0]; max = +2.0 (the answer token), not the mean +1.0
+    assert abs(max_token_did(gm, dm, gp, dp) - 2.0) < 1e-9
+
+
+def test_max_token_did_empty_is_zero():
+    assert max_token_did([], [], [], []) == 0.0
 
 
 def test_parse_body_meta_extracts_inner_and_through_close():
