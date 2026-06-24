@@ -439,6 +439,23 @@ def _compute_dcpo_region_advantage(
             ),
         )
 
+    # RLSD MULTIPLICATIVE ABLATION (spec 2026-06-24 FINAL 2-ARM Arm RLSD,
+    # dcpo_rmeta_source: decoy_did_rlsd). The populator (only on that path) writes
+    # the per-row factor dcpo_rlsd_meta_factor = ((1−λ)+λ·exp(sign(A_corr)·clip(gm)));
+    # we thread it onto the META_CONTENT region inside compose, where it MULTIPLIES
+    # the meta-routed advantage (the populator routes R_corr onto META via
+    # meta_region_utility, so the multiply lands on Â_corr·factor — the spec form).
+    # Presence-gated (mirror of _cfgroup_kwargs): when the populator did not write
+    # it (every additive / pmi / cf_group / v2 / v3 config), the dict stays empty
+    # -> compose byte-identical. The factor reaching compose via THIS forward is
+    # the anti-inert gate.
+    _rlsd_kwargs = {}
+    _rlsd_factor = non_tensor_batch.get("dcpo_rlsd_meta_factor", None)
+    if _rlsd_factor is not None:
+        _rlsd_kwargs = dict(
+            rlsd_meta_factor_per_row=np.asarray(_rlsd_factor, dtype=np.float32)
+        )
+
     return compose_dcpo_region_advantage(
         response_mask=response_mask.float(),
         index=index,
@@ -469,6 +486,7 @@ def _compute_dcpo_region_advantage(
         **_emit_route_kwargs,
         **_trunc_kwargs,
         **_cfgroup_kwargs,
+        **_rlsd_kwargs,
     )
 
 

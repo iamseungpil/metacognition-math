@@ -1362,6 +1362,7 @@ def compose_dcpo_region_advantage(
     anchor_ema_state: dict | None = None,
     anchor_ema_decay: float = 0.9,
     anchor_warmup_steps: int = 0,
+    rlsd_meta_factor_per_row=None,
 ):
     """Independent per-head group-mean-subtract + per-region token routing (§2.3).
 
@@ -1460,9 +1461,24 @@ def compose_dcpo_region_advantage(
     meta_c = torch.as_tensor(meta_content_mask, dtype=torch.float32).to(device)
     conf = torch.as_tensor(conf_mask, dtype=torch.float32).to(device)
 
+    # RLSD MULTIPLICATIVE ABLATION (spec 2026-06-24 §23 / FINAL 2-ARM Arm RLSD,
+    # OPTIONAL). `rlsd_meta_factor_per_row` [B] = ((1−λ)+λ·w) with
+    # w = exp(sign(A_corr)·clip(gm)) (dcpo_directional.rlsd_meta_factor). It
+    # MULTIPLIES the META_CONTENT-region advantage per row, shackling the meta
+    # gradient to the correctness sign (the spec's `Â_t = Â_corr·((1−λ)+λ·w)`
+    # form — production routes Â_corr onto META via R_meta=R_corr / w_meta=1, so
+    # the multiply lands on Â_corr·factor). It is the ABLATION arm only; the
+    # PRIMARY (additive) arm leaves this None. None -> the meta term is its plain
+    # self, BYTE-IDENTICAL to every pre-existing config (no caller sets it).
+    _meta_term = w_meta * A_meta * meta_c
+    if rlsd_meta_factor_per_row is not None:
+        _rf = torch.as_tensor(
+            rlsd_meta_factor_per_row, dtype=torch.float32).to(device).view(-1, 1)  # [B,1]
+        _meta_term = _meta_term * _rf
+
     advantages = (
         w_corr * A_corr * ans
-        + w_meta * A_meta * meta_c
+        + _meta_term
         + w_cal * A_cal * conf
     ) * rm
 

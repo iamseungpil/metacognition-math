@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import os
 import pathlib
+import re
 import traceback
 from typing import Callable, List
 
@@ -60,6 +61,7 @@ _dcpo_install_faulthandler("trainer")
 
 from src.metacot.prompt import META_END, META_START
 from src.training.rewards import (
+    _check_correctness,
     compute_degeneration_penalty,
     correctness_reward,
     degeneration_penalty_reward,
@@ -109,6 +111,16 @@ from src.training.dcpo_pmi import (
     compute_pmi_rows,
     splice_and_align,
     split_first_meta,
+)
+# DIRECTIONAL self-distillation (gm-contrast) R_meta core — pure numpy sibling of
+# dcpo_pmi (spec 2026-06-24-directional-self-distill-meta-rl-design.md). Used ONLY
+# by the new decoy_did_gm / decoy_did_rlsd branches + _compute_dcpo_v4_gm_rmeta.
+from src.training.dcpo_directional import (
+    boxed_answer_string,
+    compute_directional_meta_reward,
+    divergent_token_mask,
+    gm_over_emission_penalty,
+    rlsd_meta_factor,
 )
 # SYNC PAIR (round 2 IMPORTANT-4): this import list is mirrored by the
 # verl_sdc_utils STUB in tests/test_bci_isolation_regression.py
@@ -176,7 +188,7 @@ def _compute_dcpo_heads_stash(
 # open onto the deprecated CF-regeneration path (plausible nonzero values, no
 # log line) whenever the knob was missing OR the algorithm config was
 # unreadable (the reader swallows exceptions into its default).
-_V4_RMETA_SOURCES = ("cf", "pmi", "none", "cf_group")
+_V4_RMETA_SOURCES = ("cf", "pmi", "none", "cf_group", "decoy_did_gm", "decoy_did_rlsd")
 _V4_RMETA_MISSING = object()
 
 
@@ -450,6 +462,96 @@ def _populate_dcpo_region_keys(data) -> None:
             # guard-passed). NOT a gdpo_reward_key (diagnostic-style batch key
             # like dcpo_head_member) — FIVE-WAY SYNC lists untouched.
             data.non_tensor_batch["dcpo_rmeta_member"] = _rmeta_member
+        elif _rmeta_src in ("decoy_did_gm", "decoy_did_rlsd"):
+            # DIRECTIONAL self-distillation (gm-contrast) R_meta (spec 2026-06-24
+            # FINAL 2-ARM). BOTH arms use the SAME gm contrast scalar (scored after
+            # <|/meta|>, token-level mean_min over divergent answer tokens); they
+            # differ ONLY in STRUCTURE:
+            #   decoy_did_gm   (ADDITIVE) — gm contrast → R_meta independent head →
+            #                  added to META region (R3, identical plumbing to pmi).
+            #   decoy_did_rlsd (MULTIPLICATIVE ABLATION) — gm contrast → per-row
+            #                  weight w=exp(sign(A_corr)·clip(gm)) → factor
+            #                  ((1−λ)+λ·w) that MULTIPLIES Â_corr on META tokens.
+            _v4_prompt_texts = [
+                _decode_prompt_only(
+                    tokenizer,
+                    data[i].batch["prompts"],
+                    data[i].batch["attention_mask"],
+                    prompt_length,
+                )
+                for i in range(bs)
+            ]
+            _r_meta_gm, _gm_member, _gm_raw = _compute_dcpo_v4_gm_rmeta(
+                tokenizer=tokenizer,
+                trainer=trainer,
+                prompt_texts=_v4_prompt_texts,
+                response_texts=decoded_responses,
+                ground_truths=ground_truths,
+                fmt_classes=_fmt_classes,
+                heads=_heads,
+                read_knob=_v4_read,
+                step=_step,
+            )
+            if _rmeta_src == "decoy_did_gm":
+                # ADDITIVE: gm → meta_region_utility (independent head), centered
+                # over the gm-member population — identical plumbing to pmi.
+                data.non_tensor_batch["meta_region_utility"] = _r_meta_gm
+                data.non_tensor_batch["dcpo_rmeta_member"] = _gm_member
+            else:
+                # MULTIPLICATIVE (RLSD ABLATION): route Â_corr onto META scaled by
+                # the per-row gm factor. The meta head carries R_corr (so A_meta ==
+                # A_corr when centered over the SAME member set as correctness), and
+                # the factor multiplies it inside compose (rlsd_meta_factor_per_row).
+                #   factor = (1−λ) + λ·exp(sign(A_corr_row)·clip(gm))
+                # We approximate the centering-time A_corr SIGN by the raw R_corr
+                # sign (correct=+1 / wrong=−1) — the group-centered sign matches the
+                # raw correctness sign for every non-degenerate group, and the
+                # shackling the ablation demonstrates is about the correctness SIGN.
+                _lam = float(_v4_read("dcpo_rlsd_lambda", 1.0) or 0.0)
+                _clip_w = float(_v4_read("dcpo_rlsd_clip_w", 2.0) or 2.0)
+                _r_corr_sign = np.asarray(_heads["c_with"], dtype=np.float32)  # 1/0
+                _factor = np.ones(bs, dtype=np.float32)
+                for _i in range(bs):
+                    _gmv = float(_gm_raw[_i])
+                    if not np.isfinite(_gmv) or _gm_member[_i] < 0.5:
+                        continue  # no gm signal for this row → neutral factor 1.0
+                    _a_sign = 1.0 if _r_corr_sign[_i] > 0.5 else -1.0
+                    _factor[_i] = rlsd_meta_factor(_gmv, _a_sign, lam=_lam,
+                                                   clip_w=_clip_w)
+                # Meta head carries R_corr; centered over the SAME member set as the
+                # correctness head (dcpo_head_member / all rows) so A_meta == A_corr.
+                data.non_tensor_batch["meta_region_utility"] = np.asarray(
+                    _heads["c_with"], dtype=np.float32) * 2.0 - 1.0  # 0/1 → −1/+1 (R_corr)
+                # rmeta_member absent → compose centers R_meta over member_mask
+                # (same as R_corr): A_meta == A_corr. Diagnostic-style factor key
+                # threaded to compose by verl_sdc_utils (anti-inert gate).
+                data.non_tensor_batch["dcpo_rlsd_meta_factor"] = _factor
+            # OVER-EMISSION / SELECTIVITY penalty (spec §26 — reuse CF dcpo_w_over).
+            # The gm arms have NO without-meta arm split, so CF's group-counterfactual
+            # over_penalty cannot be computed directly. Mirror it per-row: a gm-meta-
+            # bearing row whose OWN GROUP is already fully correct fired meta on an
+            # already-solved problem (AdaCoT P_over = wasteful emission) → subtract
+            # w_over from correctness (same fold as cf_group, NO new GDPO key). When
+            # dcpo_w_over==0 (default) the penalty is all-zero → correctness BYTE-
+            # IDENTICAL, so existing gm behavior is unchanged unless the knob is set.
+            _gm_w_over = float(_v4_read("dcpo_w_over", 0.0) or 0.0)
+            if _gm_w_over:
+                _gm_over = gm_over_emission_penalty(
+                    meta_member=_gm_member,
+                    c_with=_heads["c_with"],
+                    group_index=_uid,
+                    w_over=_gm_w_over,
+                    over_threshold=float(_v4_read("dcpo_over_threshold", 1.0) or 1.0),
+                )
+                data.non_tensor_batch["correctness"] = (
+                    np.asarray(data.non_tensor_batch["correctness"], dtype=np.float32)
+                    - _gm_over
+                ).astype(np.float32)
+                # keep _heads["R_corr"] in lockstep so any downstream reader of the
+                # head (observability / assertion) sees the penalized correctness.
+                _heads["R_corr"] = [
+                    float(x) for x in data.non_tensor_batch["correctness"]
+                ]
         elif _rmeta_src == "none":
             data.non_tensor_batch["meta_region_utility"] = np.zeros(bs, dtype=np.float32)
             data.non_tensor_batch["dcpo_rmeta_member"] = np.zeros(bs, dtype=np.float32)
@@ -528,7 +630,7 @@ def _populate_dcpo_region_keys(data) -> None:
                 print(f"[DCPO-CFGROUP] scalar-summary skipped: {_e}", flush=True)
         # 'cf' (explicit opt-in): no-op — the dcpo_region_rewards value stands.
         # Invalid values already raised inside _v4_rmeta_source_strict.
-        if _rmeta_src in ("pmi", "none", "cf_group"):
+        if _rmeta_src in ("pmi", "none", "cf_group", "decoy_did_gm", "decoy_did_rlsd"):
             # Observability truth: the rollout table + trend scalars below must
             # chart the R_meta that actually ROUTES, not the stale CF/text-
             # fallback stash value. REASSIGN (not mutate): _DCPO_HEAD_STASH
@@ -592,7 +694,8 @@ def _populate_dcpo_region_keys(data) -> None:
     # decomposition over meta-bearing rows, CF pipeline health, and the batch
     # causal effect acc_with - acc_without. These answer "is training moving
     # toward useful metacognition?" without grepping logs or opening the table.
-    _log_dcpo_trend_scalars(step=_step, heads=_heads, cf_texts=_cf_texts)
+    _log_dcpo_trend_scalars(step=_step, heads=_heads, cf_texts=_cf_texts,
+                            decoded_responses=decoded_responses)
 
 
 # v3k §8 state: the populator-side old_log_prob consistency check runs on the
@@ -666,7 +769,20 @@ def _dcpo_fmt_replace_runtime_check(data, step, every: int = 50):
         print(f"[DCPO_DBG] oldlp-consistency scalar skipped: {_e}", flush=True)
 
 
-def _log_dcpo_trend_scalars(*, step, heads, cf_texts):
+# Epistemic verbalization markers (spec 2026-06-24 §Epistemic measurement,
+# adapted from SDPO check_epistemic_tokens.py): a direction that RAISES accuracy
+# by SUPPRESSING these words (emission↓, epistemic-words↓) is REJECTED. Counted
+# over the META block of meta-bearing rows so the rate measures genuine
+# reflective verbalization, not generic solution prose.
+_EPISTEMIC_WORDS = (
+    "wait", "hmm", "perhaps", "maybe", "actually", "alternatively",
+    "seems", "might", "likely", "check",
+)
+_EPISTEMIC_RE = re.compile(
+    r"\b(" + "|".join(_EPISTEMIC_WORDS) + r")\b", re.IGNORECASE)
+
+
+def _log_dcpo_trend_scalars(*, step, heads, cf_texts, decoded_responses=None):
     """Per-step intent-trend scalars under 'dcpo/' (crash-proof, never raises).
 
     dcpo/meta_emit_rate        fraction of rollouts emitting <|meta|> (v3b collapsed 42%->23%)
@@ -746,6 +862,32 @@ def _log_dcpo_trend_scalars(*, step, heads, cf_texts):
                             scal[f"dcpo/eff_ratio_{_h}"] = _v / _cs
         except Exception:
             pass
+        # EPISTEMIC verbalization trend (spec 2026-06-24 §Epistemic measurement):
+        # count epistemic words in the META block of meta-bearing rows + the
+        # per-token epistemic-word density, so a direction that raises accuracy by
+        # SUPPRESSING reflective language is visible (and REJECTED) on a chart.
+        # decoded_responses=None (other callers) -> keys skipped (byte-identical).
+        if decoded_responses is not None:
+            try:
+                _meta_texts = []
+                for _i, _t in enumerate(decoded_responses):
+                    if _i < len(hm) and hm[_i]:
+                        _parts = split_first_meta(_t or "")
+                        if _parts is not None:
+                            _meta_texts.append(_parts[1])  # the meta block
+                _n_meta = max(1, len(_meta_texts))
+                _epi_counts = [len(_EPISTEMIC_RE.findall(_m)) for _m in _meta_texts]
+                _tot_words = sum(max(1, len(_m.split())) for _m in _meta_texts) or 1
+                scal["dcpo/epistemic_words_per_meta"] = sum(_epi_counts) / _n_meta
+                scal["dcpo/epistemic_word_density"] = sum(_epi_counts) / _tot_words
+                scal["dcpo/epistemic_meta_with_word_rate"] = (
+                    sum(1 for c in _epi_counts if c > 0) / _n_meta
+                )
+                # meta-emission rate echoed under the epistemic namespace (the
+                # decision pairs emission selectivity WITH word preservation).
+                scal["dcpo/epistemic_meta_emit_rate"] = sum(hm) / B
+            except Exception:
+                pass
         wandb.log(scal, step=int(step))
     except Exception as _e:  # pragma: no cover — observability never kills training
         print(f"[DCPO] trend-scalar log skipped: {type(_e).__name__}: {_e}", flush=True)
@@ -2178,6 +2320,191 @@ def _compute_dcpo_v4_pmi_rmeta(
                            nonfinite_rate=n_nonfinite / max(1, B),
                            placebo_fail_rate=n_placebo_fail / max(1, B))
     return r_meta, member
+
+
+def _log_gm_wandb_scalars(step: int, *, attempted_rate: float, member_rate: float,
+                          fail_rate: float, rmeta_mean_scored: float) -> None:
+    """One wandb point for the dcpo/gm_* scalars (observability never raises).
+    Like _log_pmi_wandb_scalars: a no-aligned / ref-failure step charts a ZERO,
+    not a logging GAP (gaps look like outages)."""
+    try:
+        import wandb
+        if wandb.run is not None:
+            wandb.log({
+                "dcpo/gm_attempted_rate": float(attempted_rate),
+                "dcpo/gm_member_rate": float(member_rate),
+                "dcpo/gm_fail_rate": float(fail_rate),
+                "dcpo/gm_rmeta_mean_scored": float(rmeta_mean_scored),
+            }, step=int(step))
+    except Exception:
+        pass
+
+
+def _compute_dcpo_v4_gm_rmeta(
+    *,
+    tokenizer,
+    trainer,
+    prompt_texts: list,
+    response_texts: list,
+    ground_truths: list,
+    fmt_classes: list,
+    heads: dict,
+    read_knob,
+    step: int = 0,
+):
+    r"""TRIOBJ_DCPO_V4 directional (gm-contrast) R_meta (spec 2026-06-24).
+
+    Per trusted meta-bearing row, score the GOLD and DECOY answer strings
+    (`\boxed{gold}` / `\boxed{decoy}`) under the model's OWN meta vs a contentless
+    PLACEBO meta, and take the per-token DiD over the divergent answer-value
+    tokens:
+        DiD_t = (logp(gold_t|body+meta) − logp(gold_t|body+placebo))
+              − (logp(decoy_t|body+meta) − logp(decoy_t|body+placebo))
+    aggregated with `mean_min` (RLT) and sign-gated like the PMI head. Reuses the
+    SAME ref-scoring machinery as PMI (`_build_pmi_score_batches` +
+    `_dcpo_v4_ref_logprobs`/`trainer._compute_ref_log_prob`), just with 4 arms per
+    row (gold×{meta,placebo}, decoy×{meta,placebo}) — all batched into ONE forward.
+
+    Row eligibility = fmt class TRUSTED + a CLOSED first meta block + a non-empty
+    gold. The scored "response" is the short `\boxed{...}` answer string (a handful
+    of tokens), so the per-arm sequence is far shorter than PMI's continuation.
+
+    CRASH-SAFE on the engine call (mirror of _compute_dcpo_v4_pmi_rmeta): a ref
+    failure prints LOUDLY and returns all-zero R_meta + member; the dcpo/gm_*
+    scalars are still logged as zeros on every early return.
+
+    Returns (r_meta float32 [B], rmeta_member float32 [B], gm_raw float32 [B]) —
+    member 1.0 only for rows whose gm was actually computed; gm_raw is the
+    pre-gate DiD scalar (NaN on fail) the RLSD arm uses for the per-row weight.
+    """
+    B = len(response_texts)
+    r_meta = np.zeros(B, dtype=np.float32)
+    member = np.zeros(B, dtype=np.float32)
+    gm_raw = np.full(B, np.nan, dtype=np.float32)
+
+    agg = str(read_knob("dcpo_gm_agg", "mean_min"))
+    clip_c_token = float(read_knob("dcpo_gm_clip_token", 2.0))
+    clip_c_gate = float(read_knob("dcpo_gm_clip_gate", 2.0))
+    # RLT worst-token coefficient (mean(clip(d)) + alpha*min(clip(d))). The gm
+    # direction uses alpha=1.0 by default (the prereq PASS 0.685 used mean_min).
+    alpha = float(read_knob("dcpo_gm_alpha", 1.0))
+    decoy_seed = int(read_knob("dcpo_gm_decoy_seed", 42))
+    sign_gate = bool(read_knob("dcpo_gm_sign_gate", True))
+
+    # 1) Select trusted meta-bearing rows + build the 4 (context, answer) arms.
+    #    Each row contributes: gold@meta, decoy@meta, gold@placebo, decoy@placebo.
+    attempted: list = []  # (batch_idx, row_meta dict)
+    arm_prompts, arm_resps = [], []
+    for i in range(B):
+        if fmt_classes[i] not in TRUSTED_META_CLASSES:
+            continue
+        parts = split_first_meta(response_texts[i])
+        if parts is None:
+            continue
+        gold = (ground_truths[i] or "").strip()
+        if not gold:
+            continue
+        response_prefix, meta_text, _continuation = parts
+        prefix_text = (prompt_texts[i] or "") + response_prefix
+        try:
+            decoy = _rule_based_decoy(gold, seed=decoy_seed, checker=_check_correctness)
+        except Exception:
+            decoy = _rule_based_decoy(gold, seed=decoy_seed)
+        gold_str = boxed_answer_string(gold)
+        decoy_str = boxed_answer_string(decoy)
+        # Tokenize answer strings standalone (the divergent mask is positional
+        # over the GOLD answer-token span; structural `\boxed{`/`}` tokens are
+        # shared and excluded). add_special_tokens=False — these are continuations.
+        gold_ids = list(tokenizer.encode(gold_str, add_special_tokens=False))
+        decoy_ids = list(tokenizer.encode(decoy_str, add_special_tokens=False))
+        if not gold_ids:
+            continue
+        ctx_meta = list(tokenizer.encode(prefix_text + meta_text, add_special_tokens=False))
+        ctx_plac = list(tokenizer.encode(prefix_text + PLACEBO_META, add_special_tokens=False))
+        dmask = divergent_token_mask(gold_ids, decoy_ids)
+        # 4 arms appended in a fixed order so the readback below is positional.
+        arm_prompts.append(ctx_meta); arm_resps.append(gold_ids)    # gold@meta
+        arm_prompts.append(ctx_meta); arm_resps.append(decoy_ids)   # decoy@meta
+        arm_prompts.append(ctx_plac); arm_resps.append(gold_ids)    # gold@placebo
+        arm_prompts.append(ctx_plac); arm_resps.append(decoy_ids)   # decoy@placebo
+        attempted.append((i, {
+            "gold_ids": gold_ids, "decoy_ids": decoy_ids,
+            "divergent_mask": dmask,
+            "correct": bool(float(heads["c_with"][i]) > 0.5),
+        }))
+
+    if not attempted:
+        _log_gm_wandb_scalars(step, attempted_rate=0.0, member_rate=0.0,
+                              fail_rate=0.0, rmeta_mean_scored=0.0)
+        return r_meta, member, gm_raw
+
+    # 2) Score ALL 4n arms on the frozen ref worker in ONE forward (same
+    #    dispatch-divisibility padding as the PMI batch).
+    try:
+        nnodes = int(trainer.config.trainer.nnodes)
+    except Exception:
+        nnodes = 1
+    try:
+        n_gpus_per_node = int(trainer.config.trainer.n_gpus_per_node)
+    except Exception:
+        n_gpus_per_node = 4
+    try:
+        micro_bs = int(trainer.config.actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu)
+    except Exception:
+        micro_bs = 4
+    pad_unit = nnodes * n_gpus_per_node * micro_bs
+    tensors, real_n = _build_pmi_score_batches(arm_prompts, arm_resps, pad_unit)
+    assert real_n == 4 * len(attempted), (
+        f"gm arm bookkeeping broken: {real_n} scored rows != 4*{len(attempted)}")
+    try:
+        ref_lp = _dcpo_v4_ref_logprobs(trainer, tensors)
+    except AssertionError:
+        raise  # M1 config guard: deterministic misconfig must CRASH, not flatline
+    except Exception as e:
+        print(f"[DCPO-V4] gm ref scoring FAILED ({type(e).__name__}: {e}) — "
+              f"R_meta all-zero this batch (member 0; dcpo/gm_* charts a zero).",
+              flush=True)
+        if os.environ.get("DCPO_DEBUG", "1") == "1":
+            traceback.print_exc()
+        _log_gm_wandb_scalars(step, attempted_rate=len(attempted) / max(1, B),
+                              member_rate=0.0, fail_rate=0.0, rmeta_mean_scored=0.0)
+        return r_meta, member, gm_raw
+
+    # 3) Read back per-token logp over each answer span, build directional rows.
+    rows: list = []
+    for k, (_i, rmeta_row) in enumerate(attempted):
+        Lg = len(rmeta_row["gold_ids"])
+        Ld = len(rmeta_row["decoy_ids"])
+        base = 4 * k
+        rows.append({
+            "logp_gold_meta":     ref_lp[base + 0, :Lg].float().cpu().numpy(),
+            "logp_decoy_meta":    ref_lp[base + 1, :Ld].float().cpu().numpy(),
+            "logp_gold_placebo":  ref_lp[base + 2, :Lg].float().cpu().numpy(),
+            "logp_decoy_placebo": ref_lp[base + 3, :Ld].float().cpu().numpy(),
+            "divergent_mask":     rmeta_row["divergent_mask"],
+            "correct":            rmeta_row["correct"],
+        })
+
+    scored, diag = compute_directional_meta_reward(
+        rows, agg=agg, clip_c_token=clip_c_token, alpha=alpha,
+        clip_c_gate=clip_c_gate, sign_gate=sign_gate)
+
+    for j, (i, _rmeta_row) in enumerate(attempted):
+        r_meta[i] = scored[j]
+        gm_raw[i] = diag["raw_gm"][j]
+        member[i] = 0.0 if diag["failures"][j] else 1.0
+
+    n_fail = int(sum(bool(x) for x in diag["failures"]))
+    _scored_vals = [float(r_meta[i]) for (i, _r) in attempted if member[i] > 0.5]
+    rmeta_mean = float(np.mean(_scored_vals)) if _scored_vals else 0.0
+    if os.environ.get("DCPO_DEBUG", "1") == "1":
+        print(f"[DCPO-V4] gm step={step}: B={B} attempted={len(attempted)} "
+              f"fails={n_fail} rmeta_mean_scored={rmeta_mean:.4f}", flush=True)
+    _log_gm_wandb_scalars(step, attempted_rate=len(attempted) / max(1, B),
+                          member_rate=float(member.mean()),
+                          fail_rate=n_fail / max(1, len(attempted)),
+                          rmeta_mean_scored=rmeta_mean)
+    return r_meta, member, gm_raw
 
 
 def _attach_teacher_signals(data: DataProto):
