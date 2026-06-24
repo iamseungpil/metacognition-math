@@ -53,6 +53,37 @@ if not getattr(_signal, "_metacot_threadsafe_patch", False):
     _signal.alarm = _threadsafe_alarm
     _signal._metacot_threadsafe_patch = True
 
+
+def _verify_sympy_timed(gold, pred_text, timeout=6.0):
+    """Run math_verify parse+verify under a WALL-CLOCK timeout that works in
+    worker threads.
+
+    The signal patch above disables math_verify's SIGALRM timeout off the main
+    thread, so a pathological sympy parse/verify can HANG FOREVER inside a Ray
+    RewardLoopWorker thread (confirmed cf_group deadlock: faulthandler stuck in
+    reward_loop_score -> correctness_reward -> _check_correctness, GPU 0%, whole
+    run frozen at a step). SIGALRM can't help in threads and Python can't kill a
+    thread, so run the comparison in a throwaway DAEMON thread and ABANDON it on
+    timeout (it leaks only if truly hung — rare, degenerate output — and being a
+    per-call daemon thread there is no fixed pool to exhaust). On timeout the
+    caller falls through to the bounded string-match fallback and the run
+    proceeds. Returns False on timeout / any error.
+    """
+    result = {"ok": False}
+
+    def _run():
+        try:
+            gp = parse(str(gold), extraction_mode="first_match", parsing_timeout=None)
+            pp = parse(str(pred_text), extraction_mode="first_match", parsing_timeout=None)
+            result["ok"] = bool(verify(gp, pp, timeout_seconds=None))
+        except Exception:
+            result["ok"] = False
+
+    th = _threading.Thread(target=_run, daemon=True)
+    th.start()
+    th.join(timeout)
+    return result["ok"]  # timed out -> still False; daemon thread abandoned
+
 # Math verification via sympy (same as Open-R1)
 try:
     from math_verify import parse, verify
@@ -79,26 +110,23 @@ def _check_correctness(pred_text, gold):
     """
     if HAS_MATH_VERIFY:
         try:
-            # parsing_timeout=None / timeout_seconds=None disable math_verify's
-            # signal.SIGALRM timeout, which only works in the main thread and
-            # raises ValueError("signal only works in main thread") in Ray
-            # RewardLoopWorker threads. The installed math_verify RE-RAISES that
-            # ValueError (its own docstring says any timeout > 0 raises in a
-            # threaded environment and recommends parsing_timeout=None), so a
-            # positive timeout silently degrades correct symbolic answers
-            # (1/2==0.5, radicals, fractions) to string-match → mis-grades them.
-            # With the signal disabled the real symbolic comparison runs
-            # correctly in worker threads. Main-thread behaviour is preserved.
-            gold_parsed = parse(str(gold), extraction_mode="first_match", parsing_timeout=None)
-            pred_parsed = parse(str(pred_text), extraction_mode="first_match", parsing_timeout=None)
-            if bool(verify(gold_parsed, pred_parsed, timeout_seconds=None)):
+            # math_verify's SIGALRM timeout is disabled off the main thread (the
+            # signal patch above), so the symbolic comparison must run under a
+            # wall-clock DAEMON-thread timeout — otherwise a pathological sympy
+            # parse/verify hangs forever in a RewardLoopWorker thread and freezes
+            # the whole run (the cf_group reward_loop_score deadlock). On timeout
+            # this returns False and we fall through to the bounded string-match.
+            if _verify_sympy_timed(gold, pred_text, timeout=6.0):
                 return True
             # fall through to string-match (math_verify may have silent-failed)
         except Exception:
             pass  # fallback to string matching
 
-    # Always run string-match fallback (covers worker-thread silent fail)
-    p = _extract_answer_fallback(pred_text)
+    # Always run string-match fallback (covers worker-thread silent fail).
+    # Bound the input to the tail: the answer is near the end, and the nested
+    # \boxed regex can catastrophic-backtrack on a degenerate multi-kB output
+    # (the same class of input that hangs sympy) — cap it so the fallback is O(1).
+    p = _extract_answer_fallback(str(pred_text)[-3000:])
     g = _extract_answer_fallback(str(gold))
     if not p or not g:
         return False
