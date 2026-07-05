@@ -1,0 +1,116 @@
+description: "MATCHED BASE RL: correctness-only GRPO (mode=VANILLA_GRPO) on verl_train_meta_mix — the meta-removed twin of triobj_dcpo_v4_stage3b/pmishift. Init = v8_base_rv_sft (meta-stripped SFT-2). EVERY non-meta hyperparam identical to meta (lr 1e-6, train_batch 64, ppo_mini 8, n 8, clip 0.2/0.28, kl 0.0, max_response 4096, 300 steps); ONLY the meta mechanism is removed (no R_meta head, no cf_group rollout split, no meta/cal/emit/format heads). For the unconfounded base-vs-meta accuracy + degeneration comparison. H100x4 Standard."
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: base_matched_grpo
+    sku: 80G4-H100
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 21600
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        CODE_TAR_REVISION: "460898594"
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        WANDB_API_KEY: ${WANDB_API_KEY}
+        WANDB_KEY: ${WANDB_API_KEY}
+        WANDB_PROJECT: metacot-dcpo-v4
+        WANDB_RUN_GROUP: matched_base
+        WANDB_NAME: base_matched_grpo
+        WANDB_TAGS: BASE,MATCHED,VANILLA_GRPO,correctness_only,meta_mix,from-base-rv-sft,clean-comparison
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        DCPO_DEBUG: "1"
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints /scratch/models
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        # inline GPU spinner from t~0 (close the Singularity suspend-on-idle window).
+        nohup python -c "
+        import torch, time
+        g = torch.cuda.device_count()
+        ts = [torch.randn(2048, 2048, device=f\"cuda:{i}\", dtype=torch.float16) for i in range(g)]
+        while True:
+            for i in range(g): ts[i] = (ts[i] @ ts[i]) * 0.5
+            time.sleep(2)
+        " > /scratch/logs/gpu_keeper_inline.log 2>&1 &
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+        echo "$${CODE_TAR_REVISION}" > /scratch/metacognition/.bootstrap_version
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper_early.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        # hard-remove hf_xet (env flag + pip uninstall insufficient — memory hf-xet-pitfall).
+        pip uninstall -y hf_xet 2>&1 | tail -1 || true
+        find $${SIMPLERL_DIR}/lib -maxdepth 3 -name "hf_xet*" -exec rm -rf {} + 2>/dev/null || true
+        python /scratch/metacognition/scripts/pull_parquets.py 2>&1 | tail -3
+
+        # ── stage the BASE rv SFT-2 (RL init; meta-removed twin of v8_rv_functional_sft) ──
+        # NOTE: v8_base_rv_sft is produced by base SFT-2 (Task B1 strip + SFT). It must
+        # exist under iamseungpil/metacot models/v8_base_rv_sft/ before this run.
+        python -c "
+        from huggingface_hub import snapshot_download
+        import os, shutil
+        snapshot_download(repo_id=\"iamseungpil/metacot-rv\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/v8_base_rv_sft/**\"], local_dir=\"/scratch/models_dl\")
+        src=\"/scratch/models_dl/models/v8_base_rv_sft\"; dst=\"/scratch/models/v8_base_rv_sft\"
+        shutil.rmtree(dst, ignore_errors=True); shutil.copytree(src, dst); print(\"base rv SFT-2 staged\")
+        "
+        python -c "
+        import json, os; p=\"/scratch/models/v8_base_rv_sft/tokenizer_config.json\"
+        if os.path.exists(p):
+            cfg=json.load(open(p)); cfg.pop(\"extra_special_tokens\", None); json.dump(cfg, open(p,\"w\"), indent=2); print(\"tokenizer patched\")
+        "
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/base_matched_grpo_h100_4x4k --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --token $${HF_TOKEN} --interval 90 --config_name base_matched_grpo_h100_4x4k > /scratch/logs/push_base.log 2>&1 &
+
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+        # RESUME-FROM-HF durability for this RL run.
+        python /scratch/metacognition/scripts/pull_resume_ckpt.py --repo iamseungpil/metacot-h200-triobj-dcpo-v3 --config_name base_matched_grpo_h100_4x4k --local_dir /scratch/checkpoints/base_matched_grpo_h100_4x4k --token $${HF_TOKEN} 2>&1 | tail -5
+        # `amlt run -i` sets LOCAL_RANK='' (empty); export a valid "0" so Ray
+        # worker actors inherit a valid value when spawned (memory amlt-i pitfall).
+        export LOCAL_RANK=0
+        # MATCHED BASE: correctness-only GRPO. The config (base_matched_grpo_h100_4x4k)
+        # already sets mode=VANILLA_GRPO + single [correctness] gdpo head + no cf_group
+        # — NO meta CLI overrides needed (unlike the meta launch, which overrides
+        # dcpo_rmeta_source). model.path = the meta-stripped SFT-2 twin.
+        WANDB_NAME=base_matched_grpo /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
+            --config-name=base_matched_grpo_h100_4x4k \
+            trainer.experiment_name=base_matched_grpo_h100_4x4k \
+            trainer.default_local_dir=/scratch/checkpoints/base_matched_grpo_h100_4x4k \
+            trainer.project_name=metacot-dcpo-v4 \
+            actor_rollout_ref.model.path=/scratch/models/v8_base_rv_sft \
+            trainer.resume_mode=auto \
+            ++trainer.val_before_train=False \
+            ++hydra.searchpath=[pkg://verl/trainer/config] \
+            2>&1 | tee /scratch/logs/verl_main.log
+        VERL_RC=$${PIPESTATUS[0]}
+        echo "[YAML] verl_sdc base_matched rc=$${VERL_RC}; tail of verl_main.log:"
+        tail -40 /scratch/logs/verl_main.log 2>/dev/null
+        sleep 86400
+        '

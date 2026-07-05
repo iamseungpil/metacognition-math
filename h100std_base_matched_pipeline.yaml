@@ -1,0 +1,200 @@
+description: "MATCHED-BASE PIPELINE in ONE job (dodges the 16GB intermediate-upload wall on preemptible H100): SFT-1 (Qwen3-8B -> v8_base_matched) -> SFT-2 (-> v8_base_rv, meta-stripped) -> VANILLA_GRPO on meta_mix, all local; ONLY the final RL checkpoints go to HF (interval push + resume_mode=auto). On preemption the fast SFTs (~20min) re-run and GRPO RESUMES from HF, so RL progress is cumulative. Scientifically identical to the separate-jobs matched base (same data/config, byte-identical non-meta hyperparams vs meta). H100x4 Standard."
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: base_matched_pipeline
+    sku: 80G4-H100
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 21600
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        CODE_TAR_REVISION: "467349721"
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        WANDB_API_KEY: ${WANDB_API_KEY}
+        WANDB_KEY: ${WANDB_API_KEY}
+        WANDB_PROJECT: metacot-dcpo-v4
+        WANDB_RUN_GROUP: matched_base
+        WANDB_NAME: base_matched_grpo
+        WANDB_TAGS: BASE,MATCHED,VANILLA_GRPO,pipeline,meta_mix,clean-comparison
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        DCPO_DEBUG: "1"
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints /scratch/models
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        nohup python -c "
+        import torch, time
+        g = torch.cuda.device_count()
+        ts = [torch.randn(2048, 2048, device=f\"cuda:{i}\", dtype=torch.float16) for i in range(g)]
+        while True:
+            for i in range(g): ts[i] = (ts[i] @ ts[i]) * 0.5
+            time.sleep(2)
+        " > /scratch/logs/gpu_keeper_inline.log 2>&1 &
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        set +x  # do NOT leak GH_TOKEN into xtrace logs
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        set -x
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper_early.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        pip uninstall -y hf_xet 2>&1 | tail -1 || true
+        find $${SIMPLERL_DIR}/lib -maxdepth 3 -name "hf_xet*" -exec rm -rf {} + 2>/dev/null || true
+        pip install -q hf_transfer 2>&1 | tail -1 || true
+        python -c "import deepspeed" 2>/dev/null || pip install -q deepspeed 2>&1 | tail -1
+        python /scratch/metacognition/scripts/pull_parquets.py 2>&1 | tail -3
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+        export LOCAL_RANK=0
+
+        # ── RESUME-SKIP: if a base_matched_grpo checkpoint already exists on HF, SKIP the SFTs
+        # (they are the slow part per preemption window) and stage a SAME-vocab(151671) model as
+        # the architecture template. verl loads config/arch from model.path, then resume_mode=auto
+        # OVERWRITES all weights with the base RL checkpoint -> base weights stay correct. Only on a
+        # FRESH start (no checkpoint) do we run SFT-1 -> SFT-2. ──
+        RGS=$$(python -c "
+        import os, re, time
+        from collections import Counter
+        from huggingface_hub import HfApi
+        for i in range(3):
+            try:
+                fs=HfApi(token=os.environ[\"HF_TOKEN\"]).list_repo_files(\"iamseungpil/metacot-h200-triobj-dcpo-v3\", repo_type=\"model\")
+                break
+            except Exception as e:
+                if i==2: print(-1); raise SystemExit
+                time.sleep(30)
+        cm=Counter(); ce=Counter()
+        for f in fs:
+            m=re.search(r\"base_matched_grpo_h100_4x4k/global_step_(\d+)/actor/(model|extra_state)_world_size_\d+_rank_\d+\.pt$$\",f)
+            if m: (cm if m.group(2)==\"model\" else ce)[int(m.group(1))]+=1
+        steps=sorted(s for s,n in cm.items() if n>=4 and ce[s]>=4)
+        print(steps[-1] if steps else 0)
+        ")
+        echo "[YAML] existing GRPO resume gs = $${RGS}"
+        # FAIL CLOSED: RGS=-1 means HF was unreachable 3x — cold-starting now could
+        # let the pusher/prune overwrite real progress with a new gs0 lineage. Abort;
+        # the next window retries cleanly.
+        if [ "$${RGS}" = "-1" ]; then echo "[YAML] HF unreachable for RGS; ABORT window"; sleep 300; exit 1; fi
+        if [ "$${RGS}" -gt 0 ] 2>/dev/null; then
+          echo "[YAML] RESUME mode (gs=$${RGS}): skip SFT, stage arch template"
+          python -c "
+        from huggingface_hub import snapshot_download
+        import os, shutil
+        snapshot_download(repo_id=\"iamseungpil/metacot-rv\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/v8_rv_functional_sft/**\"], local_dir=\"/scratch/models_dl\")
+        src=\"/scratch/models_dl/models/v8_rv_functional_sft\"; dst=\"/scratch/checkpoints/v8_base_rv_sft\"
+        shutil.rmtree(dst, ignore_errors=True); shutil.copytree(src, dst); print(\"arch template staged\")
+        "
+          python -c "
+        import json, os; p=\"/scratch/checkpoints/v8_base_rv_sft/tokenizer_config.json\"
+        if os.path.exists(p):
+            c=json.load(open(p)); c.pop(\"extra_special_tokens\", None); json.dump(c, open(p,\"w\"), indent=2)
+        "
+        else
+          echo "[YAML] FRESH mode: run SFT-1 -> SFT-2"
+          python -c "
+        from huggingface_hub import hf_hub_download
+        import os, shutil
+        os.makedirs(\"/scratch/metacognition/data\", exist_ok=True)
+        for f in [\"data/v8_base_matched_strict.parquet\", \"data/v8_base_rv_sft.parquet\"]:
+            p = hf_hub_download(\"iamseungpil/metacot\", f, repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"])
+            shutil.copy(p, \"/scratch/metacognition/\"+f); print(\"staged\", f)
+        "
+          sed -i "s|num_train_epochs: 3|num_train_epochs: 1|" configs/sft_v8_base_matched_strict.yaml
+          python -m accelerate.commands.launch --config_file configs/accelerate_sft.yaml \
+              src/training/sft.py --config configs/sft_v8_base_matched_strict.yaml 2>&1 | tail -20
+          SFT1CK=$$(ls -d /scratch/metacognition/checkpoints/v8_base_matched_strict_sft/checkpoint-* 2>/dev/null | sort -V | head -1)
+          echo "[YAML] SFT-1 epoch-1 checkpoint = $${SFT1CK}"
+          sed -i "s|model_name_or_path: /scratch/models/v8_base_matched_strict_sft|model_name_or_path: $${SFT1CK}|" configs/sft_base_rv.yaml
+          python -m accelerate.commands.launch --config_file configs/accelerate_sft.yaml \
+              src/training/sft.py --config configs/sft_base_rv.yaml 2>&1 | tail -20
+          echo "[YAML] SFT-2 output exists: $$(ls -d /scratch/checkpoints/v8_base_rv_sft 2>/dev/null || echo NO)"
+        fi
+
+        # ── GRPO (VANILLA_GRPO, correctness-only on meta_mix) from local SFT-2; ONLY RL ckpts -> HF ──
+        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/base_matched_grpo_h100_4x4k --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --token $${HF_TOKEN} --interval 90 --keep 2 --config_name base_matched_grpo_h100_4x4k > /scratch/logs/push_base.log 2>&1 &
+        # RESUME HARDENING: if HF already has a GRPO checkpoint (RGS>0), a short window may
+        # preempt pull_resume mid-download -> verl would silently COLD-START from gs0 (the gs15
+        # pollution). Retry the pull up to 3x; if RGS>0 but NO local global_step_* landed, ABORT
+        # rather than restart from scratch (next window retries cleanly from max-step on HF).
+        for rp in 1 2 3; do
+          python /scratch/metacognition/scripts/pull_resume_ckpt.py --repo iamseungpil/metacot-h200-triobj-dcpo-v3 --config_name base_matched_grpo_h100_4x4k --local_dir /scratch/checkpoints/base_matched_grpo_h100_4x4k --token $${HF_TOKEN} 2>&1 | tail -5
+          ls -d /scratch/checkpoints/base_matched_grpo_h100_4x4k/global_step_* >/dev/null 2>&1 && break
+          echo "[YAML] pull_resume attempt $${rp} landed no local checkpoint; retry"; sleep 30
+        done
+        LOCAL_GS=$$(ls -d /scratch/checkpoints/base_matched_grpo_h100_4x4k/global_step_* 2>/dev/null | grep -oE "global_step_[0-9]+" | grep -oE "[0-9]+" | sort -n | tail -1)
+        echo "[YAML] RGS(HF)=$${RGS} LOCAL_GS(pulled)=$${LOCAL_GS:-NONE}"
+        if [ "$${RGS}" -gt 0 ] 2>/dev/null && [ -z "$${LOCAL_GS}" ]; then
+          echo "[YAML] ABORT: HF has gs$${RGS} but resume pull produced no local checkpoint; refusing gs0 cold-start (would pollute lineage). Next window retries."
+          sleep 300
+          exit 1
+        fi
+        WANDB_NAME=base_matched_grpo /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
+            --config-name=base_matched_grpo_h100_4x4k \
+            trainer.experiment_name=base_matched_grpo_h100_4x4k \
+            trainer.default_local_dir=/scratch/checkpoints/base_matched_grpo_h100_4x4k \
+            trainer.project_name=metacot-dcpo-v4 \
+            actor_rollout_ref.model.path=/scratch/checkpoints/v8_base_rv_sft \
+            trainer.resume_mode=auto \
+            trainer.save_freq=5 \
+            ++trainer.val_before_train=False \
+            ++hydra.searchpath=[pkg://verl/trainer/config] \
+            2>&1 | tee /scratch/logs/verl_main.log
+        VERL_RC=$${PIPESTATUS[0]}
+        echo "[YAML] verl_sdc base_matched rc=$${VERL_RC}; tail:"
+        tail -40 /scratch/logs/verl_main.log 2>/dev/null
+        # ── DURABILITY FIX (2026-07-05): the background push_ckpts_to_hf pusher
+        # failed to land intermediate ckpts (HF froze at gs245 while training reached
+        # gs295). Do a SYNCHRONOUS, VERIFIED, RETRIED push of the highest local
+        # global_step so the FINAL checkpoint (gs300) reliably reaches HF for the
+        # held-out eval — independent of the flaky background pusher. ──
+        # Stop the background pusher first: its per-file commits + periodic
+        # super_squash_history racing this synchronous upload_folder can drop or
+        # fail the final commit after hours of upload (reviewer-confirmed).
+        pkill -f push_ckpts_to_hf 2>/dev/null || true
+        sleep 5
+        FINAL=$$(ls -d /scratch/checkpoints/base_matched_grpo_h100_4x4k/global_step_* 2>/dev/null | sort -V | tail -1)
+        FN=$$(basename "$${FINAL}")
+        echo "[YAML] final sync push target: $${FINAL}"
+        if [ -n "$${FINAL}" ]; then
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            OUT=$$(python -c "
+        from huggingface_hub import HfApi
+        import os
+        api=HfApi(token=os.environ[\"HF_TOKEN\"])
+        api.upload_folder(folder_path=\"$${FINAL}\", path_in_repo=\"checkpoints/base_matched_grpo_h100_4x4k/$${FN}\", repo_id=\"iamseungpil/metacot-h200-triobj-dcpo-v3\", repo_type=\"model\", ignore_patterns=[\"*.tmp\",\"*.lock\"])
+        fs=api.list_repo_files(\"iamseungpil/metacot-h200-triobj-dcpo-v3\", repo_type=\"model\")
+        nm=sum(1 for f in fs if (\"$${FN}/actor/model_world_size\" in f) and f.endswith(\".pt\"))
+        ne=sum(1 for f in fs if (\"$${FN}/actor/extra_state_world_size\" in f) and f.endswith(\".pt\"))
+        print(\"SHARDS=%d\" % min(nm, ne))
+        " 2>&1)
+            echo "$${OUT}" | tail -2
+            echo "$${OUT}" | grep -qE "SHARDS=[4-9]|SHARDS=[1-9][0-9]" && { echo "[YAML] FINAL PUSH DURABLE $${FN}"; break; } || { echo "[YAML] final push retry $$i"; sleep 60; }
+          done
+        fi
+        sleep 86400
+        '

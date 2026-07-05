@@ -1,0 +1,84 @@
+# MATCHED BASE — meta-removed twin of triobj_dcpo_v4_stage3b (spec
+# docs/superpowers/specs/2026-06-29-matched-base-clean-meta-comparison-design.md §2).
+#
+# PURPOSE: correctness-only GRPO whose ONLY difference from the meta RL run is the
+# absence of the meta mechanism. Same RL data (verl_train_meta_mix.parquet), same
+# init lineage (v8_base_rv_sft = the meta-removed SFT-2 twin), and EVERY non-meta
+# hyperparam byte-identical to triobj_dcpo_v4_stage3b (lr, batch sizes,
+# max_response_length=4096, clip_ratio_low/high, kl, optimizer, total steps).
+#
+# HOW THE META MECHANISM IS REMOVED (vs triobj_dcpo_v4_stage3b):
+#   1. mode TRIOBJ_DCPO_V4 -> VANILLA_GRPO: the reward manager runs ONLY
+#      correctness_reward (the SAME math_verify-graded function meta uses), so the
+#      correctness scoring is byte-identical. VANILLA_GRPO is in _VANILLA_MODES, so
+#      the advantage path early-returns BEFORE any teacher / PMI / cf_group forward.
+#   2. adv_estimator STAYS gdpo with a SINGLE [correctness] head: the correctness
+#      advantage is group-mean-centered by the EXACT same GDPO code path as meta's
+#      correctness head. The meta/cal/emit/format heads are simply absent (removed),
+#      not re-weighted to zero. (gdpo over one head == meta's correctness head.)
+#   3. NO cf_group rollout split: no agent_loop_config_path override, so all n=8
+#      samples use the default single_turn_agent — identical to meta's WITH-meta
+#      arm generation, with NO meta-token logit_bias / placebo / ban (the removed
+#      without-meta sub-arm machinery).
+#   4. ALL dcpo_* / sdc_* meta knobs dropped (no R_meta, no len_cost, no emission
+#      floor, no over-penalty fold onto correctness).
+#
+# Base keeps <|meta|> (151669) / <|/meta|> (151670) in vocab but the base lineage
+# never emits them.
+
+defaults:
+  - verl_e4_selfdistill_h200_4x4k
+  - _self_
+
+# Correctness-only GRPO control (teacher OFF; VANILLA_GRPO early-returns in the
+# advantage path — no T+/T-/PMI/cf_group forward).
+mode: VANILLA_GRPO
+
+data:
+  # IDENTICAL to meta RL — the data confound is what this experiment removes.
+  train_files: /scratch/metacognition/data/verl_train_meta_mix.parquet
+  val_files: /scratch/metacognition/data/verl_val_meta_mix.parquet
+  max_response_length: 4096
+
+actor_rollout_ref:
+  actor:
+    # KL penalty = 0.0 (identical optimization to meta). Meta sets use_kl_loss=true
+    # only to keep the FROZEN ref worker alive as its PMI/teacher scorer (a meta
+    # mechanism); the KL gradient term is zero in BOTH (kl_loss_coef 0.0). Kept
+    # true/0.0 here for byte-identical actor config — the ref worker is inert for
+    # VANILLA_GRPO (no scorer reads it).
+    use_kl_loss: true
+    kl_loss_coef: 0.0
+    # clip-higher (DAPO) — IDENTICAL to meta (matched non-meta hyperparam).
+    clip_ratio_low: 0.2
+    clip_ratio_high: 0.28
+  rollout:
+    # n=8 — IDENTICAL group size / rollout compute to meta. (Meta splits these 8
+    # into 4 with-meta + 4 without-meta sub-arms; base never splits — all 8 are
+    # normal single_turn_agent samples. The cf_group SPLIT is the removed meta
+    # mechanism, not the number 8.)
+    n: 8
+    # NO agent_loop_config_path: default single_turn_agent only. (Meta points this
+    # at cf_agents_combined.yaml to register the cf_groupban/placebo without-meta
+    # injection loops — the removed meta mechanism.)
+
+algorithm:
+  sdc_mode: VANILLA_GRPO
+  sdc_enabled: false
+  sdc_beta_contrast: 0.0
+  adv_estimator: gdpo
+  use_kl_in_reward: false
+  # SINGLE correctness head only. Must equal REWARD_CONFIGS['VANILLA_GRPO']['keys']
+  # (FIVE-WAY SYNC) and what the reward manager actually writes for VANILLA_GRPO.
+  gdpo_reward_keys: [correctness]
+  gdpo_reward_weights: [1.0]
+  # (NO dcpo_* / cf_group / R_meta / len_cost / emission / over-penalty knobs — the
+  # meta mechanism is removed, not zero-weighted.)
+
+trainer:
+  project_name: metacot-dcpo-v4
+  experiment_name: base_matched_grpo_h100_4x4k
+  default_local_dir: /scratch/checkpoints/base_matched_grpo_h100_4x4k
+  total_training_steps: 300
+  save_freq: 10
+  val_before_train: true

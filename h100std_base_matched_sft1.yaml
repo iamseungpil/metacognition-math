@@ -1,0 +1,115 @@
+description: "Base SFT-1 (Approach A): the matched twin of v8_meta_inside_strict_sft. SFT Qwen3-8B on data/v8_base_matched_strict.parquet (4264, meta-stripped, same problems as meta SFT) with sft.py (adds <|meta|> tokens to vocab -> 151671, matching meta). Identical config to sft_v8_meta_inside_strict (3 epochs, lr 2e-6, bs1xga4, max_length 4096). Output checkpoints/v8_base_matched_strict_sft -> pushed to iamseungpil/metacot models/v8_base_matched_strict_sft/ so base SFT-2 can pull checkpoint-254. Gates the whole matched-base lineage. H100x4 Standard."
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: base_matched_sft1
+    sku: 80G4-H100
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 21600
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        CODE_TAR_REVISION: "460898594"
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        WANDB_API_KEY: ${WANDB_API_KEY}
+        WANDB_KEY: ${WANDB_API_KEY}
+        WANDB_PROJECT: metacot-math
+        WANDB_RUN_GROUP: base_matched
+        WANDB_NAME: v8_base_matched_strict_sft
+        WANDB_TAGS: base,matched-sft,clean-comparison,approach-A
+        HF_HUB_DISABLE_XET: "1"
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints /scratch/models
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        nohup python -c "
+        import torch, time
+        g = torch.cuda.device_count()
+        ts = [torch.randn(2048, 2048, device=f'cuda:{i}', dtype=torch.float16) for i in range(g)]
+        while True:
+            for i in range(g): ts[i] = (ts[i] @ ts[i]) * 0.5
+            time.sleep(2)
+        " > /scratch/logs/gpu_keeper_inline.log 2>&1 &
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        set +x  # do NOT leak GH_TOKEN into xtrace logs
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        set -x
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper_early.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        pip uninstall -y hf_xet 2>&1 | tail -1 || true
+        find $${SIMPLERL_DIR}/lib -maxdepth 3 -name "hf_xet*" -exec rm -rf {} + 2>/dev/null || true
+        python -c "import deepspeed" 2>/dev/null || pip install -q deepspeed 2>&1 | tail -1
+
+        # ── stage the base_matched SFT corpus (from metacot) ──
+        python -c "
+        from huggingface_hub import hf_hub_download
+        import os, shutil
+        p = hf_hub_download(\"iamseungpil/metacot\", \"data/v8_base_matched_strict.parquet\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"])
+        os.makedirs(\"/scratch/metacognition/data\", exist_ok=True)
+        shutil.copy(p, \"/scratch/metacognition/data/v8_base_matched_strict.parquet\"); print(\"base_matched corpus staged\")
+        "
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+        # init = Qwen/Qwen3-8B (downloaded by sft.py); sft.py adds <|meta|> tokens -> vocab matches meta.
+        python -m accelerate.commands.launch --config_file configs/accelerate_sft.yaml \
+            src/training/sft.py --config configs/sft_v8_base_matched_strict.yaml
+        SFT_RC=$$?
+        echo "[YAML] base_matched sft1 rc=$${SFT_RC}"
+        echo "[YAML] checkpoints produced:"; ls -1 /scratch/checkpoints/v8_base_matched_strict_sft/ 2>/dev/null
+
+        # locate the checkpoint dir; push ONLY checkpoint-254 (the epoch-1 SFT-2 init, ~16GB)
+        # NOT the whole dir (254+508+762 ~48GB) so the upload finishes inside a preemption window.
+        CKDIR=$$(find /scratch -maxdepth 4 -type d -name v8_base_matched_strict_sft 2>/dev/null | head -1)
+        C254="$${CKDIR}/checkpoint-254"
+        echo "[YAML] checkpoint-254 = $${C254}"; ls -la "$${C254}" 2>/dev/null
+        # consolidate deepspeed -> safetensors if the epoch-1 checkpoint lacks real weights.
+        if ! ls "$${C254}"/*.safetensors >/dev/null 2>&1; then
+          echo "[YAML] no safetensors in checkpoint-254; consolidating via zero_to_fp32"
+          python "$${C254}/zero_to_fp32.py" "$${C254}" "$${C254}" --safe_serialization 2>&1 | tail -4 || echo "[YAML] zero_to_fp32 failed"
+        fi
+        echo "[YAML] checkpoint-254 safetensors:"; ls -la "$${C254}"/*.safetensors 2>/dev/null || echo "  (none)"
+        # upload ONLY checkpoint-254 with REAL verify (safetensors count >= 1), retry across resumes.
+        for i in 1 2 3 4 5 6 7 8; do
+          OUT=$$(python -c "
+        from huggingface_hub import HfApi
+        import os
+        api=HfApi(token=os.environ[\"HF_TOKEN\"])
+        api.upload_folder(folder_path=\"$${C254}\", path_in_repo=\"models/v8_base_matched_strict_sft/checkpoint-254\", repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\")
+        fs=api.list_repo_files(\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"])
+        n=sum(1 for f in fs if \"v8_base_matched_strict_sft/checkpoint-254/\" in f and f.endswith(\".safetensors\"))
+        print(\"VSHARDS=%d\" % n)
+        " 2>&1)
+          echo "$${OUT}" | tail -3
+          echo "$${OUT}" | grep -qE "VSHARDS=[1-9]" && { echo "[YAML][push] base SFT-1 durable (checkpoint-254 weights on HF)"; break; } || { echo "[YAML][push] retry $$i"; sleep 120; }
+        done
+        echo "[YAML] base_matched_sft1 DONE"
+        sleep 86400
+        '
