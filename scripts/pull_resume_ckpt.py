@@ -26,7 +26,15 @@ from pathlib import Path
 
 
 def _max_step(repo: str, config_name: str, token: str):
-    """Return (max_step:int, files:list[str]) for checkpoints/<config>/global_step_*."""
+    """Return (max COMPLETE step:int, files:list[str]) for checkpoints/<config>/global_step_*.
+
+    Complete = at least 4 ``actor/model_world_size_*_rank_*.pt`` shards on the
+    repo. The pusher uploads per-file (durability under preemption), so a
+    partially-uploaded step CAN be visible on HF; resuming from one would crash
+    or corrupt training. Only complete steps are resume candidates.
+    """
+    from collections import Counter
+
     from huggingface_hub import HfApi
 
     api = HfApi(token=token)
@@ -35,16 +43,22 @@ def _max_step(repo: str, config_name: str, token: str):
     except Exception as exc:
         print(f"[resume] repo list failed ({exc}); cold start")
         return None, []
-    prefix = f"checkpoints/{config_name}/global_step_"
-    steps = set()
+    pat = re.compile(
+        rf"checkpoints/{re.escape(config_name)}/global_step_(\d+)/actor/model_world_size_\d+_rank_\d+\.pt$"
+    )
+    shard_counts: Counter = Counter()
     for f in files:
-        m = re.search(rf"{re.escape(prefix)}(\d+)/", f)
+        m = pat.match(f)
         if m:
-            steps.add(int(m.group(1)))
-    if not steps:
-        print(f"[resume] no global_step_* under checkpoints/{config_name}/ on {repo}; cold start")
+            shard_counts[int(m.group(1))] += 1
+    complete = {s for s, n in shard_counts.items() if n >= 4}
+    partial = set(shard_counts) - complete
+    if partial:
+        print(f"[resume] ignoring PARTIAL steps on HF: {sorted(partial)}")
+    if not complete:
+        print(f"[resume] no COMPLETE global_step_* under checkpoints/{config_name}/ on {repo}; cold start")
         return None, []
-    return max(steps), files
+    return max(complete), files
 
 
 def main() -> None:
@@ -58,13 +72,40 @@ def main() -> None:
     from huggingface_hub import snapshot_download
 
     step, _ = _max_step(args.repo, args.config_name, args.token)
+
+    # NEVER move the resume point backwards (reviewer-confirmed): on a
+    # same-node requeue /scratch survives, so the local dir may hold a COMPLETE
+    # checkpoint NEWER than anything on HF (its upload was cut by the kill).
+    # Overwriting the pointer with the older HF step would re-train a whole
+    # window and let the pusher upload a dir verl is concurrently rewriting.
+    local_dir = Path(args.local_dir)
+    local_best = None
+    for d in local_dir.glob("global_step_*"):
+        try:
+            n = int(d.name.rsplit("_", 1)[-1])
+        except ValueError:
+            continue
+        models = len(list(d.glob("actor/model_world_size_*_rank_*.pt")))
+        extras = len(list(d.glob("actor/extra_state_world_size_*_rank_*.pt")))
+        if models >= 4 and extras >= 4 and (local_best is None or n > local_best):
+            local_best = n
+    if local_best is not None and (step is None or step <= local_best):
+        pointer = local_dir / "latest_checkpointed_iteration.txt"
+        pointer.write_text(str(local_best))
+        print(
+            f"[resume] local global_step_{local_best} is >= HF ({step}); keeping local resume point"
+        )
+        return
     if step is None:
         return
 
-    local_dir = Path(args.local_dir)
     target = local_dir / f"global_step_{step}"
-    # If a complete-looking local copy already exists, don't re-download.
-    if (target / "actor").exists() and any(target.glob("actor/model_world_size_*")):
+    # If a complete local copy already exists, don't re-download. One stray
+    # shard must NOT count as present — require the full resume set.
+    if (
+        len(list(target.glob("actor/model_world_size_*_rank_*.pt"))) >= 4
+        and len(list(target.glob("actor/extra_state_world_size_*_rank_*.pt"))) >= 4
+    ):
         print(f"[resume] local global_step_{step} already present; skip download")
     else:
         local_dir.mkdir(parents=True, exist_ok=True)
