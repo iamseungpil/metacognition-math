@@ -1,0 +1,96 @@
+% SCOPE: 5 Discussion — honest limitations (SFT capability cost vs. no-SFT
+% GRPO absolute baselines incl. RLRT numbers; verify-boilerplate SFT flaw and
+% R1-style v2 plan; token-budget confound; single model family/scale; grader
+% dependence), threats to validity, what a negative T1 would still teach;
+% 6 Conclusion (one paragraph). Pre-results draft: no fabricated numbers.
+\section{Discussion}
+\label{sec:discussion}
+
+\paragraph{Absolute accuracy and the SFT capability cost.}
+Our pipeline requires two SFT stages to install the \metaopen{}\dots\metaclose{}
+protocol before RL, and SFT priming is known to carry a capability cost
+relative to RL applied directly to the base model. Consequently, our absolute
+numbers should not be read against no-SFT RLVR baselines: on Qwen3-8B-Base
+without SFT, \citet{kim2026rebellious} report GRPO at 83.6 on MATH500 and 19.8
+on AIME24, and their RLRT (``Rebellious Student'') variant at 84.4 and 27.9
+respectively (20{,}480-token budget,
+avg@16).\footnote{These four numbers are quoted from the cited preprint and
+have not been independently reproduced by us.}
+The claim this paper is designed to support is not state-of-the-art accuracy
+but the \emph{causal} contribution of the meta mechanism, read off the
+matched-base twin that shares data, hyperparameters, and the same SFT cost
+(Section~\ref{sec:method}); the raw-Qwen3-8B and SFT-only reference rows in
+Table~\ref{tab:t1} make the priming cost explicit rather than hiding it.
+
+\paragraph{Verify-boilerplate in the SFT data.}
+The current functional-verify SFT corpus contains boilerplate verification
+phrasing: many verify blocks re-assert the preceding step rather than perform
+an independent check, rewarding the \emph{form} of verification over its
+\emph{function}. RL on top of such a prime can amplify the template
+\citep{gandhi2025cognitive} even when \pmishift{} scores evidence movement. A
+v2 corpus with R1-style annotation --- meta blocks distilled from traces where
+verification demonstrably changed the trajectory --- is planned; the placebo
+arm in Table~\ref{tab:t2} bounds how much of any observed gain the boilerplate
+alone can explain.
+
+\paragraph{Token budget.}
+Meta blocks consume tokens, so any meta-vs-base comparison is confounded with
+inference-time compute. Some of our legacy evaluations used a 4k-token budget
+under which meta traces were disproportionately truncated; those numbers are
+superseded by the 16k protocol of Section~\ref{sec:exp:setup}, and
+Table~\ref{tab:t1} carries a token-budget control column so the reader can
+separate ``thinks better'' from ``thinks longer.''
+
+\paragraph{Scope and measurement.}
+All experiments use a single model family and scale (Qwen3-8B) and a single
+domain (competition-style math); whether \pmishift{} transfers across scales,
+families, or to non-verifiable domains is untested. Grading depends on
+\texttt{math\_verify}: an earlier grader incorrectly rejected a substantial
+fraction of correct base-model answers, and although the pipeline was audited
+after that failure, residual grader asymmetries between meta-bearing and plain
+traces cannot be fully excluded. Finally, the \pmishift{} signal itself
+depends on a frozen reference model and rule-based decoys; a decoy family that
+is too easy, or systematically correlated with the model's own answer, would
+let the reward be satisfied without genuine self-verification --- which is why
+the SAVE/DERAIL flip rates are reported alongside accuracy.
+
+\paragraph{Threats to validity.}
+Internally, the twin design controls what we can byte-audit, but it cannot
+control emergent differences that the reward itself induces in exploration
+(e.g., entropy trajectories); we therefore compare same-step, same-seed
+checkpoints rather than best-checkpoint selections. Statistically, meta
+emission tracks difficulty (preliminary: $\approx$10\% on Q1 vs.\
+$\approx$98\% on Q4), so any aggregate comparison of meta-bearing vs.\
+meta-free responses is Simpson-confounded --- a warning we consider a
+contribution in its own right, and the reason all headline comparisons in
+Section~\ref{sec:experiments} are stratified.
+
+\paragraph{What a negative result would still establish.}
+If Table~\ref{tab:t1} shows no accuracy gain over the matched base, the
+analysis suite still answers mechanistic questions the field currently lacks
+instruments for: whether explicit meta blocks move the model's own
+gold-vs-decoy evidence at all (flip analysis), whether any effect is content-
+or form-driven (placebo), whether SFT priming or the RL reward is the inert
+component (Gandhi-arm decomposition), and whether apparent meta effects in
+aggregate comparisons are stratification artifacts. A clean null with this
+apparatus would be a mechanism paper: evidence that RLVR-style rewards, even
+when routed precisely onto metacognitive content, do not install functional
+self-verification --- sharpening, rather than merely echoing, the skepticism
+of \citet{huang2024llmcannot}.
+
+\section{Conclusion}
+\label{sec:conclusion}
+We proposed an operational definition of in-reasoning metacognition ---
+explicit \metaopen{}\dots\metaclose{} blocks that decide when to verify or
+redirect --- and \pmishift{}, a metacognitive self-distillation reward that
+scores each block by how much it shifts the model's own evidence from a decoy
+toward the gold answer, routed onto meta content only and evaluated against a
+byte-audited matched-base twin that isolates the causal contribution of the
+mechanism. The four-table experimental program (main effect, mechanism
+decomposition, difficulty/OOD stratification, calibration) is designed so that
+either outcome is informative: a positive result localizes \emph{where}
+metacognition pays, while a negative one cleanly attributes the failure to
+priming, reward, or content. Results are pending (\todo{finalize once T1--T4
+land}); next steps are the R1-style functional verify corpus (SFT~v2) and
+extension beyond math to domains where a learned verifier, not an exact
+grader, must supply the notion of gold.

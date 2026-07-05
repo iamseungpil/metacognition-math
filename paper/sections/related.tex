@@ -1,0 +1,126 @@
+% SCOPE: two insight-driven subsections (NOT enumerations): 2.1 RLVR/GRPO +
+% Gandhi + Kim self-distill/RLRT = RL amplifies what exists; 2.2 calibration
+% vs. functional metacognition (Kadavath, verbalized confidence, self-
+% correction skepticism, STaR/SCoRe).
+\section{Related Work}
+\label{sec:related}
+
+\subsection{RL amplifies what exists: the missing metacognitive substrate}
+\label{sec:related:rlvr}
+
+The dominant recipe for reasoning post-training is reinforcement learning
+from verifiable rewards (RLVR) driven by a single terminal correctness
+signal. \citet{shao2024deepseekmath} introduced GRPO, the critic-free
+group-relative policy-gradient method that made outcome-reward RL practical
+at scale for mathematical reasoning; DeepSeek-R1 \citep{deepseekr1} showed
+that applying this recipe to a strong base model elicits long chains of
+thought in which reflective-looking behavior---re-checking,
+``aha''-style backtracking---\emph{emerges} without ever being rewarded as
+such; SimpleRL-Zoo \citep{zeng2025simplerlzoo} replicated zero-RL across a
+zoo of open base models and found that both the gains and the emergent
+reflective behavior vary sharply with the base model family; and the Qwen3
+report \citep{qwen3} folds the same pipeline into production post-training.
+Across this entire line the objective contains one bit: was the final answer
+correct. Credit is smeared over the whole trajectory, so a verification step
+that actually flipped the outcome is indistinguishable, from the optimizer's
+point of view, from decorative hedging that happened to co-occur with a
+correct answer. Process supervision \citep{lightman2024letsverify} sharpens
+credit to individual steps and outperforms outcome supervision on MATH, but
+it scores steps against \emph{externally labeled} step correctness; it never
+asks whether a step changed the \emph{model's own} evidence about the
+answer, and so it cannot separate a step that is merely correct from one
+that is epistemically useful.
+
+Two recent lines expose, from opposite directions, why outcome-level RLVR
+does not install the missing epistemic machinery. \citet{gandhi2025cognitive}
+show that four cognitive behaviors---verification, backtracking, subgoal
+setting, and backward chaining---predict which base models benefit from RL,
+and that RL \emph{amplifies behaviors already present} in the base model or
+its SFT prime: priming with the behaviors enables gains even when the primed
+solutions contain wrong answers. This establishes that the substrate must be
+supplied before RL can grow it, but it stops at the level of surface form:
+priming installs the \emph{shape} of a habit, and amplification is
+indiscriminate---nothing in the pipeline checks that an amplified
+verification actually verifies. \citet{kim2026selfdistill} probe the
+complementary failure: naively turning the model's own outputs into a
+training signal, via self-distillation on top of RLVR, can \emph{degrade}
+reasoning relative to plain GRPO, so ``the model
+teaching itself'' is not automatically benign. Yet the same authors' RLRT
+variant (``Rebellious Student,'' which drives exploration by \emph{reversing}
+a frozen teacher's signals) \citep{kim2026rebellious} shows that a frozen
+reference model's likelihoods carry genuinely useful training information
+when pointed at the right target, improving over GRPO on both MATH500 and
+AIME24 (numbers quoted in Section~\ref{sec:discussion}). What RLRT
+does not do is localize this signal: the reference-model evidence steers
+whole-trajectory exploration, never a specific reasoning act.
+
+Read together, these results delimit our design space. Outcome-only RLVR
+cannot select for functional metacognition because its credit never reaches
+the metacognitive act; behavioral priming supplies forms that RL will
+amplify whether or not they function; and reference-model evidence is a
+double-edged signal---harmful when imitated wholesale, helpful when it
+directs learning. \pmishift{} occupies the point these lines triangulate: we
+prime the form (explicit \metaopen{}\dots\metaclose{} blocks via SFT), then
+reward each individual block by the gold-versus-decoy evidence shift it
+produces under a frozen reference model, routing that reward onto the
+block's tokens only (Section~\ref{sec:method}). This is self-distillation in
+the sense studied by \citet{kim2026selfdistill}, but of an evidence
+\emph{contrast} (the model's own gold-versus-decoy margin) rather than of
+the output distribution itself; and a matched-base twin---identical
+meta-stripped data, byte-audited identical non-meta hyperparameters,
+correctness-only GRPO---measures whether the installed substrate causally
+pays rather than merely survives.
+
+\subsection{Calibration is not metacognition: from knowing uncertainty to using it}
+\label{sec:related:calibration}
+
+A long line of work establishes that models \emph{know} more about their own
+uncertainty than they act on. \citet{guo2017calibration} made the
+miscalibration of modern networks measurable (expected calibration error,
+which we adopt for RQ4), and \citet{kadavath2022language} showed that large
+LMs are mostly well-calibrated when asked to judge whether their own answers
+are true (P(True), P(IK))---but that knowledge is elicited by an external
+probe \emph{after} generation and never routed back into the solution
+process. Verbalized confidence widens the elicitation surface without
+changing its role: \citet{lin2022teaching} showed models can be trained to
+express calibrated uncertainty in words, and \citet{tian2023just} that
+prompting RLHF-trained models yields verbalized confidences better
+calibrated than their token probabilities. In all of these, calibration is
+the \emph{terminal} object of study: the metric rewards a model for
+accurately reporting its doubt, not for resolving it. A perfectly calibrated
+model can correctly doubt every hard problem and still fail all of them.
+
+The converse line asks whether models can \emph{use} self-assessment, and
+its record is cautionary. Self-Refine \citep{madaan2023selfrefine} reported
+that a model critiquing and revising its own outputs improves them across
+diverse generation tasks, but \citet{huang2024llmcannot} showed that on
+reasoning benchmarks, without external feedback, such intrinsic
+self-correction fails to improve and can even degrade accuracy---prompting
+alone does not convert latent self-knowledge into better answers.
+Training-based approaches go further. STaR \citep{zelikman2022star}
+bootstraps by fine-tuning on self-generated rationales filtered by answer
+correctness, which reinforces whole successful traces but assigns no credit
+to any epistemic act inside them. SCoRe \citep{kumar2024score} trains
+multi-turn self-correction with RL and reward shaping, demonstrating that
+correction \emph{behavior} is trainable---yet its reward attaches to the
+outcome of the revised attempt, so credit lives at episode granularity:
+correction happens between attempts, after a complete solution has been
+emitted, not at the moment mid-solution where the model's evidence goes
+wrong.
+
+The gap between the two lines is precisely a reward that pays an individual
+\emph{in-reasoning} metacognitive act for the evidence it moves. \pmishift{}
+supplies this: for each \metaopen{}\dots\metaclose{} block we measure the
+model's gold-versus-decoy log-likelihood contrast immediately before and
+immediately after the block under a frozen reference, and route the
+resulting reward onto the block's tokens and nothing else
+(Section~\ref{sec:method}). Knowing uncertainty is thereby rewarded chiefly
+insofar as it is used: a block that merely announces doubt earns no
+\pmishift{} credit, while one that redirects the solution toward the correct
+answer earns the shift it caused. Our training objective does retain a small
+explicit calibration term on the confidence token
+(Section~\ref{sec:method:pmishift}), so we do not claim calibration arises as
+a pure byproduct; rather, we treat accuracy as the primary outcome and
+calibration (ECE, Brier, overconfidence rate; RQ4) as a secondary one---the
+reverse of the calibration literature's emphasis, and, we argue, the right
+ordering for reasoning.

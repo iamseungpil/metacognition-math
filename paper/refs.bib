@@ -1,0 +1,160 @@
+% ============================================================================
+% Anchor references for "Metacognitive Self-Distillation".
+% Entries marked "% TODO verify" have unconfirmed metadata (venue/authors/ID)
+% and must be checked before submission. All others were verified against
+% arXiv (via web search, 2026-07) or are standard well-known entries.
+% ============================================================================
+
+% ------------------------- (a) RLVR / GRPO line ----------------------------
+
+@article{shao2024deepseekmath,
+  title   = {{DeepSeekMath}: Pushing the Limits of Mathematical Reasoning in Open Language Models},
+  author  = {Shao, Zhihong and Wang, Peiyi and Zhu, Qihao and Xu, Runxin and Song, Junxiao and Bi, Xiao and Zhang, Haowei and Zhang, Mingchuan and Li, Y.K. and Wu, Y. and Guo, Daya},
+  journal = {arXiv preprint arXiv:2402.03300},
+  year    = {2024}
+}
+
+@article{deepseekr1,
+  title   = {{DeepSeek-R1}: Incentivizing Reasoning Capability in {LLMs} via Reinforcement Learning},
+  author  = {{DeepSeek-AI}},
+  journal = {arXiv preprint arXiv:2501.12948},
+  year    = {2025}
+}
+
+% TODO verify: "SimpleRL-Zero" is described in the SimpleRL-Zoo report; check
+% whether a separate SimpleRL-Zero technical report should be cited instead.
+@article{zeng2025simplerlzoo,
+  title   = {{SimpleRL-Zoo}: Investigating and Taming Zero Reinforcement Learning for Open Base Models in the Wild},
+  author  = {Zeng, Weihao and Huang, Yuzhen and Liu, Qian and Liu, Wei and He, Keqing and Ma, Zejun and He, Junxian},
+  journal = {arXiv preprint arXiv:2503.18892},
+  year    = {2025}
+}
+
+% TODO verify: full author list of the Qwen3 technical report.
+@article{qwen3,
+  title   = {Qwen3 Technical Report},
+  author  = {{Qwen Team}},
+  journal = {arXiv preprint arXiv:2505.09388},
+  year    = {2025}
+}
+
+% Verified 2026-07 via arXiv abs page (2305.20050) and NeurIPS/ICLR listings:
+% title, authors, ID. Process supervision vs. outcome supervision on MATH.
+@inproceedings{lightman2024letsverify,
+  title     = {Let's Verify Step by Step},
+  author    = {Lightman, Hunter and Kosaraju, Vineet and Burda, Yura and Edwards, Harri and Baker, Bowen and Lee, Teddy and Leike, Jan and Schulman, John and Sutskever, Ilya and Cobbe, Karl},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  year      = {2024},
+  note      = {arXiv:2305.20050}
+}
+
+% --------------------- (b) Kim et al.: RLRT / self-distill -----------------
+
+% Verified 2026-07 via arXiv abs page: title, authors, ID. RLRT = "RLVR with
+% Reversed Teacher". TODO verify: the specific Qwen3-8B-Base numbers quoted in
+% Sec. 5 (GRPO 83.6 MATH500 / 19.8 AIME24; RLRT 84.4 / 27.9; 20480 tokens
+% avg-at-16) against the paper body before citing them in prose.
+@article{kim2026rebellious,
+  title   = {Rebellious Student: Reversing Teacher Signals for Reasoning Exploration with Self-Distilled {RLVR}},
+  author  = {Kim, Jeonghye and Jeon, Jiwon and Li, Dongsheng and Yang, Yuqing},
+  journal = {arXiv preprint arXiv:2605.10781},
+  year    = {2026}
+}
+
+% Verified 2026-07 via arXiv: ID and title; first author Jeonghye Kim.
+% TODO verify: complete author list (8 authors).
+@article{kim2026selfdistill,
+  title   = {Why Does Self-Distillation (Sometimes) Degrade the Reasoning Capability of {LLMs}?},
+  author  = {Kim, Jeonghye and others},
+  journal = {arXiv preprint arXiv:2603.24472},
+  year    = {2026}
+}
+
+% ------------------------- (c) cognitive behaviors -------------------------
+
+@article{gandhi2025cognitive,
+  title   = {Cognitive Behaviors that Enable Self-Improving Reasoners, or, Four Habits of Highly Effective {STaRs}},
+  author  = {Gandhi, Kanishk and Chakravarthy, Ayush and Singh, Anikait and Lile, Nathan and Goodman, Noah D.},
+  journal = {arXiv preprint arXiv:2503.01307},
+  year    = {2025}
+}
+
+% --------------------- (d) calibration / self-correction -------------------
+
+@article{kadavath2022language,
+  title   = {Language Models (Mostly) Know What They Know},
+  author  = {Kadavath, Saurav and Conerly, Tom and Askell, Amanda and Henighan, Tom and Drain, Dawn and Perez, Ethan and Schiefer, Nicholas and Hatfield-Dodds, Zac and DasSarma, Nova and Tran-Johnson, Eli and others},
+  journal = {arXiv preprint arXiv:2207.05221},
+  year    = {2022}
+}
+
+@article{lin2022teaching,
+  title   = {Teaching Models to Express Their Uncertainty in Words},
+  author  = {Lin, Stephanie and Hilton, Jacob and Evans, Owain},
+  journal = {Transactions on Machine Learning Research},
+  year    = {2022},
+  note    = {arXiv:2205.14334}
+}
+
+% TODO verify: EMNLP 2023 venue and exact author list.
+@inproceedings{tian2023just,
+  title     = {Just Ask for Calibration: Strategies for Eliciting Calibrated Confidence Scores from Language Models Fine-Tuned with Human Feedback},
+  author    = {Tian, Katherine and Mitchell, Eric and Zhou, Allan and Sharma, Archit and Rafailov, Rafael and Yao, Huaxiu and Finn, Chelsea and Manning, Christopher D.},
+  booktitle = {Proceedings of EMNLP},
+  year      = {2023},
+  note      = {arXiv:2305.14975}
+}
+
+% Verified 2026-07 via arXiv abs page (2303.17651) and NeurIPS 2023
+% proceedings: title, authors, ID.
+@inproceedings{madaan2023selfrefine,
+  title     = {Self-Refine: Iterative Refinement with Self-Feedback},
+  author    = {Madaan, Aman and Tandon, Niket and Gupta, Prakhar and Hallinan, Skyler and Gao, Luyu and Wiegreffe, Sarah and Alon, Uri and Dziri, Nouha and Prabhumoye, Shrimai and Yang, Yiming and Gupta, Shashank and Majumder, Bodhisattwa Prasad and Hermann, Katherine and Welleck, Sean and Yazdanbakhsh, Amir and Clark, Peter},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+  year      = {2023},
+  note      = {arXiv:2303.17651}
+}
+
+@inproceedings{huang2024llmcannot,
+  title     = {Large Language Models Cannot Self-Correct Reasoning Yet},
+  author    = {Huang, Jie and Chen, Xinyun and Mishra, Swaroop and Zheng, Huaixiu Steven and Yu, Adams Wei and Song, Xinying and Zhou, Denny},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  year      = {2024},
+  note      = {arXiv:2310.01798}
+}
+
+@inproceedings{guo2017calibration,
+  title     = {On Calibration of Modern Neural Networks},
+  author    = {Guo, Chuan and Pleiss, Geoff and Sun, Yu and Weinberger, Kilian Q.},
+  booktitle = {International Conference on Machine Learning (ICML)},
+  year      = {2017},
+  note      = {arXiv:1706.04599}
+}
+
+% ------------------------- (e) STaR / SCoRe --------------------------------
+
+@inproceedings{zelikman2022star,
+  title     = {{STaR}: Bootstrapping Reasoning With Reasoning},
+  author    = {Zelikman, Eric and Wu, Yuhuai and Mu, Jesse and Goodman, Noah D.},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+  year      = {2022},
+  note      = {arXiv:2203.14465}
+}
+
+% TODO verify: ICLR 2025 venue confirmation.
+@inproceedings{kumar2024score,
+  title     = {Training Language Models to Self-Correct via Reinforcement Learning},
+  author    = {Kumar, Aviral and Zhuang, Vincent and Agarwal, Rishabh and Su, Yi and Co-Reyes, John D. and Singh, Avi and Baumli, Kate and Iqbal, Shariq and Bishop, Colton and Roelofs, Rebecca and others},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  year      = {2025},
+  note      = {arXiv:2409.12917}
+}
+
+% Added for method.tex (Dr.GRPO: group-mean-only advantage centering, no /std).
+% TODO verify final venue (arXiv:2503.20783).
+@article{liu2025understanding,
+  title={Understanding R1-Zero-Like Training: A Critical Perspective},
+  author={Liu, Zichen and Chen, Changyu and Li, Wenjun and Qi, Penghui and Pang, Tianyu and Du, Chao and Lee, Wee Sun and Lin, Min},
+  journal={arXiv preprint arXiv:2503.20783},
+  year={2025}
+}

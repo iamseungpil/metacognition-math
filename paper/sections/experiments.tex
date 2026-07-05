@@ -1,0 +1,273 @@
+% SCOPE: 4.1 setup/protocol; 4.2 RQ1/T1 main accuracy; 4.3 RQ2/T2 mechanism
+% decomposition (Gandhi arm, flip, placebo); 4.4 RQ3/T3 difficulty/OOD
+% stratification; 4.5 RQ4/T4 calibration. ALL result cells are placeholders
+% (\todo{}) or explicitly marked "preliminary" — this is a pre-results draft.
+\section{Experiments}
+\label{sec:experiments}
+
+Our experiments answer four questions, each with a dedicated table:
+does \pmishift{} improve accuracy over a confound-free baseline (RQ1,
+Table~\ref{tab:t1}); where does any effect come from (RQ2,
+Table~\ref{tab:t2}); how does it vary with difficulty, domain, and
+distribution shift (RQ3, Table~\ref{tab:t3}); and what happens to
+calibration (RQ4, Table~\ref{tab:t4}). This draft precedes the final
+gs300 evaluation: every result cell is a placeholder, and the few
+numbers we do quote are training-time or small-$n$ signals explicitly
+marked \emph{preliminary}.
+
+\subsection{Setup and evaluation protocol}
+\label{sec:exp:setup}
+
+\paragraph{Models and training.} All arms start from Qwen3-8B. The
+treatment arm follows the pipeline of Section~\ref{sec:method}: SFT-1
+primes \metaopen{}\dots\metaclose{} blocks inside the reasoning trace
+(\texttt{v8\_meta\_inside\_strict} data), SFT-2 adds functional
+redirect/verify behaviors (\texttt{rv\_functional}), and RL is a
+GRPO-family objective (\texttt{TRIOBJ\_DCPO\_V4})~\citep{shao2024deepseekmath}
+with \pmishift{} as the auxiliary meta-region reward
+(Section~\ref{sec:method:pmishift}): the correctness reward
+$R_{\mathrm{corr}} \in \{-1,+1\}$ (\texttt{math\_verify}) is the primary
+objective with weight $w_{\mathrm{corr}} = 1.0$, and the meta-region reward
+$R_{\mathrm{shift}}$ has weight $w_{\mathrm{meta}} = 0.8$, linearly warmed up
+over the first 80 steps, alongside the protocol-maintenance heads and costs
+of Section~\ref{sec:method:pmishift} ($w_{\mathrm{cal}} = 0.3$,
+$w_{\mathrm{format}} = 0.35$, $w_{\mathrm{emit}} = 0.1$, length cost $0.08$,
+truncation penalty $0.3$). The control arm is the matched-base twin
+of Section~\ref{sec:method:twin}: identical data with meta blocks
+stripped, identical non-meta hyperparameters (byte-audited config diff),
+and vanilla GRPO with correctness-only reward. Both arms are trained with a
+4{,}096-token response cap (identical across arms) and evaluated at 16k
+(below); the token-budget control column and tokens-per-response reporting
+in Table~\ref{tab:t1} make any train/eval length-extrapolation asymmetry
+visible rather than hidden.
+
+\paragraph{Evaluation protocol.} We evaluate on a held-out suite of
+1{,}030 problems: 500 GSM8K, 500 MATH500, and 30 AIME. Answers are
+graded with \texttt{math\_verify}; generation uses a 16k max-token
+budget at temperature $0.7$. We report avg@8 accuracy (avg@16 on AIME
+to reduce variance on the small set). Both arms are always evaluated
+\emph{in the same job with identical seeds}, so any run-to-run
+infrastructure variation is shared across arms. Main results use 3
+training seeds (mean$\pm$std), and Table~\ref{tab:t1} includes a
+token-budget control column (tokens per response) so that accuracy
+differences cannot be silently explained by one arm simply generating
+longer.
+
+\paragraph{Stratified reporting.} All meta-vs-no-meta comparisons are
+reported \emph{difficulty-stratified}, never only in aggregate. The
+reason is a Simpson-style artifact we document in
+Section~\ref{sec:exp:rq3}: meta-block emission is strongly
+difficulty-dependent (preliminary: $\approx$10\% on the easiest quartile
+vs.\ $\approx$98\% on the hardest), so conditioning on ``response
+contains a meta block'' selects hard problems, and aggregate
+per-response comparisons mechanically make meta responses look worse.
+
+\subsection{RQ1: Does \pmishift{} improve held-out accuracy?}
+\label{sec:exp:rq1}
+
+\paragraph{Question and design.} RQ1 asks whether adding the
+\pmishift{} meta-shaping reward to an otherwise identical GRPO run
+improves end-task accuracy. Table~\ref{tab:t1} compares the matched
+base twin against \pmishift{} at the final training checkpoint (gs300),
+with raw Qwen3-8B and SFT-only rows as reference points that locate the
+SFT capability cost (Section~\ref{sec:discussion}) and the RL gain
+separately, plus per-domain columns and the token-budget control.
+
+\paragraph{Decision rule.} \pmishift{} is supported if its overall
+held-out accuracy exceeds the matched base by more than one pooled
+standard deviation across the 3 seeds \emph{without} a commensurate
+increase in tokens per response; it is refuted if the gap is within
+noise or is fully absorbed by the token-budget control. Because the
+twin differs from the treatment only in the meta package of
+Section~\ref{sec:method:twin}, any significant gap is attributable to
+that package as a whole; apportioning it to the \pmishift{} reward
+specifically is the job of RQ2. As a preliminary,
+non-final signal: \pmishift{} led the matched base at all 8 same-step
+validation checkpoints during training (gap $+0.02$ to $+0.12$,
+narrowing late), measured on val-aux \texttt{math\_verify} correctness,
+the only cross-arm-comparable validation metric (the composite
+validation reward is meta-shaped and excluded from arm comparisons);
+the gs300 held-out judgment is pending and this
+training-time signal must not be read as a result.
+
+\begin{table}[t]
+\caption{\textbf{T1 (placeholder): main results} at gs300 on the
+held-out 1{,}030-problem suite (avg@8; AIME avg@16), mean$\pm$std over
+3 seeds, with a token-budget control column. All cells pending.
+\emph{Preliminary training-time signal (not a result):} \pmishift{} led
+the matched base at all 8 same-step validation checkpoints (gap
+$+0.02$\,--\,$+0.12$, narrowing late), on val-aux \texttt{math\_verify}
+correctness (the only cross-arm-comparable validation metric); gs300
+held-out judgment pending.}
+\label{tab:t1}
+\begin{center}
+\small
+\begin{tabular}{lccccc}
+\toprule
+Arm & Overall & GSM8K & MATH500 & AIME & Tokens/resp. \\
+\midrule
+Qwen3-8B (raw)        & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} \\
+SFT-only (SFT-1+2)    & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} \\
+Matched base (vanilla GRPO) & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} \\
+\pmishift{} (ours)    & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{table}
+
+\subsection{RQ2: Where does the effect come from?}
+\label{sec:exp:rq2}
+
+\paragraph{Question and design.} If \pmishift{} helps, the gain could
+come from three places: the SFT priming of meta behaviors, the RL
+reward that selectively reinforces them, or a non-semantic artifact of
+emitting extra tokens (a ``pause'' effect). Table~\ref{tab:t2}
+decomposes these with three probes. \emph{(i) Gandhi arm:} meta-SFT
+priming followed by \emph{vanilla} GRPO (correctness-only), directly
+instantiating the hypothesis of \citet{gandhi2025cognitive} that RL
+amplifies whatever behaviors priming installs --- it isolates the value
+of priming without the \pmishift{} reward. \emph{(ii) Flip analysis:}
+using the 4-arm teacher-forced PMI probe of
+Section~\ref{sec:method:pmishift}, we measure how often the model's
+evidence flips around a meta block: decoy$\to$gold (SAVE) vs.\
+gold$\to$decoy (DERAIL), per arm. \emph{(iii) Placebo:} meta-block
+\emph{content} is shuffled across problems at evaluation time while
+positions and lengths are preserved, testing whether the content of the
+block, rather than its mere presence, carries the effect.
+
+\paragraph{Decision rule.} The \pmishift{} \emph{reward} (beyond
+priming) is supported if \pmishift{} $>$ Gandhi arm on accuracy and on
+net flips (SAVE $-$ DERAIL); if Gandhi $\approx$ \pmishift{}, the
+mechanism reduces to SFT priming amplified by generic RL. The
+\emph{semantic} interpretation is supported only if the placebo arm
+loses most of the SAVE-rate and accuracy advantage; if shuffled content
+performs comparably, the meta block is a computational pause, not
+functional metacognition.
+
+\begin{table}[t]
+\caption{\textbf{T2 (placeholder): mechanism decomposition.} The Gandhi
+arm (meta-SFT + vanilla GRPO) separates SFT priming from the \pmishift{}
+reward; flip analysis reports SAVE (decoy$\to$gold) and DERAIL
+(gold$\to$decoy) rates around meta blocks; the placebo shuffles meta
+content while preserving block position and length.}
+\label{tab:t2}
+\begin{center}
+\small
+\begin{tabular}{lcccc}
+\toprule
+Arm & Accuracy & SAVE rate & DERAIL rate & Net flips \\
+\midrule
+Matched base (no meta blocks)            & \todo{} & --      & --      & --      \\
+Gandhi arm (meta-SFT + vanilla GRPO)     & \todo{} & \todo{} & \todo{} & \todo{} \\
+Placebo (shuffled meta content)          & \todo{} & \todo{} & \todo{} & \todo{} \\
+\pmishift{} (ours)                       & \todo{} & \todo{} & \todo{} & \todo{} \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{table}
+
+\subsection{RQ3: Difficulty, domain, and OOD stratification}
+\label{sec:exp:rq3}
+
+\paragraph{Question and design.} Metacognition should pay where the
+model is actually uncertain; on easy problems a verification detour can
+only cost tokens. Table~\ref{tab:t3} therefore stratifies accuracy and
+meta-emission rate by difficulty quartile (Q1 easy to Q4 hard, quartiles
+defined by the matched base's per-problem pass rate), reports per-domain
+breakdowns, and treats AIME and the hardest strata as an
+out-of-distribution probe: since \pmishift{} distills the model's
+\emph{own} evidence contrast rather than imitating teacher traces, we
+frame the OOD rows as a test of whether self-distilled metacognition
+transfers where imitation typically degrades~\citep{kim2026selfdistill}.
+This table is also where we document the Simpson artifact
+quantitatively: because emission tracks difficulty (preliminary:
+Q1 $\approx$10\% $\to$ Q4 $\approx$98\%), the aggregate
+``responses-with-meta vs.\ without'' comparison is confounded, and only
+within-stratum arm-vs-arm comparisons are meaningful.
+
+\paragraph{Decision rule.} The difficulty-dependence hypothesis is
+supported if the \pmishift{}-vs-base gap grows monotonically from Q1 to
+Q3/Q4 (with Q1 $\approx$ 0, ruling out a uniform token-budget effect)
+and if the AIME/hard-domain rows show a non-negative gap; it is refuted
+if the gap is flat across quartiles or concentrated on easy strata. As
+a preliminary small-$n$ observation only: on mid-hard Q3, responses
+with meta blocks scored 0.83 vs.\ 0.67 without --- suggestive of the
+predicted pattern, but subject to the very selection confound this
+table is designed to remove, and not a result.
+
+\begin{table}[t]
+\caption{\textbf{T3 (placeholder): difficulty-quartile stratified
+accuracy and meta-emission rate.} Quartiles by matched-base per-problem
+pass rate; per-domain and AIME/hard-domain OOD rows to follow in the
+full table. \emph{Preliminary (small $n$, not a result):} emission
+tracks difficulty (Q1 $\approx$10\% $\to$ Q4 $\approx$98\%); on Q3,
+meta 0.83 vs.\ 0.67 no-meta --- pre-stratification, hence still
+selection-confounded.}
+\label{tab:t3}
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+ & Q1 (easy) & Q2 & Q3 & Q4 (hard) \\
+\midrule
+Meta-emission rate (\pmishift{}) & \todo{} & \todo{} & \todo{} & \todo{} \\
+Matched base acc.                & \todo{} & \todo{} & \todo{} & \todo{} \\
+\pmishift{} acc.                 & \todo{} & \todo{} & \todo{} & \todo{} \\
+$\Delta_{\mathrm{acc}}$ (\pmishift{} $-$ base)  & \todo{} & \todo{} & \todo{} & \todo{} \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{table}
+
+\subsection{RQ4: Calibration as a secondary outcome}
+\label{sec:exp:rq4}
+
+\paragraph{Question and design.} Our position
+(Section~\ref{sec:related:calibration}) is that calibration should be
+subordinate to functional metacognition, not its target. We must be
+precise about what the launched run optimizes: the treatment objective
+\emph{does} include an explicit Brier-style calibration head on the
+confidence token ($w_{\mathrm{cal}} = 0.3$;
+Section~\ref{sec:method:pmishift}), so calibration is not a pure
+byproduct here. RQ4 therefore asks two things: (i) whether the
+treatment ends up better calibrated than the matched base at equal or
+better accuracy, and (ii) whether the \emph{functional} meta reward
+contributes calibration benefit beyond the explicit calibration term
+--- to be answered by a planned $w_{\mathrm{cal}} = 0$ ablation arm
+added to Table~\ref{tab:t4}. Table~\ref{tab:t4} reports, per
+arm, expected calibration error (15-bin ECE~\citep{guo2017calibration}),
+Brier score, and overconfidence rate on the held-out suite. Accuracy
+(RQ1) remains the primary outcome; these metrics are strictly
+secondary.
+
+\paragraph{Decision rule.} The functional-metacognition framing is
+supported if \pmishift{} improves ECE/overconfidence relative to the
+matched base \emph{at equal or better accuracy}, and if the
+$w_{\mathrm{cal}} = 0$ ablation retains most of that calibration gain
+(showing the functional reward, not the explicit Brier term, carries
+it); calibration gains
+purchased with accuracy losses would instead replicate the known
+calibration-accuracy trade-off and refute our claim that
+problem-solving-directed metacognition subsumes it. No change in
+calibration with an accuracy gain would be a neutral outcome: it would
+weaken the secondary-outcome story without touching the primary claim.
+
+\begin{table}[t]
+\caption{\textbf{T4 (placeholder): calibration per arm} --- ECE
+(15-bin), Brier score, and overconfidence rate on the held-out suite.
+Calibration is a secondary outcome; accuracy (Table~\ref{tab:t1}) is
+primary.}
+\label{tab:t4}
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+Arm & ECE (15-bin) & Brier & Overconf.\ rate \\
+\midrule
+Qwen3-8B (raw)              & \todo{} & \todo{} & \todo{} \\
+SFT-only (SFT-1+2)          & \todo{} & \todo{} & \todo{} \\
+Matched base (vanilla GRPO) & \todo{} & \todo{} & \todo{} \\
+\pmishift{} (ours)          & \todo{} & \todo{} & \todo{} \\
+\pmishift{}, $w_{\mathrm{cal}}=0$ (planned ablation) & \todo{} & \todo{} & \todo{} \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{table}

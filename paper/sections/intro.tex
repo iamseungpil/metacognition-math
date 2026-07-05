@@ -1,0 +1,104 @@
+% SCOPE: motivation (RL-for-reasoning lacks uncertainty handling; Kim
+% self-distillation degradation and Gandhi four-habits point at the same
+% missing FUNCTIONAL-metacognition substrate from two sides), our operational
+% definition + \pmishift{} + matched-twin causal design, and 4 contributions.
+\section{Introduction}
+\label{sec:intro}
+
+Reinforcement learning with verifiable rewards (RLVR) has become the dominant
+recipe for improving mathematical reasoning in large language models: GRPO and
+its descendants optimize a single scalar signal---final-answer
+correctness---over sampled solution traces
+\citep{shao2024deepseekmath,deepseekr1,zeng2025simplerlzoo,qwen3}. This recipe
+is remarkably effective at sharpening the policy toward answers the model can
+already reach, but it leaves a conspicuous gap: nothing in the objective
+teaches the model to \emph{handle its own uncertainty}. Trained models remain
+overconfident, commit to a flawed line of attack early, and rarely notice
+mid-solution that their evidence no longer supports the path they are on
+\citep{huang2024llmcannot,kadavath2022language}. When a problem exceeds the
+model's reliable competence, the trace does not slow down, verify, or
+redirect---it simply produces a fluent wrong answer.
+
+The field's default remedy for this failure mode is scale: larger models, more
+RL compute, longer traces. Scaling raises the competence frontier, but it does
+not change the character of behavior \emph{at} the frontier---wherever a
+model's reliable reach ends, the same silent overconfidence reappears. What is
+missing is not more capability but a mechanism for the model to detect and act
+on the boundary of its own capability during a solution.
+
+Two recent lines of evidence diagnose why RLVR alone does not supply this
+mechanism. \citet{gandhi2025cognitive} show that RL amplifies cognitive
+behaviors---verification, backtracking, subgoal setting, backward
+chaining---only when those behaviors are already present in the base model or
+its priming data; RL selects among existing behaviors rather than installing
+new ones. \citet{kim2026selfdistill} show the complementary failure from the
+self-distillation side: distilling a model's own outputs back into itself can
+suppress epistemic content and \emph{degrade} reasoning, and their follow-up
+remedy \citep{kim2026rebellious}, which drives exploration by contrasting
+against a frozen teacher's signals, suggests that a frozen model's
+likelihoods carry a usable contrast signal that the plain objective
+lacks. Read together, these results say that
+current pipelines reward the \emph{form} of self-reflective reasoning wherever
+it happens to appear, but never its \emph{function}. A model can learn to emit
+verification-shaped text---``let me double-check this step''---while the text
+changes nothing about the answer, because no term in the objective asks
+whether the reflection moved the model's evidence.
+
+Functional metacognition, by contrast, would require three things: an explicit,
+inspectable locus for metacognitive acts (so they can be rewarded separately
+from object-level reasoning); a reward that measures whether each act
+\emph{causally improves the model's evidence about the answer}, not merely
+whether it is emitted; and an evaluation design that can attribute any
+downstream accuracy gain to the metacognitive mechanism rather than to
+confounded data or hyperparameters. Calibration research supplies part of the
+picture---models do carry usable uncertainty signals
+\citep{kadavath2022language,lin2022teaching,tian2023just}---but knowing
+uncertainty is not the same as using it: what is missing is training pressure
+that converts uncertainty into problem-solving actions such as verifying and
+redirecting \citep{zelikman2022star,kumar2024score}.
+
+We build exactly this. First, we define in-reasoning metacognition
+operationally: the model emits \metaopen{}\dots\metaclose{} blocks inside its
+chain of thought, primed by two SFT stages that teach where such blocks belong
+and what functional content (verify, redirect) they should carry. Second, we
+reinforce each block only by what it accomplishes. Our \pmishift{} reward
+freezes a reference model and teacher-forces the gold answer and a rule-based
+decoy at two points---just before \metaopen{} and just after
+\metaclose{}---yielding a pointwise-mutual-information contrast at each point;
+the reward is the \emph{shift} in this contrast across the block, plus a
+reversal bonus when the block flips the preferred answer from decoy to gold
+(and a penalty for the reverse). The shift is routed onto the meta-block
+tokens alone, so the meta region is rewarded exactly insofar as it moves the
+model's own gold-vs-decoy evidence: the model distills its latent evidence
+contrast into explicit metacognitive text---metacognitive self-distillation.
+Correctness remains the primary objective; \pmishift{} is an auxiliary shaping
+term. Third, we train a matched-base twin---identical data with meta content
+stripped, byte-audited identical non-meta hyperparameters, correctness-only
+GRPO---so that any difference between arms isolates the meta mechanism itself.
+All experimental results in this draft are pending (\todo{T1--T4}); as a
+preliminary signal, the \pmishift{} arm leads its matched twin at every
+same-step validation checkpoint observed so far, and meta-block emission
+tracks problem difficulty (preliminary; final held-out judgments pending).
+
+Our contributions are:
+\begin{enumerate}
+\item An \textbf{operational, executable definition of in-reasoning
+  metacognition}: explicit \metaopen{}\dots\metaclose{} blocks governing when to
+  verify and redirect, paired with a matched-twin causal design that isolates
+  the contribution of the meta mechanism from data and hyperparameter
+  confounds.
+\item \textbf{\pmishift{}}, a metacognitive self-distillation reward that
+  scores each meta block by the gold-vs-decoy evidence shift it produces in
+  the model's own likelihoods, rewarding metacognitive function rather than
+  form.
+\item An \textbf{analysis suite}---priming-vs-reward decomposition, flip
+  (save/derail) analysis, placebo meta content, difficulty stratification, and
+  calibration---designed to locate \emph{where} metacognition pays: testing
+  whether it acts as a difficulty-dependent and out-of-distribution mechanism
+  rather than a uniform accuracy additive.
+\item An \textbf{empirical characterization on math reasoning}
+  (GSM8K/MATH500/AIME, Qwen3-8B), including a Simpson-artifact analysis:
+  preliminary evidence indicates meta emission concentrates on hard problems,
+  implying that aggregate meta-vs-base comparisons can understate the effect
+  and must be difficulty-stratified (final stratified results pending).
+\end{enumerate}
