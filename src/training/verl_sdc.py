@@ -20,9 +20,7 @@ Refactor notes (2026-04-20):
 """
 from __future__ import annotations
 
-import hashlib
 import os
-import pathlib
 import re
 import traceback
 from typing import Callable, List
@@ -64,7 +62,6 @@ from src.training.rewards import (
     _check_correctness,
     compute_degeneration_penalty,
     correctness_reward,
-    degeneration_penalty_reward,
     meta_commit_shape_reward,
     meta_penalty_reward,
     meta_structure_reward,
@@ -121,6 +118,17 @@ from src.training.dcpo_directional import (
     divergent_token_mask,
     gm_over_emission_penalty,
     rlsd_meta_factor,
+)
+from src.training.dcpo_asymcf import (
+    apply_content_gate,
+    compute_asym_cf_gate,
+)
+# PMI-SHIFT-ACROSS-META (asymmetric sign-reversal) R_meta core — pure numpy
+# sibling of dcpo_pmi/dcpo_directional. Used ONLY by the new pmi_shift branch +
+# _compute_dcpo_v4_pmi_shift_rmeta below (default-OFF; existing arms unaffected).
+from src.training.dcpo_pmi_shift import (
+    compute_pmi_shift_reward,
+    pmi_shift_reward,
 )
 # SYNC PAIR (round 2 IMPORTANT-4): this import list is mirrored by the
 # verl_sdc_utils STUB in tests/test_bci_isolation_regression.py
@@ -188,7 +196,8 @@ def _compute_dcpo_heads_stash(
 # open onto the deprecated CF-regeneration path (plausible nonzero values, no
 # log line) whenever the knob was missing OR the algorithm config was
 # unreadable (the reader swallows exceptions into its default).
-_V4_RMETA_SOURCES = ("cf", "pmi", "none", "cf_group", "decoy_did_gm", "decoy_did_rlsd")
+_V4_RMETA_SOURCES = ("cf", "pmi", "none", "cf_group", "decoy_did_gm", "decoy_did_rlsd",
+                     "asym_cf", "pmi_shift")
 _V4_RMETA_MISSING = object()
 
 
@@ -552,6 +561,34 @@ def _populate_dcpo_region_keys(data) -> None:
                 _heads["R_corr"] = [
                     float(x) for x in data.non_tensor_batch["correctness"]
                 ]
+        elif _rmeta_src == "pmi_shift":
+            # PMI-SHIFT-ACROSS-META (design 2026-06-25): TWO-position teacher-
+            # forcing (gold/decoy at meta-OPEN and meta-CLOSE) → asymmetric sign-
+            # reversal R_shift. ADDITIVE head routed onto META (independent head,
+            # identical plumbing to pmi/decoy_did_gm), centered over the shift-
+            # member population. decoy→gold reversal = +save, gold→decoy = −derail.
+            _v4_prompt_texts = [
+                _decode_prompt_only(
+                    tokenizer,
+                    data[i].batch["prompts"],
+                    data[i].batch["attention_mask"],
+                    prompt_length,
+                )
+                for i in range(bs)
+            ]
+            _r_shift, _shift_member, _shift_raw = _compute_dcpo_v4_pmi_shift_rmeta(
+                tokenizer=tokenizer,
+                trainer=trainer,
+                prompt_texts=_v4_prompt_texts,
+                response_texts=decoded_responses,
+                ground_truths=ground_truths,
+                fmt_classes=_fmt_classes,
+                heads=_heads,
+                read_knob=_v4_read,
+                step=_step,
+            )
+            data.non_tensor_batch["meta_region_utility"] = _r_shift
+            data.non_tensor_batch["dcpo_rmeta_member"] = _shift_member
         elif _rmeta_src == "none":
             data.non_tensor_batch["meta_region_utility"] = np.zeros(bs, dtype=np.float32)
             data.non_tensor_batch["dcpo_rmeta_member"] = np.zeros(bs, dtype=np.float32)
@@ -628,9 +665,161 @@ def _populate_dcpo_region_keys(data) -> None:
                     _wb.log(_summ, step=int(_step))
             except Exception as _e:  # pragma: no cover — diagnostics never raise
                 print(f"[DCPO-CFGROUP] scalar-summary skipped: {_e}", flush=True)
+        elif _rmeta_src == "asym_cf":
+            # ASYMMETRIC COUNTERFACTUAL meta-RL (design 2026-06-25). TWO layers:
+            #   LAYER 1 (GATE/timing): per group c0=P(correct|meta-OFF) /
+            #     c1=P(correct|meta-ON) from the SAME with/without arm split
+            #     cf_group uses. R_gate = α·max(0,c1−c0) − β·max(0,c0−c1) −
+            #     γ·1[c0,c1≥t], β>α (DERAIL hurts more than SAVE helps), with the
+            #     §4.5 margin / β-clip / emit-floor / confidence-downweight
+            #     safeguards. Routed onto ANSWER via the SAME dcpo_ans_meta param
+            #     cf_group threads (the counterfactual-outcome locus). The Layer-1
+            #     GATE weight is INDEPENDENT from the Layer-2 CONTENT weight: the
+            #     gate routes via dcpo_w_ans_meta (verl_sdc_utils), which defaults
+            #     to dcpo_w_meta for backward compat but can be set so disabling
+            #     content (dcpo_w_meta=0) does NOT silently disable the gate head.
+            #   LAYER 2 (CONTENT/quality): the PMI/decoy independence R_meta the
+            #     dcpo_region_rewards fallback already left in meta_region_utility,
+            #     GATED by Layer 1's emit decision (wrong-to-emit ⇒ content 0) and
+            #     kept on the META channel.
+            _arm = data.non_tensor_batch.get("dcpo_cf_with_meta", None)
+            if _arm is None:
+                _n_roll = int(
+                    getattr(getattr(getattr(_config, "actor_rollout_ref", None),
+                                    "rollout", None), "n", 8) or 8
+                ) if _config is not None else 8
+                _frac = float(_v4_read("dcpo_cf_branch_frac", 0.5) or 0.5)
+                _arm, _ = cf_group_arm_split(bs, n=_n_roll, branch_frac=_frac)
+                _arm = np.asarray(_arm, dtype=np.float32)
+                print(
+                    "[DCPO-ASYMCF] WARN dcpo_cf_with_meta absent — falling back "
+                    f"to positional i%{_n_roll} arm split (frac={_frac}). The "
+                    "gen-wrap stash is missing; without-arm meta may NOT be banned.",
+                    flush=True,
+                )
+            else:
+                _arm = np.asarray(_arm, dtype=np.float32)
+            # Per-row student confidence (optional down-weight of the positive
+            # emit reward): the conf parsed by dcpo_region_rewards (heads["conf"],
+            # 0 when the row stated none). Absence-tolerant -> conf_w stays inert.
+            _conf_row = _heads.get("conf", None)
+            _conf_w = float(_v4_read("dcpo_asymcf_conf_w", 0.0) or 0.0)
+            _R_gate, _gate_member, _gate_diag = compute_asym_cf_gate(
+                c_with=_heads["c_with"],
+                with_meta_flag=_arm,
+                group_index=_uid,
+                alpha=float(_v4_read("dcpo_asymcf_alpha", 1.0) or 1.0),
+                beta=float(_v4_read("dcpo_asymcf_beta", 2.5) or 2.5),
+                gamma=float(_v4_read("dcpo_asymcf_gamma", 0.5) or 0.5),
+                t=float(_v4_read("dcpo_asymcf_t", 0.99) or 0.99),
+                margin=float(_v4_read("dcpo_asymcf_margin", 0.1) or 0.1),
+                beta_clip=float(_v4_read("dcpo_asymcf_beta_clip", 1e9) or 1e9),
+                # emit-floor: OVERRIDABLE knob, default 0.0 = OFF (2026-06-25 live
+                # fix). It is a group-CONSTANT additive term (same +emit_floor on
+                # every emitting member). The reason WASTE/DERAIL can still go
+                # negative is NOT that the floor "cancels" — under whole-group
+                # centering it does NOT fully cancel, because the without-arm rows
+                # carry zero values and shift the group mean. The REAL guarantee is
+                # the whole-group centering strategy (ans_meta_whole_group_center in
+                # compose): centering over the WHOLE group keeps the group-constant
+                # gate scalar present (the without-arm zeros dilute, not annihilate,
+                # the mean), so SAVE survives positive and WASTE/DERAIL survive
+                # negative AFTER centering. The emit_floor only lifts the pre-center
+                # level as an anti-total-abstention policy minimum; it does NOT by
+                # itself prevent WASTE/DERAIL from being negative before centering
+                # (the gs41 bug was emit_floor=0.01 making the PRE-center reward >=0
+                # under the OLD member-mask centering, which the whole-group fix
+                # replaces). Kept only as an opt-in minimum, OFF by default.
+                # asym_cf-only.
+                emit_floor=float(_v4_read("dcpo_asymcf_emit_floor", 0.0) or 0.0),
+                confidence=(
+                    np.asarray(_conf_row, dtype=np.float32)
+                    if (_conf_row is not None and _conf_w) else None
+                ),
+                conf_w=_conf_w,
+            )
+            # COLLAPSE-GUARD DATA PREREQUISITE (review 2026-06-26, critical). The
+            # whole-group centering only KEEPS the gate signal present; it cannot
+            # MANUFACTURE one. If the batch has NO SAVE groups (c1-c0 > margin), then
+            # mean(R_gate) over with-arm rows has no positive mass to survive
+            # centering -> meta emission collapses REGARDLESS of the centering fix
+            # (the §6 prerequisite: frontier-hard data must supply real SAVE cases).
+            # This is a DATA condition, not a code bug, so we do NOT raise — but we
+            # surface it LOUDLY (logger.warning level) so a run on easy data (model
+            # already correct -> SAVE=0) is caught instead of silently collapsing.
+            _n_save = int(_gate_diag.get("n_save", 0))
+            _n_member_groups = int(
+                _gate_diag.get("n_save", 0) + _gate_diag.get("n_derail", 0)
+                + _gate_diag.get("n_waste", 0) + _gate_diag.get("n_neutral", 0))
+            if _n_member_groups > 0 and _n_save < max(1, int(0.05 * _n_member_groups)):
+                print(
+                    "[DCPO-ASYMCF] CRITICAL: n_save="
+                    f"{_n_save}/{_n_member_groups} arm-split groups (<5%). The "
+                    "asym_cf gate has (almost) no SAVE signal — whole-group "
+                    "centering keeps the signal PRESENT but cannot create one. On "
+                    "easy data (model already correct) SAVE=0 -> meta emission will "
+                    "collapse regardless of the centering fix. Verify frontier-hard "
+                    "data is co-deployed (§6 prerequisite).",
+                    flush=True,
+                )
+            # LAYER 1 -> ANSWER region via the cf_group answer-delta param
+            # (dcpo_ans_meta). The head reaching compose via THIS write is the
+            # anti-inert (gs190) gate — it is an EXPLICIT compose param routed in
+            # verl_sdc_utils._cfgroup_kwargs, not a computed-but-unread key.
+            data.non_tensor_batch["dcpo_ans_meta"] = np.asarray(
+                _R_gate, dtype=np.float32)
+            data.non_tensor_batch["dcpo_ans_member"] = np.asarray(
+                _gate_member, dtype=np.float32)
+            # WHOLE-GROUP CENTERING marker (2026-06-25 live fix). The gate scalar is
+            # GROUP-CONSTANT (every with-arm member of a group shares the c0/c1-
+            # derived R_gate), so centering it over the WITH-ARM member mask (where
+            # it is the only value) annihilates it -> rmeta_neg_rate=0, gate cannot
+            # suppress. This marker tells compose (via verl_sdc_utils) to center the
+            # gate head over the WHOLE group instead (without-arm rows carry 0, so
+            # the with-arm value survives), then mask credit onto with-arm rows.
+            # asym_cf-only: cf_group never writes this key -> stays member-mask
+            # centered (its R_ans_meta is a per-row delta, byte-identical).
+            data.non_tensor_batch["dcpo_ans_meta_whole_group_center"] = np.ones(
+                bs, dtype=np.float32)
+            # LAYER 2 -> META, gated by Layer 1's emit decision. When content is
+            # ENABLED (dcpo_asymcf_content), the fallback meta_region_utility
+            # (PMI/decoy independence content) is zeroed wherever the gate says
+            # wrong-to-emit. When content is DISABLED (default, gate-only arm A1),
+            # meta_region_utility / dcpo_rmeta_member are LEFT UNCHANGED so the
+            # arm stays byte-identical to the non-asym_cf path (review fix: do NOT
+            # hard-zero — that destroyed any pre-existing Layer-2 content and broke
+            # the default-OFF byte-identity guarantee). Gate-only mode is then pure
+            # Layer-1: Layer 2 simply routes as-is, never gated. This is the design
+            # intent (§3 Layer 2 = apply_content_gate, NOT destroy).
+            if bool(_v4_read("dcpo_asymcf_content", False)):
+                _content = np.asarray(
+                    data.non_tensor_batch.get(
+                        "meta_region_utility", np.zeros(bs, dtype=np.float32)),
+                    dtype=np.float32)
+                _gated = apply_content_gate(_content, _gate_diag["emit_decision"])
+                data.non_tensor_batch["meta_region_utility"] = _gated
+                # member: only emitted-and-net-positive rows (gate emit==1).
+                data.non_tensor_batch["dcpo_rmeta_member"] = (
+                    np.asarray(_gate_diag["emit_decision"], dtype=np.float32)
+                )
+            try:
+                import wandb as _wb
+                if _wb.run is not None:
+                    _wb.log({
+                        "dcpo/asymcf/n_save": float(_gate_diag["n_save"]),
+                        "dcpo/asymcf/n_derail": float(_gate_diag["n_derail"]),
+                        "dcpo/asymcf/n_waste": float(_gate_diag["n_waste"]),
+                        "dcpo/asymcf/n_neutral": float(_gate_diag["n_neutral"]),
+                        "dcpo/asymcf/member_rate": float(np.mean(_gate_member)),
+                        "dcpo/asymcf/emit_rate": float(
+                            np.mean(_gate_diag["emit_decision"])),
+                    }, step=int(_step))
+            except Exception as _e:  # pragma: no cover — diagnostics never raise
+                print(f"[DCPO-ASYMCF] scalar-summary skipped: {_e}", flush=True)
         # 'cf' (explicit opt-in): no-op — the dcpo_region_rewards value stands.
         # Invalid values already raised inside _v4_rmeta_source_strict.
-        if _rmeta_src in ("pmi", "none", "cf_group", "decoy_did_gm", "decoy_did_rlsd"):
+        if _rmeta_src in ("pmi", "none", "cf_group", "decoy_did_gm", "decoy_did_rlsd",
+                          "asym_cf", "pmi_shift"):
             # Observability truth: the rollout table + trend scalars below must
             # chart the R_meta that actually ROUTES, not the stale CF/text-
             # fallback stash value. REASSIGN (not mutate): _DCPO_HEAD_STASH
@@ -1029,28 +1218,6 @@ REWARD_CONFIGS = {
             "postmeta_closure",
         ],
     },
-    # E21R-v2 + SDC contrastive: only correctness as the GDPO reward head.
-    # Meta-format heads (saturated to ~95% by step 100, providing reward floor)
-    # are removed because they push the policy toward "clean wrong" on hard tasks.
-    # SDC teacher / anti-teacher contrastive (lambda_meta/shared/diff) remain as
-    # auxiliary actor losses — they replace outcome_calibration as the second
-    # signal source.
-    "SDC_CORR_ONLY": {
-        "funcs": [correctness_reward],
-        "weights": [1.0],
-        "keys": ["correctness"],
-    },
-    # Meta-only SDC RLSD: correctness + asymmetric meta penalty.
-    # Penalty-only meta head (0 if meta present, -0.20 if missing) prevents
-    # meta-scaffold collapse during RL without creating the +0.9 saturation
-    # floor that the symmetric ±0.10 head caused. Pair with
-    # sdc_lambda_shared/diff = 0 in the YAML to restrict contrastive teacher
-    # to meta tokens only.
-    "SDC_CORR_META_PEN": {
-        "funcs": [correctness_reward, meta_penalty_reward],
-        "weights": [1.0, 1.0],
-        "keys": ["correctness", "meta_penalty"],
-    },
     # ── RLSD ablation modes (arxiv 2604.03128) ───────────────────────────────
     # R0: vanilla GRPO baseline — no SDC teacher signal at all. Used to isolate
     # the contribution of meta-region teacher guidance over plain RLVR.
@@ -1058,16 +1225,6 @@ REWARD_CONFIGS = {
         "funcs": [correctness_reward],
         "weights": [1.0],
         "keys": ["correctness"],
-    },
-    # R1: RLSD with single (gold-conditioned) teacher T+ on meta region only.
-    # Matches the paper's RLSD formulation: factor = exp(sign × (T+ − student))
-    # clipped to [1−ε, 1+ε], applied as multiplicative magnitude evaluator.
-    # Decoy forward pass is SKIPPED at runtime (saves the 1 of ~3-4 forwards
-    # used by the contrastive variants — roughly 25-33% wall-time saving).
-    "RLSD_META_ATTR": {
-        "funcs": [correctness_reward, meta_penalty_reward],
-        "weights": [1.0, 1.0],
-        "keys": ["correctness", "meta_penalty"],
     },
     # R2: RLSD extended with contrastive component. Combined log-ratio
     #   combined = α × (T+ − student) + β × (T+ − T−)
@@ -1080,56 +1237,12 @@ REWARD_CONFIGS = {
         "weights": [1.0, 1.0],
         "keys": ["correctness", "meta_penalty"],
     },
-    # R3: OPSD baseline — full distribution distillation KL(T+ ‖ student) on
-    # meta tokens. Distillation loss path is NOT YET IMPLEMENTED (deferred);
-    # this mode currently behaves like RLSD_META_ATTR with a marker for the
-    # advantage path. Trainer must add an auxiliary KL loss term to fully
-    # realize OPSD; tracked as phase-2 work.
-    "OPSD_META": {
-        "funcs": [correctness_reward, meta_penalty_reward],
-        "weights": [1.0, 1.0],
-        "keys": ["correctness", "meta_penalty"],
-    },
-    # R5: RLSD with FORCED <|meta|> token on both student rollout and teacher
-    # conditioning. Resolves the "meta empty 95%" pathology by guaranteeing
-    # meta region presence (paper 2603.24472 epistemic suppression mitigation).
-    # Verified S3 (inspect_forced_meta.py): V0_prefix + gold + force <|meta|>
-    # → 71.4% gold commit, 33.3% AIME accuracy, valid meta + body + boxed.
-    "RLSD_FORCED_META": {
-        "funcs": [correctness_reward, meta_penalty_reward],
-        "weights": [1.0, 1.0],
-        "keys": ["correctness", "meta_penalty"],
-    },
     # ROD-PT: R5 RLSD framework + position teacher amplify (Plan v5.17 FINAL).
     # Decoy T- replaced by T_position which measures log_prob(META | prompt+gold+response[:p])
     # at first META_START emit position p. Multiplicative on R5's w_meta:
     #   w_combined = w_attr * w_position (RLSD invariant 보존, sign 절대 안 바꿈).
     # Natural emit (forced_meta=False, V0_prefix unused).
     "ROD_PT": {
-        "funcs": [correctness_reward, meta_penalty_reward],
-        "weights": [1.0, 1.0],
-        "keys": ["correctness", "meta_penalty"],
-    },
-    # ROD_PT_DEGEN (R16, 2026-05-12): ROD_PT + sample-level degeneration_penalty
-    # via dedicated GDPO key, weight 0.3 vs correctness.
-    # Stabilizes hard-regime generation (AIME tail collapse 57% → target <30%)
-    # so R17 (control-field RLSD + follow-through) can be measured cleanly.
-    # Spec: codex-locked V4 (4 rounds review, 1030-trace replay validated).
-    # See src/training/rewards.py compute_degeneration_penalty for details.
-    "ROD_PT_DEGEN": {
-        "funcs": [correctness_reward, meta_penalty_reward, degeneration_penalty_reward],
-        "weights": [1.0, 1.0, 0.3],
-        "keys": ["correctness", "meta_penalty", "degeneration_penalty"],
-    },
-    # ROD_MQ (R18a, Plan v7.2.2): meta-quality verifiable signal — single
-    # teacher T+ on EXTENDED meta region (meta block + post K=10 tokens).
-    # Sign-preserving multiplicative factor:
-    #   q_attr = mean over extended meta of clip(T+ − student, [-10,10])
-    #   q_centered = q_attr − batch_median(q_attr)   (centered, RLVR invariant)
-    #   w_meta_quality = clip(exp(sign × q_centered / τ), 1−ε, 1+ε)   per sequence
-    #   w_meta = w_attr × w_meta_quality            (PRODUCT, sign preserved)
-    # NO rubric, NO judge — verifiable signal only (RLVR + T+ logit).
-    "ROD_MQ": {
         "funcs": [correctness_reward, meta_penalty_reward],
         "weights": [1.0, 1.0],
         "keys": ["correctness", "meta_penalty"],
@@ -1205,58 +1318,10 @@ REWARD_CONFIGS = {
         "keys": ["correctness", "meta_penalty"],
     },
     # ── C1/C2 NEXT-WAVE ARMS (2026-05-18, EXPERIMENT_PLAN_ARMS.md "CODEX
-    # PLAN-REVIEW CONVERGED"). All three entries below are NEW and ADDITIVE:
+    # PLAN-REVIEW CONVERGED"). Entries below are NEW and ADDITIVE:
     # no entry above this comment is touched; existing §8/RLSD modes keep their
     # exact funcs/weights/keys (regression-asserted).
     #
-    # ROD_PT2_E21CTRL  (Arm 2 = "Recipe X" additive primary)
-    #   Intent     : combine the best self-distill ingredient (R10/ROD_PT
-    #                content×position 2-teacher) with the best verifiable-RL
-    #                ingredient (E21Rv2 control reward heads), un-throttled
-    #                (C1 fix in verl_sdc_utils) + C2-fixed (the adaptive meta
-    #                cost below replaces the presence-forced meta_penalty).
-    #   Hypothesis : un-clip + C2-fix + E21Rv2 control + 2-teacher => accuracy
-    #                >= B* (Arm 1) with adaptive (not forced ~100%) meta.
-    #   Validation : 1-step numeric reward sanity + the
-    #                ROD_PT2_E21CTRL w_meta branch (verl_sdc_utils) un-clipped
-    #                to [1/w_max, w_max] (test_c1c2_arms_smoke.py).
-    #   Reward head : correctness + the FOUR E21Rv2 control heads
-    #                 (confidence_revision, redirect_execution,
-    #                  verify_execution, meta_floor) + meta_count_bonus
-    #                 + the C2-fix adaptive meta cost (meta_penalty_adaptive).
-    #                 Weights mirror compute_score_confidence_centered's
-    #                 E21Rv2 control ratios (corr 1.0, conf_rev 0.35,
-    #                 redirect 0.30, verify 0.15, floor 0.5, count 1.0); the
-    #                 C2-fix head carries weight 1.0 like the OLD meta_penalty
-    #                 head it REPLACES (same magnitude envelope, adaptive sign).
-    # 2026-05-22 ROOT-CAUSE FIX (replaces the 2026-05-20 emergency 2-key
-    # collapse): the original 7-key design crashed with `AssertionError:
-    # GDPO reward key 'confidence_revision' not found in non_tensor_batch`
-    # because the agent_reward_loop path pre-fills `rm_scores` and the
-    # MetaCotSDCRewardManager.__call__ early-return then dropped the
-    # per-key emit (lines 1061-1064). Fix lives in __call__ now; reward
-    # design restored to the documented E21Rv2 control × C2-fix product.
-    "ROD_PT2_E21CTRL": {
-        "funcs": [
-            correctness_reward,
-            confidence_revision_reward,
-            redirect_execution_reward,
-            verify_execution_reward,
-            confidence_omission_floor,
-            meta_count_bonus,
-            meta_penalty_adaptive_reward,
-        ],
-        "weights": [1.0, 0.35, 0.30, 0.15, 0.5, 1.0, 1.0],
-        "keys": [
-            "correctness",
-            "confidence_revision",
-            "redirect_execution",
-            "verify_execution",
-            "meta_floor",
-            "meta_count_bonus",
-            "meta_penalty_adaptive",
-        ],
-    },
     # STABLE_GFN_C2FIX  (Arm 3 = STABLE_GFN PRIMARY, un-clip + C2-fix)
     #   Intent     : the SHIP'd STABLE_GFN mechanism (Z-free pairwise cTB,
     #                pairwise_ctb code byte-identical) but paper-grade primary:
@@ -1275,51 +1340,6 @@ REWARD_CONFIGS = {
         "funcs": [correctness_reward, meta_penalty_adaptive_reward],
         "weights": [1.0, 1.0],
         "keys": ["correctness", "meta_penalty_adaptive"],
-    },
-    # MATCHED_E21RV2  (Arm 1 = B* matched RLVR baseline — mandatory comparator)
-    #   Intent     : a same-infra E21Rv2 re-run so any SD-vs-RLVR delta is
-    #                attributable to METHOD, not nuisance (resolves C6 reward-
-    #                path / C7 baseline-parity). It runs under the IDENTICAL
-    #                SDC infra (verl_sdc_e21r_shared base, same SFT init / RL
-    #                parquet / reward-path / decoding / eval) as Arms 2 & 3.
-    #   Hypothesis : E21Rv2's reward, re-run here, yields baseline B* — MEASURE
-    #                it; do NOT assume the stale 81.7. B* is THE comparator;
-    #                all Arm-2/3 success is RELATIVE to B*.
-    #   Validation : 1030-panel 16k overall+per-bench+meta-emission; this is
-    #                the pre-registered non-inferiority anchor (parity fields in
-    #                configs/verl_matched_e21rv2_arm1_h200_4x4k.yaml).
-    #   Reward head : EXACTLY the E21Rv2 confidence-centered control set
-    #                 (compute_score_confidence_centered: correctness +
-    #                  confidence_revision + redirect_execution +
-    #                  verify_execution + meta_floor + meta_count_bonus),
-    #                 SAME funcs/weights as Arm-2's control block — but with
-    #                 NO self-distill teacher (this mode is in _VANILLA_MODES:
-    #                 _attach_teacher_signals returns early, NO T+/T-/position
-    #                 forward) and NO C2-fix head: pure matched RLVR. The ONLY
-    #                 reward-head difference vs Arm 2 is the absence of the
-    #                 C2-fix adaptive head (Arm 2 = this + 2-teacher SD + C2-fix
-    #                 + un-clip), so the bridge ablation is clean.
-    # 2026-05-22 ROOT-CAUSE FIX (replaces 2026-05-20 emergency 2-key):
-    # see ROD_PT2_E21CTRL note above. Arm 1 is the matched-RLVR comparator
-    # using the E21Rv2 6-control reward set, no teacher forward.
-    "MATCHED_E21RV2": {
-        "funcs": [
-            correctness_reward,
-            confidence_revision_reward,
-            redirect_execution_reward,
-            verify_execution_reward,
-            confidence_omission_floor,
-            meta_count_bonus,
-        ],
-        "weights": [1.0, 0.35, 0.30, 0.15, 0.5, 1.0],
-        "keys": [
-            "correctness",
-            "confidence_revision",
-            "redirect_execution",
-            "verify_execution",
-            "meta_floor",
-            "meta_count_bonus",
-        ],
     },
     # ── E.9 BCI_RLVR (Binned-Confidence-Injection RLVR, 2026-06-05) ───────────
     # NEW + ADDITIVE: no entry above is touched. correctness (dominant head) +
@@ -1420,12 +1440,7 @@ REWARD_CONFIGS = {
 }
 
 # Modes that do NOT compute teacher forward (env reward only).
-# MATCHED_E21RV2 (Arm 1, ADDITIVE): a teacher-free matched-RLVR baseline —
-# joins the no-teacher-forward set so _attach_teacher_signals returns early
-# (no T+/T-/position forward), exactly like VANILLA_GRPO. The advantage path
-# early-return in verl_sdc_utils was extended with a matching OR-clause.
-# VANILLA_GRPO membership/behaviour is unchanged (set still contains it).
-_VANILLA_MODES = {"VANILLA_GRPO", "MATCHED_E21RV2", "BCI_RLVR", "TRIOBJ_META_V1"}
+_VANILLA_MODES = {"VANILLA_GRPO", "BCI_RLVR", "TRIOBJ_META_V1"}
 # TRIOBJ_DCPO_V2 (ADDITIVE): region-routed, env-reward-only mode. It is NOT in
 # _VANILLA_MODES (that set is left byte-identical) but it is teacher-FREE: the
 # _attach_teacher_signals short-circuit and the verl_sdc_utils advantage branch
@@ -1447,22 +1462,14 @@ _DCPO_V3_FMT_MODES = {"TRIOBJ_DCPO_V3", "TRIOBJ_DCPO_V4"}
 # the same additive OR-clause for sdc_mode=="BCI_RLVR".
 # Modes that compute T+ forward only (single-teacher RLSD).
 # ROD_PT: R5 + position teacher (decoy off, natural emit, multiplicative w_position)
-# ROD_PT_DEGEN: ROD_PT + degeneration_penalty reward head (R16, 2026-05-12)
-# ROD_MQ: meta-quality factor on extended meta region, T+ − student only (R18a)
 # RLSD_FAITHFUL_META: R20 direction B. T+ only (gold-blind teacher → MAGNITUDE
 #   only). NO meta_penalty head (see REWARD_CONFIGS). Restores the RLSD
 #   sign/magnitude invariant on meta tokens that ROD_* break via clip+penalty.
-# ROD_PT2_E21CTRL: Arm-2 additive primary. Same T+ + position-teacher forward
-#   pair as ROD_PT (content×position 2-teacher), decoy OFF (single-teacher), so
-#   it joins this set AND the ROD_PT position-teacher branch below. ADDITIVE:
-#   does not change membership semantics of any pre-existing mode.
-_SINGLE_TEACHER_MODES = {"RLSD_META_ATTR", "OPSD_META", "ROD_PT", "ROD_PT_DEGEN", "ROD_MQ", "RLSD_FAITHFUL_META", "ROD_PT2_E21CTRL"}
+_SINGLE_TEACHER_MODES = {"ROD_PT", "RLSD_FAITHFUL_META"}
 # Modes that compute T+ AND T− forward (contrastive RLSD).
 # ROD_MQ_CONTRAST: R18a + T+ − T− contrast term mixed via α/β (R18b)
 _CONTRASTIVE_MODES = {
     "SDC_SHARED",
-    "SDC_CORR_ONLY",
-    "SDC_CORR_META_PEN",
     "RLSD_META_CONTRAST",
     "ROD_MQ_CONTRAST",
     # ROD_MQ_CONTRAST_INJECT (CTSD Phase C): == ROD_MQ_CONTRAST advantage math,
@@ -1480,56 +1487,10 @@ _CONTRASTIVE_MODES = {
     # the λ=0 advantage plane — neither affects which teacher forwards run.
     "STABLE_GFN_C2FIX",
 }
-# Modes that prepend V0 student prefix + forced <|meta|> to teacher conditioning,
-# AND require student rollout to start inside meta (via custom agent loop).
-# These also do BOTH T+ and T− forwards (same as contrastive). See verl_sdc_utils
-# build_sdc_region_masks for the started_inside_meta plumbing this enables.
-_FORCED_META_MODES = {"RLSD_FORCED_META"}
-
 _ACTIVE_SDC_CONTEXT = {"trainer": None, "tokenizer": None, "mode": "SDC_SHARED"}
 # One-shot guard so the pairwise_ctb "0 usable uid groups" warning prints once
 # per process instead of every degenerate microbatch (codex review pt.4).
 _CTB_INACTIVE_WARNED = {"done": False}
-
-# ── Arm-2 parameterized teacher-prompt slot (deliverable #2) ───────────────
-# The gold-conditioned TEACHER prompt is the SD quality lever (codex R4 #2:
-# prompt-strengthening, NOT a gameable reward head). It is a PARAMETERIZED
-# slot keyed by `algorithm.sdc_teacher_prompt_set`, defaulting to
-# "r10v2_baseline". The G2 probe (scripts/prompt_probe_g2.py) decides the
-# FROZEN value later; until then the default is the live R10v2 system prompt
-# (zero behavioural change vs ROD_PT — the baseline teacher prompt is the
-# identity wrapper, so ROD_PT2_E21CTRL@baseline reproduces ROD_PT teacher
-# conditioning exactly aside from the documented reward-head/un-clip deltas).
-#
-# Single source of truth = the G2 prompt JSONs under scripts/prompts/ (so a
-# strengthened set cannot silently diverge between the probe and training).
-# The slot ONLY ever applies to mode=ROD_PT2_E21CTRL; every pre-existing mode
-# never reads it (guarded in _build_teacher_logprob_batch), so existing
-# teacher conditioning is byte-identical.
-#
-# ── G2 PER-TEACHER SLOTS (deliverable #2, 2026-05-19) ──────────────────────
-# The single shared slot above is REPLACED (additively) by TWO independent
-# slots so the POSITION teacher and the CONTENT (T+) teacher can carry
-# different gold-conditioned prompts (EXPERIMENT_PLAN_ARMS.md "G2 PER-TEACHER
-# PROMPT SPEC — CODEX CONVERGED ... 2026-05-19"):
-#   * algorithm.sdc_position_teacher_prompt_set  -> position-teacher logP(<|meta|>)
-#   * algorithm.sdc_content_teacher_prompt_set   -> content-teacher T+ region
-# Each accepts: "r10v2_baseline" (default -> "" identity prefix, byte-identical
-# to the SHIP'd ROD_PT teacher conditioning) | "pos_teacher_v1" |
-# "content_teacher_v1" (the frozen G2 spec prompts) | the legacy
-# "strengthened_v*" sets (back-compat). PRECEDENCE: a per-teacher key, when
-# explicitly set, overrides the legacy shared `sdc_teacher_prompt_set`; if a
-# per-teacher key is left unset it INHERITS the legacy shared value (so the
-# pre-existing single-slot configs keep working byte-identically). Both
-# defaulting to "r10v2_baseline" => "" prefix for BOTH teachers => identical
-# to current Arm-2 behaviour. Slots ONLY ever apply to mode=ROD_PT2_E21CTRL.
-_TEACHER_PROMPT_SETS = (
-    "r10v2_baseline",
-    "strengthened_v1",
-    "strengthened_v2",
-    "pos_teacher_v1",
-    "content_teacher_v1",
-)
 
 # ── E.4 self-distill contrast variants (plan_ctsd_E4_selfdistill_rl) ───────────
 # `sdc_contrast_variant ∈ {decoy, stance, conf}` selects how the T+ / T- teacher
@@ -1552,52 +1513,12 @@ CAUTIOUS_INSTR = ("Reason cautiously: question whether your current approach is 
 CONFIDENT_INSTR = ("Reason decisively: commit to your current approach with confidence and proceed.")
 
 
-def _resolve_teacher_prompt_prefix(prompt_set: str) -> str:
-    """Return the teacher-instruction PREFIX text for a prompt set.
-
-    r10v2_baseline -> "" (identity: teacher conditioning unchanged vs ROD_PT;
-                         the baseline prompt is the live system prompt the
-                         policy already uses, NOT an extra teacher wrapper).
-    strengthened_v* -> the literal `system_prompt` from the matching FROZEN
-                       G2 prompt JSON, prepended (TRAINING-ONLY teacher
-                       conditioning; never enters policy inference inputs —
-                       guarded by being applied only inside the teacher
-                       log-prob batch builder).
-    """
-    if prompt_set == "r10v2_baseline":
-        return ""
-    if prompt_set not in _TEACHER_PROMPT_SETS:
-        raise ValueError(
-            f"sdc_teacher_prompt_set={prompt_set!r} not in {_TEACHER_PROMPT_SETS}"
-        )
-    import json as _json
-
-    pj = (
-        pathlib.Path(__file__).resolve().parents[2]
-        / "scripts"
-        / "prompts"
-        / f"{prompt_set}.json"
-    )
-    if not pj.exists():
-        raise FileNotFoundError(
-            f"teacher prompt set {prompt_set!r} -> {pj} missing (the G2 "
-            "frozen prompt JSON is the single source of truth)"
-        )
-    spec = _json.loads(pj.read_text(encoding="utf-8"))
-    sp = spec.get("system_prompt")
-    if not isinstance(sp, str) or not sp.strip():
-        raise ValueError(f"{pj.name}: empty/non-literal system_prompt")
-    # Prepended as a teacher-only instruction block, clearly delimited.
-    return f"{sp}\n\n"
-
-
 def reward_loop_score(data_source=None, solution_str="", ground_truth="", extra_info=None, **kwargs):
     """Fallback scalar score for veRL agent-loop reward workers.
 
     Mode-aware: emits the GDPO reward keys appropriate to the active mode.
-      • VANILLA_GRPO, SDC_CORR_ONLY  → correctness only
-      • RLSD_META_ATTR / RLSD_META_CONTRAST / OPSD_META / SDC_CORR_META_PEN
-                                     → correctness + meta_penalty
+      • VANILLA_GRPO                 → correctness only
+      • RLSD_META_CONTRAST           → correctness + meta_penalty
       • SDC_SHARED                   → all 5 legacy heads
                                        (correctness, outcome_calibration,
                                         meta_structure, meta_commit_shape,
@@ -1634,8 +1555,8 @@ def reward_loop_score(data_source=None, solution_str="", ground_truth="", extra_
     # degeneration_penalty in async-rollout workers, which then fails the
     # GDPO assertion that demands the key exist in non_tensor_batch.
     # Fix: ALWAYS emit degeneration_penalty as a sample-level scalar. The
-    # GDPO weight (configured in YAML) is 0 for non-R16 modes so this is a
-    # safe no-op, and 0.3 for ROD_PT_DEGEN where it provides the intended signal.
+    # GDPO weight (configured in YAML) is 0 for modes that do not list the
+    # key, so this is a safe no-op everywhere else.
     try:
         tok = _ACTIVE_SDC_CONTEXT.get("tokenizer")
         if tok is not None:
@@ -1649,8 +1570,6 @@ def reward_loop_score(data_source=None, solution_str="", ground_truth="", extra_
         ans = _ext(solution_str)
         degen, _ = compute_degeneration_penalty(solution_str, length, ans)
         out["degeneration_penalty"] = float(degen)
-        if mode == "ROD_PT_DEGEN":
-            out["score"] = float(out["score"] + degen)
     except Exception:
         out["degeneration_penalty"] = 0.0
 
@@ -1737,104 +1656,6 @@ def _decode_prompt_only(tokenizer, prompt_ids, attention_mask, prompt_length: in
     return tokenizer.decode(valid_prompt_ids, skip_special_tokens=False)
 
 
-# ─── V0 prefix cache (RLSD_FORCED_META) ─────────────────────────────────────
-# Why a module-level cache: every batch in a step calls _attach_teacher_signals
-# once, but each unique prompt may appear under multiple uids. Caching by
-# (global_steps, prompt_hash) means we generate V0 prefixes at most once per
-# unique prompt per step. Cache is cleared whenever ``global_steps`` advances
-# so we never serve a stale prefix from a previous policy.
-_V0_PREFIX_CACHE: dict[tuple[int, str], str] = {}
-_V0_PREFIX_LAST_STEP: list[int] = [-1]  # mutable holder, avoids `global` decl
-
-
-def _generate_v0_prefixes(
-    trainer,
-    tokenizer,
-    prompt_texts: list[str],
-    global_steps: int,
-    max_new_tokens: int = 256,
-    max_chars: int = 1500,
-) -> dict[str, str]:
-    """Generate (or retrieve cached) V0 student-prefix strings for forced-meta mode.
-
-    For RLSD_FORCED_META the teacher conditioning is augmented with the V0
-    student's first attempt followed by the gold answer + ``<|meta|>``. This
-    grounds the teacher distribution on a contextualized "rethink-after-attempt"
-    rather than a synthetic continuation from prompt+answer alone.
-
-    TODO(v0): The actual V0 generation path requires invoking the rollout
-        manager mid-step (e.g., ``trainer.async_rollout_manager.generate_sequences``
-        with ``meta_info["validate"]=True``). That is non-trivial because the
-        rollout workers may be busy with the current generate call. To keep
-        this plug-and-play and avoid deadlocks, this initial implementation
-        falls back to a constant ``"(no prior attempt)"`` prefix for every
-        prompt — which still validates the core hypothesis (force <|meta|> +
-        gold context) without V0. Wire real V0 generation later as a follow-up
-        after smoke-testing the forced <|meta|> + gold path end-to-end.
-
-    Args:
-        trainer: SDCRayPPOTrainer instance (used by future V0 generation).
-        tokenizer: Tokenizer (currently unused; reserved for future stripping).
-        prompt_texts: List of unique prompt strings to generate prefixes for.
-        global_steps: Current trainer step. Cache is invalidated on step change
-            so we don't reuse last-step prefixes after the policy has shifted.
-        max_new_tokens: Future V0 generation cap (unused in fallback path).
-        max_chars: Future cap on stripped prefix length (unused in fallback path).
-
-    Returns:
-        dict mapping each input prompt_text → its V0 prefix string. Always
-        returns one entry per input.
-    """
-    # Step transition: drop stale entries to bound memory + avoid reusing
-    # prefixes that no longer reflect the current policy's V0 behavior.
-    if _V0_PREFIX_LAST_STEP[0] != global_steps:
-        _V0_PREFIX_CACHE.clear()
-        _V0_PREFIX_LAST_STEP[0] = global_steps
-
-    out: dict[str, str] = {}
-    missing: list[str] = []
-    for pt in prompt_texts:
-        # Hash by prompt prefix-16 of MD5 — collisions are vanishingly unlikely
-        # within a single training step's unique prompt set.
-        h = hashlib.md5(pt.encode("utf-8", errors="replace")).hexdigest()[:16]
-        cache_key = (global_steps, h)
-        if cache_key in _V0_PREFIX_CACHE:
-            out[pt] = _V0_PREFIX_CACHE[cache_key]
-        else:
-            missing.append(pt)
-
-    # ── Fallback path (TODO(v0)): no real generation; populate placeholder. ──
-    # See module docstring above for rationale. This is intentional and safe:
-    # the meta_info "(no prior attempt)" is non-empty, contains no <|meta|>
-    # token, and is short — so downstream stripping/capping logic is a no-op
-    # for it but still exercises the same code path that real V0 prefixes will.
-    fallback_str = "(no prior attempt)"
-    for pt in missing:
-        h = hashlib.md5(pt.encode("utf-8", errors="replace")).hexdigest()[:16]
-        cache_key = (global_steps, h)
-        prefix = fallback_str
-
-        # Apply the same hygiene we'll need once real V0 is wired up:
-        # 1. Strip chat-template markers (in case generation includes them).
-        for marker in ("<|im_end|>", "<|im_start|>", "<|endoftext|>"):
-            if marker in prefix:
-                prefix = prefix.split(marker, 1)[0]
-        # 2. Slice at first <|meta|> if present (real V0 may emit one).
-        if META_START in prefix:
-            prefix = prefix.split(META_START, 1)[0]
-        # 3. Cap length from the END (most recent reasoning is most informative).
-        if len(prefix) > max_chars:
-            prefix = prefix[-max_chars:]
-        prefix = prefix.strip()
-        if not prefix:
-            prefix = fallback_str
-
-        _V0_PREFIX_CACHE[cache_key] = prefix
-        out[pt] = prefix
-
-    return out
-
-
 def _build_teacher_logprob_batch(
     *,
     tokenizer,
@@ -1842,104 +1663,49 @@ def _build_teacher_logprob_batch(
     answer_texts: list[str],
     responses: torch.Tensor,
     response_mask: torch.Tensor,
-    v0_prefixes: dict[str, str] | None = None,
-    forced_meta: bool = False,
     teacher_role: str = "content",
     contrast_side: str = "pos",
 ):
-    # Arm-2 ONLY: a TRAINING-ONLY gold-conditioned teacher-prompt prefix
-    # resolved from the PER-TEACHER parameterized slots (deliverable #2,
-    # 2026-05-19). `teacher_role` selects which resolved prefix applies:
-    #   "content"  -> the content-teacher (T+) slot
-    #                 (_ACTIVE_SDC_CONTEXT["sdc_content_teacher_prompt_prefix"])
-    #   "position" -> the position-teacher logP(<|meta|>) slot
-    #                 (_ACTIVE_SDC_CONTEXT["sdc_position_teacher_prompt_prefix"])
-    # For EVERY pre-existing mode this is the empty string (the context keys
-    # are absent / "r10v2_baseline" -> ""), so the teacher prompt below is
-    # byte-identical to the SHIP'd code path. Unknown roles fall back to "".
-    _tp_prefix = ""
-    if _ACTIVE_SDC_CONTEXT.get("mode") == "ROD_PT2_E21CTRL":
-        if teacher_role == "position":
-            _tp_prefix = str(
-                _ACTIVE_SDC_CONTEXT.get(
-                    "sdc_position_teacher_prompt_prefix", ""
-                )
-            )
-        else:  # "content" (default; also covers forced-meta T+ path)
-            _tp_prefix = str(
-                _ACTIVE_SDC_CONTEXT.get(
-                    "sdc_content_teacher_prompt_prefix", ""
-                )
-            )
-
     prompt_ids_list = []
     seq_lens = []
     for prompt_text, answer_text in zip(prompt_texts, answer_texts):
-        if forced_meta:
-            # RLSD_FORCED_META teacher conditioning: prepend the V0 student
-            # prefix (when available) and a "(The correct answer is X.)" hint,
-            # then force a <|meta|> opening so teacher log-prob is conditioned
-            # on the same "start inside meta" state the student rollout sees.
-            # Layout: <prompt> <V0_prefix>?\n(The correct answer is <gold>.)\n<|meta|>
-            #
-            # CRITICAL: prompt_text comes from _decode_prompt_only() of the
-            # rollout's input_ids. The agent loop (ForcedMetaAgentLoop) has
-            # already appended <|meta|> token id to prompt_ids → prompt_text
-            # ends with META_START. Strip it before re-appending the suffix
-            # so the final teacher prompt has EXACTLY ONE <|meta|> at the end
-            # (matches inspect_forced_meta.py S3 verified format byte-for-byte).
-            base = prompt_text
-            if base.endswith(META_START):
-                base = base[: -len(META_START)]
-            v0 = (v0_prefixes.get(prompt_text, "") if v0_prefixes else "").rstrip()
-            sep = "\n" if v0 else ""
-            teacher_prompt = (
-                f"{base}{v0}{sep}(The correct answer is {answer_text}.)\n{META_START}"
-            )
+        # Align teacher conditioning with what the actor actually sees:
+        # prompt_text is already the chat-templated prompt (ending in the
+        # assistant role marker), so we append the gold/decoy answer directly
+        # instead of injecting a synthetic " Answer: " separator the actor
+        # never produces. This keeps teacher log-prob on the same conditional
+        # distribution the policy is optimizing against.
+        #
+        # E.4 self-distill contrast variants: `decoy` is the UNCHANGED
+        # f-string below (answer slot = gold for T+, decoy for T-, filled by
+        # the caller). It is taken whenever `sdc_contrast_variant` is unset
+        # or "decoy" → byte-identical for every pre-existing mode/config/test.
+        # `stance`/`conf` append a side-specific suffix to a gold-on-BOTH-
+        # sides answer marker (answer cancels in T+−T−).
+        _cv = _ACTIVE_SDC_CONTEXT.get("sdc_contrast_variant", "decoy")
+        if _cv == "decoy":
+            teacher_prompt = f"{prompt_text}{answer_text}"
+        elif _cv == "stance":
+            # e2_contrastive_steering CONTRASTS["gold_stance"] join pattern.
+            _sfx = (" " + CAUTIOUS_INSTR) if contrast_side == "pos" else (" " + CONFIDENT_INSTR)
+            teacher_prompt = f"{prompt_text} (answer is {answer_text}){_sfx}"
+        elif _cv == "conf":
+            _sfx = "\nconfidence: 0.15\n" if contrast_side == "pos" else "\nconfidence: 0.95\n"
+            teacher_prompt = f"{prompt_text} (answer is {answer_text}){_sfx}"
+        elif _cv == "conf_free":
+            # E.8 GOLD-FREE conf-down: confidence suffix ONLY, NO answer injected (T+/T-
+            # differ only in the confidence level, both gold-free). Combined with
+            # mode=GFN_OPSD_CONTRAST this makes the teacher a DISTRIBUTION-MATCHING (listwise
+            # KL) target pulling the policy's meta toward the low-conf-conditioned self —
+            # genuinely != E.4 (RLSD_META_CONTRAST + conf = gold-conditioned MAGNITUDE
+            # reshaping). Gold-free avoids the leakage that kills distribution-matching for
+            # gold-conditioned teachers (Self-Distilled RLVR, arXiv 2604.03128).
+            _sfx = "\nconfidence: 0.15\n" if contrast_side == "pos" else "\nconfidence: 0.95\n"
+            teacher_prompt = f"{prompt_text}{_sfx}"
         else:
-            # Align teacher conditioning with what the actor actually sees:
-            # prompt_text is already the chat-templated prompt (ending in the
-            # assistant role marker), so we append the gold/decoy answer directly
-            # instead of injecting a synthetic " Answer: " separator the actor
-            # never produces. This keeps teacher log-prob on the same conditional
-            # distribution the policy is optimizing against.
-            #
-            # Arm-2 (ROD_PT2_E21CTRL) ONLY: prepend the resolved strengthened
-            # teacher-prompt prefix. `_tp_prefix == ""` for every other mode
-            # AND for the r10v2_baseline set, so this is the IDENTITY
-            # `f"{prompt_text}{answer_text}"` everywhere except a strengthened
-            # Arm-2 run — preserving byte-parity for all existing modes.
-            #
-            # E.4 self-distill contrast variants: `decoy` is the UNCHANGED
-            # f-string below (answer slot = gold for T+, decoy for T-, filled by
-            # the caller). It is taken whenever `sdc_contrast_variant` is unset
-            # or "decoy" → byte-identical for every pre-existing mode/config/test.
-            # `stance`/`conf` append a side-specific suffix to a gold-on-BOTH-
-            # sides answer marker (answer cancels in T+−T−).
-            _cv = _ACTIVE_SDC_CONTEXT.get("sdc_contrast_variant", "decoy")
-            if _cv == "decoy":
-                teacher_prompt = f"{_tp_prefix}{prompt_text}{answer_text}"
-            elif _cv == "stance":
-                # e2_contrastive_steering CONTRASTS["gold_stance"] join pattern.
-                _sfx = (" " + CAUTIOUS_INSTR) if contrast_side == "pos" else (" " + CONFIDENT_INSTR)
-                teacher_prompt = f"{_tp_prefix}{prompt_text} (answer is {answer_text}){_sfx}"
-            elif _cv == "conf":
-                _sfx = "\nconfidence: 0.15\n" if contrast_side == "pos" else "\nconfidence: 0.95\n"
-                teacher_prompt = f"{_tp_prefix}{prompt_text} (answer is {answer_text}){_sfx}"
-            elif _cv == "conf_free":
-                # E.8 GOLD-FREE conf-down: confidence suffix ONLY, NO answer injected (T+/T-
-                # differ only in the confidence level, both gold-free). Combined with
-                # mode=GFN_OPSD_CONTRAST this makes the teacher a DISTRIBUTION-MATCHING (listwise
-                # KL) target pulling the policy's meta toward the low-conf-conditioned self —
-                # genuinely != E.4 (RLSD_META_CONTRAST + conf = gold-conditioned MAGNITUDE
-                # reshaping). Gold-free avoids the leakage that kills distribution-matching for
-                # gold-conditioned teachers (Self-Distilled RLVR, arXiv 2604.03128).
-                _sfx = "\nconfidence: 0.15\n" if contrast_side == "pos" else "\nconfidence: 0.95\n"
-                teacher_prompt = f"{_tp_prefix}{prompt_text}{_sfx}"
-            else:
-                raise ValueError(
-                    f"sdc_contrast_variant={_cv!r} not in {_CONTRAST_VARIANTS}"
-                )
+            raise ValueError(
+                f"sdc_contrast_variant={_cv!r} not in {_CONTRAST_VARIANTS}"
+            )
         ids = tokenizer(teacher_prompt, add_special_tokens=False)["input_ids"]
         prompt_ids_list.append(torch.tensor(ids, dtype=torch.long))
         seq_lens.append(len(ids))
@@ -2419,6 +2185,11 @@ def _compute_dcpo_v4_gm_rmeta(
         decoy_ids = list(tokenizer.encode(decoy_str, add_special_tokens=False))
         if not gold_ids:
             continue
+        # Decoy integrity (review 2026-06-25): an empty decoy tokenization would be
+        # treated as logp=0 (P=1.0) downstream — a semantically-wrong PMI delta. Fail
+        # the row closed rather than score a fabricated contrast.
+        if not decoy_ids:
+            continue
         ctx_meta = list(tokenizer.encode(prefix_text + meta_text, add_special_tokens=False))
         ctx_plac = list(tokenizer.encode(prefix_text + PLACEBO_META, add_special_tokens=False))
         dmask = divergent_token_mask(gold_ids, decoy_ids)
@@ -2507,6 +2278,289 @@ def _compute_dcpo_v4_gm_rmeta(
     return r_meta, member, gm_raw
 
 
+def _pmi_position_scalar(logp_gold, logp_decoy, divergent_mask) -> float:
+    r"""gold-minus-decoy summed logp over the DIVERGENT answer tokens at ONE
+    teacher-forcing context (PMI_open or PMI_close).
+
+    logp_gold/logp_decoy are per-token ref logprobs over the gold/decoy answer
+    spans. The DiD is positionally over the GOLD span (where divergent_mask lives).
+
+    LENGTH-MISMATCH (review 2026-06-25): the gold and decoy answer strings are both
+    tokenizations of a `\boxed{...}` answer and SHOULD share length on the divergent
+    span. The previous code zero-PADDED a shorter decoy span, which is WRONG: a
+    missing decoy logprob is treated as logp=0 (P=1.0), inflating the gold-vs-decoy
+    contrast by orders of magnitude (e.g. a 4-vs-2 mismatch turned 1.0 into 8.0) and
+    corrupting the PMI-shift signal. We now FAIL CLOSED (return NaN) on any length
+    mismatch so the caller drops the row instead of training on a tokenization
+    accident. Only the masked (truly divergent) positions are summed. Empty/NaN ->
+    NaN. This is the SUM (not mean_min) — a position-level belief log-odds that
+    PMI_close − PMI_open then differences (matching the gm DiD locus)."""
+    g = np.asarray(logp_gold, dtype=np.float64).reshape(-1)
+    d = np.asarray(logp_decoy, dtype=np.float64).reshape(-1)
+    n = g.size
+    if n == 0:
+        return float("nan")
+    if d.size != n:
+        # Misaligned gold/decoy spans: do NOT pad with 0 (that fabricates logp=0
+        # i.e. P=1 for the missing decoy tokens). Fail closed.
+        return float("nan")
+    mask = (np.ones(n, dtype=bool) if divergent_mask is None
+            else np.asarray(divergent_mask, dtype=bool).reshape(-1))
+    if mask.size != n:
+        return float("nan")
+    diff = (g - d)[mask]
+    if diff.size == 0 or not np.isfinite(diff).all():
+        return float("nan")
+    return float(diff.sum())
+
+
+def _meta_body_token_jaccard(meta_inner: str, body_prefix: str) -> float:
+    """Token-set Jaccard similarity between the meta-inner text and the body prefix.
+
+    A near-1.0 value means the meta block merely RESTATES the body reasoning (no
+    novel content) — the content-integrity guard then skips the row so a derivative
+    meta cannot earn shift credit via mere presence (presence-as-confidence confound).
+    Whitespace-tokenized, case-folded; empty meta -> 0.0 (caught upstream anyway)."""
+    mt = set((meta_inner or "").lower().split())
+    bt = set((body_prefix or "").lower().split())
+    if not mt:
+        return 0.0
+    inter = len(mt & bt)
+    union = len(mt | bt)
+    return float(inter) / float(union) if union else 0.0
+
+
+def _compute_dcpo_v4_pmi_shift_rmeta(
+    *,
+    tokenizer,
+    trainer,
+    prompt_texts: list,
+    response_texts: list,
+    ground_truths: list,
+    fmt_classes: list,
+    heads: dict,
+    read_knob,
+    step: int = 0,
+):
+    r"""TRIOBJ_DCPO_V4 PMI-SHIFT-ACROSS-META R_meta (design 2026-06-25).
+
+    TWO-position teacher-forcing extension of the gm head. For each trusted
+    meta-bearing row, score the GOLD and DECOY `\boxed{...}` answer strings at TWO
+    contexts of the model's OWN rollout:
+        OPEN  = body BEFORE <|meta|>          (belief before the meta block)
+        CLOSE = body + <|meta|>...<|/meta|>   (belief after the meta block)
+    and compute, over the divergent answer tokens,
+        PMI_open  = Σ (logp(gold|OPEN)  − logp(decoy|OPEN))
+        PMI_close = Σ (logp(gold|CLOSE) − logp(decoy|CLOSE))
+    R_shift = pmi_shift_reward(PMI_open, PMI_close) — asymmetric sign-reversal
+    (decoy→gold = +save, gold→decoy = −derail, derail>=save), default knobs.
+
+    4 arms per row (gold@open, decoy@open, gold@close, decoy@close) batched into ONE
+    frozen-ref forward, reusing _build_pmi_score_batches + _dcpo_v4_ref_logprobs.
+    Reuses _rule_based_decoy for D. CRASH-SAFE: a ref failure prints LOUDLY and
+    returns all-zero R_meta + member.
+
+    Returns (r_meta float32[B], member float32[B], shift_raw float32[B]).
+    """
+    B = len(response_texts)
+    r_meta = np.zeros(B, dtype=np.float32)
+    member = np.zeros(B, dtype=np.float32)
+    shift_raw = np.full(B, np.nan, dtype=np.float32)
+
+    scale = float(read_knob("dcpo_pmishift_scale", 1.0))
+    save_big = float(read_knob("dcpo_pmishift_reversal_save", 1.0))
+    derail_big = float(read_knob("dcpo_pmishift_reversal_derail", 2.0))
+    clip = float(read_knob("dcpo_pmishift_clip", 2.0))
+    decoy_seed = int(read_knob("dcpo_pmishift_decoy_seed", 42))
+    reversal_eps = float(read_knob("dcpo_pmishift_reversal_min_magnitude", 0.0))
+    # meta-vs-body content-integrity: a meta that near-exactly duplicates the body
+    # reasoning earns NO shift credit (presence-as-confidence confound guard). The
+    # threshold is a token-Jaccard similarity over the meta-inner vs body-prefix
+    # token sets; >= dup_thresh means derivative -> skip. dup_thresh>=1.0 disables.
+    dup_thresh = float(read_knob("dcpo_pmishift_meta_body_dup_thresh", 1.0))
+
+    # Config guard (review M1): the frozen-ref scorer requires the ENGINE worker
+    # path (use_legacy_worker_impl=disable) so meta_info['temperature']=1.0 is NOT
+    # overwritten by rollout.temperature (~1.67x silent PMI compression). We check
+    # HERE before any work so a READABLE-but-WRONG config crashes loudly at the
+    # pmi_shift entry rather than mid-batch. An UNREADABLE config (e.g. unit-test
+    # trainer=object() with the ref monkeypatched away) is left to the hard
+    # fail-closed assert inside _dcpo_v4_ref_logprobs, which fires on the real
+    # scoring path — keeping the entry guard from breaking mock-ref tests.
+    try:
+        _legacy = str(trainer.config.trainer.use_legacy_worker_impl)
+    except Exception:
+        _legacy = None  # unreadable here -> deferred to the ref-scorer's hard assert
+    if _legacy is not None:
+        assert _legacy == "disable", (
+            f"DCPO-V4 pmi_shift requires use_legacy_worker_impl=disable to preserve "
+            f"T=1.0 ref scoring; got {_legacy!r} (the legacy fsdp worker overwrites "
+            f"meta_info['temperature'] with rollout.temperature, compressing PMI ~1.67x)")
+
+    # 1) Select trusted meta-bearing rows + build the 4 (context, answer) arms.
+    attempted: list = []
+    arm_prompts, arm_resps = [], []
+    skip_empty_meta = 0       # meta block has no content between the tags
+    skip_dup_meta = 0         # meta is a near-duplicate of body reasoning
+    skip_decoy = 0            # gold==decoy or empty/mismatched decoy tokenization
+    for i in range(B):
+        if fmt_classes[i] not in TRUSTED_META_CLASSES:
+            continue
+        parts = split_first_meta(response_texts[i])
+        if parts is None:
+            continue
+        gold = (ground_truths[i] or "").strip()
+        if not gold:
+            continue
+        response_prefix, meta_text, _continuation = parts
+        # meta_text is the TAG-INCLUSIVE block (<|meta|>...<|/meta|>). Require actual
+        # content BETWEEN the tags: an empty/whitespace-only meta makes CLOSE==OPEN
+        # and PMI_close==PMI_open by construction (a spurious null), and lets meta
+        # PRESENCE (not content) earn credit. Skip such rows.
+        meta_inner = meta_text[len(META_START):len(meta_text) - len(META_END)] \
+            if meta_text.startswith(META_START) and meta_text.endswith(META_END) \
+            else ""
+        if not meta_inner.strip():
+            skip_empty_meta += 1
+            continue
+        # Content-integrity (presence-as-confidence confound guard): if the meta is a
+        # near-exact duplicate of the body reasoning it adds no novel reasoning — skip
+        # so it cannot earn shift credit through mere presence. Token-set Jaccard.
+        if dup_thresh < 1.0 and _meta_body_token_jaccard(
+                meta_inner, response_prefix) >= dup_thresh:
+            skip_dup_meta += 1
+            continue
+        # OPEN context = body strictly BEFORE <|meta|>; CLOSE = body through close.
+        ctx_open_text = (prompt_texts[i] or "") + response_prefix
+        ctx_close_text = ctx_open_text + meta_text
+        try:
+            decoy = _rule_based_decoy(gold, seed=decoy_seed, checker=_check_correctness)
+        except Exception:
+            decoy = _rule_based_decoy(gold, seed=decoy_seed)
+        gold_str = boxed_answer_string(gold)
+        decoy_str = boxed_answer_string(decoy)
+        gold_ids = list(tokenizer.encode(gold_str, add_special_tokens=False))
+        decoy_ids = list(tokenizer.encode(decoy_str, add_special_tokens=False))
+        if not gold_ids:
+            continue
+        # Decoy integrity: an empty decoy tokenization would be treated as logp=0
+        # (P=1) downstream; a gold==decoy decoy produces ZERO signal by construction;
+        # a length-mismatched decoy would (post-fix) fail the row closed in
+        # _pmi_position_scalar. Skip all three here and count them as a diagnostic.
+        if (not decoy_ids) or (decoy_str == gold_str) or (len(decoy_ids) != len(gold_ids)):
+            skip_decoy += 1
+            if os.environ.get("DCPO_DEBUG", "1") == "1" and decoy_str == gold_str:
+                print(f"[DCPO-V4] pmi_shift row {i}: gold==decoy "
+                      f"({gold_str!r}) → zero signal, skipped.", flush=True)
+            continue
+        ctx_open = list(tokenizer.encode(ctx_open_text, add_special_tokens=False))
+        ctx_close = list(tokenizer.encode(ctx_close_text, add_special_tokens=False))
+        dmask = divergent_token_mask(gold_ids, decoy_ids)
+        # 4 arms in fixed order: gold@open, decoy@open, gold@close, decoy@close.
+        arm_prompts.append(ctx_open);  arm_resps.append(gold_ids)
+        arm_prompts.append(ctx_open);  arm_resps.append(decoy_ids)
+        arm_prompts.append(ctx_close); arm_resps.append(gold_ids)
+        arm_prompts.append(ctx_close); arm_resps.append(decoy_ids)
+        attempted.append((i, {"gold_ids": gold_ids, "decoy_ids": decoy_ids,
+                              "divergent_mask": dmask}))
+
+    if (skip_empty_meta or skip_dup_meta or skip_decoy) and \
+            os.environ.get("DCPO_DEBUG", "1") == "1":
+        print(f"[DCPO-V4] pmi_shift step={step}: skipped empty_meta={skip_empty_meta} "
+              f"dup_meta={skip_dup_meta} decoy={skip_decoy}", flush=True)
+
+    if not attempted:
+        _log_pmi_shift_wandb_scalars(step, attempted_rate=0.0, member_rate=0.0,
+                                     n_save=0, n_derail=0, rmeta_mean_scored=0.0)
+        return r_meta, member, shift_raw
+
+    # 2) Score ALL 4n arms on the frozen ref worker in ONE forward.
+    try:
+        nnodes = int(trainer.config.trainer.nnodes)
+    except Exception:
+        nnodes = 1
+    try:
+        n_gpus_per_node = int(trainer.config.trainer.n_gpus_per_node)
+    except Exception:
+        n_gpus_per_node = 4
+    try:
+        micro_bs = int(trainer.config.actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu)
+    except Exception:
+        micro_bs = 4
+    pad_unit = nnodes * n_gpus_per_node * micro_bs
+    tensors, real_n = _build_pmi_score_batches(arm_prompts, arm_resps, pad_unit)
+    assert real_n == 4 * len(attempted), (
+        f"pmi_shift arm bookkeeping broken: {real_n} != 4*{len(attempted)}")
+    try:
+        ref_lp = _dcpo_v4_ref_logprobs(trainer, tensors)
+    except AssertionError:
+        raise
+    except Exception as e:
+        print(f"[DCPO-V4] pmi_shift ref scoring FAILED ({type(e).__name__}: {e}) — "
+              f"R_meta all-zero this batch (member 0).", flush=True)
+        if os.environ.get("DCPO_DEBUG", "1") == "1":
+            traceback.print_exc()
+        _log_pmi_shift_wandb_scalars(step, attempted_rate=len(attempted) / max(1, B),
+                                     member_rate=0.0, n_save=0, n_derail=0,
+                                     rmeta_mean_scored=0.0)
+        return r_meta, member, shift_raw
+
+    # 3) Read back per-token logp, build PMI_open/PMI_close per rollout.
+    rows: list = []
+    for k, (_i, rmeta_row) in enumerate(attempted):
+        Lg = len(rmeta_row["gold_ids"])
+        Ld = len(rmeta_row["decoy_ids"])
+        base = 4 * k
+        gold_open = ref_lp[base + 0, :Lg].float().cpu().numpy()
+        decoy_open = ref_lp[base + 1, :Ld].float().cpu().numpy()
+        gold_close = ref_lp[base + 2, :Lg].float().cpu().numpy()
+        decoy_close = ref_lp[base + 3, :Ld].float().cpu().numpy()
+        dmask = rmeta_row["divergent_mask"]
+        pmi_open = _pmi_position_scalar(gold_open, decoy_open, dmask)
+        pmi_close = _pmi_position_scalar(gold_close, decoy_close, dmask)
+        rows.append({"pmi_open": pmi_open, "pmi_close": pmi_close})
+
+    scored, diag = compute_pmi_shift_reward(
+        rows, scale=scale, reversal_save=save_big,
+        reversal_derail=derail_big, clip=clip,
+        reversal_min_magnitude=reversal_eps)
+
+    for j, (i, _rmeta_row) in enumerate(attempted):
+        r_meta[i] = scored[j]
+        shift_raw[i] = diag["raw_shift"][j]
+        member[i] = 0.0 if diag["failures"][j] else 1.0
+
+    _scored_vals = [float(r_meta[i]) for (i, _r) in attempted if member[i] > 0.5]
+    rmeta_mean = float(np.mean(_scored_vals)) if _scored_vals else 0.0
+    if os.environ.get("DCPO_DEBUG", "1") == "1":
+        print(f"[DCPO-V4] pmi_shift step={step}: B={B} attempted={len(attempted)} "
+              f"n_save={diag['n_save']} n_derail={diag['n_derail']} "
+              f"rmeta_mean_scored={rmeta_mean:.4f}", flush=True)
+    _log_pmi_shift_wandb_scalars(step, attempted_rate=len(attempted) / max(1, B),
+                                 member_rate=float(member.mean()),
+                                 n_save=diag["n_save"], n_derail=diag["n_derail"],
+                                 rmeta_mean_scored=rmeta_mean)
+    return r_meta, member, shift_raw
+
+
+def _log_pmi_shift_wandb_scalars(step: int, *, attempted_rate: float,
+                                 member_rate: float, n_save: int, n_derail: int,
+                                 rmeta_mean_scored: float) -> None:
+    """One wandb point for the dcpo/pmishift_* scalars (never kills training)."""
+    try:
+        import wandb
+        if wandb.run is not None:
+            wandb.log({
+                "dcpo/pmishift_attempted_rate": float(attempted_rate),
+                "dcpo/pmishift_member_rate": float(member_rate),
+                "dcpo/pmishift_n_save": float(n_save),
+                "dcpo/pmishift_n_derail": float(n_derail),
+                "dcpo/pmishift_rmeta_mean_scored": float(rmeta_mean_scored),
+            }, step=int(step))
+    except Exception:
+        pass
+
+
 def _attach_teacher_signals(data: DataProto):
     trainer = _ACTIVE_SDC_CONTEXT.get("trainer")
     tokenizer = _ACTIVE_SDC_CONTEXT.get("tokenizer")
@@ -2586,20 +2640,6 @@ def _attach_teacher_signals(data: DataProto):
         print(f"[SDC] WARNING: {_n_empty_gold}/{len(gold_answers)} rows have EMPTY "
               f"gold — teacher contrast is content-free for those rows.", flush=True)
 
-    # ── R5 (RLSD_FORCED_META) prep ─────────────────────────────────────────
-    # Generate (or fetch cached) V0 student prefixes for unique prompts in this
-    # batch. The forced-meta path threads these through to both T+ and T-
-    # teacher conditioning so the teacher distribution is grounded on the same
-    # "rethink-after-attempt" context the student sees post-rollout.
-    v0_prefixes: dict[str, str] | None = None
-    forced_meta_flag = mode in _FORCED_META_MODES
-    if forced_meta_flag:
-        global_steps = int(getattr(trainer, "global_steps", 0) or 0)
-        unique_prompts = sorted(set(prompt_texts))
-        v0_prefixes = _generate_v0_prefixes(
-            trainer, tokenizer, unique_prompts, global_steps
-        )
-
     # E.4 self-distill: for stance/conf the T- side conditions on GOLD (not the
     # decoy) so the answer CANCELS in T+−T− and the contrast isolates the
     # stance/confidence axis only. For `decoy` (default) neg_answers IS the
@@ -2613,8 +2653,6 @@ def _attach_teacher_signals(data: DataProto):
         answer_texts=gold_answers,
         responses=response_tensor,
         response_mask=response_mask,
-        v0_prefixes=v0_prefixes,
-        forced_meta=forced_meta_flag,
         teacher_role="content",  # gold-conditioned T+ (content teacher)
         contrast_side="pos",
     )
@@ -2644,7 +2682,7 @@ def _attach_teacher_signals(data: DataProto):
         # T_position input = prompt + gold + response[:p] where p = first META_START position.
         # Returns log_prob(META | prompt + gold + response[:p]) = position factor signal.
         # We reuse R5 _build_teacher_logprob_batch with truncated response_mask (valid only up to p).
-        if mode in ("ROD_PT", "ROD_PT_DEGEN", "ROD_PT2_E21CTRL"):  # F1 codex r2 fix: ROD_PT_DEGEN needs position forward too (utils:308 expects it); ROD_PT2_E21CTRL (Arm 2) reuses the SAME content×position 2-teacher
+        if mode == "ROD_PT":
             try:
                 meta_start_id = int(tokenizer.convert_tokens_to_ids("<|meta|>"))
                 # UNK-GUARD (codereview IMPORTANT-2): a tokenizer without <|meta|>
@@ -2721,8 +2759,6 @@ def _attach_teacher_signals(data: DataProto):
                         answer_texts=gold_subset,
                         responses=truncated_responses,
                         response_mask=truncated_mask_subset,
-                        v0_prefixes=None,
-                        forced_meta=False,
                         teacher_role="position",  # logP(<|meta|>) position teacher
                     )
                     position_batch.meta_info["temperature"] = rollout_temp
@@ -2739,18 +2775,8 @@ def _attach_teacher_signals(data: DataProto):
 
             data.batch["sdc_position_log_prob_meta"] = full_log_prob_meta
     else:
-        # Both contrastive (R2/SDC_*) and forced-meta (R5) modes run T- here.
-        # Forced-meta passes the same v0_prefixes + forced_meta=True so the
-        # decoy teacher conditioning matches the gold teacher format (only the
-        # answer slot differs), preserving the contrast-on-answer-only
-        # invariant the SDC contrastive math depends on.
-        # T- decoy teacher. This branch is the `else` of
-        # `if mode in _SINGLE_TEACHER_MODES` — ROD_PT2_E21CTRL is a
-        # single-teacher mode so it NEVER reaches here (T-=T+ clone above).
-        # Leaving teacher_role at its "content" default is byte-identical for
-        # every mode that DOES run this (contrastive / forced-meta), because
-        # the per-teacher prefix guard only fires for ROD_PT2_E21CTRL, which
-        # by construction cannot enter this branch -> _tp_prefix stays "".
+        # Contrastive (R2/SDC_*) modes run the T- decoy teacher here. This
+        # branch is the `else` of `if mode in _SINGLE_TEACHER_MODES`.
         neg_answers = (
             gold_answers if contrast_variant in ("stance", "conf") else decoy_answers
         )
@@ -2760,8 +2786,6 @@ def _attach_teacher_signals(data: DataProto):
             answer_texts=neg_answers,
             responses=response_tensor,
             response_mask=response_mask,
-            v0_prefixes=v0_prefixes,
-            forced_meta=forced_meta_flag,
             teacher_role="content",
             contrast_side="neg",
         )
@@ -4582,15 +4606,6 @@ def main_task(config):
         raise ValueError(
             f"Unknown mode='{mode}'. Available: {sorted(REWARD_CONFIGS.keys())}"
         )
-    if mode == "OPSD_META":
-        # KL distillation auxiliary loss is NOT implemented yet. The advantage
-        # path falls back to RLSD_META_ATTR (T+ only, attractive). Refusing to
-        # silently run a half-implemented mode prevents accidental wasted runs.
-        raise NotImplementedError(
-            "mode=OPSD_META requires KL distillation loss in the actor — "
-            "phase-2 work, not yet wired. Use RLSD_META_ATTR or "
-            "RLSD_META_CONTRAST for now."
-        )
     reward_cfg = REWARD_CONFIGS[mode]
 
     # FAIL-FAST gate-coherence check (codereview CRITICAL-2, the sdc_enabled-class
@@ -4598,7 +4613,7 @@ def main_task(config):
     # truthy OR the mode is region-routed. A teacher-ON mode whose YAML omits/false
     # sdc_enabled would otherwise SILENTLY train as plain GDPO while labeled e.g.
     # ROD_MQ_CONTRAST — exactly how the v2/v3 region routing stayed off unnoticed.
-    _teacher_on_modes = _SINGLE_TEACHER_MODES | _CONTRASTIVE_MODES | _FORCED_META_MODES
+    _teacher_on_modes = _SINGLE_TEACHER_MODES | _CONTRASTIVE_MODES
     _alg_for_gate = config.get("algorithm", {}) or {}
     if mode in _teacher_on_modes and not bool(_alg_for_gate.get("sdc_enabled", False)):
         raise ValueError(
@@ -4657,53 +4672,6 @@ def main_task(config):
             f"algorithm.sdc_contrast_variant={_cv!r} not in {_CONTRAST_VARIANTS}"
         )
     _ACTIVE_SDC_CONTEXT["sdc_contrast_variant"] = _cv
-    # Arm-2 parameterized teacher-prompt slot (deliverable #2). Resolved ONCE
-    # at launch and stashed via the SAME deterministic transport. Default
-    # "r10v2_baseline" -> "" prefix => byte-identical teacher conditioning for
-    # every existing mode (none of which read this key) and for an Arm-2 run
-    # that has not yet picked a strengthened set from the FROZEN G2 decision.
-    _tp_set = str(alg_cfg.get("sdc_teacher_prompt_set", "r10v2_baseline"))
-    _ACTIVE_SDC_CONTEXT["sdc_teacher_prompt_set"] = _tp_set
-    # ── G2 PER-TEACHER SLOTS (deliverable #2, 2026-05-19) ──────────────────
-    # PRECEDENCE (codex-converged): an explicitly-set per-teacher key wins;
-    # otherwise it INHERITS the legacy shared `sdc_teacher_prompt_set` (so the
-    # pre-existing single-slot config + every prior run is byte-identical).
-    # `None` sentinel distinguishes "key absent -> inherit legacy" from "key
-    # explicitly set to r10v2_baseline -> use baseline" (both yield "" prefix,
-    # but the distinction keeps the back-compat semantics explicit & logged).
-    _pos_set_raw = alg_cfg.get("sdc_position_teacher_prompt_set", None)
-    _con_set_raw = alg_cfg.get("sdc_content_teacher_prompt_set", None)
-    _pos_set = str(_pos_set_raw) if _pos_set_raw is not None else _tp_set
-    _con_set = str(_con_set_raw) if _con_set_raw is not None else _tp_set
-    _ACTIVE_SDC_CONTEXT["sdc_position_teacher_prompt_set"] = _pos_set
-    _ACTIVE_SDC_CONTEXT["sdc_content_teacher_prompt_set"] = _con_set
-    if mode == "ROD_PT2_E21CTRL":
-        # Legacy shared prefix kept resolved for back-compat / logging.
-        _ACTIVE_SDC_CONTEXT["sdc_teacher_prompt_prefix"] = (
-            _resolve_teacher_prompt_prefix(_tp_set)
-        )
-        _ACTIVE_SDC_CONTEXT["sdc_position_teacher_prompt_prefix"] = (
-            _resolve_teacher_prompt_prefix(_pos_set)
-        )
-        _ACTIVE_SDC_CONTEXT["sdc_content_teacher_prompt_prefix"] = (
-            _resolve_teacher_prompt_prefix(_con_set)
-        )
-        print(
-            "[SDC][Arm2] per-teacher prompt slots: position=%s "
-            "(prefix_len=%d) content=%s (prefix_len=%d) "
-            "[legacy shared=%s, precedence: explicit per-teacher > shared]"
-            % (
-                _pos_set,
-                len(_ACTIVE_SDC_CONTEXT["sdc_position_teacher_prompt_prefix"]),
-                _con_set,
-                len(_ACTIVE_SDC_CONTEXT["sdc_content_teacher_prompt_prefix"]),
-                _tp_set,
-            )
-        )
-    else:
-        _ACTIVE_SDC_CONTEXT["sdc_teacher_prompt_prefix"] = ""
-        _ACTIVE_SDC_CONTEXT["sdc_position_teacher_prompt_prefix"] = ""
-        _ACTIVE_SDC_CONTEXT["sdc_content_teacher_prompt_prefix"] = ""
     print(
         "[SDC][GFN] objective=%s reward_baseline=%s reward_temperature=%s"
         % (

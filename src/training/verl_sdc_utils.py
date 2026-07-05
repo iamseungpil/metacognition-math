@@ -127,19 +127,9 @@ def _shared_char_spans(text: str, post_start: int) -> list[tuple[int, int]]:
 
 def build_sdc_region_masks(tokenizer, completion_ids, completion_text: str):
     """Build meta/shared/diff/body masks for a decoded completion."""
-    # Lazy import to avoid circular import: verl_sdc imports from this module
-    # at top-level. Reading the active mode here (set by verl_sdc.main_task)
-    # lets us flag ``started_inside_meta`` for forced-meta modes so the
-    # response's leading tokens count as meta even though the <|meta|> opener
-    # is in the prompt, not the response.
-    try:
-        from src.training.verl_sdc import _ACTIVE_SDC_CONTEXT, _FORCED_META_MODES
-        mode = _ACTIVE_SDC_CONTEXT.get("mode", "SDC_SHARED")
-        started_inside_meta = mode in _FORCED_META_MODES
-    except Exception:
-        # Fall back to legacy behavior if context module isn't importable
-        # (e.g., unit tests that import verl_sdc_utils in isolation).
-        started_inside_meta = False
+    # No live mode starts the rollout inside <|meta|> (the forced-meta modes
+    # were removed), so the opener is always in the response, not the prompt.
+    started_inside_meta = False
     meta_mask = _build_meta_mask(
         tokenizer, completion_ids, completion_text, started_inside_meta=started_inside_meta
     )
@@ -424,13 +414,30 @@ def _compute_dcpo_region_advantage(
         _r_trans = non_tensor_batch.get("dcpo_r_trans", None)
         _ans_member = non_tensor_batch.get("dcpo_ans_member", None)
         _trans_member = non_tensor_batch.get("dcpo_trans_member", None)
+        # GATE (Layer 1) weight is INDEPENDENT from CONTENT (Layer 2 = dcpo_w_meta):
+        # dcpo_w_ans_meta defaults to dcpo_w_meta for backward compat (cf_group),
+        # but lets asym_cf disable meta content (dcpo_w_meta=0) WITHOUT silently
+        # zeroing the gate head via the `w_ans_meta` falsy-check on compose
+        # (dcpo_region.py L1499). Review fix: decouple gate timing from content.
+        # asym_cf GATE whole-group centering (2026-06-25 live fix). The asym_cf
+        # populator writes dcpo_ans_meta_whole_group_center (a per-row 1.0 marker
+        # array); cf_group NEVER writes it, so this stays False there and cf_group
+        # is byte-identical (its R_ans_meta is a PER-ROW answer-delta, not a group
+        # constant, so member-mask centering is correct for it). For asym_cf the
+        # gate scalar is group-CONSTANT and member-mask centering annihilates it
+        # (rmeta_neg_rate=0 bug) -> center over the whole group instead.
+        _wg_center = non_tensor_batch.get("dcpo_ans_meta_whole_group_center", None)
         _cfgroup_kwargs = dict(
             R_ans_meta=_head("dcpo_ans_meta"),
-            w_ans_meta=_w_meta,
+            w_ans_meta=float(config.get("dcpo_w_ans_meta", _w_meta)),
             ans_meta_member_mask=(
                 np.asarray(_ans_member, dtype=np.float32)
                 if _ans_member is not None else None
             ),
+            ans_meta_whole_group_center=bool(
+                _wg_center is not None
+                and float(np.asarray(_wg_center, dtype=np.float32).reshape(-1)[0]) > 0.5
+            ) if _wg_center is not None else False,
             R_trans=(_head("dcpo_r_trans") if _r_trans is not None else None),
             w_score_alpha=float(config.get("dcpo_w_score_alpha", 0.0)),
             trans_member_mask=(
@@ -505,30 +512,12 @@ def compute_sdc_gdpo_advantage(
 
     Mode dispatch (algorithm.sdc_mode, mirrored from top-level mode at init):
       VANILLA_GRPO         — skip SDC factor; return base GDPO advantage directly.
-      RLSD_META_ATTR       — meta region uses w_attr = exp(sign × (T+ − student));
-                             shared/diff regions controlled by their lambdas.
       RLSD_META_CONTRAST   — meta region uses w_meta = exp(sign × (α × Δ+ + β × δ))
                              where Δ+ = T+ − student, δ = T+ − T−.
-      RLSD_FORCED_META     — same combined formula as RLSD_META_CONTRAST; rollout
-                             prompt is augmented to start inside <|meta|>, so
-                             the meta_mask is guaranteed non-empty (resolves the
-                             "meta empty 95%" pathology of meta-SFT under gold
-                             conditioning, paper 2603.24472).
-      OPSD_META            — same advantage path as RLSD_META_ATTR; the auxiliary
-                             KL distillation loss is applied in the actor (TBD).
-      SDC_SHARED / SDC_CORR_ONLY / SDC_CORR_META_PEN — legacy behavior (w_attr on
+      SDC_SHARED           — legacy behavior (w_attr on
                              meta, w_shared on shared, w_diff on diff).
-      ROD_MQ               — meta-quality factor on EXTENDED meta region
-                             (meta block + post K tokens):
-                               q_attr     = mean clip(T+ − student) over ext-meta
-                               q_centered = q_attr − batch_median(q_attr)
-                               w_meta_quality = clip(exp(sign × q_centered / τ), …)
-                               w_meta     = w_attr × w_meta_quality   (PRODUCT)
       ROD_MQ_CONTRAST      — R18a + α/β contrast term: q_meta = α·q_attr + β·q_contrast
                              where q_contrast = mean clip(T+ − T−) over ext-meta.
-      ROD_PT2_E21CTRL      — Arm 2 (deliverable #2): ROD_PT's w_attr × w_position
-                             2-teacher PRODUCT but UN-CLIPPED — each factor uses
-                             the log-symmetric bound [1/w_max, w_max] (C1 fix).
       STABLE_GFN_C2FIX     — Arm 3 (deliverable #3): same advantage-plane
                              dispatch as STABLE_GFN (the else: w_attr branch,
                              λ_meta=0 in the config so the factor is identically
@@ -555,18 +544,12 @@ def compute_sdc_gdpo_advantage(
     # R0: vanilla GRPO. Bypass all SDC factor computation — just whiten the
     # base GDPO advantage, exactly like a non-SDC trainer would.
     #
-    # MATCHED_E21RV2 (Arm 1, ADDITIVE): a NO-teacher matched-RLVR baseline.
-    # It takes the SAME teacher-free advantage path as VANILLA_GRPO (no SDC
-    # factor, just whiten the multi-head GDPO advantage). This OR-clause only
-    # ADDS a new mode to the early-return; the `== "VANILLA_GRPO"` predicate is
-    # still independently true for VANILLA_GRPO, so VANILLA_GRPO behaviour is
-    # byte-identical. No new mode was given the SDC factor path.
     # BCI_RLVR (E.9, ADDITIVE): env-reward-only mode (correctness +
     # outcome_calibration, no SDC teacher). Takes the SAME teacher-free advantage
-    # path as VANILLA_GRPO/MATCHED_E21RV2 — whiten the multi-head GDPO advantage,
+    # path as VANILLA_GRPO — whiten the multi-head GDPO advantage,
     # no SDC factor, no teacher-tensor reads. This OR-clause only ADDS a mode;
-    # the existing `== "VANILLA_GRPO"`/`== "MATCHED_E21RV2"` predicates stay
-    # independently true, so those modes are byte-identical.
+    # the existing `== "VANILLA_GRPO"` predicate stays
+    # independently true, so that mode is byte-identical.
     # TRIOBJ_META_V1 (ADDITIVE): env-reward-only tri-objective GDPO mode (no SDC
     # teacher). Takes the SAME teacher-free advantage path as VANILLA_GRPO/BCI_RLVR
     # — whiten the multi-head GDPO advantage, no SDC factor, no teacher-tensor reads.
@@ -595,7 +578,7 @@ def compute_sdc_gdpo_advantage(
             config=config,
         )
 
-    if sdc_mode == "VANILLA_GRPO" or sdc_mode == "MATCHED_E21RV2" or sdc_mode == "BCI_RLVR" or sdc_mode == "TRIOBJ_META_V1":
+    if sdc_mode == "VANILLA_GRPO" or sdc_mode == "BCI_RLVR" or sdc_mode == "TRIOBJ_META_V1":
         advantages = base_advantages * response_mask
         advantages = verl_F.masked_whiten(advantages, response_mask) * response_mask
         return advantages, advantages
@@ -644,8 +627,7 @@ def compute_sdc_gdpo_advantage(
         if (alpha_attr + beta_contrast) <= 0:
             raise ValueError(
                 f"sdc_alpha_attr + sdc_beta_contrast = {alpha_attr + beta_contrast}: "
-                "must be > 0 (else combined log-ratio is identically zero, "
-                "use RLSD_META_ATTR with sdc_lambda_meta=0 instead)"
+                "must be > 0 (else combined log-ratio is identically zero)"
             )
         combined_log = torch.clamp(
             alpha_attr * attr_log + beta_contrast * delta,
@@ -655,11 +637,8 @@ def compute_sdc_gdpo_advantage(
         w_meta = torch.clamp(
             torch.exp(sign * combined_log), 1.0 - clip_eps, 1.0 + clip_eps
         )
-    elif sdc_mode in ("ROD_PT", "ROD_PT_DEGEN"):
+    elif sdc_mode == "ROD_PT":
         # ROD-PT (Plan v5.17 FINAL): w_meta = w_attr × w_position  (PRODUCT).
-        # ROD_PT_DEGEN (R16): identical w_meta logic — degeneration_penalty is
-        # composed at the GDPO reward-head plane via its own weight (0.3),
-        # NOT inside the meta-region multiplicative factor.
         #
         # log_prob_meta = P_T(<|meta|> | prefix before the student's first meta
         # position p), from the frozen ref teacher → it is ≤ 0 always, so the
@@ -682,11 +661,10 @@ def compute_sdc_gdpo_advantage(
             torch.exp(sign * log_prob_meta), 1.0 - clip_eps, 1.0 + clip_eps
         )  # [B, 1]
         w_meta = w_attr * w_position  # [B, T] × [B, 1] → [B, T] PRODUCT
-    elif sdc_mode in ("ROD_MQ", "ROD_MQ_CONTRAST", "ROD_MQ_CONTRAST_INJECT"):
+    elif sdc_mode in ("ROD_MQ_CONTRAST", "ROD_MQ_CONTRAST_INJECT"):
         # R18a/R18b (Plan v7.2.2 codex round 5 LOCK): meta-quality verifiable
         # signal on EXTENDED meta region (meta block + post K=10 tokens).
         #
-        # ROD_MQ      : q_meta = α × q_attr                                  (T+ only)
         # ROD_MQ_CONTRAST : q_meta = α × q_attr + β × q_contrast             (T+ AND T-)
         #   q_attr     = mean over extended meta of clip(T+ − student, ±10)
         #   q_contrast = mean over extended meta of clip(T+ − T−,        ±10)
@@ -797,54 +775,9 @@ def compute_sdc_gdpo_advantage(
                 f"bound), got {w_max}"
             )
         w_meta = torch.clamp(torch.exp(sign * attr_log), 1.0 / w_max, w_max)
-    elif sdc_mode == "ROD_PT2_E21CTRL":
-        # Arm 2 (deliverable #2; EXPERIMENT_PLAN_ARMS.md "Recipe X"). The
-        # R10/ROD_PT TWO-teacher structure  w_attr(content) × w_position  but
-        # UN-CLIPPED — the SINGLE structural fix for diagnosed cause C1.
-        #
-        #   ROD_PT (the throttled path, lines above):
-        #     w_attr     = clamp(exp(sign·attr_log),     1−ε, 1+ε)  = [0.8,1.2]
-        #     w_position = clamp(exp(sign·log_prob_meta), 1−ε, 1+ε) = [0.8,1.2]
-        #     w_meta     = w_attr × w_position  ∈ [0.64, 1.44]   (clipped ±20%
-        #                  no-op = C1: the teacher's relative magnitude ordering
-        #                  is destroyed because |attr_log| ≫ 0.2 saturates the
-        #                  rail on nearly every meta token).
-        #
-        #   ROD_PT2_E21CTRL (here): identical 2-teacher PRODUCT but each factor
-        #     uses the RLSD_FAITHFUL_META log-symmetric magnitude bound
-        #     [1/w_max, w_max] (default w_max=4.0, ~20× wider) instead of the
-        #     order-changing ±ε clip. Sign is preserved EXACTLY (exp(·)>0 ⇒
-        #     each clamped factor >0 ⇒ product >0 ⇒ advantage sign never flips,
-        #     RLSD invariant intact). The teacher's relative magnitude ordering
-        #     survives across the realistic operating range; only the extreme
-        #     tails saturate (numerical-stability bound, NOT a throttle).
-        #
-        # Re-uses the SAME sdc_faithful_w_max key as RLSD_FAITHFUL_META so the
-        # un-clip bound is a single shared knob across the C1-fix arms.
-        w_max = float(config.get("sdc_faithful_w_max", 4.0))
-        if w_max <= 1.0:
-            raise ValueError(
-                f"sdc_faithful_w_max must be > 1.0 (log-symmetric magnitude "
-                f"bound), got {w_max}"
-            )
-        log_prob_meta = batch.get(
-            "sdc_position_log_prob_meta",
-            torch.zeros(student_logp.size(0), device=device),
-        ).to(device)
-        if log_prob_meta.dim() == 1:
-            log_prob_meta = log_prob_meta.unsqueeze(1)  # [B, 1]
-        # UN-CLIPPED content teacher (vs the clipped w_attr above).
-        w_attr_unclipped = torch.clamp(
-            torch.exp(sign * attr_log), 1.0 / w_max, w_max
-        )
-        # UN-CLIPPED position teacher (vs the clipped w_position in ROD_PT).
-        w_position_unclipped = torch.clamp(
-            torch.exp(sign * log_prob_meta), 1.0 / w_max, w_max
-        )  # [B, 1]
-        w_meta = w_attr_unclipped * w_position_unclipped  # [B,T]×[B,1] PRODUCT
     else:
-        # Existing modes (SDC_SHARED, SDC_CORR_ONLY, SDC_CORR_META_PEN,
-        # RLSD_META_ATTR, OPSD_META): meta uses pure attractive.
+        # Existing modes (SDC_SHARED):
+        # meta uses pure attractive.
         w_meta = w_attr
 
     orig_shared_mask = shared_mask
@@ -886,8 +819,6 @@ def compute_sdc_gdpo_advantage(
                 except Exception:
                     _CM = {
                         "SDC_SHARED",
-                        "SDC_CORR_ONLY",
-                        "SDC_CORR_META_PEN",
                         "RLSD_META_CONTRAST",
                         "ROD_MQ_CONTRAST",
                         "ROD_MQ_CONTRAST_INJECT",

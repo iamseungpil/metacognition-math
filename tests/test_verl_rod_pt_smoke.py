@@ -28,10 +28,8 @@ def test_rod_pt_in_reward_configs():
 
 def test_rod_pt_in_single_teacher_modes():
     """ROD_PT must skip decoy forward (single teacher path)."""
-    from src.training.verl_sdc import _SINGLE_TEACHER_MODES, _FORCED_META_MODES
+    from src.training.verl_sdc import _SINGLE_TEACHER_MODES
     assert "ROD_PT" in _SINGLE_TEACHER_MODES
-    # natural emit, NOT forced meta (no V0 prefix)
-    assert "ROD_PT" not in _FORCED_META_MODES
 
 
 def test_position_factor_amplify_correct_rollout():

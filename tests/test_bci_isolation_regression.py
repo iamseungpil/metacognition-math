@@ -147,43 +147,14 @@ EXPECTED = {
         "keys": ["correctness", "outcome_calibration", "meta_structure",
                  "meta_commit_shape", "postmeta_closure"],
     },
-    "SDC_CORR_ONLY": {
-        "funcs": ["correctness_reward"], "weights": [1.0], "keys": ["correctness"],
-    },
-    "SDC_CORR_META_PEN": {
-        "funcs": ["correctness_reward", "meta_penalty_reward"],
-        "weights": [1.0, 1.0], "keys": ["correctness", "meta_penalty"],
-    },
     "VANILLA_GRPO": {
         "funcs": ["correctness_reward"], "weights": [1.0], "keys": ["correctness"],
-    },
-    "RLSD_META_ATTR": {
-        "funcs": ["correctness_reward", "meta_penalty_reward"],
-        "weights": [1.0, 1.0], "keys": ["correctness", "meta_penalty"],
     },
     "RLSD_META_CONTRAST": {
         "funcs": ["correctness_reward", "meta_penalty_reward"],
         "weights": [1.0, 1.0], "keys": ["correctness", "meta_penalty"],
     },
-    "OPSD_META": {
-        "funcs": ["correctness_reward", "meta_penalty_reward"],
-        "weights": [1.0, 1.0], "keys": ["correctness", "meta_penalty"],
-    },
-    "RLSD_FORCED_META": {
-        "funcs": ["correctness_reward", "meta_penalty_reward"],
-        "weights": [1.0, 1.0], "keys": ["correctness", "meta_penalty"],
-    },
     "ROD_PT": {
-        "funcs": ["correctness_reward", "meta_penalty_reward"],
-        "weights": [1.0, 1.0], "keys": ["correctness", "meta_penalty"],
-    },
-    "ROD_PT_DEGEN": {
-        "funcs": ["correctness_reward", "meta_penalty_reward",
-                  "degeneration_penalty_reward"],
-        "weights": [1.0, 1.0, 0.3],
-        "keys": ["correctness", "meta_penalty", "degeneration_penalty"],
-    },
-    "ROD_MQ": {
         "funcs": ["correctness_reward", "meta_penalty_reward"],
         "weights": [1.0, 1.0], "keys": ["correctness", "meta_penalty"],
     },
@@ -206,27 +177,9 @@ EXPECTED = {
         "funcs": ["correctness_reward", "meta_penalty_reward"],
         "weights": [1.0, 1.0], "keys": ["correctness", "meta_penalty"],
     },
-    "ROD_PT2_E21CTRL": {
-        "funcs": ["correctness_reward", "confidence_revision_reward",
-                  "redirect_execution_reward", "verify_execution_reward",
-                  "confidence_omission_floor", "meta_count_bonus",
-                  "meta_penalty_adaptive_reward"],
-        "weights": [1.0, 0.35, 0.30, 0.15, 0.5, 1.0, 1.0],
-        "keys": ["correctness", "confidence_revision", "redirect_execution",
-                 "verify_execution", "meta_floor", "meta_count_bonus",
-                 "meta_penalty_adaptive"],
-    },
     "STABLE_GFN_C2FIX": {
         "funcs": ["correctness_reward", "meta_penalty_adaptive_reward"],
         "weights": [1.0, 1.0], "keys": ["correctness", "meta_penalty_adaptive"],
-    },
-    "MATCHED_E21RV2": {
-        "funcs": ["correctness_reward", "confidence_revision_reward",
-                  "redirect_execution_reward", "verify_execution_reward",
-                  "confidence_omission_floor", "meta_count_bonus"],
-        "weights": [1.0, 0.35, 0.30, 0.15, 0.5, 1.0],
-        "keys": ["correctness", "confidence_revision", "redirect_execution",
-                 "verify_execution", "meta_floor", "meta_count_bonus"],
     },
     # tri-objective family (post-E.9 additions, snapshotted on registration)
     "TRIOBJ_META_V1": {

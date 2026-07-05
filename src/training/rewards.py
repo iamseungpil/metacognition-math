@@ -87,7 +87,6 @@ def _verify_sympy_timed(gold, pred_text, timeout=6.0):
 # Math verification via sympy (same as Open-R1)
 try:
     from math_verify import parse, verify
-    from latex2sympy2_extended import NormalizationConfig
     HAS_MATH_VERIFY = True
 except ImportError:
     HAS_MATH_VERIFY = False
@@ -1262,56 +1261,6 @@ def correct_meta_reward(completions, ground_truth=None, **kwargs):
     return rewards
 
 
-def self_correction_reward(completions, ground_truth=None, **kwargs):
-    """Reward uncertainty followed by a genuine change in approach.
-
-    This targets the intended metacognitive behavior:
-    when the model realizes it may be wrong, it should redirect and recover.
-    """
-    rewards = []
-    for i, c in enumerate(completions):
-        text = _get_text(c)
-        gt = ground_truth[i] if ground_truth is not None else ""
-        is_correct = _check_correctness(text, gt)
-
-        has_uncertainty = _has_uncertainty_signal(text)
-        has_redirection = _has_redirection_signal(text)
-
-        if has_uncertainty and has_redirection:
-            rewards.append(0.8 if is_correct else 0.2)
-        elif has_uncertainty:
-            rewards.append(-0.2)
-        else:
-            rewards.append(0.0)
-    return rewards
-
-
-def verification_reward(completions, ground_truth=None, **kwargs):
-    """Reward final verification, especially for high-confidence answers."""
-    rewards = []
-    for i, c in enumerate(completions):
-        text = _get_text(c)
-        meta_text = _meta_joined_text(text)
-        solve_tail = _text_after_last_meta(text)
-        gt = ground_truth[i] if ground_truth is not None else ""
-        is_correct = _check_correctness(text, gt)
-        conf = _last_confidence(text)
-        has_verify_intent = _has_verification_signal(meta_text)
-        has_verify = _has_effective_verification_signal(solve_tail)
-
-        if conf is None:
-            rewards.append(0.0)
-            continue
-
-        if conf >= 0.75 and has_verify_intent and has_verify:
-            rewards.append(0.5 if is_correct else 0.05)
-        elif conf >= 0.75 and has_verify_intent and not has_verify:
-            rewards.append(-0.1 if is_correct else -0.6)
-        else:
-            rewards.append(0.1 if has_verify_intent and has_verify and is_correct else 0.0)
-    return rewards
-
-
 def overconfidence_penalty_reward(completions, ground_truth=None, **kwargs):
     """Strongly penalize wrong answers delivered with high confidence."""
     rewards = []
@@ -2306,91 +2255,6 @@ def efficiency_bonus_reward(completions, **kwargs):
     return rewards
 
 
-# ─── Phase 6 [NEW 2026-04-16]: No-Boxed Commit Penalty ───
-#
-# Rationale (Meta-CoT V8 plan, Phase 6, H6):
-#   `results/aime_failure_analysis_16k/aime_failure_modes.json` shows that at
-#   16k max_tokens on AIME, the Meta GRPO (E21R-v2 step 300) model decoheres
-#   on 13/26 wrong cases and runs out of tokens without emitting \boxed{} on
-#   12/26 wrong cases — only 1/26 commits to a coherent wrong answer. Base
-#   GRPO commits to a coherent \boxed{} on 18/19 wrong cases. Meta training
-#   teaches verify/redirect/epistemic patterns, which under GRPO on OOD hard
-#   problems loop infinitely → no commit → token exhaustion → decoherence.
-#
-#   H6 claims that the reward surface has no force pushing the model to stop
-#   deliberating and write a boxed answer. This penalty is the minimal reward
-#   intervention: subtract a fixed amount whenever a completion never emits
-#   \boxed, independent of correctness. It is additive and does not modify
-#   any existing reward head.
-#
-# Evidence class: side_evidence (Phase 6 smoke only). Do not mix into
-# claim-bearing Phase 5 self-distill tables.
-
-
-def compute_no_boxed_penalty(completion: str, penalty: float = -0.3) -> float:
-    """Penalize completions that never emit ``\\boxed{...}``.
-
-    Scalar variant. Used by Phase 6 ``E21R-v3-smoke`` reward composition to
-    push GRPO away from epistemic-loop decoherence on OOD hard problems.
-
-    Args:
-        completion: The raw generated text of a single completion.
-        penalty: Penalty applied when ``\\boxed`` is absent. Defaults to
-            ``-0.3`` per the Phase 6 plan.
-
-    Returns:
-        ``penalty`` if ``\\boxed`` is not present in ``completion``,
-        otherwise ``0.0``.
-
-    Notes:
-        - Detection uses a plain substring check on the literal ``\\boxed``
-          prefix so that malformed tails (e.g., ``\\boxed{`` without a
-          closing brace) still count as "committed": the goal is to reward
-          any commit attempt, not only well-formed commits. Downstream
-          correctness reward already handles whether the commit is valid.
-        - A ``None`` or empty string is treated as no-commit and receives
-          the full penalty.
-        - This function is a scalar helper. For the batched reward-function
-          signature expected by the reward manager, use
-          :func:`no_boxed_penalty_reward` below.
-
-    References:
-        Plan section "Phase 6: Decoherence / no-commit fix [NEW 2026-04-16]",
-        intervention I1. Evidence: ``results/aime_failure_analysis_16k/
-        aime_failure_modes.json`` (2026-04-16).
-    """
-    if not completion:
-        return penalty
-    if r"\boxed" not in completion:
-        return penalty
-    return 0.0
-
-
-def no_boxed_penalty_reward(completions, ground_truth=None, penalty: float = -0.3, **kwargs):
-    """Batched reward wrapper around :func:`compute_no_boxed_penalty`.
-
-    Matches the batched ``(completions, ground_truth=None, **kwargs)``
-    signature used by the rest of this module so it can be composed into
-    ``src/training/verl_reward.py::compute_score_e21r_v3`` without special
-    casing.
-
-    Args:
-        completions: Iterable of completion objects (text, dict, or list
-            form). Parsed via the module-private ``_get_text``.
-        ground_truth: Unused; accepted for signature parity with other
-            rewards in this file.
-        penalty: Forwarded to :func:`compute_no_boxed_penalty`.
-
-    Returns:
-        List of floats, one per completion.
-    """
-    rewards = []
-    for c in completions:
-        text = _get_text(c)
-        rewards.append(compute_no_boxed_penalty(text, penalty=penalty))
-    return rewards
-
-
 # ====================================================================
 # ADDITIVE RESTORE (do not modify above): missing names required by
 # src.training.verl_sdc import. Definitions copied byte-identical from
@@ -2585,31 +2449,6 @@ def compute_degeneration_penalty(completion_text, completion_len_tokens, answer_
     total = min(p_repeat + p_latex + p_tail + p_repeat_high + p_len, _DEGEN_CAP)
     br["triggered"] = total > 0
     return -total, br
-
-
-def degeneration_penalty_reward(completions, ground_truth=None, **kwargs):
-    """Batched reward wrapper for compute_degeneration_penalty.
-
-    Matches the (completions, ground_truth=None, **kwargs) signature used by
-    the rest of this module. ``kwargs`` may contain ``completion_lengths`` and
-    ``answer_extracted`` lists; if absent, falls back to safe defaults
-    (length = len(text.split()), answer = None).
-    """
-    completion_lengths = kwargs.get("completion_lengths")
-    answers_extracted = kwargs.get("answer_extracted") or kwargs.get("answers_extracted")
-    rewards = []
-    for idx, c in enumerate(completions):
-        text = _get_text(c)
-        if completion_lengths and idx < len(completion_lengths):
-            length = int(completion_lengths[idx])
-        else:
-            length = len(text.split())
-        ans = None
-        if answers_extracted and idx < len(answers_extracted):
-            ans = answers_extracted[idx]
-        penalty, _ = compute_degeneration_penalty(text, length, ans)
-        rewards.append(penalty)
-    return rewards
 
 
 def meta_penalty_adaptive_reward(completions, ground_truth=None, **kwargs):

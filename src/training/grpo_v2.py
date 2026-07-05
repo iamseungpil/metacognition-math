@@ -201,7 +201,7 @@ from src.training.rewards import (
     calibration_reward, uncertainty_meta_reward,
     stepwise_trajectory_reward, probe_calibration_reward,
     stepwise_probe_reward, length_penalty_reward, correct_meta_reward,
-    self_correction_reward, verification_reward, overconfidence_penalty_reward,
+    overconfidence_penalty_reward,
     confidence_revision_reward, effective_verification_reward,
     effective_redirection_reward, diagnosis_reward, decomposition_reward,
     anomaly_notice_reward, repeated_intervention_reward, overconfidence_verify_reward,

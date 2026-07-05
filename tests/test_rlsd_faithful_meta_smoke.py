@@ -4,8 +4,8 @@ LOCK ref: GFN_SGFN_IMPROVEMENT_PLAN.md iter-3 SURVEY-GROUNDED LOCK;
 memory project_gfn_sgfn_plan_v3_lock.
 
 Verifies the LOCKED RLSD-faithful invariant and — critically — that the
-NEW mode is purely additive (zero touch to the 5 in-flight §8 modes
-ROD_PT / ROD_PT_DEGEN / ROD_MQ / ROD_MQ_CONTRAST / GFN_OPSD_CONTRAST).
+NEW mode is purely additive (zero touch to the in-flight §8 modes
+ROD_PT / ROD_MQ_CONTRAST / GFN_OPSD_CONTRAST).
 
 1. Wiring: REWARD_CONFIGS["RLSD_FAITHFUL_META"] is correctness-ONLY (the C2
    fix — NO meta_penalty head, so base_advantages sign is pure env reward).
@@ -193,13 +193,13 @@ def test_faithful_branch_is_purely_additive_elif():
     # Existing-mode branch heads must all still be present (untouched).
     for head in (
         'if sdc_mode in {"RLSD_META_CONTRAST", "RLSD_FORCED_META"}:',
-        'elif sdc_mode in ("ROD_PT", "ROD_PT_DEGEN"):',
+        'elif sdc_mode == "ROD_PT":',
         # ROD_MQ_CONTRAST_INJECT (CTSD) aliases into this branch — same MQ math.
-        'elif sdc_mode in ("ROD_MQ", "ROD_MQ_CONTRAST", "ROD_MQ_CONTRAST_INJECT"):',
+        'elif sdc_mode in ("ROD_MQ_CONTRAST", "ROD_MQ_CONTRAST_INJECT"):',
     ):
         assert head in src, f"existing branch head missing/modified: {head}"
     # The faithful elif must come AFTER ROD_MQ branch and BEFORE final else.
-    i_rodmq = src.index('elif sdc_mode in ("ROD_MQ", "ROD_MQ_CONTRAST", "ROD_MQ_CONTRAST_INJECT"):')
+    i_rodmq = src.index('elif sdc_mode in ("ROD_MQ_CONTRAST", "ROD_MQ_CONTRAST_INJECT"):')
     i_faith = src.index('elif sdc_mode == "RLSD_FAITHFUL_META":')
     i_else = src.index("\n    else:\n", i_rodmq)
     assert i_rodmq < i_faith < i_else
@@ -210,8 +210,8 @@ def test_existing_mode_strings_never_select_faithful_branch():
     predicate is False, so its math is provably unaffected.
     """
     for mode in (
-        "ROD_PT", "ROD_PT_DEGEN", "ROD_MQ", "ROD_MQ_CONTRAST",
-        "GFN_OPSD_CONTRAST", "RLSD_META_ATTR", "RLSD_META_CONTRAST",
+        "ROD_PT", "ROD_MQ_CONTRAST",
+        "GFN_OPSD_CONTRAST", "RLSD_META_CONTRAST",
         "SDC_SHARED", "VANILLA_GRPO",
     ):
         assert (mode == "RLSD_FAITHFUL_META") is False
