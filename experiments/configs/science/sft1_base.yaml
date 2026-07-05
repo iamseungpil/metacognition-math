@@ -1,0 +1,30 @@
+# SFT-1, BASE arm: raw Qwen3-8B -> v8_base_matched_strict_sft.
+# Meta-stripped twin of sft1_meta.yaml — SAME problems/answers with the
+# <|meta|>...<|/meta|> blocks removed; every hyperparam byte-identical to the
+# meta arm so the ONLY difference is the meta mechanism.
+# Thin layer over configs/sft_v8_base_matched_strict.yaml (real sft.py keys).
+schema: metacot-science-v1
+experiment: sft1_base
+arm: base
+mode: sft
+
+derives_from: configs/sft_v8_base_matched_strict.yaml
+
+data:
+  hf_dataset: iamseungpil/metacot
+  train_parquet: data/v8_base_matched_strict.parquet
+
+overrides:
+  model_name_or_path: Qwen/Qwen3-8B
+  dataset_path: data/v8_base_matched_strict.parquet
+  output_dir: checkpoints/v8_base_matched_strict_sft
+  num_train_epochs: 3
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 4
+  learning_rate: 2.0e-6
+  max_length: 4096
+  save_strategy: epoch
+  eval_strategy: "no"
+  wandb_project: metacot-math
+
+seed: 42   # provenance only — see sft1_meta.yaml note.

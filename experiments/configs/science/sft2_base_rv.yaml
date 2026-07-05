@@ -1,0 +1,36 @@
+# SFT-2, BASE arm: v8_base_matched_strict_sft -> v8_base_rv_sft.
+# Meta-REMOVED twin of sft2_rv.yaml (Approach A, spec 2026-06-29): same
+# problems / same final answers as the rv_functional corpus with meta blocks +
+# conf/verify-only turns stripped. Every non-meta hyperparam IDENTICAL to the
+# meta SFT-2 (lr 1e-5, 3 epochs, bs1 x ga4, max_length 4096, save per epoch).
+# Thin layer over configs/sft_base_rv.yaml (real sft.py keys).
+schema: metacot-science-v1
+experiment: sft2_base_rv
+arm: base
+mode: sft
+
+derives_from: configs/sft_base_rv.yaml
+
+data:
+  # Verified on HF 2026-07-05: data/v8_base_rv_sft.parquet exists on
+  # iamseungpil/metacot (uploaded from the local repo copy; round-trip
+  # sha256-verified). hf_hub_download of exactly this path stages it.
+  hf_dataset: iamseungpil/metacot
+  train_parquet: data/v8_base_rv_sft.parquet
+
+overrides:
+  # Init = the SFT-1 base checkpoint (sft1_base.yaml output; <|meta|> tokens in
+  # vocab, never emitted). Point at your local SFT-1 output off-cluster.
+  model_name_or_path: /scratch/models/v8_base_matched_strict_sft
+  dataset_path: data/v8_base_rv_sft.parquet
+  output_dir: /scratch/checkpoints/v8_base_rv_sft
+  num_train_epochs: 3
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 4
+  learning_rate: 1.0e-5
+  max_length: 4096
+  save_strategy: epoch
+  eval_strategy: "no"
+  wandb_project: metacot-math
+
+seed: 42   # provenance only — see sft1_meta.yaml note.

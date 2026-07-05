@@ -1,0 +1,38 @@
+# RL, REF-0 arm (T1 reference row): raw Qwen3-8B + VANILLA_GRPO — no SFT at all.
+# Answers "does SFT itself cost capability?": if REF-0 beats the SFT'd arms on
+# held-out 1030, the SFT stage (not the meta mechanism) is the bottleneck.
+# Same VANILLA_GRPO config / data / steps as rl_vanilla_base; ONLY the init
+# differs. NOTE: raw Qwen3-8B has no <|meta|> added tokens — harmless here,
+# VANILLA_GRPO never scores or emits them.
+schema: metacot-science-v1
+experiment: rl_ref0_nosft
+arm: base
+mode: rl
+
+verl_config_name: base_matched_grpo_h100_4x4k
+derives_from: configs/base_matched_grpo_h100_4x4k.yaml
+
+reward_mode: VANILLA_GRPO
+experiment_name: ref0_nosft_vanilla_grpo_h100_4x4k
+
+init_model: Qwen/Qwen3-8B   # raw base model straight from the HF hub
+
+data:
+  # HF repo holds these at REPO ROOT (no data/ prefix) — verl_train_meta_mix.parquet /
+  # verl_val_meta_mix.parquet; scripts/pull_parquets.py pulls exactly these.
+  # train_parquet/val_parquet are the LOCAL staged paths under <repo>/.
+  hf_dataset: iamseungpil/metacot-sdc-data
+  train_parquet: data/verl_train_meta_mix.parquet
+  val_parquet: data/verl_val_meta_mix.parquet
+
+total_training_steps: 300
+save_freq: 10
+val_freq: 25
+seed: 1              # matches the launched T1 arms' inherited data_loader_seed
+                     # default=1 (verl_sdc_e21r_shared.yaml); the T1-protocol
+                     # seed sweeps use --seed.
+
+hydra_overrides:
+  - trainer.project_name=metacot-dcpo-v4
+  - trainer.resume_mode=auto
+  - ++trainer.val_before_train=False

@@ -1,0 +1,43 @@
+# RL, BASE arm (T1 control): v8_base_rv_sft -> VANILLA_GRPO (correctness-only,
+# math_verify-graded, single gdpo [correctness] head). ONLY difference from
+# rl_pmishift.yaml = the meta mechanism (mode, R_meta head, cf_group split);
+# data / init lineage / every non-meta hyperparam byte-identical (see the
+# removal audit in configs/base_matched_grpo_h100_4x4k.yaml header).
+schema: metacot-science-v1
+experiment: rl_vanilla_base
+arm: base
+mode: rl
+
+verl_config_name: base_matched_grpo_h100_4x4k
+derives_from: configs/base_matched_grpo_h100_4x4k.yaml
+
+reward_mode: VANILLA_GRPO
+experiment_name: base_matched_grpo_h100_4x4k
+
+# RL init = base SFT-2 twin (sft2_base_rv.yaml output). On MSR the one-job
+# pipeline (h100std_base_matched_pipeline.yaml) builds it locally each window.
+init_model: /scratch/checkpoints/v8_base_rv_sft
+
+data:
+  # HF repo holds these at REPO ROOT (no data/ prefix) — verl_train_meta_mix.parquet /
+  # verl_val_meta_mix.parquet; scripts/pull_parquets.py pulls exactly these.
+  # train_parquet/val_parquet are the LOCAL staged paths under <repo>/.
+  hf_dataset: iamseungpil/metacot-sdc-data
+  train_parquet: data/verl_train_meta_mix.parquet
+  val_parquet: data/verl_val_meta_mix.parquet
+
+total_training_steps: 300
+save_freq: 5         # matches the live pipeline (h100std_base_matched_pipeline.yaml,
+                     # verl invocation overrides trainer.save_freq=5): reduces ckpt
+                     # loss under the 6h preemption window; non-science knob (meta
+                     # arm ran with 10).
+val_freq: 25         # trainer.test_freq; read val-aux/<ds>/correctness/mean@1 only
+seed: 1              # matches the launched run's inherited data_loader_seed
+                     # default=1 (verl_sdc_e21r_shared.yaml) — the pipeline yaml
+                     # never overrides it. T1-protocol seed sweeps override
+                     # via --seed.
+
+hydra_overrides:
+  - trainer.project_name=metacot-dcpo-v4
+  - trainer.resume_mode=auto
+  - ++trainer.val_before_train=False

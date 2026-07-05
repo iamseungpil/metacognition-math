@@ -1,0 +1,35 @@
+# Documented EXAMPLE for a collaborator-owned 8-GPU server (no preemption, no
+# amlt). Copy and adjust paths/python interpreters for your machine.
+#
+# Prerequisites on the server:
+#   - repo checked out; .env with HF_TOKEN / WANDB_API_KEY (never hardcode)
+#   - data staged into <repo>/data/ via hf_hub_download of the parquet paths
+#     named in the science yaml (data.hf_dataset + data.train_parquet).
+#     NOTE: scripts/pull_parquets.py is NOT sufficient here — it writes to the
+#     hardcoded MSR path /scratch/metacognition/data and fetches only the six
+#     verl_* RL parquets (no SFT parquets).
+#   - SFT/eval env: the training requirements (requirements.txt) + vLLM
+#   - RL env: verl 0.7.1 stack — bootstrap with scripts/bootstrap_sdc_node.sh
+#     (SCRATCH can be overridden via env) or scripts/install_verl.sh
+schema: metacot-infra-v1
+infra: generic_8gpu
+run_mode: local           # run.sh executes sft/eval directly on this machine
+
+gpus: 8
+eval_tp_size: 8           # Qwen3-8B: 32 q-heads / 8 kv-heads — tp 8 divides both
+gpu_memory_utilization: 0.85
+
+scratch_dir: ./scratch    # resolved relative to the repo root by run.sh
+repo_dir: .
+accelerate_config: configs/accelerate_sft.yaml
+train_python: python3
+verl_python: python3      # python of your ACTIVATED verl env
+eval_python: python3      # python of your vLLM env
+
+preemption_window_seconds: 0   # no preemption: no HF relay needed, local ckpts suffice
+hf_relay:
+  model_repo: iamseungpil/metacot-h200-triobj-dcpo-v3   # only used if you mirror ckpts
+  push_script: scripts/push_ckpts_to_hf.py
+  pull_script: scripts/pull_resume_ckpt.py
+
+smoke: false

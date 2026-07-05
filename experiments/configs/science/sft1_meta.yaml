@@ -1,0 +1,37 @@
+# SFT-1, META arm: raw Qwen3-8B -> v8_meta_inside_strict_sft.
+# Thin science-invariant layer over configs/sft_v8_meta_inside_strict.yaml.
+# All keys under `overrides` are the REAL keys src/training/sft.py reads; run.sh
+# merges them over `derives_from` and launches via accelerate (see
+# experiments/launch/run.sh, sft mode).
+schema: metacot-science-v1
+experiment: sft1_meta
+arm: meta
+mode: sft
+
+derives_from: configs/sft_v8_meta_inside_strict.yaml
+
+data:
+  # Parquet lives on the HF dataset; stage into <repo>/data/ before launch via
+  # hf_hub_download of exactly this path from hf_dataset below.
+  # (scripts/pull_parquets.py does NOT fetch SFT parquets — it pulls only the
+  # six verl_* RL parquets from iamseungpil/metacot-sdc-data into
+  # /scratch/metacognition/data.)
+  hf_dataset: iamseungpil/metacot
+  train_parquet: data/v8_meta_inside_strict.parquet
+
+overrides:
+  model_name_or_path: Qwen/Qwen3-8B
+  dataset_path: data/v8_meta_inside_strict.parquet
+  output_dir: checkpoints/v8_meta_inside_strict_sft
+  num_train_epochs: 3
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 4
+  learning_rate: 2.0e-6
+  max_length: 4096
+  save_strategy: epoch     # SFT save freq = per epoch; no in-train eval
+  eval_strategy: "no"
+  wandb_project: metacot-math
+
+# NOTE: sft.py exposes no training-seed knob; its internal train_test_split
+# seed is fixed at 42. This field is recorded in run_name for provenance only.
+seed: 42

@@ -1,0 +1,56 @@
+# Held-out 1030 eval (final judgment): gsm8k 500 + math500 + aime2024 30,
+# paper protocol — 16k max tokens, avg@8 (AIME avg@16), temp 0.7, BOTH arms in
+# the SAME eval job with the same seed.
+# GRADING: the is_correct stored at runtime is PROVISIONAL — it comes from the
+# legacy src/training/rewards._check_correctness path (raw-text
+# math_verify.parse; DOCUMENTED to mis-grade, drops ~21% of math500 golds).
+# Final-judgment numbers come ONLY from experiments/analysis/* re-grading:
+# analysis_common.resolve_correct = experiments/common/grading.robust_grade
+# (boxed-wrap math_verify). Entry points: experiments/analysis/aggregate_tables.py
+# (renders every paper table T1-T4) and experiments/analysis/stratify.py (T3
+# stratification) on the eval parquets below.
+# run.sh (eval mode) executes scripts/eval_vllm_1030.py once per model x pass;
+# every field below maps 1:1 onto that script's REAL CLI flags.
+schema: metacot-science-v1
+experiment: eval_1030
+mode: eval
+
+eval_script: scripts/eval_vllm_1030.py
+grader: math_verify
+
+# SamplingParams (real eval_vllm_1030.py flags).
+temperature: 0.7
+top_p: 0.95
+max_tokens: 16384
+max_model_len: 20480      # 16k response + prompt headroom
+max_problems: 500
+seed: 42                  # same seed for every model in the job
+
+# avg@8 / AIME avg@16 via --num_samples (per-sample rows land in the parquet;
+# avg@k = mean over sample_idx per problem at analysis time).
+passes:
+  - name: avg8
+    benchmarks: [gsm8k, math500]
+    num_samples: 8
+  - name: aime_avg16
+    benchmarks: [aime2024]
+    num_samples: 16
+
+# BOTH arms, same job, same seeds (metric rule 3). Paths are the merged HF-format
+# model dirs. Staging recipe per model (see h100std_base_matched_1030_eval.yaml):
+#   1. download checkpoints/<experiment_name>/global_step_300/actor from HF model
+#      repo iamseungpil/metacot-h200-triobj-dcpo-v3
+#   2. python -m verl.model_merger merge --backend fsdp \
+#        --local_dir .../global_step_300/actor --target_dir <path below>
+#   3. drop the "extra_special_tokens" key from <path>/tokenizer_config.json
+#      (meta emission must be counted on CLOSED <|meta|>...<|/meta|> blocks,
+#      never stripped as special tokens).
+models:
+  - name: base_matched_gs300
+    arm: base
+    path: /scratch/eval_results/merged_base_matched_gs300
+    hf_checkpoint: checkpoints/base_matched_grpo_h100_4x4k/global_step_300/actor
+  - name: pmishift_gs300
+    arm: meta
+    path: /scratch/eval_results/merged_pmishift_gs300
+    hf_checkpoint: checkpoints/triobj_dcpo_v4_pmishift_h100_4x4k/global_step_300/actor

@@ -1,0 +1,28 @@
+# 1-GPU smoke profile: verify a science yaml end-to-end (config parses, data
+# loads, model builds, one output lands) before burning cluster hours.
+# smoke: true makes run.sh shrink ONLY throughput knobs (eval: max_problems=10,
+# num_samples=1, max_tokens=2048; sft: num_train_epochs=1). Science-relevant
+# numbers are otherwise untouched — smoke results are for plumbing, NEVER for
+# tables.
+schema: metacot-infra-v1
+infra: local_debug
+run_mode: local
+
+gpus: 1
+eval_tp_size: 1
+gpu_memory_utilization: 0.85
+
+scratch_dir: ./scratch
+repo_dir: .
+accelerate_config: configs/accelerate_sft.yaml
+train_python: python3
+verl_python: python3
+eval_python: python3
+
+preemption_window_seconds: 0
+hf_relay:
+  model_repo: iamseungpil/metacot-h200-triobj-dcpo-v3
+  push_script: scripts/push_ckpts_to_hf.py
+  pull_script: scripts/pull_resume_ckpt.py
+
+smoke: true

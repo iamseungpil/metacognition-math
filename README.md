@@ -1,224 +1,90 @@
-# Meta-CoT — SDC, RLSD, Baseline GRPO
+# metacognition-math
 
-Train LLaMA-3.1-8B with metacognitive reasoning via `<|meta|>` tokens.
-Three RL algorithms are compared: **SDC** (Shared-preserve Directional Credit), **RLSD** (Reinforced Self-Distillation contrastive meta), and **Baseline GRPO** (vanilla, no meta).
+**한 줄 요약**: Qwen3-8B가 풀이 도중 `<|meta|>` 블록으로 메타인지를 외재화하도록
+학습하고, 그 메타 구간에 모델 자신의 gold/decoy 로그확률 신호를 증류하는
+**메타인지적 자기증류(metacognitive self-distillation)** 로 OOD(어려운 도메인,
+AIME)에 강건한 수학 추론을 만든다.
 
-```
-SFT init  ──▶  RL training  ──▶  1,030-problem eval  ──▶  ckpt push to HF
-                  │
-                  ├── SDC          (meta SFT init + SDC algo)
-                  ├── SDC-base     (base SFT init + SDC algo, ablation)
-                  ├── RLSD         (meta SFT init + contrastive RLSD)
-                  └── Baseline     (base SFT init + vanilla GRPO)
-```
+North-star 가설: 메타인지 행동(막힘 감지, 가정 점검, 접근 전환, 검산)은
+in-distribution 정답 암기보다 분포 밖 문제에서 더 강건하게 일반화한다. 목표
+지표는 정확도이고, calibration(ECE/Brier/과신율)은 보조 지표로 항상 함께
+측정한다.
 
-> Model is **Qwen3-8B** (the line above is historical). The sections below from
-> "TL;DR" down are the older SDC/RLSD/Baseline infra reference. The **current**
-> work is CTSD — read the next section.
-
----
-
-# CURRENT WORK — CTSD (Contrastive Triggered Self-Distill)
-
-Full plan with intent / hypothesis / verification per step: **[PLAN.md](PLAN.md)**.
-Node-launch index for the training arm: **[configs/CTSD_NODE_INDEX.md](configs/CTSD_NODE_INDEX.md)**.
-
-**The question.** Can self-monitoring metacognition (`<|meta|>` blocks emitted
-mid-solution) make Qwen3-8B better at math? Prior approaches failed: single-teacher
-self-distill is null on our distribution, the model's natural meta is *decorative*
-(carries no good/bad signal), and a contrastive RL run (R18b) scored 70.9% < 72.3%
-baseline. CTSD adds **force-inject**: insert `<|meta|>` at the model's most-uncertain
-point so a contrastive reward has a meta region to shape.
-
-## Pipeline & entry points (run this code → get this experiment)
+두 arm은 메타 메커니즘만 빼고 byte-identical하다:
 
 ```
-Phase A (local A100, inference only, NO training)
-   ├─ A.1 contrastive control      experiments/probes/a1_contrastive_with_controls.py   → reports/a1_*.json   [done: FAIL — meta decorative]
-   ├─ A.2 entropy threshold        experiments/probes/a2_entropy_distribution.py        → reports/a2_*.json   [done: PASS, AUC 0.749]
-   ├─ A.6 teacher discrimination   experiments/probes/a6_six_cell_teacher_swap.py       → reports/a6_*.json   [done: PASS, AUC 0.81–0.95]
-   └─ A.3 force-inject CAUSAL ★    experiments/probes/a3_inject_causal.py               → reports/a3_*.json   [THE GATE for training]
-                                          │  PASS → Phase C/E   |  INCONCLUSIVE → raise --max_new   |  FAIL → stop + rethink
-Phase C/E (AMLT H200 node, RL training — gated by A.3 PASS)
-   └─ ROD_MQ_CONTRAST_INJECT       configs/verl_ctsd_inject_C_h200_4x4k.yaml + h200_ctsd_inject_C_smoke.yaml
+meta arm:  Qwen3-8B → SFT-1(v8_meta_inside_strict) → SFT-2(rv_functional)
+                    → RL(TRIOBJ_DCPO_V4 + pmi_shift 보상)
+base arm:  Qwen3-8B → 같은 데이터의 meta 제거판 SFT → RL(VANILLA_GRPO, correctness-only)
 ```
 
-### Phase A probes — local, no training
-```bash
-source experiments/common/load_secrets.sh          # loads .env (HF_TOKEN etc.)
+## 현재 결과 (PRELIMINARY — 최종 판정 아님)
 
-# A.3 — the gate: does force-injecting <|meta|> at the max-entropy point causally help?
-python -u experiments/probes/a3_inject_causal.py --n 30 --k 4 --max_new 2048
-python -u experiments/probes/a3_inject_causal.py --smoke 2          # 2-problem smoke first
+- pmishift(meta arm)가 same-step 비교에서 `val-aux/*/correctness/mean@1` 기준
+  **8/8 도메인 리드** 중.
+- 단, 이것은 학습 중 지표다. **최종 판정인 held-out 1030문제 비교(base gs300 vs
+  pmishift gs300)는 base arm gs300 체크포인트 확보를 기다리는 중**이라 아직
+  열려 있다. 이 시점의 모든 숫자는 PRELIMINARY로 취급할 것.
 
-# other Phase A probes (already passed)
-python -u experiments/probes/a2_entropy_distribution.py
-python -u experiments/probes/a6_six_cell_teacher_swap.py --n_per_bench 7
-```
-Each writes a JSON verdict to `reports/`. A.3 gates: **helps** (good-inject beats
-no-inject, +3pp, p<0.05) **AND direction** (good beats bad-inject, +5pp, p<0.05),
-with a `boxed_rate<0.5` power guard → INCONCLUSIVE rather than a false null.
-
-### Phase C — RL training (only after A.3 PASS; runs on a node, not locally)
-`ROD_MQ_CONTRAST_INJECT` = R18b's contrastive reward **+ force-inject** (one-axis
-ablation). Inject core is pure + unit-tested:
-```bash
-python src/training/tests/test_meta_inject.py      # 9 tests, core logic
-amlt run h200_ctsd_inject_C_smoke.yaml ctsd-inject-c-smoke -d "CTSD Phase C smoke"
-```
-**Node-first step:** wire `SDCRayPPOTrainer._force_inject_rollout` (the two-phase
-DataProto repack) and 1-step smoke it, then remove the `__init__` fail-fast guard.
-Until then the job intentionally refuses to launch (`sdc_force_inject=true`). See
-[configs/CTSD_NODE_INDEX.md](configs/CTSD_NODE_INDEX.md) for the full launch order.
-
----
-
-## TL;DR — pick the experiment, submit the yaml
-
-| Experiment | yaml | Cluster | SKU |
-|---|---|---|---|
-| SDC single-node H100 STD ×4 | `h100_1node_a_0424.yaml` (also b/c/d) | msrresrchbasicvc | 80G4-H100 |
-| SDC + Baseline (paired, 2 nodes) | `h200_2nodes_sdc_baseline_0424.yaml` | msrresrchbasicvc | 141G4-H200 |
-| SDC + RLSD (paired, 2 nodes) | `h200_2nodes_sdc_rlsd_0423.yaml` | msrresrchbasicvc | 141G4-H200 |
+## 5분 재현 가이드
 
 ```bash
-# 1. Refresh the HF code tarball if scripts/ changed
-bash scripts/build_sdc_code_snapshot.sh
+git clone https://github.com/iamseungpil/metacognition-math && cd metacognition-math
+cp .env.example .env                          # HF_TOKEN / GH_TOKEN / WANDB_API_KEY 채우기
+source experiments/common/load_secrets.sh     # .env 로드 + placeholder 검사
 
-# 2. Submit
-amlt run h100_1node_a_0424.yaml metacot-h100-1n-a-0425 -d "SDC node a"
+# held-out 1030 eval (GSM8K 500 + MATH-500 500 + AIME 30), vLLM, 논문 프로토콜
+python scripts/eval_vllm_1030.py \
+    --model_path <merged_ckpt_dir> --model_name my_eval \
+    --output_dir results/eval_1030_my_eval/ \
+    --max_tokens 16384 --temperature 0.7 --num_samples 8 --seed 42
+
+# RL 학습 (MSR 클러스터, amlt) — meta arm / base arm
+set -a; source .env; set +a
+amlt run h100std_pmishift.yaml pmishift-<날짜> -d "meta arm RL"
+amlt run h100std_base_matched_rl.yaml base-matched-<날짜> -d "base arm RL"
 ```
 
-The yaml command pulls the tarball from HF and runs `scripts/run_sdc_on_h200_node.sh`, which orchestrates everything (see [Runtime](#runtime) below).
+데이터 parquet은 HF dataset `iamseungpil/metacot`, RL 체크포인트는
+`iamseungpil/metacot-h200-triobj-dcpo-v3`를 경유해 릴레이된다. 자세한 배선은
+아래 experiments 가이드 참조.
 
-## Repository layout
+## 실험 가이드 → [experiments/README.md](experiments/README.md)
 
-```
-metacognition/
-├── README.md                 ← this file
-├── CLAUDE.md                 ← Claude/agent guide (tokens, goal, status)
-├── NODE_POLICY.md            ← AMLT node ownership contract
-├── REPORT_REFERENCES.md      ← report → file → HF path map
-├── ANALYSIS_MAP.md           ← analysis output index
-│
-├── scripts/                  ← all shell + python entry points
-│   └── CATALOG.md            ← per-script role index (start here)
-├── src/                      ← training/eval source code
-├── configs/                  ← verl + SFT configs
-├── data/                     ← local data caches (gitignored)
-├── results/                  ← evaluation outputs (HF-mirrored)
-│
-├── h100_*.yaml               ← H100 STD single/multi-node submissions
-├── h200_*.yaml               ← H200 BSC submissions
-├── metacognition_*.yaml      ← long-running A100/H200 reservation holders
-│
-├── archive/                  ← dated cleanups
-└── legacy/                   ← retired code
-```
+연구 질문은 4개다 — RQ1 효과(PMI-shift가 정확도를 올리는가, 메인 표 T1),
+RQ2 분해·메커니즘(효과는 무엇이며 어디서 오는가, T2), RQ3 난이도·유형·OOD
+층화(T3), RQ4 calibration(T4). RQ1–4와 테이블 T1–T4 매핑, 폴더 구조
+(science/infra 분리), 실행 예시 3종(SFT/eval/RL), 협업자 트랙 A(클러스터
+학습)/B(분석, GPU 불필요)/C(SFT v2 데이터)/D(집필·사이트) 온보딩이 전부 거기
+있다. **새로 온 사람은 그 문서부터 읽는다.**
 
-## Experiment menu
+## 지표 규약 요약 (전문은 experiments/README.md 3절)
 
-### 1. SDC (main)
+1. 학습 중 정확도는 wandb `val-aux/<ds>/correctness/mean@1`만 — `val-core`/
+   `reward`는 메타 shaping 합성 지표라 arm 비교에 쓰면 가짜 격차가 생긴다.
+2. 최종 판정은 held-out 1030문제, 채점은 **math_verify** (`check_correctness`는
+   버그 문서화됨, 사용 금지).
+3. 논문 eval: 16k tokens, avg@8(AIME avg@16), temp 0.7, 두 arm을 같은 job·같은
+   seed로.
+4. 난이도 층화 정확도 필수 보고 (집계만 보면 Simpson 함정).
+5. 메타 방출은 닫힌 `<|meta|>...<|/meta|>` 블록만 센다.
 
-**Goal**: validate that SDC RL on a meta-SFT init outperforms base-SFT + vanilla GRPO on math reasoning.
+## 설명 사이트
 
-| Component | Path |
-|---|---|
-| Outer orchestrator | `scripts/run_sdc_on_h200_node.sh` |
-| Bootstrap (env install) | `scripts/bootstrap_sdc_node.sh` |
-| Inner launcher | `scripts/launch_sdc_verl.sh` |
-| Default config | `configs/verl_sdc_e21r_shared_h100_4x4k.yaml` (H100) / `verl_sdc_e21r_shared_h200_4x16k.yaml` (H200) |
-| WandB project | `skilldiscovery2` |
-| HF ckpt repo | `iamseungpil/metacot-sdc-verl-shared` |
+프로젝트 해설 사이트: **https://metacog-explainer.pages.dev** (소스: `docs/site/`)
 
-Submission yamls: `h100_1node_a/b/c/d_0424.yaml`, `h200_2nodes_sdc_baseline_0424.yaml` (sdc job), `h200_2nodes_sdc_rlsd_0423.yaml` (sdc job).
+## 더 보기
 
-### 2. Baseline GRPO
+- `CLAUDE.md` — 에이전트/데이터 레지스트리
+- `NODE_POLICY.md` — AMLT 노드 소유권 규칙
+- `scripts/README.md`, `scripts/ANALYSIS_INDEX.md` — 스크립트·분석 산출물 색인
+- `docs/`, `archive/`, `legacy/` — 이전 세대 실험(SDC/RLSD/CTSD) 계획과 기록
 
-**Goal**: paired control. Same problems, base SFT init, vanilla GRPO without `<|meta|>` rewards.
+## 보안
 
-| Component | Path |
-|---|---|
-| Outer orchestrator | `scripts/run_baseline_verl_on_node.sh` |
-| Inner launcher | `scripts/launch_baseline_verl.sh` |
-| Default config | `verl07_base_redirect` |
-| HF ckpt repo | `iamseungpil/metacot-baseline-v100` |
+토큰은 **.env에만** 둔다 (gitignore됨). 코드·yaml·문서에 실제 토큰을 절대
+커밋하지 않는다 — yaml은 `${HF_TOKEN}` 환경변수 치환만 쓴다.
 
-### 3. RLSD
+## 연락처
 
-**Goal**: contrastive self-distill alternative to SDC.
-
-| Component | Path |
-|---|---|
-| Outer orchestrator | `scripts/run_rlsd_on_h200_node.sh` |
-| Inner launcher | `scripts/launch_rlsd_h200.sh` |
-| Default config | `contrastive_meta_rlsd` |
-| HF ckpt repo | `iamseungpil/metacot-rlsd-v100` |
-
-### 4. SDC-base (ablation)
-
-Same SDC algorithm but on a **base** SFT init (`v8_base_matched_clean_sft`). Isolates whether the gain comes from meta-SFT priming or from SDC itself.
-
-## Runtime
-
-`run_sdc_on_h200_node.sh` (and the parallel baseline/rlsd orchestrators) provide three resilience layers:
-
-1. **gpu_keeper tmux** suppresses BSC idle-suspend during slow installs and idle phases.
-2. **Bootstrap retry**: if the simplerl env install hangs >60 min, drop into keep-alive (does **not** terminate the AMLT job; SSH in, fix, `touch /scratch/retry.trigger`).
-3. **Training retry loop**: 10 attempts with 60 s backoff. On exhaustion: keep-alive again. AMLT job stays alive until `max_run_duration_seconds`.
-
-A heartbeat daemon (`nohup bash`) writes to `/scratch/logs/keepalive.log` every 3 min, plus nvidia-smi.
-
-## Eval
-
-```bash
-bash scripts/run_eval_1030.sh <ckpt_path>
-# or remotely
-bash scripts/run_eval_1030_eval_node.sh <hf_ckpt_id>
-```
-
-The 1,030-problem benchmark = 500 GSM8K + 500 MATH-500 + 30 AIME2024. Output JSON goes to `results/<run>/<split>.json` and is mirrored to `iamseungpil/metacot:results/`.
-
-## HF data layout
-
-Code, models, results all live under `iamseungpil/metacot` (dataset repo).
-
-```
-iamseungpil/metacot
-├── code_snapshots/metacognition.tar.gz     # current tarball (refresh via build_sdc_code_snapshot.sh)
-├── models/<run_name>/                       # SFT/RL ckpts
-├── results/<run_name>/<split>.json          # eval outputs
-└── datasets/                                # SFT data parquets
-```
-
-Separate model-only repos for active RL runs:
-- `iamseungpil/metacot-sdc-verl-shared`
-- `iamseungpil/metacot-baseline-v100`
-- `iamseungpil/metacot-rlsd-v100`
-- `iamseungpil/metacot-sdc-base-v100`
-
-## Reports
-
-- `../metacognition-paper/main.pdf` — main NeurIPS submission (sections under `metacognition-paper/sections/`).
-- `../metacognition-behavior-uncertainty/reports/behavior_uncertainty_working_note_ko.pdf` — Four Habits derivative working note.
-- `REPORT_REFERENCES.md` — per-figure / per-number cross reference for the 2026-04-16 V8 final report.
-
-## Status snapshot (2026-04-25)
-
-Active SDC training run: `iamseungpil/metacot-sdc-verl-shared` (last commit timestamp = current training step).
-
-Queued AMLT experiments:
-- `metacot-h100-1n-{a,b,c,d}-0424` — STD H100 single-node SDC (4 lanes)
-- `metacot-sdc-baseline-0424` — H200 BSC SDC vs Baseline
-- `metacot-sdc-rlsd-0423` — H200 BSC SDC vs RLSD
-
-For per-node detail and history, see `NODE_POLICY.md`.
-
-## See also
-
-- `QUICK_START.md` — clone → first run, three paths (AMLT / standalone / eval-only).
-- `docs/experiments_intent_hypothesis.md` — Intent / Hypothesis / Validation Method per experiment.
-- `scripts/CATALOG.md` — every script with a one-line role.
-- `CLAUDE.md` — agent / token / data registry.
-- `NODE_POLICY.md` — node ownership contract.
-- `.env.example` — required environment variables for a fresh-server run.
+이승필 — iamseungpil@gmail.com (HF/GitHub: `iamseungpil`)

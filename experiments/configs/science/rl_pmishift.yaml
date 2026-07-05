@@ -1,0 +1,57 @@
+# RL, META arm (T1 treatment): v8_rv_functional_sft -> TRIOBJ_DCPO_V4 with
+# dcpo_rmeta_source=pmi_shift (two-position teacher-forcing, sign-reversal
+# reward: SAVE decoy->gold +1, DERAIL gold->decoy -2). Mirrors the launched
+# h100std_pmishift.yaml verl invocation exactly.
+# Real hyperparams live in the hydra config chain
+# configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml -> verl_e4_selfdistill_h200_4x4k
+# -> verl_sdc_e21r_shared; this file pins ONLY the science-invariant fields and
+# the verbatim hydra overrides run.sh appends.
+schema: metacot-science-v1
+experiment: rl_pmishift
+arm: meta
+mode: rl
+
+verl_config_name: triobj_dcpo_v4_stage3b_h100_4x4k
+derives_from: configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml
+
+reward_mode: TRIOBJ_DCPO_V4+pmi_shift
+experiment_name: triobj_dcpo_v4_pmishift_h100_4x4k   # trainer.experiment_name / ckpt dir / WANDB_NAME
+
+# RL init + frozen ref scorer. Staged from HF dataset iamseungpil/metacot-rv,
+# path models/v8_rv_functional_sft (drop extra_special_tokens from
+# tokenizer_config.json after staging — see h100std_pmishift.yaml).
+init_model: /scratch/models/v8_rv_functional_sft
+
+data:
+  # IDENTICAL RL data across all arms (meta_mix) — the data confound is removed.
+  # On the HF repo the files live at REPO ROOT as verl_train_meta_mix.parquet /
+  # verl_val_meta_mix.parquet (no data/ prefix); scripts/pull_parquets.py pulls
+  # exactly these from that repo. train_parquet/val_parquet below are the LOCAL
+  # staged paths under <repo>/.
+  hf_dataset: iamseungpil/metacot-sdc-data
+  train_parquet: data/verl_train_meta_mix.parquet
+  val_parquet: data/verl_val_meta_mix.parquet
+
+total_training_steps: 300
+save_freq: 10        # trainer.save_freq — meta arm value. NOTE: the live base
+                     # arm pipeline (h100std_base_matched_pipeline.yaml) ran
+                     # with save_freq=5 (ckpt-loss reduction under the 6h
+                     # preemption window; non-science knob).
+val_freq: 25         # trainer.test_freq; training-time accuracy = wandb
+                     # val-aux/<ds>/correctness/mean@1 ONLY (val-core/reward is
+                     # a meta-shaped composite -> fake base-vs-meta gaps)
+seed: 1              # -> ++actor_rollout_ref.actor.data_loader_seed. Matches
+                     # the LAUNCHED runs: h100std_pmishift.yaml does not
+                     # override data_loader_seed, so the live gs300 ckpt was
+                     # trained with the inherited default data_loader_seed=1
+                     # (configs/verl_sdc_e21r_shared.yaml). T1-protocol seed
+                     # sweeps override via run.sh --seed.
+
+# Verbatim hydra overrides (REAL verl keys) appended by run.sh after the
+# composed trainer.* / data.* / model.path arguments.
+hydra_overrides:
+  - trainer.project_name=metacot-dcpo-v4
+  - ++algorithm.dcpo_rmeta_source=pmi_shift
+  - ++algorithm.dcpo_w_over=0.0
+  - trainer.resume_mode=auto
+  - ++trainer.val_before_train=False

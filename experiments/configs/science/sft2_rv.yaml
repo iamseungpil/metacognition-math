@@ -1,0 +1,32 @@
+# SFT-2, META arm: v8_meta_inside_strict_sft -> v8_rv_functional_sft
+# (functional redirect/verify corpus; sft.py masks prompt+wrong_prefix via
+# segment_loss_mask and trains only meta+recovery; teacher_kl stays OFF).
+# Thin layer over configs/sft_rv_functional.yaml (real sft.py keys).
+schema: metacot-science-v1
+experiment: sft2_rv
+arm: meta
+mode: sft
+
+derives_from: configs/sft_rv_functional.yaml
+
+data:
+  hf_dataset: iamseungpil/metacot-rv
+  train_parquet: data/rv_redirect_verify_functional.parquet
+
+overrides:
+  # Init = the SFT-1 meta checkpoint (sft1_meta.yaml output). On MSR nodes it is
+  # staged at /scratch/models/v8_meta_inside_strict_sft; point this at your
+  # local SFT-1 output when running elsewhere.
+  model_name_or_path: /scratch/models/v8_meta_inside_strict_sft
+  dataset_path: data/rv_redirect_verify_functional.parquet
+  output_dir: /scratch/checkpoints/v8_rv_functional_sft
+  num_train_epochs: 3
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 4
+  learning_rate: 1.0e-5
+  max_length: 4096
+  save_strategy: epoch
+  eval_strategy: "no"
+  wandb_project: metacot-math
+
+seed: 42   # provenance only — see sft1_meta.yaml note.

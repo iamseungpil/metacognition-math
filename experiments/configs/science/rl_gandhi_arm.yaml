@@ -1,0 +1,41 @@
+# RL, GANDHI arm (RQ2/T2 decomposition): meta-SFT init + VANILLA_GRPO.
+# Isolates SFT-priming from RL-reward: the model KNOWS the meta form
+# (init = v8_rv_functional_sft, same as rl_pmishift) but RL rewards ONLY
+# correctness (same VANILLA_GRPO config as rl_vanilla_base). If this arm
+# matches rl_pmishift, the pmi_shift reward adds nothing over priming
+# (form-vs-behavior, Gandhi 0622); if it matches rl_vanilla_base, the reward
+# is the active ingredient.
+schema: metacot-science-v1
+experiment: rl_gandhi_arm
+arm: meta
+mode: rl
+
+verl_config_name: base_matched_grpo_h100_4x4k
+derives_from: configs/base_matched_grpo_h100_4x4k.yaml
+
+reward_mode: VANILLA_GRPO
+experiment_name: gandhi_metasft_vanilla_grpo_h100_4x4k
+
+# Init = the META SFT-2 checkpoint (iamseungpil/metacot-rv
+# models/v8_rv_functional_sft), NOT the base twin — that swap is the arm.
+init_model: /scratch/models/v8_rv_functional_sft
+
+data:
+  # HF repo holds these at REPO ROOT (no data/ prefix) — verl_train_meta_mix.parquet /
+  # verl_val_meta_mix.parquet; scripts/pull_parquets.py pulls exactly these.
+  # train_parquet/val_parquet are the LOCAL staged paths under <repo>/.
+  hf_dataset: iamseungpil/metacot-sdc-data
+  train_parquet: data/verl_train_meta_mix.parquet
+  val_parquet: data/verl_val_meta_mix.parquet
+
+total_training_steps: 300
+save_freq: 10
+val_freq: 25
+seed: 1              # matches the launched T1 arms' inherited data_loader_seed
+                     # default=1 (verl_sdc_e21r_shared.yaml); the T1-protocol
+                     # seed sweeps use --seed.
+
+hydra_overrides:
+  - trainer.project_name=metacot-dcpo-v4
+  - trainer.resume_mode=auto
+  - ++trainer.val_before_train=False
