@@ -62,6 +62,11 @@ def summarize(results: list[dict]) -> dict:
             "avg_completion_length_tokens": float(
                 bdf["completion_length_tokens"].mean()
             ),
+            "num_truncated": (
+                int((bdf["finish_reason"] == "length").sum())
+                if "finish_reason" in bdf.columns
+                else None
+            ),
         }
     return {
         "total": int(len(df)),
@@ -88,6 +93,11 @@ def main() -> None:
     parser.add_argument("--max_model_len", type=int, default=20480)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num_samples", type=int, default=1)
+    # anti-degeneration decode knobs (defaults = no-op; preserve baseline behavior).
+    parser.add_argument("--repetition_penalty", type=float, default=1.0)
+    parser.add_argument("--presence_penalty", type=float, default=0.0)
+    parser.add_argument("--min_p", type=float, default=0.0)
+    parser.add_argument("--no_repeat_ngram_size", type=int, default=0)
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -123,7 +133,7 @@ def main() -> None:
         len(tokenizer(p, add_special_tokens=False)["input_ids"]) for p in prompts
     ]
 
-    sampling = SamplingParams(
+    sp_kwargs = dict(
         n=args.num_samples,
         temperature=args.temperature,
         top_p=args.top_p,
@@ -131,6 +141,24 @@ def main() -> None:
         seed=args.seed,
         skip_special_tokens=False,
     )
+    # anti-degeneration knobs: only attach when non-default so baseline is byte-identical.
+    if args.repetition_penalty and args.repetition_penalty != 1.0:
+        sp_kwargs["repetition_penalty"] = args.repetition_penalty
+    if args.presence_penalty:
+        sp_kwargs["presence_penalty"] = args.presence_penalty
+    if args.min_p and args.min_p > 0.0:
+        sp_kwargs["min_p"] = args.min_p
+    if args.no_repeat_ngram_size and args.no_repeat_ngram_size > 0:
+        sp_kwargs["no_repeat_ngram_size"] = args.no_repeat_ngram_size
+    try:
+        sampling = SamplingParams(**sp_kwargs)
+    except TypeError as exc:
+        # older vLLM may not accept no_repeat_ngram_size — drop it and proceed.
+        dropped = sp_kwargs.pop("no_repeat_ngram_size", None)
+        print(f"[decode-sweep] SamplingParams fallback, dropped no_repeat_ngram_size={dropped}: {exc}")
+        sampling = SamplingParams(**sp_kwargs)
+    print(f"[decode-sweep] sampling kwargs (non-default): "
+          f"{ {k: v for k, v in sp_kwargs.items() if k not in ('n','temperature','top_p','max_tokens','seed','skip_special_tokens')} }")
 
     print(
         f"Generating {len(prompts)} prompts x n={args.num_samples} "
@@ -164,6 +192,12 @@ def main() -> None:
                     "completion_length_chars": int(len(completion)),
                     "prompt_length_tokens": int(prompt_tok_len),
                     "sample_idx": int(s_idx),
+                    "finish_reason": str(sample.finish_reason),
+                    "stop_reason": (
+                        str(sample.stop_reason)
+                        if getattr(sample, "stop_reason", None) is not None
+                        else None
+                    ),
                 }
             )
 
