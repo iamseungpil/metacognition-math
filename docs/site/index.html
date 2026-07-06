@@ -208,9 +208,9 @@
   </div>
   <div class="lede">
     <span class="tag">의도.</span>
-    메타인지는 목적이 아니라 정확도를 끌어올리는 <i>수단</i>이다. 우리는 신뢰도 숫자를 흉내내게 하지 않고,
-    메타 블록을 여는 순간(<code>ctx_open</code>)과 닫는 순간(<code>ctx_close</code>) 사이에서
-    <b>gold와 decoy 사이 마진이 실제로 얼마나 벌어졌는지</b>를 보상 신호로 삼는다. 그 이동이 곧 "유용한 메타인지"의 증거다.
+    메타인지는 목적이 아니라 정확도를 끌어올리는 <i>수단</i>이다. 우리는 모델이 신뢰도 숫자를 흉내내게 하지 않는다.
+    대신 메타 블록을 여는 순간(<code>ctx_open</code>)과 닫는 순간(<code>ctx_close</code>) 사이에서
+    <b>gold와 decoy 마진이 실제로 얼마나 벌어졌는지</b>를 보상 신호로 삼는다. 그 이동이 곧 "유용한 메타인지"의 증거다.
   </div>
   <div class="trace">
     <span class="t">checkpoint <b>pmishift · gs300</b></span>
@@ -225,7 +225,7 @@
   <span class="rqtag">방법 · PMI-shift</span>
   <h2>메타 블록을 지나며 믿음이 이동하는 만큼 보상한다</h2>
   <p class="sectlead">
-    한 rollout이 <code>&lt;|meta|&gt;…&lt;|/meta|&gt;</code> 블록을 담으면, 얼어붙은 참조 모델로 teacher-forcing 하여
+    한 rollout이 <code>&lt;|meta|&gt;…&lt;|/meta|&gt;</code> 블록을 담으면, 고정된 참조 모델로 teacher-forcing 하여
     블록 <b>직전</b>과 <b>직후</b> 두 지점에서 gold−decoy 마진을 잰다. 두 마진의 차이(SHIFT)가 신호다.
     핵심 세 가지: <b>스팬-이동</b>(한 지점이 아니라 구간의 변화) · <b>디코이 대조</b>(정답 확률이 아니라 gold−decoy 판별 마진) ·
     <b>메타 지역화</b>(보상을 메타-콘텐츠 토큰에만 라우팅).
@@ -313,7 +313,7 @@
       </svg>
       </div>
       <div class="figcap">
-        <b>계산.</b> 얼어붙은 참조 모델로 teacher-forcing:
+        <b>계산.</b> 고정된 참조 모델로 teacher-forcing:
         <span class="mono">PMI_open = logp(gold|ctx_open) − logp(decoy|ctx_open)</span>,
         닫은 뒤 같은 계산이 <span class="mono">PMI_close</span>,
         <span class="mono">SHIFT = PMI_close − PMI_open</span>.
@@ -413,7 +413,7 @@
         </svg>
       </div>
       <div class="pb">
-        <span class="them">학생이 스스로의 교사이며, 정답 조건 분포를 증류하며 RLVR과 결합.
+        <span class="them">학생이 스스로의 교사가 되어 정답 조건 분포를 증류하고 RLVR과 결합한다.
         그러나 gold 조건은 망설임 토큰을 억제해 hard 문제에서 추론 경로를 줄인다.</span>
         <span class="us"><b>우리:</b> 증류 위에 <b>행동-통제 층</b>을 얹되 <b>priming하지 않는다</b>.
         신호는 모델 자신의 rollout 대조에서만 나온다.</span>
@@ -457,7 +457,7 @@
   <span class="rqtag real">RQ1 · 실측</span>
   <h2>메타 arm이 6/6 벤치에서 매치드-베이스를 넘는다</h2>
   <p class="sectlead">
-    PMI-shift(gs300)와 <b>메타 기제만 제거한</b> 매치드-베이스(gs300)를 문제-쌍 부트스트랩으로 비교.
+    PMI-shift(gs300)와 <b>메타 기제만 제거한</b> 매치드-베이스(gs300)를 문제-쌍 부트스트랩으로 비교했다.
     이득은 문제가 어려울수록 커진다.
   </p>
   <div class="trace">
@@ -500,7 +500,7 @@
           <div class="lab">AIME<span class="sub">@16k avg@16</span></div>
           <div class="pair">
             <div class="b"><span class="who">base</span><div class="track"><div class="fill base" style="width:4.8%">4.8</div></div></div>
-            <div class="b"><span class="who">meta</span><div class="track"><div class="fill meta" style="width:18.5%">18.5</div></div><span class="dv">+13.8</span></div>
+            <div class="b"><span class="who">meta</span><div class="track"><div class="fill meta" style="width:18.5%">18.5</div></div><span class="dv" title="unrounded 18.54−4.79">+13.8</span></div>
           </div>
         </div>
 
@@ -520,8 +520,8 @@
   </figure>
 
   <div class="callout">
-    <b>정직한 caveat: 이건 "패키지" 효과다.</b> 발사된 pmishift arm은 5-head 패키지다:
-    correctness + meta/pmi-shift + cal 0.3 + emit 0.1 + format 0.35 + len_cost 0.08 + cf_group rollout split.
+    <b>정직한 caveat: 이건 "패키지" 효과다.</b> 발사된 pmishift arm은 5-head 보상 벡터 + format/len_cost shaping 패키지다:
+    correctness + meta/pmi-shift + cal 0.3 + emit 0.1 (reward 벡터) + format 0.35 + len_cost 0.08 (shaping) + cf_group rollout split.
     따라서 RQ1은 <b>패키지 vs vanilla GRPO</b> 효과이지 <i>PMI-shift 단독</i>이 아니다.
     PMI-shift만 떼어내는 분해는 <a href="#rq2">RQ2(PENDING)</a>에서 다룬다.
   </div>
@@ -580,8 +580,8 @@
   <span class="rqtag real">RQ3 · 실측</span>
   <h2>이득은 어려운 문제에 집중된다 (Q4 +34.8pp). 그런데 메타 발화는 비선택적이다</h2>
   <p class="sectlead">
-    held-out 문제를 난이도 사분위(Q1 쉬움 → Q4 어려움)로 나눠 본 층화 분석.
-    쉬운 두 사분위는 이미 포화(100%), 이득은 뒤로 갈수록 커진다.
+    held-out 문제를 난이도 사분위(Q1 쉬움 → Q4 어려움)로 나눠 층화 분석했다.
+    쉬운 두 사분위는 이미 포화 상태(100%)이고, 이득은 뒤로 갈수록 커진다.
   </p>
   <div class="trace">
     <span class="t">held-out <b>1030</b> · 난이도 층화</span>
@@ -646,8 +646,8 @@
   <span class="rqtag real">RQ4 · 실측</span>
   <h2>보정은 대체로 좋지만 AIME에서 과신한다. base는 신뢰도를 아예 안 낸다</h2>
   <p class="sectlead">
-    메타 arm의 verbalized confidence를 ECE(15-bin)로 측정. 쉬운 벤치는 잘 맞지만
-    AIME에서는 크게 과신한다. base arm은 <b>0% 메타 → 신뢰도 자체가 없어</b> 비교 불가라는 구조적 비대칭을 정직하게 밝힌다.
+    메타 arm의 verbalized confidence를 ECE(15-bin)로 측정했다. 쉬운 벤치는 잘 맞지만
+    AIME에서는 크게 과신한다. base arm은 메타를 0% 내므로 신뢰도 자체가 없다. 여기서 비교 불가라는 구조적 비대칭이 생기는데, 이 점을 정직하게 밝힌다.
   </p>
   <div class="trace">
     <span class="t">meta arm only · <b>ECE(15)</b></span>
