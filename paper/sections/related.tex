@@ -1,199 +1,147 @@
-% SCOPE: insight-driven related work, their-work vs. our-difference pairs.
-% 2.1 RL amplifies what exists (substrate); 2.2 self-distillation degrades
-% reasoning (Kim/whydegrade + AntiSD diagnosis); 2.3 the field converged on
-% reference-answer-likelihood rewards (RLPR/CRM/self-distill family) = where we
-% sit; 2.4 calibration != control (Rewarding Doubt) = our motivation. Every work:
-% what they show + where they stop + how we differ. Funnel to our
-% span-shift + decoy + metacognition + causal-twin corner.
+% SCOPE: insight-driven related work. Each subsection carries ONE argument;
+% prior work is cited as support for that argument, not enumerated.
+% 2.1 outcome-reward RL cannot credit the epistemic step; 2.2 self-distillation
+% gives a strong but mis-aimed signal (AntiSD = closest neighbor); 2.3 the field
+% converged on reference-answer-likelihood but never localized it; 2.4 reporting
+% doubt is not using doubt. Funnel to our span-shift + decoy + meta-block corner.
 \section{Related Work}
 \label{sec:related}
 
-\subsection{RL amplifies what exists: the missing metacognitive substrate}
+\subsection{Outcome-reward RL cannot credit the step that did the epistemic work}
 \label{sec:related:rlvr}
 
-The dominant recipe for reasoning post-training is reinforcement learning
-from verifiable rewards (RLVR) driven by a single terminal correctness
-signal. \citet{shao2024deepseekmath} introduced GRPO, the critic-free
-group-relative policy-gradient method that made outcome-reward RL practical
-at scale for mathematical reasoning; DeepSeek-R1 \citep{deepseekr1} showed
-that applying this recipe to a strong base model elicits long chains of
-thought in which reflective-looking behavior---re-checking,
-``aha''-style backtracking---\emph{emerges} without ever being rewarded as
-such; SimpleRL-Zoo \citep{zeng2025simplerlzoo} replicated zero-RL across a
-zoo of open base models and found that both the gains and the emergent
-reflective behavior vary sharply with the base model family; and the Qwen3
-report \citep{qwen3} folds the same pipeline into production post-training.
-Across this entire line the objective contains one bit: was the final answer
-correct. Credit is smeared over the whole trajectory, so a verification step
-that actually flipped the outcome is indistinguishable, from the optimizer's
-point of view, from decorative hedging that happened to co-occur with a
-correct answer. Process supervision \citep{lightman2024letsverify} sharpens
-credit to individual steps and outperforms outcome supervision on MATH, but
-it scores steps against \emph{externally labeled} step correctness; it never
-asks whether a step changed the \emph{model's own} evidence about the
-answer, and so it cannot separate a step that is merely correct from one
-that is epistemically useful.
+Reinforcement learning from verifiable rewards trains on one bit of feedback,
+whether the final answer was correct, and that single bit cannot tell which step
+earned it. The reward attaches to the whole trajectory at once, so a
+verification that actually flipped the outcome looks identical, to the
+optimizer, to a decorative hedge that merely co-occurred with a right answer.
+This recipe is now the default for mathematical reasoning, from the
+group-relative policy gradient that made it practical at scale to zero-RL
+replications and production post-training pipelines
+\citep{shao2024deepseekmath, deepseekr1, zeng2025simplerlzoo, qwen3}. In every
+case the reflective-looking behavior that appears, the re-checking and the
+backtracking, is never itself rewarded. It survives only because the answers it
+accompanies happen to be correct.
 
-\citet{gandhi2025cognitive} sharpen why this matters. They show that four
-cognitive behaviors---verification, backtracking, subgoal setting, and
-backward chaining---predict which base models benefit from RL, and that RL
-\emph{amplifies behaviors already present} in the base model or its SFT
-prime: priming with the behaviors enables gains even when the primed
-solutions contain wrong answers. This establishes that the substrate must be
-supplied before RL can grow it, but it stops at the level of surface form.
-Priming installs the \emph{shape} of a habit, and amplification is
-indiscriminate---nothing in the pipeline checks that an amplified
-verification actually verifies. Our design accepts the first half (we prime
-explicit \metaopen{}\dots\metaclose{} blocks via SFT) and targets the
-gap the second half leaves open: a reward that pays a primed metacognitive
-block only when it does epistemic work, so amplification becomes selective
-rather than indiscriminate (Section~\ref{sec:method}).
+Process supervision moves credit down to the level of individual steps, but it
+grades each step against an external label rather than against the model's own
+evidence. Scoring reasoning step by step outperforms outcome-only reward on
+competition math \citep{lightman2024letsverify}. Yet the score asks whether a
+step is correct by an outside rubric, not whether the step changed what the
+model itself believes about the answer. A step that is textbook-correct and a
+step that actually resolved the model's uncertainty are treated the same. The
+signal therefore still cannot single out the moment that did epistemic work.
 
-\subsection{Self-distillation degrades reasoning: rewarding the wrong tokens}
+Reinforcement learning amplifies cognitive behaviors that are already present in
+the model, and it grows their shape without ever checking that they function.
+Four such behaviors, verification, backtracking, subgoal setting, and backward
+chaining, predict which base models improve under RL, and priming a model with
+them unlocks gains even when the primed solutions carry wrong answers
+\citep{gandhi2025cognitive}. This is the canonical evidence that the substrate
+must be installed before RL can select for it. It also exposes the gap we
+target. Priming installs the outward form of a habit, and amplification is
+indiscriminate, so nothing in the loop confirms that an amplified verification
+verifies anything. What is missing is a reward that pays a metacognitive step
+only when that step actually moves the model's evidence about the answer.
+
+\subsection{Self-distillation gives a strong but mis-aimed signal, and the closest neighbor}
 \label{sec:related:selfdistill}
 
-Turning a model's own likelihoods into a training signal is attractive
-because it needs no external teacher, but a fast-growing line shows the
-signal is treacherous: it is strong, yet it rewards the wrong tokens unless
-carefully aimed. \citet{kim2026selfdistill} demonstrate the headline
-failure---naive self-distillation on top of RLVR can \emph{degrade}
-reasoning relative to plain GRPO---so ``the model teaching itself'' is not
-automatically benign. Their RLRT variant \citep{kim2026rebellious} then shows
-the flip side: a frozen reference model's likelihoods carry genuinely useful
-training information when the sign is \emph{reversed} (the ``Rebellious
-Student'' ascends rather than descends the teacher's signal), improving over
-GRPO on MATH500 and AIME24. \citet{whydegrade2026} localize the mechanism:
-conditioning distillation on the gold solution systematically suppresses
-\emph{deliberation} tokens---the hedging and re-derivation that carry
-multi-step search---because those tokens look low-probability once the answer
-is known, and the loss therefore shortens the very reasoning paths that hard
-problems need. A cluster of on-policy-distillation work catalogs the same
-pathology and proposes recoveries: \citet{opd2026rethinking} characterize the
-failure modes (distribution gap, homogeneous-teacher overfitting) and
-prescribe off-policy initialization plus teacher-aligned prompt selection;
-\citet{sdzero2026} replace binary rewards with a generator--reviser scheme
-that manufactures token-level dense supervision without an external teacher;
-\citet{opsd2025} formalize a single model playing student and teacher at
-once; \citet{gates2025} and \citet{hdpo2025} add consensus gating and
-privileged self-distillation to blunt the side effects; and
-\citet{lightning_opd2026} precompute teacher log-probabilities to reproduce
-OPD without a live teacher server. \citet{mulgund2026rlsd} unify the family,
-distilling a self-teacher's gold-conditioned distribution jointly with RLVR.
+A model's own likelihoods are a powerful training signal, but they reward the
+wrong tokens unless the signal is aimed with care. Descending toward a
+self-teacher on top of RLVR can degrade reasoning below plain GRPO, so a model
+teaching itself is not automatically safe \citep{kim2026selfdistill}. The same
+likelihoods become useful once their sign is reversed, with a frozen reference
+model's signal ascended rather than descended \citep{kim2026rebellious}. The
+mechanism behind both poles is now pinned down. Conditioning distillation on the
+gold solution suppresses the deliberation tokens, the hedging and re-derivation
+that carry multi-step search, because those tokens look improbable once the
+answer is already known, which shortens exactly the reasoning that hard problems
+require \citep{whydegrade2026}.
 
-The work closest to ours is AntiSD \citep{shen2026antisd}, which supplies the
-sharpest diagnosis of \emph{which} tokens self-distillation misprices. It
-defines a per-token conditional pointwise mutual information,
-$u_t = \log\big[\pi(y_t\mid x, c, y_{<t}) / \pi(y_t\mid x, y_{<t})\big]$ with
-$c$ a verified solution, and shows that privileged context \emph{inflates}
-the teacher on tokens already implied by the answer (boilerplate, structural
-scaffolding) and \emph{deflates} it on the deliberation tokens that drive
-search. AntiSD's remedy is to \emph{ascend} the student--teacher divergence,
-reversing the per-token sign for a bounded one-step advantage, and it reaches
-GRPO accuracy in far fewer steps with up to $+11.5$ points on competition
-math. We share AntiSD's premise---gold-conditioned self-imitation
-mechanically rewards shortcut and boilerplate tokens---but occupy a different
-corner. AntiSD acts as a global, per-token imitation objective with a
-reversed sign over the whole trajectory; we reward a \emph{shift} (a
-difference across a span) of a gold-\emph{versus-decoy} discriminative margin,
-localized to an explicit \metaopen{}\dots\metaclose{} span, and validate the
-installed substrate against a matched-base causal twin rather than an
-accuracy curve alone (Section~\ref{sec:method}). Crucially the shortcut risk
-AntiSD identifies is \emph{shared}: our verify-boilerplate is their
-scaffolding bias, and a span-shift reward could in principle be collected by
-emitting a formulaic ``let me check'' that moves no evidence. This is exactly
-why our decomposition (an imitation-style Gandhi arm and a shift-only arm) and
-placebo tests are load-bearing rather than optional (Section~\ref{sec:method})
----they are what separate a rewarded metacognitive \emph{act} from rewarded
-metacognitive \emph{decoration}.
+A whole literature documents this same mispricing and patches it, which shows
+the pathology is robust rather than incidental. Across on-policy distillation,
+work independently characterizes the failure modes and prescribes off-policy
+initialization, dense self-generated supervision, single-model student-teacher
+schemes, consensus gating, privileged self-distillation, precomputed teacher
+log-probabilities, and joint distillation with RLVR
+\citep{opd2026rethinking, sdzero2026, opsd2025, gates2025, hdpo2025,
+lightning_opd2026, mulgund2026rlsd}. The number of independent recoveries is the
+point. When many groups converge on the same failure and the same class of fix,
+the mispricing is a structural property of gold-conditioned self-imitation, not
+an artifact of one setup.
 
-\subsection{The field converged on reference-answer-likelihood rewards}
+AntiSD supplies the sharpest diagnosis of which tokens are mispriced, and we
+occupy a different corner of the same problem \citep{shen2026antisd}. It measures,
+per token, whether knowing the answer makes a generated token more likely, and
+shows that privileged context inflates structural and boilerplate tokens while
+deflating the deliberation tokens that drive search; its remedy reverses that
+per-token sign over the whole trajectory. Our signal differs on three axes.
+First, we reward a shift, a difference across a span, rather than a level at each
+token. Second, we score a gold-versus-decoy discriminative margin, asking not
+just whether the answer's likelihood rises but whether it rises against a
+plausible wrong answer, rather than a single sign-reversed imitation term.
+Third, we localize the reward to an explicit \metaopen{}\dots\metaclose{} block
+and validate the installed substrate with a matched causal twin, rather than an
+accuracy curve alone. The shortcut risk AntiSD names is shared: our
+verify-boilerplate is their scaffolding bias, and a span-shift reward could in
+principle be earned by a formulaic ``let me check'' that moves no evidence. That
+shared risk is precisely why our experiments control for it rather than assume it
+away.
+
+\subsection{The field converged on reference-answer-likelihood but never localized it}
 \label{sec:related:likelihood}
 
-A parallel line, arriving from the verifier-free direction, has converged on
-the same underlying quantity we exploit: the reference answer's likelihood
-under the model. RLPR \citep{yu2025rlpr} makes this explicit---it replaces the
-external verifier with the model's own average decoding probability of the
-gold answer tokens, arguing that intrinsic probability \emph{is} the model's
-self-evaluation of its reasoning, and extends RLVR to general domains on that
-signal. CRM \citep{zhang2025crm} reaches the answer likelihood from the
-process side: it models each step's reward as the conditional probability of
-staying on a correct-outcome trajectory, so that the summed process reward is
-the log-probability of the correct answer, and shows this links intermediate
-credit to the final outcome without ground-truth verification. Contrastive
-and self-rewarding methods circle the same object from the preference angle:
-DistiLLM-2 \citep{ko2024distillm2} and RLCD \citep{yang2024rlcd} exploit
-paired positive/negative responses, while Self-Rewarding models
-\citep{yuan2024selfrewarding}, Meta-Rewarding \citep{wu2024metarewarding},
-SPPO \citep{wu2024sppo}, and Iterative Reasoning Preference Optimization
-\citep{xu2024iterativedpo} iterate a policy against its own judgments; and an
-information-theoretic analysis of PPO reasoning habits \citep{fourhabits2026wn}
-studies how these signals reshape behavior. What none of these localize is
-\emph{where} in the trajectory the likelihood moves and \emph{against what
-alternative}. RLPR and CRM score the gold answer's probability globally or
-step-averaged; the preference methods reward whole responses. We sit
-squarely in this reference-answer-likelihood neighborhood, and we are honest
-that our novelty is correspondingly narrow: we do not introduce a new family
-of signal but a specific instantiation---a gold-versus-\emph{decoy} contrast
-(not the gold likelihood alone), measured as a \emph{shift} across an explicit
-metacognition span (not globally or per step), so that credit reaches the
-metacognitive act that moved the model's evidence rather than the answer
-tokens that merely record it.
+Verifier-free methods have independently converged on the same underlying
+quantity, the reference answer's likelihood under the model. One line replaces
+the external verifier with the model's own average decoding probability of the
+gold answer tokens, arguing that this intrinsic probability is the model's
+self-evaluation of its reasoning \citep{yu2025rlpr}. A second reaches the same
+quantity from the process side, modeling each step's reward as the probability
+of staying on a correct-outcome trajectory so that the summed reward equals the
+log-probability of the correct answer \citep{zhang2025crm}. Two clean instances,
+arriving from opposite directions, land on reference-answer-likelihood as the
+training signal.
 
-\subsection{Calibration is not control: from knowing uncertainty to using it}
+Preference and self-rewarding methods circle the same object but score whole
+responses, never where the likelihood moves or against what alternative.
+Contrastive pairs, self-judged iteration, self-play, and iterative preference
+optimization all reshape behavior by comparing complete responses to one another
+\citep{ko2024distillm2, yang2024rlcd, yuan2024selfrewarding, wu2024metarewarding,
+wu2024sppo, xu2024iterativedpo, fourhabits2026wn}. None of them asks at which
+point inside a trajectory the answer's likelihood changes, and none contrasts the
+gold answer against a competing wrong one. We sit inside this same
+reference-answer-likelihood neighborhood, and our contribution is a narrow but
+honest one: a gold-versus-decoy contrast measured as a shift across an explicit
+metacognition span, rather than the gold likelihood alone scored globally.
+
+\subsection{Reporting doubt is not using doubt}
 \label{sec:related:calibration}
 
-Our motivation is a gap this convergence leaves untouched: a model can be
-made to \emph{report} its uncertainty accurately without ever being made to
-\emph{act} on it. A long line establishes the first half.
-\citet{guo2017calibration} made miscalibration measurable (expected
-calibration error, which we adopt for RQ4); \citet{kadavath2022language}
-showed large LMs are mostly well-calibrated when probed after generation
-about whether their own answers are true (P(True), P(IK)); and verbalized-
-confidence work \citep{lin2022teaching, tian2023just} trains or prompts models
-to state calibrated uncertainty in words. In all of these calibration is the
-\emph{terminal} object: the metric rewards accurately reporting doubt, not
-resolving it, and a perfectly calibrated model can correctly doubt every hard
-problem and still fail all of them. Rewarding Doubt
-\citep{baniharouni2026rewardingdoubtreinforcementlearning} pushes calibration
-into RL by directly rewarding calibrated confidence expressions; we reuse a
-Rewarding-Doubt-style log-scoring term, but treat calibration as an
-intermediate signal for control rather than the goal---whether overconfidence
-drops on hard wrong answers, and whether that drop is \emph{used} to redirect
-the solution, are separate questions.
+A long line teaches a model to report its uncertainty accurately, yet a
+perfectly calibrated model can correctly doubt every hard problem and still fail
+all of them. Miscalibration was made measurable through the gap between stated
+confidence and observed accuracy \citep{guo2017calibration}. Large models turn
+out to be mostly well-calibrated when asked after the fact whether their own
+answers are true \citep{kadavath2022language}, and further work trains or prompts
+them to state calibrated uncertainty in words
+\citep{lin2022teaching, tian2023just}, including by rewarding calibrated
+confidence directly under RL \citep{baniharouni2026rewardingdoubtreinforcementlearning}.
+In all of this, calibration is the terminal object. The metric pays a model for
+reporting doubt accurately, not for resolving it, so accurate doubt and better
+answers remain separate achievements.
 
-The converse line---can models \emph{use} self-assessment---is cautionary.
-Self-Refine \citep{madaan2023selfrefine} improves outputs by iterative
-self-critique, but \citet{huang2024llmcannot} show that on reasoning, without
-external feedback, intrinsic self-correction fails to improve and can degrade
-accuracy: prompting alone does not convert latent self-knowledge into better
-answers. Training-based approaches go further but stop short of the
-in-reasoning act. STaR \citep{zelikman2022star} fine-tunes on self-generated
-rationales filtered by answer correctness, reinforcing whole successful traces
-without crediting any epistemic act inside them; SCoRe \citep{kumar2024score}
-trains multi-turn self-correction with RL, but its reward attaches to the
-outcome of a \emph{revised} attempt, so credit lives at episode granularity,
-between complete solutions, not at the mid-solution moment where the model's
-evidence goes wrong; and Reflexion \citep{shinn2023reflexionlanguageagentsverbal}
-shows verbal reflection can fix a \emph{next} trial in an external agent loop.
-Our problem is narrower and internal: within a single attempt, when
-confidence wavers, does that wavering cause an explicit diagnosis and a course
-correction, and does the correction pay off in accuracy.
-
-These three lines triangulate our contribution. Outcome-only RLVR cannot
-select for functional metacognition because its credit never reaches the
-metacognitive act; self-distillation supplies a strong but mis-aimed signal
-that rewards boilerplate over deliberation; the field's reference-answer-
-likelihood rewards score that signal globally, never localized to a
-metacognitive span or contrasted against a decoy; and the calibration
-literature optimizes reporting doubt rather than using it. \pmishift{}
-occupies the remaining corner: for each \metaopen{}\dots\metaclose{} block we
-measure the model's gold-versus-decoy log-likelihood contrast immediately
-before and immediately after the block under a frozen reference, and route the
-resulting \emph{shift} onto the block's tokens and nothing else. Because
-multiple reward terms can collide, the RL stage normalizes each reward
-independently (GDPO-style decoupled normalization,
-\citealp{liu2026gdpogrouprewarddecouplednormalization}), and a matched-base
-twin---identical meta-stripped data, byte-audited identical non-meta
-hyperparameters, correctness-only GRPO---measures whether the installed
-substrate causally pays rather than merely survives
-(Section~\ref{sec:method}).
+The converse line asks whether a model can use its self-assessment while
+reasoning, and finds that it either fails or earns credit at the wrong
+granularity. Iterative self-critique can improve outputs \citep{madaan2023selfrefine},
+but on reasoning, without external feedback, intrinsic self-correction does not
+improve and can degrade accuracy \citep{huang2024llmcannot}. Training-based
+approaches reinforce whole successful traces without crediting any act inside
+them \citep{zelikman2022star}, attach reward to the outcome of a revised attempt
+so that credit lives between complete solutions \citep{kumar2024score}, or fix a
+next trial in an external agent loop \citep{shinn2023reflexionlanguageagentsverbal}.
+In each case the credit lands at episode granularity, not at the mid-solution
+moment where the model's evidence goes wrong. Our target is exactly that moment:
+within a single attempt, we reward the metacognitive block only when the model's
+evidence for the right answer, measured against a decoy, actually improves across
+it.

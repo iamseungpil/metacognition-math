@@ -1,38 +1,27 @@
-% SCOPE: one-paragraph abstract on the MERGED arc — motivation (self-distillation
+% SCOPE: one-paragraph abstract on the MERGED arc: motivation (self-distillation
 % degrades reasoning; calibration reduces overconfidence but does NOT restore
-% accuracy) -> insight (calibration != metacognitive control) -> method
-% (\pmishift{} + matched-base twin) -> preliminary result (6/6 held-out wins,
-% single-seed, PACKAGE-level). No obsolete numbers; preliminary labeled.
+% accuracy) -> insight (reward the causal evidence shift, not the reported
+% confidence) -> method (one-line \pmishift{} gloss + matched-base twin) ->
+% preliminary result (6/6 held-out wins, single-seed, PACKAGE-level). No
+% equations, no teacher-forcing detail, one caveat tag only.
 \begin{abstract}
-Reinforcement learning with verifiable rewards is the standard recipe for
-training reasoning models, yet the resulting models handle their own
-uncertainty poorly: they are overconfident, rarely notice mid-solution errors,
-and the field's default remedy is to scale the model. Self-distillation, the
-natural remedy, can instead \emph{degrade} reasoning by suppressing the
-epistemic, hesitation-bearing tokens that mark deliberation. A calibration-first
-response---training the model to report its confidence faithfully---reduces
-overconfidence but, in our earlier study, did not restore accuracy: traces grew
-longer and more hesitant, yet the added hesitation was never closed by a change
-of solution path. We take this as evidence that \emph{calibration is necessary
-but not sufficient for metacognitive control}: the signal worth rewarding is the
-causal effect a metacognitive act has on the model's evidence about the answer,
-not the confidence it reports. We define in-reasoning metacognition
-operationally as explicit \metaopen{}\dots\metaclose{} blocks and reinforce each
-block only by the evidence shift it causes. Our \pmishift{} reward freezes a
-reference model, teacher-forces the gold answer and a rule-based decoy just
-before and just after a block, and scores the block by how much it moves this
-gold-vs-decoy log-likelihood contrast---a form of metacognitive
-self-distillation---plus a reversal bonus when a block flips the preferred
-answer from decoy to gold. A matched-base twin (identical data with meta content
-stripped, byte-audited hyperparameters, correctness-only GRPO) isolates the
-mechanism. On GSM8K, MATH500, and AIME with Qwen3-8B, the meta arm beats its
-matched twin on all six held-out comparisons (preliminary, single seed): GSM8K
-$+4.0$, MATH500 $+18.8$, and AIME $+13.8$~pp (avg@16, 16k tokens, bootstrap
-$p<.001$), with the gain concentrating on the hardest problems ($+34.8$~pp in
-the top difficulty quartile) even though meta emission is difficulty-agnostic.
-Both arms are flat from 4k to 16k tokens and the base truncates far more often,
-so the meta mechanism \emph{mitigates} rather than causes the long-context
-degeneration. We report these as preliminary results for a multi-head reward
-package; a decomposition isolating \pmishift{} from its auxiliary terms is
-ongoing.
+Reinforcement learning with verifiable rewards now trains language models into
+strong mathematical reasoners, yet these models still handle their own
+uncertainty badly. They stay overconfident, and they rarely catch their own
+errors mid-solution. Making the models larger does not change this. The two
+obvious repairs both fail. Training a model on its own correct solutions, a
+procedure called self-distillation, can instead degrade its reasoning. Teaching
+the model to report a calibrated confidence lowered its overconfidence but did
+not restore its accuracy. We argue for a different target: a metacognitive act
+should be rewarded for the causal effect it has on the model's evidence about
+the answer, not for the confidence the model reports. We turn this into a
+concrete method. The model writes explicit metacognitive blocks inside its
+reasoning, and we score each block by how far it shifts the model's own evidence
+away from a plausible wrong answer and toward the correct one. A twin model,
+trained on byte-identical settings with the metacognitive content removed,
+isolates this mechanism. On held-out mathematics with Qwen3-8B, the
+metacognitive model beats its matched twin on all six benchmark comparisons,
+improving GSM8K by $4.0$, MATH500 by $18.8$, and AIME by $14.2$ percentage
+points (preliminary, single seed, package-level), with the gain concentrated on
+the hardest problems.
 \end{abstract}

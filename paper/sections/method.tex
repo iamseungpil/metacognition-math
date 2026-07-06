@@ -1,286 +1,226 @@
-% SCOPE: 3.1 meta-token protocol + two-stage SFT priming; 3.2 \pmishift{}
-% reward with exact equations (4-arm teacher-forced PMI, clip, reversal bonus,
-% META_CONTENT-region routing, group centering); 3.3 matched-base twin design.
-% Grounded in src/training/dcpo_pmi_shift.py, src/training/dcpo_region.py,
-% src/training/verl_sdc.py (_compute_dcpo_v4_pmi_shift_rmeta),
-% src/training/_decoy_utils.py.
+% SCOPE: 3.1 operational meta-block protocol + two-stage SFT priming; 3.2 the
+% PMI-shift reward (two teacher-forced contexts, evidence margin, clipped shift,
+% asymmetric save/derail bonus, region-routed token advantages, group centering);
+% 3.3 the matched-base twin that isolates the meta package.
+% Grounded in src/training/dcpo_pmi_shift.py and src/training/dcpo_region.py.
 \section{Method}
 \label{sec:method}
 
-Our method has three components: an \emph{operational protocol} that makes
-metacognition an explicit, localizable object in the token stream
-(Section~\ref{sec:method:protocol}); the \pmishift{} reward, which scores each
-metacognitive block by the evidence shift it causally produces in the model's
-own beliefs (Section~\ref{sec:method:pmishift}); and a matched-base twin that
-isolates the contribution of this mechanism from every other ingredient of the
-pipeline (Section~\ref{sec:method:twin}).
+Our method has three parts. First, an operational protocol turns metacognition
+into an explicit object that we can locate in the token stream. Second, a reward
+scores each metacognitive block by the belief update it causally produces in the
+model's own answer preferences. Third, a byte-identical control model isolates
+the contribution of this reward from every other ingredient of the training
+pipeline.
 
-\subsection{The meta protocol and two-stage SFT priming}
+\subsection{An operational, localizable definition of metacognition}
 \label{sec:method:protocol}
 
-\paragraph{Operationalizing metacognition.}
-We define in-reasoning metacognition as an explicit, delimited intervention on
-the model's own solution attempt: at any point inside its reasoning trace, the
-model may open a block
+We make metacognition an explicit object in the model's output rather than a
+trait we infer after the fact. At any point inside its reasoning, the model may
+open a short delimited block, state three things, close the block, and resume
+solving:
 \begin{center}
-\metaopen{} \texttt{confidence:} $\hat{p}$ \quad \texttt{assessment:} \emph{(diagnosis of the current attempt)} \quad \texttt{action:} \emph{(verify / redirect / continue)} \metaclose{}
+\metaopen{} \texttt{confidence:} $\hat{p}$ \quad
+\texttt{assessment:} \emph{(a judgment of the current attempt)} \quad
+\texttt{action:} \emph{(verify / redirect / continue)} \metaclose{}
 \end{center}
-where \metaopen{} and \metaclose{} are dedicated special tokens added to the
-vocabulary. The block states a confidence estimate, an assessment of the
-partial solution so far, and a committed action (e.g.\ verify the current
-answer, or redirect to a different approach), after which the model resumes
-solving. This representation is deliberately \emph{executable} rather than
-descriptive: the block sits at a known position in the trace, its content is
-machine-parsable, and---crucially for Section~\ref{sec:method:pmishift}---the
-contexts immediately before and after it are well defined, so the block's
-effect on downstream beliefs can be measured.
+The opening marker \metaopen{} and the closing marker \metaclose{} are dedicated
+tokens added to the vocabulary. Inside the block the model writes a confidence
+number, an assessment of how the partial solution is going, and a committed next
+action such as re-checking the current answer or switching to a different
+approach. We call this representation executable because it exposes quantities we
+can read directly. The block sits at a known position in the trace. Its content
+is machine-parsable. The token context just before the block and the token
+context just after it are both well defined, so we can measure how the block
+changes what the model believes downstream.
 
-\paragraph{Two-stage SFT priming.}
-Following the observation that RL amplifies behaviors already present in the
-base policy rather than installing new ones \citep{gandhi2025cognitive}, we
-prime the protocol with two supervised stages on Qwen3-8B. \textbf{SFT-1}
-teaches \emph{form and placement}: it trains on reasoning traces with
-well-formed \metaopen{}\dots\metaclose{} blocks embedded \emph{inside} the
-chain of thought (the \texttt{v8\_meta\_inside\_strict} corpus), so the model
-reliably emits syntactically valid, correctly delimited blocks mid-solution.
-\textbf{SFT-2} teaches \emph{function}: it adds traces in which the meta block
-is followed by a behavioral consequence---a redirect that abandons a failing
-approach, or a verification that re-derives the candidate answer---so that
-blocks are not inert annotations but precede an actual change in the solving
-trajectory (the \texttt{rv\_functional} corpus). After priming, the RL stage
-below decides \emph{which} of these behaviors to reinforce, and only where
-they demonstrably help.
+Two supervised stages install this protocol before any reinforcement learning.
+The first stage teaches form and placement. It trains on reasoning traces that
+contain well-formed blocks embedded inside the chain of thought, so the model
+reliably emits syntactically valid, correctly delimited blocks in the middle of
+a solution. The second stage teaches function. It adds traces in which the block
+is followed by a real behavioral consequence, such as abandoning a failing
+approach or re-deriving a candidate answer, so that a block precedes an actual
+change in the solving trajectory rather than sitting inert. We prime both form
+and function first because reinforcement learning amplifies behaviors the policy
+already produces rather than installing new ones \citep{gandhi2025cognitive}.
+After priming, the reinforcement stage decides which of these behaviors to
+strengthen and where they actually help.
 
-\subsection{\pmishift{}: a metacognitive self-distillation reward}
+\subsection{PMI-shift: rewarding a block by the evidence it moves}
 \label{sec:method:pmishift}
 
-RL training uses a GRPO-family objective in which verified answer correctness
-is the primary reward and \pmishift{} is an auxiliary shaping term routed
-exclusively onto meta-block tokens; the launched objective additionally
-carries a small set of protocol-maintenance heads and costs (calibration,
-format, emission, length, truncation), enumerated in the routing paragraph
-below, whose role is to keep the meta channel well-formed rather than to
-improve answers. The design principle is that a meta block
-should be rewarded not for existing, and not for the correctness of the
-rollout it happens to sit in, but for the \emph{belief update it causes}.
+A metacognition block should earn reward for the belief update it causes. It
+should not be rewarded merely for existing, and not for the correctness of the
+rollout it happens to sit in. This is a form of self-distillation with an unusual
+target: the model already carries a latent preference between the correct answer
+and a plausible wrong one in its own likelihoods, and we reward it for writing
+explicit text that surfaces that preference and moves it in the right direction.
+The equations below make this principle precise. We name the resulting reward
+\pmishift{}, after the pointwise-mutual-information contrast between two candidate
+answers that it is built on.
 
-\paragraph{Two-position evidence contrast.}
-Consider a rollout $y$ for prompt $x$ that contains a meta block $m$
-(tag-inclusive, \metaopen{}$\dots$\metaclose{}). Let $y_{<m}$ denote the
-reasoning prefix strictly before \metaopen{}, and define the two evaluation
-contexts
+To measure the update, we read the model's answer preference at two contexts of
+the same rollout and take the difference. Let $x$ be the problem and let
+$y_{<b}$ be the reasoning the model produced strictly before it opened the block.
+The context just before the block is the prompt plus that prefix, and the context
+just after the block adds the block $b$ itself:
 \begin{equation}
-c_{\mathrm{open}} \;=\; (x,\, y_{<m}),
+\mathrm{ctx}_{\mathrm{open}} = (x,\, y_{<b}),
 \qquad
-c_{\mathrm{close}} \;=\; (x,\, y_{<m},\, m),
+\mathrm{ctx}_{\mathrm{close}} = (x,\, y_{<b},\, b).
 \label{eq:contexts}
 \end{equation}
-i.e.\ the model's state just \emph{before} reading its own meta block and just
-\emph{after} it. Let $a^{\star}$ be the gold answer rendered as a boxed answer
-string, and $\tilde{a}$ a \emph{decoy}: a rule-based perturbation of the gold
-answer (integer/float offsets, numerator--denominator swaps, sign flips,
-dropped constants), generated deterministically from the gold string and
-checked for non-equivalence to $a^{\star}$ under the same
-\texttt{math\_verify}-based checker used for grading. This check is
-best-effort: if the checker itself raises an exception, decoy selection
-degrades to string- and float-level non-equality filters, so symbolically
-equivalent decoys are excluded whenever the checker succeeds rather than
-unconditionally. With a \emph{frozen}
-reference model $\pi_{\mathrm{ref}}$ we teacher-force both answer strings at
-both contexts---four arms per rollout, batched into a single no-gradient
-forward---and compute a pointwise-mutual-information--style log-odds of gold
-versus decoy at each position:
-\begin{align}
-\mathrm{PMI}_{\mathrm{open}}
-  &= \textstyle\sum_{t \in \mathcal{D}}
-     \Big[ \log \pi_{\mathrm{ref}}\!\big(a^{\star}_{t} \,\big|\, c_{\mathrm{open}}, a^{\star}_{<t}\big)
-         - \log \pi_{\mathrm{ref}}\!\big(\tilde{a}_{t} \,\big|\, c_{\mathrm{open}}, \tilde{a}_{<t}\big) \Big],
-\label{eq:pmiopen}\\
-\mathrm{PMI}_{\mathrm{close}}
-  &= \textstyle\sum_{t \in \mathcal{D}}
-     \Big[ \log \pi_{\mathrm{ref}}\!\big(a^{\star}_{t} \,\big|\, c_{\mathrm{close}}, a^{\star}_{<t}\big)
-         - \log \pi_{\mathrm{ref}}\!\big(\tilde{a}_{t} \,\big|\, c_{\mathrm{close}}, \tilde{a}_{<t}\big) \Big],
-\label{eq:pmiclose}
-\end{align}
-where $\mathcal{D}$ is the set of token positions at which the (length-matched)
-gold and decoy tokenizations diverge; rows whose tokenizations mismatch in
-length fail closed rather than being zero-padded, which would fabricate
-spurious log-probabilities. $\mathrm{PMI}_{\mathrm{open}}$ is the model's
-gold-vs-decoy evidence \emph{before} its own metacognitive intervention;
-$\mathrm{PMI}_{\mathrm{close}}$ is the evidence \emph{after}. Their difference
+We compare two candidate final answers at each context. The first is the gold
+answer $a^{\star}$, rendered as a boxed answer string. The second is a decoy
+$\tilde{a}$: a plausible wrong answer produced by perturbing the gold string with
+rule-based edits such as numeric offsets, sign flips, and numerator--denominator
+swaps. The decoy is generated deterministically and checked to be non-equivalent
+to the gold under a symbolic answer-equivalence checker, falling back to string
+and float inequality when the checker itself errors. A frozen reference model
+$\pi_{\mathrm{ref}}$, a copy of the policy that is never updated, reads the
+probability of each candidate answer at each context. Reading here means
+teacher-forcing: we feed the reference model a fixed answer string and record the
+log-probability it assigns, with no sampling. Let
+$\log p_{\mathrm{ref}}(a \mid \mathrm{ctx})$ be that teacher-forced log-probability
+of answer string $a$ at context $\mathrm{ctx}$, summed over the answer tokens
+where the gold and decoy tokenizations differ. The evidence margin at a context
+is the reference model's log-odds of gold over decoy there:
 \begin{equation}
-\Delta \;=\; \mathrm{PMI}_{\mathrm{close}} - \mathrm{PMI}_{\mathrm{open}}
+m(\mathrm{ctx})
+= \log p_{\mathrm{ref}}(a^{\star} \mid \mathrm{ctx})
+- \log p_{\mathrm{ref}}(\tilde{a} \mid \mathrm{ctx}).
+\label{eq:margin}
+\end{equation}
+Reading the margin at both contexts gives $m(\mathrm{ctx}_{\mathrm{open}})$, the
+gold-versus-decoy evidence before the model reads its own block, and
+$m(\mathrm{ctx}_{\mathrm{close}})$, the evidence after. These are four
+teacher-forced readings in all: gold and decoy, each at the open and close
+context. Their difference is the block's marginal contribution to belief:
+\begin{equation}
+\mathrm{SHIFT}
+= m(\mathrm{ctx}_{\mathrm{close}}) - m(\mathrm{ctx}_{\mathrm{open}}).
 \label{eq:shift}
 \end{equation}
-is the meta block's marginal contribution to moving belief toward the correct
-answer: everything else about the rollout (prompt, prefix, answers, reference
-model) is held fixed across the two positions, so $\Delta$ isolates the effect
-of the block itself.
+Everything else about the rollout stays fixed across the two contexts: the
+prompt, the prefix, both candidate answers, and the reference model. So
+$\mathrm{SHIFT}$ isolates the effect of the block itself.
 
-\paragraph{Reward with clipping and asymmetric reversal bonuses.}
-The per-rollout meta reward combines a clipped continuous term with an
-asymmetric bonus for genuine \emph{sign reversals} of belief:
+The reward turns the shift into a bounded score and adds an asymmetric bonus for
+genuine reversals of preference:
 \begin{equation}
 R_{\mathrm{shift}}
-\;=\;
-s \cdot \mathrm{clip}\!\big(\Delta,\, -c,\, c\big)
-\;+\;
+= s \cdot \mathrm{clip}(\mathrm{SHIFT},\, -c,\, c)
++
 \begin{cases}
 +\beta_{\mathrm{save}}
-  & \text{if } \mathrm{PMI}_{\mathrm{open}} < -\varepsilon
-    \text{ and } \mathrm{PMI}_{\mathrm{close}} > \varepsilon
-    \quad \text{(\textsc{save})}\\[2pt]
+  & \text{if } m(\mathrm{ctx}_{\mathrm{open}}) < 0
+    \text{ and } m(\mathrm{ctx}_{\mathrm{close}}) > 0
+    \quad(\textsc{save}),\\[2pt]
 -\beta_{\mathrm{derail}}
-  & \text{if } \mathrm{PMI}_{\mathrm{open}} > \varepsilon
-    \text{ and } \mathrm{PMI}_{\mathrm{close}} < -\varepsilon
-    \quad \text{(\textsc{derail})}\\[2pt]
+  & \text{if } m(\mathrm{ctx}_{\mathrm{open}}) > 0
+    \text{ and } m(\mathrm{ctx}_{\mathrm{close}}) < 0
+    \quad(\textsc{derail}),\\[2pt]
 0 & \text{otherwise,}
 \end{cases}
 \label{eq:reward}
 \end{equation}
-with scale $s = 1$, clip $c = 2$, $\beta_{\mathrm{save}} = 1.0$, and
-$\beta_{\mathrm{derail}} = 2.0$. A \textsc{save} (a decoy$\to$gold reversal)
-is exactly the event of
-interest---the meta block corrected a wrong-leaning belief---while a
-\textsc{derail} (gold$\to$decoy: the block talked the model out of a correct
-answer) is
-penalized strictly harder than a save is rewarded, making harmful
-metacognition more costly than useful metacognition is profitable. The margin
-$\varepsilon \geq 0$ exists as a guard against marginal-jitter reward
-farming: with $\varepsilon > 0$ a reversal must clear a dead band on
-\emph{both} sides of zero. Our reported runs use $\varepsilon = 0$, under
-which the strict inequalities exclude only exact zero-crossings; the dead
-band is an ablatable knob, not an active safeguard in the results we report.
-Degenerate inputs fail closed to $R_{\mathrm{shift}}=0$:
-non-finite PMI values, empty meta blocks (for which
-$c_{\mathrm{close}}=c_{\mathrm{open}}$ and the shift is null by construction),
-and decoys that collapse onto the gold string. A further guard---a token-set
-Jaccard filter denying credit to meta blocks that near-duplicate the
-preceding reasoning---is implemented but disabled (threshold $1.0$) in the
-reported runs. Scoring is also selective: in each rollout only the
-\emph{first} closed meta block is scored; rollouts whose block is followed by
-no further content (whitespace-only continuation) and rollouts whose
-delimiters cannot be trusted are excluded from the member set, while
-recoverable delimiter errors (swapped, duplicated, or reversed tags) are
-scored after token repair.
+with scale $s = 1$, clip bound $c = 2$, $\beta_{\mathrm{save}} = 1.0$, and
+$\beta_{\mathrm{derail}} = 2.0$. A \textsc{save} is the event of interest: the
+block flipped a decoy-leaning preference to a gold-leaning one. A \textsc{derail}
+is the opposite failure, where the block talked the model out of a correct
+leaning. The derail penalty is strictly larger than the save bonus, so harmful
+metacognition costs more than useful metacognition earns. The clip keeps a single
+large log-odds swing from dominating the objective. Degenerate cases fail closed
+to $R_{\mathrm{shift}} = 0$ in one rule: a non-finite reading, an empty block
+whose two contexts coincide, a decoy that collapses onto the gold string, or a
+gold and decoy whose tokenizations cannot be length-matched all yield no shift
+credit rather than a fabricated one.
 
-\paragraph{Region-masked routing and group centering.}
-Rewards are converted to token-level advantages by region
-(Figure~\todo{method overview figure}). Each response is partitioned into an
-\textsc{answer} region (all non-meta tokens), a \textsc{meta-content} region
-(the opening \metaopen{} tag plus the tokens inside the block,
-\emph{excluding} the confidence-number tokens), and a \textsc{conf} region
-(the confidence-number tokens). The \textsc{conf} carve-out is deliberate:
-dense PMI credit on the stated confidence would reward writing a confidence
-that the continuation then echoes, so those tokens are routed to the
-calibration head below and never receive $R_{\mathrm{shift}}$. The closing
-\metaclose{} tag serves as the anchor position for the format head. Within a
-GRPO group $\mathcal{G}$ of rollouts sharing a prompt, each reward head is
-centered by subtracting its group mean (no variance normalization, following
-Dr.GRPO~\citep{liu2025understanding}),
-$\hat{A}^{(i)} = R^{(i)} - \tfrac{1}{|\mathcal{M}|}\sum_{j \in \mathcal{M}} R^{(j)}$,
-where the meta head is centered only over the member set $\mathcal{M}$ of
-rollouts whose shift was actually computed---centering over non-emitting
-rollouts would both dilute the baseline with structural zeros and hand those
-rollouts a spurious nonzero advantage. To keep heads on a common scale, the
-auxiliary heads' centered advantages are rescaled to match an
-exponential-moving-average of the correctness head's mean absolute advantage
-(\emph{anchor normalization}); the centered, rescaled value is then broadcast
-\emph{uniformly} onto every token of its own region. The two heads of primary
-scientific interest are
+The scalar reward becomes token-level advantages routed by region, so that
+answer quality and block quality cannot game each other. Correctness reward
+$R_{\mathrm{corr}}\in\{-1,+1\}$ flows
+only onto the final-answer tokens, and $R_{\mathrm{shift}}$ flows only onto the
+tokens inside the meta block. Because the two signals never share a token,
+improving the answer cannot inflate the block reward and vice versa. These are
+the two scientifically load-bearing heads: a correctness head on the answer
+tokens and the shift head on the meta-content tokens. For each head, the scalar
+is centered by subtracting the mean reward over the group of rollouts that share
+a prompt, with no division by the group's variance, and the centered value is
+broadcast uniformly onto every token of its own region:
 \begin{equation}
-A_{t} \;=\; w_{\mathrm{corr}}\, \hat{A}_{\mathrm{corr}} \,
-\mathbb{1}[t \in \textsc{answer}]
-\;+\;
-w_{\mathrm{meta}}\, \hat{A}_{\mathrm{shift}} \,
-\mathbb{1}[t \in \textsc{meta-content}]
-\;+\;
-A^{\mathrm{aux}}_{t},
+A_{t}
+= w_{\mathrm{corr}}\, \hat{A}_{\mathrm{corr}}\, \mathbb{1}[t \in \textsc{answer}]
++ w_{\mathrm{meta}}\, \hat{A}_{\mathrm{shift}}\, \mathbb{1}[t \in \textsc{meta}]
++ A^{\mathrm{aux}}_{t},
+\qquad
+\hat{A}^{(i)}_{\bullet} = R^{(i)}_{\bullet} - \frac{1}{|\mathcal{G}_{\bullet}|}\sum_{j\in\mathcal{G}_{\bullet}} R^{(j)}_{\bullet},
+\quad \bullet\in\{\mathrm{corr},\mathrm{shift}\}.
 \label{eq:routing}
 \end{equation}
-with $w_{\mathrm{corr}} = 1.0$ and $w_{\mathrm{meta}} = 0.8$; the meta weight
-is linearly warmed up from $0$ to $0.8$ over the first $80$ training steps.
-The term $A^{\mathrm{aux}}_{t}$ collects three protocol-maintenance heads,
-routed analogously: a Brier-style calibration head on the \textsc{conf}
-tokens ($w_{\mathrm{cal}} = 0.3$), a format head anchored on the closing tag
-($w_{\mathrm{format}} = 0.35$; $+1$ for a well-formed closed block, $-0.2$
-for drifting or discarded blocks), and a binary emission head on the first
-response token ($w_{\mathrm{emit}} = 0.1$) that counters silent collapse of
-the protocol. Two scalar costs complete the objective: a length cost that
-subtracts $0.08 \cdot (\text{response length} / \text{max length})$ (scaled
-by the same warmup) from the correctness scalar, and a $0.3$ penalty for meta
-blocks left dangling open at truncation. The correctness head is therefore
-$R_{\mathrm{corr}} \in \{-1, +1\}$ (verified final-answer grading with
-\texttt{math\_verify}) minus the length cost; it remains the primary
-objective and never flows onto meta tokens. Conversely, $R_{\mathrm{shift}}$
-never flows onto answer tokens, so improving the answer cannot directly game
-the meta channel nor vice versa; the maintenance heads touch only their own
-anchor positions.
+Here $\mathbb{1}[\cdot]$ is 1 when token $t$ lies in the named region and 0
+otherwise, $\hat{A}^{(i)}_{\bullet}$ is the centered advantage for head $\bullet$,
+and $\mathcal{G}_{\bullet}$ is the set of rollouts over which that head is
+centered; for rollout $i$, $\hat{A}_{\mathrm{corr}}$ and $\hat{A}_{\mathrm{shift}}$
+abbreviate $\hat{A}^{(i)}_{\mathrm{corr}}$ and $\hat{A}^{(i)}_{\mathrm{shift}}$.
+Also $w_{\mathrm{corr}} = 1.0$, and $w_{\mathrm{meta}}$ is
+warmed up linearly from $0$ to $0.8$ over the first $80$ steps. The shift head is
+centered only over rollouts that actually emitted a scored block, so
+non-emitting rollouts neither dilute the baseline nor receive a spurious
+advantage. The auxiliary term $A^{\mathrm{aux}}_{t}$ collects a small set of
+maintenance heads whose job is to keep the block channel clean, not to drive the
+science, each routed onto its own tokens:
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Maintenance head & What it scores & Weight \\
+\midrule
+calibration & squared error of the stated confidence versus outcome & $0.30$ \\
+format      & whether the block is well-formed and properly closed  & $0.35$ \\
+emission    & whether the response opens a block at all             & $0.10$ \\
+length cost & response length as a fraction of the token budget     & $0.08$ \\
+truncation  & a block left open when the response is cut off        & $0.30$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+The calibration head reads the confidence-number tokens, which are carved out of
+the shift region so that writing a confidence the continuation then echoes cannot
+earn shift credit. To keep weak and strong signals comparable, the auxiliary
+heads are rescaled so their typical advantage magnitude tracks a running average
+of the correctness head's, which prevents the small shift signal from being
+buried under correctness.
 
-\paragraph{Interpretation: metacognitive self-distillation.}
-Equations~\eqref{eq:pmiopen}--\eqref{eq:routing} implement a form of
-self-distillation with an unusual target. The model already carries, in its
-own frozen-reference likelihoods, a latent contrast between the correct answer
-and a plausible perturbation of it. \pmishift{} rewards the policy for
-\emph{writing meta content that surfaces this latent evidence}---text whose
-inclusion in the context measurably moves the gold-vs-decoy log-odds in the
-right direction. Rather than distilling a teacher's outputs into the student,
-the model distills its own evidence contrast into its explicit metacognitive
-channel; the reward is high precisely when the verbalized self-assessment
-does causal work.
-
-\subsection{Matched-base causal design}
+\subsection{The matched-base twin that isolates the mechanism}
 \label{sec:method:twin}
 
-Any accuracy difference between our model and an off-the-shelf RLVR baseline
-confounds the meta mechanism with the SFT data distribution, prompt format,
-token budget spent on meta blocks, and RL hyperparameters. We therefore train
-a \emph{matched-base twin} that differs from the \pmishift{} arm only in the
-meta package defined below.
+Any accuracy gap between our model and an off-the-shelf reinforcement-learning
+baseline is hard to attribute, because such a baseline differs from our model in
+many ways at once: the fine-tuning data, the prompt format, the token budget
+spent on blocks, and the optimizer settings. We therefore train a matched-base
+twin that differs from the treatment model in one thing only, the meta package
+defined below.
 
-\textbf{Held identical.} The twin is trained on the same problems in the same
-order, with the SFT corpora \emph{meta-stripped}: every
-\metaopen{}\dots\metaclose{} block is removed while the surrounding reasoning
-is preserved verbatim, so both arms see the same mathematical content. All
-non-meta hyperparameters---optimizer, learning-rate schedule, group size,
-rollout sampling parameters, sequence budget, training steps---are identical,
-enforced by a byte-level audit of the two configurations that whitelists only
-the meta-specific keys: the reward-head list, the meta/calibration/format/%
-emission head weights and their warmup, the length cost, the truncation
-penalty, and the meta-token and region-masking switches. Both arms are
-evaluated in the same jobs with the same
-seeds and the same grading (Section~\ref{sec:experiments}).
+The two models are held identical everywhere except the package. They train on
+the same problems in the same order. The twin's fine-tuning data is
+meta-stripped: every block is removed while the surrounding reasoning is kept
+verbatim, so both models see the same mathematical content. Every non-meta
+setting is identical, including the optimizer, the learning-rate schedule, the
+group size, the sampling parameters, the sequence budget, and the number of
+training steps. We enforce this with a byte-level audit of the two configurations
+that whitelists only the meta-specific keys. What differs is the meta package as
+a whole. The package is the priming protocol, the \pmishift{} reward, and the
+maintenance heads together. The twin runs plain reinforcement learning with the
+correctness reward alone: no meta tokens, no region routing, no shift head, and
+none of the maintenance heads.
 
-\textbf{What differs.} The twin runs vanilla GRPO with the correctness reward
-only: no meta tokens, no region masking, no \pmishift{} head, and none of the
-protocol-maintenance machinery of Section~\ref{sec:method:pmishift}. The
-treatment arm adds, as a package: the protocol and priming of
-Section~\ref{sec:method:protocol}, the \pmishift{} head, the
-calibration/format/emission heads, the length cost, and the truncation
-penalty of Section~\ref{sec:method:pmishift}. One inherited mechanism is
-explicitly \emph{not} part of the treatment: the configuration chain
-registers a counterfactual rollout-split agent (which would split each GRPO
-group into with-meta and meta-banned sub-arms), but that split is gated on a
-different reward source (\texttt{cf\_group}) and we verified it is inactive
-under the \pmishift{} source; both arms generate all rollouts through the
-same single-turn rollout path.
-
-\textbf{Why this isolates the mechanism.} Under this design the two arms share
-base model, data content, compute, and optimization, so the treatment
-$-$ twin contrast estimates the causal effect of the full meta package
-\{meta priming $+$ \pmishift{} shaping $+$ protocol-maintenance heads and
-costs\}---not of the \pmishift{} reward in isolation; the Gandhi-style
-decomposition arm in
-Section~\ref{sec:exp:rq2} (meta-primed SFT followed by vanilla GRPO) further splits
-this package into the contribution of priming versus RL-time shaping.
-The twin also guards against a subtle failure mode we document in
-Section~\ref{sec:exp:rq3}: any comparison between meta-emitting and
-non-emitting \emph{subsets} of a single model conditions on the endogenous
-decision to emit, whereas the twin comparison is a between-arm contrast on
-the full, identical evaluation set. This matters because emission and payoff
-dissociate in our runs---the treatment arm emits a meta block on 86--94\% of
-responses across \emph{all} difficulty quartiles (non-selective;
-Section~\ref{sec:exp:rq3}), while the accuracy benefit concentrates on the
-hardest problems---so within-model subset comparisons would mix this
-uniform-emission behavior with the difficulty-dependent payoff, and only the
-between-arm contrast cleanly estimates the effect of the meta package.
+This contrast estimates the causal effect of the package. A between-model
+comparison is necessary here. The alternative, comparing responses that emit a
+block against responses that do not within a single model, would condition on a
+decision the model itself makes, and rollouts that choose to emit a block may
+differ systematically from those that do not. The matched-base contrast avoids
+this by comparing two models on the same, full evaluation set. It estimates the
+effect of the whole package rather than the shift reward alone. The experiments
+further separate the package into the contribution of the priming stages and the
+contribution of the reward, by comparing a meta-primed model trained with plain
+reinforcement learning against the full treatment.

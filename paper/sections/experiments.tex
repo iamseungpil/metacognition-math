@@ -1,325 +1,313 @@
-% SCOPE: 4.1 setup/protocol; 4.2 RQ1/T1 main accuracy (FILLED, preliminary
-% single-seed gs300, robust math_verify re-grade) + degeneration-mitigation
-% finding; 4.3 RQ2/T2 mechanism decomposition (Gandhi-arm + shift-only arm)
-% = PENDING with pre-registered decision rules; 4.4 RQ3/T3 difficulty
-% stratification (FILLED); 4.5 RQ4/T4 calibration (FILLED, meta-only).
-% All FILLED cells are a SINGLE-SEED preliminary gs300 evaluation; the RQ2
-% decomposition and multi-seed replication remain pending.
+% SCOPE: 4.0 setup + all caveats stated ONCE; 4.1 RQ1 accuracy (T1) +
+% degeneration/truncation-mitigation (T1b); 4.2 RQ2 mechanism decomposition
+% (pending, pre-registered, \todo); 4.3 RQ3 difficulty stratification +
+% emission-vs-payoff dissociation (T3); 4.4 RQ4 calibration, meta-only (T4).
+% Result paragraphs and captions carry only the tag "(prelim., package)".
 \section{Experiments}
 \label{sec:experiments}
 
-Our experiments answer four questions, each with a dedicated table:
-does the \pmishift{} package improve accuracy over a confound-free
-matched baseline (RQ1, Table~\ref{tab:t1}); where does the effect come
-from (RQ2, Table~\ref{tab:t2}); how does it vary with difficulty and
-distribution shift (RQ3, Table~\ref{tab:t3}); and what happens to
-calibration (RQ4, Table~\ref{tab:t4}). The accuracy, stratification, and
-calibration tables (T1, T3, T4) report a \emph{single-seed, preliminary}
-gs300 evaluation under a robust \texttt{math\_verify} re-grade; we mark
-every such number \emph{preliminary} and defer multi-seed replication.
-The mechanism decomposition (RQ2/T2) is still \emph{pending}: its cells
-are placeholders (\todo{}) governed by pre-registered decision rules
-(Section~\ref{sec:exp:rq2}).
+We ask four questions. RQ1: does the meta package raise held-out accuracy
+over an otherwise identical run? RQ2: which part of the package carries the
+effect? RQ3: does the gain live where the model is actually uncertain, and
+does meta emission track it? RQ4: what happens to calibration? Each question
+follows the same order: the plain-language intent, the experiment that
+answers it, the result, and the interpretation.
 
-\subsection{Setup and evaluation protocol}
+\subsection{Setup}
 \label{sec:exp:setup}
 
-\paragraph{Models and training.} All arms start from Qwen3-8B. The
-treatment arm follows the pipeline of Section~\ref{sec:method}: SFT-1
-primes \metaopen{}\dots\metaclose{} blocks inside the reasoning trace
-(\texttt{v8\_meta\_inside\_strict} data), SFT-2 adds functional
-redirect/verify behaviors (\texttt{rv\_functional}), and RL is a
-GRPO-family objective (\texttt{TRIOBJ\_DCPO\_V4})~\citep{shao2024deepseekmath}
-whose launched configuration is a \emph{five-head package}, not the
-\pmishift{} reward in isolation: the correctness reward
-$R_{\mathrm{corr}} \in \{-1,+1\}$ (\texttt{math\_verify}) with weight
-$w_{\mathrm{corr}} = 1.0$; the \pmishift{} meta-region reward
-$R_{\mathrm{shift}}$ ($w_{\mathrm{meta}} = 0.8$, warmed up over 80 steps);
-and the protocol-maintenance heads and costs of
-Section~\ref{sec:method:pmishift} ($w_{\mathrm{cal}} = 0.3$,
-$w_{\mathrm{format}} = 0.35$, $w_{\mathrm{emit}} = 0.1$, length cost
-$0.08$, truncation penalty $0.3$). Because all five heads move together,
-the T1 treatment$-$base contrast estimates the effect of the
-\emph{whole package} versus vanilla GRPO, and isolating the \pmishift{}
-reward is exactly the job of RQ2 (Section~\ref{sec:exp:rq2}). The control
-arm is the matched-base twin of Section~\ref{sec:method:twin}: identical
-data with meta blocks stripped, identical non-meta hyperparameters
-(byte-audited config diff), and vanilla GRPO with correctness-only reward.
-The base arm emits \emph{no} meta blocks and \emph{no} confidence token
-(0\% meta emission), a structural asymmetry we return to in RQ4. Both arms
-are trained with a 4{,}096-token response cap and evaluated at both 4k and
-16k (below).
+Every result below shares one evaluation protocol, and we state its caveats
+here so that later paragraphs do not repeat them. The numbers come from a
+single training seed at one checkpoint (gs300) and are therefore
+preliminary. Answers are scored by a robust \texttt{math\_verify} re-grade,
+which replaces an earlier brittle grader that had marked some correct
+answers wrong. The held-out suite is 1{,}030 problems: 500 from GSM8K, 500
+from MATH500, and 30 from AIME. For each problem we sample several answers
+and average their correctness; we report this average over 8 samples (over
+16 samples on the small AIME set, to reduce noise). We evaluate at two
+generation budgets, a 4k-token cap and a 16k-token cap, so that any length
+effect is visible. The treatment arm is a seven-head reward package, not the
+meta-shift reward alone. Its per-head decomposition is the subject of RQ2;
+until then, every treatment-minus-base gap is the effect of the whole
+package. We tag each result and caption ``(prelim., package)'' as a reminder
+of these two facts.
 
-\paragraph{Evaluation protocol.} We evaluate on a held-out suite of
-1{,}030 problems: 500 GSM8K, 500 MATH500, and 30 AIME. Answers are graded
-with a robust \texttt{math\_verify} re-grade (correcting the earlier
-brittle grader that spuriously deflated correct answers); generation uses
-temperature $0.7$ at both a 4k and a 16k max-token budget. We report avg@8
-accuracy (avg@16 on AIME to reduce variance on the small set). Both arms
-are evaluated \emph{in the same job with identical seeds}. Significance is
-assessed by \emph{problem-paired bootstrap} over the held-out set (and, on
-the $n{=}30$ AIME set, additionally by McNemar's test). The current gs300
-results are a \emph{single training seed} and are therefore preliminary;
-multi-seed mean$\pm$std replication is pending.
-
-\paragraph{Stratified reporting.} All meta-vs-base comparisons are also
-reported \emph{difficulty-stratified} (Section~\ref{sec:exp:rq3}). The
-motivation is empirical: the accuracy payoff of the meta package is
-strongly difficulty-dependent (saturated on easy quartiles, largest on
-the hardest), whereas meta-block \emph{emission} is essentially
-\emph{non-selective}---the treatment arm emits a block on 86--94\% of
-responses across \emph{all} difficulty quartiles
-(Section~\ref{sec:exp:rq3}). This dissociation---uniform emission but
-difficulty-concentrated payoff---means the model over-emits on easy
-problems (an efficiency cost we flag as a limitation), and it is why we
-rely on the between-arm matched-base contrast, which compares the two arms
-on the full identical evaluation set rather than conditioning on the
-endogenous decision to emit.
-
-\subsection{RQ1: Does the \pmishift{} package improve held-out accuracy?}
-\label{sec:exp:rq1}
-
-\paragraph{Question and design.} RQ1 asks whether the \pmishift{} package
-improves end-task accuracy over an otherwise identical GRPO run.
-Table~\ref{tab:t1} compares the matched base twin against the \pmishift{}
-arm at the final checkpoint (gs300). Because the twin differs from the
-treatment only in the meta package of Section~\ref{sec:method:twin}, any
-gap is attributable to that package \emph{as a whole}; apportioning it to
-the \pmishift{} reward specifically is RQ2.
-
-\paragraph{Result.} The package improves accuracy on every domain, with
-the gain growing sharply with domain difficulty. On GSM8K, \pmishift{}
-scores $93.9$ vs.\ the base's $89.9$ ($+4.0$\,pp, problem-paired bootstrap
-$p<.001$); on MATH500, $81.5$ vs.\ $62.7$ ($+18.8$\,pp, $p<.001$); on
-AIME (avg@16, 16k budget), $18.5$ vs.\ $4.8$ ($+13.8$\,pp, bootstrap
-$p<.001$; McNemar $p\in[.03,.06]$ on $n{=}30$). The sample-weighted
-overall accuracy is $85.7$ vs.\ $74.2$ ($+11.5$\,pp). These are
-single-seed preliminary numbers; the effect size and its concentration on
-hard problems (RQ3) are the two robust qualitative signals.
+The remaining setup is summarized in Table~\ref{tab:setup}. The two arms are
+byte-identical twins: same base model, same data, and same non-meta
+hyperparameters, differing only in whether meta blocks are present and
+rewarded. This is what lets us read any accuracy gap as the package effect.
+The base arm emits no meta block and no confidence token at all, an
+asymmetry that matters in RQ4.
 
 \begin{table}[t]
-\caption{\textbf{T1: main results} at gs300 on the held-out
-1{,}030-problem suite (avg@8; AIME avg@16 at the 16k budget), robust
-\texttt{math\_verify} re-grade. \emph{Preliminary, single seed.} The
-\pmishift{} arm is the five-head package (correctness $+$ \pmishift{}
-$+$ calibration/format/emission heads $+$ costs); the treatment$-$base
-gap is the package effect vs.\ vanilla GRPO, decomposed in RQ2. Overall
-is the 1{,}030-sample-weighted mean. $p$-values: problem-paired bootstrap;
-$^{\dagger}$AIME additionally McNemar $p\in[.03,.06]$, $n{=}30$.}
+\caption{Experimental setup shared by all results \emph{(prelim., package)}.
+The treatment and control arms differ only in the meta package; all other
+settings are matched.}
+\label{tab:setup}
+\begin{center}
+\small
+\begin{tabular}{ll}
+\toprule
+Component & Setting \\
+\midrule
+Base model        & Qwen3-8B (both arms) \\
+Stage 1 (SFT-1)   & primes meta blocks in the trace \\
+Stage 2 (SFT-2)   & adds functional redirect/verify behavior \\
+RL objective      & GRPO-family~\citep{shao2024deepseekmath} \\
+\midrule
+\multicolumn{2}{l}{\emph{Treatment reward heads (seven-head package):}} \\
+\quad correctness ($R_{\mathrm{corr}}\!\in\!\{-1,+1\}$, \texttt{math\_verify}) & weight $1.0$ \\
+\quad meta-shift ($R_{\mathrm{shift}}$, warmed up over 80 steps) & weight $0.8$ \\
+\quad calibration / format / emission maintenance & $0.3$ / $0.35$ / $0.1$ \\
+\quad length cost / truncation penalty & $0.08$ / $0.3$ \\
+Control reward    & correctness only (vanilla GRPO), no meta blocks \\
+\midrule
+Held-out suite    & 1{,}030 problems (GSM8K 500, MATH500 500, AIME 30) \\
+Budgets           & 4k and 16k token caps; sampling temperature $0.7$ \\
+Metric            & avg@8 accuracy (avg@16 on AIME) \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{table}
+
+\subsection{RQ1: Does the meta package improve held-out accuracy?}
+\label{sec:exp:rq1}
+
+\paragraph{Intent.} The core question is whether rewarding metacognitive acts
+actually raises end-task accuracy. Rewarding them is only worthwhile if a run
+that does so beats an otherwise identical run that does not.
+
+\paragraph{Method.} We compare the byte-identical twins on the same held-out
+problems at the same checkpoint. One arm carries the meta package; the other
+is vanilla GRPO with a correctness-only reward. The two arms are graded in the
+same job with the same seeds, so any gap between them is the package. We test
+each gap two ways. A problem-paired bootstrap resamples the held-out problems
+with replacement and checks whether the paired accuracy gap stays above zero;
+this yields a bootstrap $p$ and a 95\% interval. McNemar's test asks whether
+the two arms disagree asymmetrically on the same problems, which is
+informative on the tiny 30-problem AIME set.
+
+\paragraph{Result.} The package wins on all three domains, and the margin grows
+with difficulty (Table~\ref{tab:t1}). On GSM8K the gap is small but reliable,
+$+4.0$ points. On MATH500 it is large, $+18.8$ points. On AIME it is
+$+14.2$ points, from a base accuracy of only $5.0$. The bootstrap places every
+gap above zero with $p<.001$; McNemar agrees except on the smallest AIME cell,
+where it is borderline. A second result concerns the token budget
+(Table~\ref{tab:t1b}). Both arms are flat from 4k to 16k: extra tokens buy no
+accuracy on either side. What changes with budget is truncation, meaning how
+often a response runs into the length cap without finishing. The base arm
+truncates far more, about 19\% of MATH500 responses and 73\% of AIME responses,
+against about 6\% and 50\% for the meta arm. The base arm emits no meta blocks
+at any budget.
+
+\begin{table}[t]
+\caption{RQ1 accuracy: byte-identical twin (base) vs.\ the meta arm on the
+held-out suite \emph{(prelim., package)}. avg@8 (AIME avg@16). $\Delta$ in
+percentage points; 95\% interval and bootstrap $p$ from a problem-paired
+bootstrap; McNemar $p$ from McNemar's test.}
 \label{tab:t1}
 \begin{center}
 \small
-\begin{tabular}{lcccc}
+\begin{tabular}{llccccc}
 \toprule
-Arm & GSM8K & MATH500 & AIME & Overall \\
+Domain & Budget & Base & Meta & $\Delta$ & Bootstrap $p$ (95\% CI) & McNemar $p$ \\
 \midrule
-Qwen3-8B (raw)              & \todo{} & \todo{} & \todo{} & \todo{} \\
-SFT-only (SFT-1+2)          & \todo{} & \todo{} & \todo{} & \todo{} \\
-Matched base (vanilla GRPO) & $89.9$  & $62.7$  & $4.8$   & $74.2$  \\
-\pmishift{} (ours, package) & $\mathbf{93.9}$ & $\mathbf{81.5}$ & $\mathbf{18.5}^{\dagger}$ & $\mathbf{85.7}$ \\
-\midrule
-$\Delta$ (\pmishift{} $-$ base) & $+4.0$ & $+18.8$ & $+13.8$ & $+11.5$ \\
-$p$ (bootstrap)             & $<.001$ & $<.001$ & $<.001$ & $<.001$ \\
+GSM8K   & 4k  & $89.9$ & $\mathbf{93.9}$ & $+4.0$  & $<.001$ ($[+2.5,+5.6]$)  & $<.001$ \\
+GSM8K   & 16k & $90.2$ & $\mathbf{93.3}$ & $+3.1$  & $<.001$                  & $.024$  \\
+MATH500 & 4k  & $62.7$ & $\mathbf{81.5}$ & $+18.8$ & $<.001$ ($[+16.2,+21.4]$)& $<.001$ \\
+MATH500 & 16k & $62.9$ & $\mathbf{81.8}$ & $+18.9$ & $<.001$                  & $<.001$ \\
+AIME    & 4k  & $5.0$  & $\mathbf{19.2}$ & $+14.2$ & $<.001$                  & $.031$  \\
+AIME    & 16k & $4.8$  & $\mathbf{18.5}$ & $+13.8$ & $<.001$ ($[+5.8,+23.1]$) & $.062$  \\
 \bottomrule
 \end{tabular}
 \end{center}
 \end{table}
 
-\paragraph{Highlighted finding: the meta package \emph{mitigates}, and
-does not cause, 16k degeneration.} A natural worry is that the gain is a
-length artifact---that meta blocks simply buy more tokens. The budget
-sweep in Table~\ref{tab:t1budget} rules this out and reveals the opposite.
-\emph{Both} arms are flat from 4k to 16k (AIME: \pmishift{} $19.2\to18.5$,
-base $5.0\to4.8$): extra token budget yields no accuracy on either arm, so
-the treatment gap is not bought by longer generations. What \emph{does}
-differ is non-termination. The base arm truncates far more at every
-budget---on MATH500 $\approx$19\% of base responses hit the cap vs.\
-$\approx$6\% for \pmishift{}, and on AIME $\approx$73\% vs.\
-$\approx$50\%. The 16k non-termination degeneration is therefore a
-property of the base policy and data that the meta mechanism
-\emph{mitigates}, not one it introduces.
-
 \begin{table}[t]
-\caption{\textbf{T1b: token-budget sweep and truncation.} \emph{Preliminary,
-single seed.} Accuracy is flat 4k$\to$16k on both arms (no length effect),
-while the base arm truncates far more at the cap---the meta mechanism
-mitigates the 16k degeneration rather than causing it.}
-\label{tab:t1budget}
+\caption{RQ1 budget sweep and truncation \emph{(prelim., package)}. Accuracy
+is flat from 4k to 16k on both arms, so the gap is not bought with tokens.
+The base arm hits the length cap far more often. Truncation rates are
+budget-averaged.}
+\label{tab:t1b}
 \begin{center}
 \small
-\begin{tabular}{lcccc}
+\begin{tabular}{lcccccc}
 \toprule
- & \multicolumn{2}{c}{AIME acc.} & \multicolumn{2}{c}{Truncation rate} \\
-\cmidrule(lr){2-3}\cmidrule(lr){4-5}
-Arm & 4k & 16k & MATH500 & AIME \\
+ & \multicolumn{2}{c}{GSM8K} & \multicolumn{2}{c}{MATH500} & \multicolumn{2}{c}{AIME} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}
+Arm & 4k & 16k & 4k & 16k & 4k & 16k \\
 \midrule
-Matched base (vanilla GRPO) & $5.0$  & $4.8$  & $\approx$19\% & $\approx$73\% \\
-\pmishift{} (ours, package) & $19.2$ & $18.5$ & $\approx$6\%  & $\approx$50\% \\
+Base accuracy & $89.9$ & $90.2$ & $62.7$ & $62.9$ & $5.0$  & $4.8$  \\
+Meta accuracy & $93.9$ & $93.3$ & $81.5$ & $81.8$ & $19.2$ & $18.5$ \\
+\midrule
+ & \multicolumn{6}{c}{Truncation rate (response hit the length cap)} \\
+\cmidrule(lr){2-7}
+Base & \multicolumn{2}{c}{--} & \multicolumn{2}{c}{$\approx19\%$} & \multicolumn{2}{c}{$\approx73\%$} \\
+Meta & \multicolumn{2}{c}{--} & \multicolumn{2}{c}{$\approx6\%$}  & \multicolumn{2}{c}{$\approx50\%$} \\
 \bottomrule
 \end{tabular}
 \end{center}
 \end{table}
 
-\subsection{RQ2: Where does the effect come from? (\textsc{pending})}
+\paragraph{Interpretation.} The gain is not paid for with tokens, since neither
+arm improves when given four times the budget. That rules out the simplest
+alternative explanation, that meta blocks merely license longer generations.
+The truncation numbers point the other way. Long-budget degeneration, where a
+response fills the budget without terminating, is a property of the base policy
+that the meta mechanism mitigates rather than causes. The meta arm finishes
+more often on exactly the hard problems where the base arm stalls.
+
+\subsection{RQ2: Where does the effect come from? (pending)}
 \label{sec:exp:rq2}
 
-\paragraph{Question and design.} Because T1 is a five-head package effect,
-RQ2 decomposes it into pre-registered arms and adjudicates each with a
-fixed decision rule. The gain could come from (i) SFT priming of meta
-behaviors, (ii) the \pmishift{} reward selectively reinforcing them, (iii)
-a non-semantic ``pause''/format artifact of emitting extra tokens, or (iv)
-a boilerplate/shortcut shortcut of the kind AntiSD~\citep{shen2026antisd}
-shows self-distillation is prone to. We instantiate four arms:
-\begin{itemize}[leftmargin=1.4em,itemsep=1pt,topsep=1pt]
-\item \textbf{A1 (Gandhi arm)}: meta-SFT priming $+$ \emph{vanilla} GRPO
-  (correctness-only), directly instantiating
-  \citet{gandhi2025cognitive}---priming without the \pmishift{} reward.
-\item \textbf{A2 (shift-only arm)}: the \pmishift{} reward added on top of
-  A1, but \emph{without} the calibration/format/emission maintenance
-  heads---isolating the shaping reward itself.
-\item \textbf{C1 (placebo, shuffled content)}: A2 evaluated with meta-block
-  \emph{content} shuffled across problems, positions and lengths preserved.
-\item \textbf{C2 (dedup)}: A2 with the token-set Jaccard filter enabled, so
-  meta blocks that near-duplicate the preceding reasoning receive no
-  credit---the AntiSD boilerplate/shortcut control.
-\end{itemize}
+\paragraph{Intent.} The RQ1 gap is a package effect, and a package can win for
+uninteresting reasons. Four candidates compete. The meta-SFT priming alone
+might carry it. The meta-shift reward, which credits meta blocks that move the
+model's answer toward the correct one, might add value on top of priming. The
+blocks might work only as a computational pause, with their content irrelevant.
+Or the reward might farm boilerplate that echoes the surrounding reasoning, the
+shortcut failure that self-distillation is known to invite~\citep{shen2026antisd}.
 
-\paragraph{Pre-registered decision rules.} These are fixed \emph{before}
-the decomposition run and stated as \todo{} pending its results:
-\begin{itemize}[leftmargin=1.4em,itemsep=1pt,topsep=1pt]
-\item \textbf{Shift adds beyond priming} if $\text{A2} > \text{A1}$: the
-  \pmishift{} reward contributes over and above meta-SFT priming amplified
-  by generic RL. If $\text{A2}\approx\text{A1}$, the mechanism reduces to
-  priming and the reward is inert.
-\item \textbf{Content, not format} if $\text{A2} \gtrsim \text{C1}$
-  (shuffled): the \emph{semantics} of the meta block, not its mere
-  presence/position/length, carry the effect. If $\text{A2}\approx
-  \text{C1}$, the block is a computational pause, not functional
-  metacognition.
-\item \textbf{Survives the AntiSD/boilerplate critique} if $\text{A2}
-  \approx \text{C2}$ (dedup): the reward is not farming shortcut/boilerplate
-  tokens that echo the preceding reasoning; a large drop $\text{A2}\gg
-  \text{C2}$ would concede the shortcut-bias diagnosis of
-  \citet{shen2026antisd}.
-\end{itemize}
+\paragraph{Method.} We pre-register four arms, each named by its function, and
+fix a decision rule for each before the run. A priming-only arm applies meta-SFT
+and then correctness-only GRPO, with no shift reward. A shift-only arm adds the
+meta-shift reward on top of priming but turns the other maintenance heads off,
+isolating the shaping reward. A shuffled-content placebo keeps each meta block's
+position and length but scrambles its wording across problems. A duplicate-body
+filter arm withholds credit from meta blocks that near-duplicate the preceding
+reasoning. Table~\ref{tab:t2} holds the pending cells.
+
+\paragraph{Result.} Pending. The cells are placeholders (\todo{}).
 
 \begin{table}[t]
-\caption{\textbf{T2 (\textsc{pending}): mechanism decomposition.} A1 (Gandhi:
-meta-SFT $+$ vanilla GRPO) isolates priming; A2 (shift-only) adds the
-\pmishift{} reward without maintenance heads; C1 (placebo) shuffles meta
-content; C2 (dedup) enables the Jaccard boilerplate filter. Flip analysis
-reports SAVE (decoy$\to$gold) and DERAIL (gold$\to$decoy) rates around meta
-blocks. All cells pending; decision rules in text.}
+\caption{RQ2 mechanism decomposition \emph{(prelim., package)}. Four
+pre-registered arms, each isolating one candidate source of the RQ1 gap. All
+cells pending; decision rules in the interpretation.}
 \label{tab:t2}
 \begin{center}
 \small
 \begin{tabular}{lcccc}
 \toprule
-Arm & Accuracy & SAVE rate & DERAIL rate & Net flips \\
+Arm (by function) & Accuracy & SAVE rate & DERAIL rate & Net flips \\
 \midrule
-Matched base (no meta blocks)           & \todo{} & --      & --      & --      \\
-A1 Gandhi (meta-SFT + vanilla GRPO)     & \todo{} & \todo{} & \todo{} & \todo{} \\
-A2 shift-only (\pmishift{} reward)      & \todo{} & \todo{} & \todo{} & \todo{} \\
-C1 placebo (shuffled content)           & \todo{} & \todo{} & \todo{} & \todo{} \\
-C2 dedup (Jaccard filter on)            & \todo{} & \todo{} & \todo{} & \todo{} \\
+Base (correctness only, no meta)        & \todo{} & --      & --      & --      \\
+Priming-only (meta-SFT + correctness)   & \todo{} & \todo{} & \todo{} & \todo{} \\
+Shift-only (+ meta-shift reward)        & \todo{} & \todo{} & \todo{} & \todo{} \\
+Placebo (shuffled meta content)         & \todo{} & \todo{} & \todo{} & \todo{} \\
+Duplicate-body filter (dedup on)        & \todo{} & \todo{} & \todo{} & \todo{} \\
 \bottomrule
 \end{tabular}
 \end{center}
 \end{table}
 
-\subsection{RQ3: Difficulty stratification and OOD}
+\paragraph{Interpretation.} Each rule states in advance what a given outcome
+would prove, which is the point of pre-registration. If the shift-only arm beats
+the priming-only arm, the shift reward adds value beyond priming; if the two tie,
+the reward is inert and the win reduces to priming. If the shift-only arm beats
+the shuffled-content placebo, the block's meaning carries the effect; if they
+tie, the block is a pause, not functional metacognition. If the duplicate-body
+filter barely changes the shift-only accuracy, the reward is not farming
+boilerplate; a large drop would concede the shortcut diagnosis. The design thus
+converts a single package number into a set of falsifiable claims.
+
+\subsection{RQ3: Where does the gain live, and does emission track it?}
 \label{sec:exp:rq3}
 
-\paragraph{Question and design.} Metacognition should pay where the model
-is actually uncertain. Table~\ref{tab:t3} stratifies held-out accuracy by
-difficulty quartile (Q1 easy to Q4 hard, quartiles by the matched base's
-per-problem pass rate) and reports the treatment arm's meta-emission rate
-per quartile.
+\paragraph{Intent.} Metacognition should pay off where the model is genuinely
+uncertain, not everywhere. If it does, the gain should concentrate on hard
+problems, and the model should ideally spend meta effort there rather than on
+easy ones.
 
-\paragraph{Result.} The gap is flat-to-zero where the base already
-saturates and enormous where it fails. On Q1 and Q2 both arms are at
-$100\%$ (no headroom). On the mid-hard Q3, \pmishift{} scores $95.7$ vs.\
-the base's $84.6$ ($+11.1$\,pp), and on the hardest Q4, $46.9$ vs.\ $12.1$
-($+34.8$\,pp)---nearly a $4\times$ relative improvement. The effect is thus
-entirely difficulty-concentrated. Crucially, meta \emph{emission} does
-\emph{not} track this: the treatment arm emits a meta block on 86--94\% of
-responses across \emph{all four} quartiles (non-selective). Emission and
-payoff dissociate---the model verbalizes metacognition roughly uniformly,
-but that metacognition only converts to accuracy on hard problems. The
-uniform emission on easy quartiles, where it cannot help, is a real
-efficiency cost and a limitation (Section~\ref{sec:discussion}); the AIME
-and Q4 rows double as an out-of-distribution probe, where self-distilled
-metacognition transfers rather than degrading as imitation
-typically does~\citep{kim2026selfdistill}.
+\paragraph{Method.} We sort the held-out problems into difficulty quartiles,
+from Q1 (easiest) to Q4 (hardest), using the base arm's per-problem pass rate as
+the difficulty score. Within each quartile we compare the two arms' accuracy,
+and we also record how often the meta arm emits a meta block. Emission rate and
+accuracy gain can then be read side by side.
+
+\paragraph{Result.} The gain is concentrated on hard problems (Table~\ref{tab:t3}).
+On Q1 and Q2 both arms are near 100\%, so there is no room to improve. On Q3 the
+meta arm scores $95.7$ against the base's $84.6$, a gap of $+11.1$ points. On Q4
+it scores $46.9$ against $12.1$, a gap of $+34.8$ points, close to a fourfold
+relative improvement. Emission tells a different story. The meta arm emits a
+block on 86\% to 96\% of responses in every quartile, roughly constant across
+difficulty.
 
 \begin{table}[t]
-\caption{\textbf{T3: difficulty-quartile stratified accuracy and
-meta-emission.} \emph{Preliminary, single seed.} Quartiles by matched-base
-per-problem pass rate. Q1/Q2 are saturated (no headroom); the gap grows to
-$+34.8$\,pp on the hardest quartile. Emission is \emph{non-selective}
-(86--94\% across all quartiles), so payoff---not emission---is
-difficulty-dependent.}
+\caption{RQ3 accuracy by base-difficulty quartile and meta-emission rate
+\emph{(prelim., package)}. Quartiles are set by the base arm's per-problem pass
+rate. The accuracy gap concentrates on the hardest quartile, while emission is
+nearly flat across all quartiles.}
 \label{tab:t3}
 \begin{center}
+\small
 \begin{tabular}{lcccc}
 \toprule
  & Q1 (easy) & Q2 & Q3 & Q4 (hard) \\
 \midrule
-Meta-emission rate (\pmishift{}) & \multicolumn{4}{c}{$86$--$94\%$ (non-selective across quartiles)} \\
-Matched base acc.                & $100$ & $100$ & $84.6$ & $12.1$ \\
-\pmishift{} acc.                 & $100$ & $100$ & $95.7$ & $46.9$ \\
-$\Delta_{\mathrm{acc}}$ (\pmishift{} $-$ base)  & $0$ & $0$ & $+11.1$ & $\mathbf{+34.8}$ \\
+Base accuracy    & $100$ & $100$ & $84.6$ & $12.1$ \\
+Meta accuracy    & $100$ & $100$ & $95.7$ & $46.9$ \\
+$\Delta$ accuracy & $0$   & $0$   & $+11.1$ & $\mathbf{+34.8}$ \\
+Meta-emission rate & \multicolumn{4}{c}{$86$--$96\%$ (roughly constant across quartiles)} \\
 \bottomrule
 \end{tabular}
 \end{center}
 \end{table}
 
-\subsection{RQ4: Calibration as a secondary outcome}
+\paragraph{Interpretation.} Emission and payoff dissociate. The model verbalizes
+metacognition at nearly the same rate everywhere, but that metacognition only
+converts to accuracy on hard problems. This has two consequences. First,
+aggregate comparisons understate the effect, because easy quartiles that are
+already saturated dilute the large hard-quartile gain. Second, uniform emission
+is an efficiency cost, since the model spends meta tokens on easy problems where
+they cannot help. The hardest cells, including AIME, may also hint that the
+learned metacognition holds up somewhat away from the training distribution,
+though we do not press this point.
+
+\subsection{RQ4: What happens to calibration?}
 \label{sec:exp:rq4}
 
-\paragraph{Question and design.} Our position
-(Section~\ref{sec:related:calibration}) is that calibration should be
-subordinate to functional metacognition, not its target. RQ4 reports
-calibration for the \pmishift{} arm only, because the matched base emits
-\emph{no} confidence token: with nothing to be calibrated, the base arm is
-\emph{structurally uncomparable} on ECE/overconfidence. We state this
-asymmetry honestly rather than fabricating a base calibration number; it is
-a consequence of the protocol, not an omission. Table~\ref{tab:t4}
-therefore reports per-domain and pooled 15-bin
-ECE~\citep{guo2017calibration} and the overconfidence rate for the
-treatment arm.
+\paragraph{Intent.} We treat calibration as subordinate to functional
+metacognition, not as the target. Still, since the meta arm states a confidence
+level, it is fair to ask how honest those statements are.
 
-\paragraph{Result.} On the easier domains the \pmishift{} arm is
-well-calibrated: ECE(15) is $0.082$ on GSM8K and $0.052$ on MATH500, with a
-pooled ECE of $0.053$. On AIME, however, calibration breaks down: ECE(15)
-is $0.402$ and the model is overconfident on $81.8\%$ of problems---it
-states high confidence on problems it gets wrong. Accuracy (RQ1) remains
-the primary outcome; this AIME miscalibration is a candid negative for the
-calibration story and motivates the planned $w_{\mathrm{cal}}=0$ ablation
-(Table~\ref{tab:t4}), which tests whether the \emph{functional} meta reward,
-rather than the explicit Brier term, carries any calibration benefit.
+\paragraph{Method.} We report calibration for the meta arm only, because the base
+arm emits no confidence token and so cannot be scored on it. We use expected
+calibration error, which is the average gap between a stated confidence level and
+the actual accuracy of answers made at that confidence, computed over 15 bins. We
+also report the overconfidence rate, the share of problems where the model states
+high confidence yet answers wrong.
+
+\paragraph{Result.} The meta arm is well-calibrated on the easier domains and
+poorly calibrated on the hardest (Table~\ref{tab:t4}). Expected calibration error
+is $0.082$ on GSM8K and $0.052$ on MATH500, with a pooled value of $0.053$. On
+AIME it rises to $0.402$, and the model is overconfident on $81.8\%$ of problems.
 
 \begin{table}[t]
-\caption{\textbf{T4: calibration (\pmishift{} arm only).} \emph{Preliminary,
-single seed.} 15-bin ECE and overconfidence rate on the held-out suite. The
-matched base emits no confidence token and is \emph{structurally
-uncomparable} (N/A). Calibration is a secondary outcome; accuracy
-(Table~\ref{tab:t1}) is primary. AIME is badly miscalibrated (ECE $0.402$,
-81.8\% overconfident).}
+\caption{RQ4 calibration for the meta arm \emph{(prelim., package)}. Expected
+calibration error (15-bin) and overconfidence rate. The base arm emits no
+confidence token and cannot be scored (N/A). Calibration is secondary to
+accuracy.}
 \label{tab:t4}
 \begin{center}
-\begin{tabular}{lccc}
+\small
+\begin{tabular}{lcc}
 \toprule
-Arm / domain & ECE (15-bin) & Overconf.\ rate & Brier \\
+Domain & ECE (15-bin) & Overconfidence rate \\
 \midrule
-\pmishift{} --- GSM8K            & $0.082$ & \todo{} & \todo{} \\
-\pmishift{} --- MATH500          & $0.052$ & \todo{} & \todo{} \\
-\pmishift{} --- AIME             & $0.402$ & $81.8\%$ & \todo{} \\
-\pmishift{} --- pooled           & $\mathbf{0.053}$ & \todo{} & \todo{} \\
+GSM8K   & $0.082$ & \todo{} \\
+MATH500 & $0.052$ & \todo{} \\
+AIME    & $0.402$ & $81.8\%$ \\
+Pooled  & $\mathbf{0.053}$ & \todo{} \\
 \midrule
-Matched base (no confidence)     & \multicolumn{3}{c}{N/A --- emits no confidence token (structural)} \\
-\pmishift{}, $w_{\mathrm{cal}}{=}0$ (planned ablation) & \todo{} & \todo{} & \todo{} \\
+Base (no confidence token) & \multicolumn{2}{c}{N/A (structural)} \\
 \bottomrule
 \end{tabular}
 \end{center}
 \end{table}
+
+\paragraph{Interpretation.} This is a candid negative for the calibration story.
+The confidence statements are trustworthy on GSM8K and MATH500 but collapse on
+AIME, where the model asserts high confidence on problems it gets wrong. Accuracy
+remains the primary outcome, and the AIME breakdown motivates an ablation that
+turns the explicit calibration head off, to test whether any calibration benefit
+comes from the functional meta reward rather than from that head.
