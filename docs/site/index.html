@@ -169,6 +169,49 @@
   .lim.data{border-left-color:var(--amber)}
   .lim.pkg{border-left-color:var(--blue)}
 
+  /* tldr + gloss */
+  .tldr{display:flex; gap:14px; align-items:flex-start; background:var(--green-soft); border:1px solid #bfe3cc;
+    border-left:4px solid var(--green); border-radius:12px; padding:14px 17px; margin:.2em 0 1em}
+  .tldr .lbl{font-size:.7rem; font-weight:800; letter-spacing:.08em; color:var(--green-ink); text-transform:uppercase; padding-top:3px; white-space:nowrap}
+  .tldr .txt{font-size:1.02rem; color:#243027; line-height:1.5}
+  .tldr .txt b{color:var(--green-ink); font-variant-numeric:tabular-nums}
+  .tldr .txt .cav{color:var(--amber); font-weight:700}
+  .gloss{font-size:.95rem; color:#3d3f44; background:var(--soft); border:1px solid var(--line); border-radius:10px; padding:11px 15px; margin:.2em 0 1em; line-height:1.62}
+  .gloss b{color:var(--ink)}
+  .gloss code{background:#eceff6; padding:1px 5px; border-radius:4px; font-size:.9em}
+
+  /* method pillars */
+  .pillars{list-style:none; padding:0; margin:14px 0 4px; display:flex; flex-direction:column; gap:8px}
+  .pillars li{font-size:.94rem; color:#3d3f44; background:var(--soft); border:1px solid var(--line);
+    border-left:3px solid var(--meta); border-radius:9px; padding:9px 13px; line-height:1.5}
+  .pillars .nm{font-weight:720; color:var(--ink)}
+  .pillars li b{color:#2f45b8}
+
+  /* stacked definition block */
+  .defblock{margin:12px 0 8px; border:1px solid var(--line); border-radius:10px; overflow:hidden}
+  .defrow{display:grid; grid-template-columns:118px 1fr; gap:12px; align-items:baseline; padding:8px 13px; border-bottom:1px solid var(--line)}
+  .defrow:last-child{border-bottom:none}
+  .defrow .dl{font-size:.8rem; font-weight:700; color:var(--slate)}
+  .defrow .df{font-family:"SFMono-Regular",Consolas,monospace; font-size:.82rem; color:#33353a; min-width:0; overflow-x:auto; white-space:nowrap}
+  .defrow.res{background:var(--soft)}
+  .defrow.res .dl{color:var(--blue-ink)}
+
+  /* recipe / stats table */
+  .tablewrap{overflow-x:auto; margin:12px 0 6px}
+  .rtable{width:100%; border-collapse:collapse; font-size:.85rem}
+  .rtable th,.rtable td{border:1px solid var(--line); padding:6px 11px; text-align:left; color:#33353a; background:#fff}
+  .rtable th{background:var(--soft); font-weight:700; color:var(--slate); font-size:.74rem; letter-spacing:.03em; text-transform:uppercase; white-space:nowrap}
+  .rtable td.num{font-variant-numeric:tabular-nums; font-family:"SFMono-Regular",Consolas,monospace; text-align:right; white-space:nowrap}
+
+  /* ladder decision rules */
+  .ruleset{margin-top:6px; display:flex; flex-direction:column; gap:6px}
+  .ruleline{display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; font-size:.82rem;
+    background:var(--soft); border:1px solid var(--line); border-radius:8px; padding:6px 11px; color:#3d3f44}
+  .ruleline .cond{font-family:"SFMono-Regular",Consolas,monospace; font-weight:700; color:var(--ink); white-space:nowrap}
+  .ruleline .arrow{color:var(--muted); font-weight:800}
+  .ruleline b{color:var(--ink)}
+  .rule-lbl{margin:9px 0 0; font-size:.78rem; font-weight:700; color:var(--slate)}
+
   footer{padding:30px 0 52px; color:var(--muted); font-size:.82rem; text-align:center}
   footer a{color:var(--muted); text-decoration:underline}
 
@@ -202,15 +245,28 @@
 <header class="hero">
   <div class="eyebrow">PMI-shift · 매치드-베이스 인과 설계</div>
   <h1>좋은 메타인지 행동을 보상하는 자기증류</h1>
+
+  <div class="tldr">
+    <span class="lbl">TL;DR</span>
+    <span class="txt"><b>매치드-베이스</b> 대비 <b>6/6 벤치 우위</b>, 가장 어려운 문제(Q4)에서 <b>+34.8pp</b>.
+    <span class="cav">단, 단일 시드 예비 결과.</span></span>
+  </div>
+
+  <div class="gloss">
+    <b>먼저 용어.</b> <b>decoy</b> = 그럴듯한 오답 하나, <b>gold</b> = 정답.
+    둘 중 어느 쪽으로 모델의 믿음이 기우는지를 본다. 그 기울기가 <b>gold−decoy 마진</b>이다.
+    <b>PMI</b>(pointwise mutual information) = 두 로그확률의 차이.
+  </div>
+
   <div class="subtitle">
-    모델이 <code>&lt;|meta|&gt;</code> 블록을 지나며 <b>정답을 향해 얼마나 마음을 바꾸는지</b>(gold−decoy 마진의 이동)를
-    측정해 그 스팬에 보상한다. 자기 신뢰도를 맞추는 <b>보정(calibration)은 필요조건일 뿐</b>, 행동을 바꾸는 통제는 별개의 문제다.
+    모델이 <code>&lt;|meta|&gt;</code> 블록을 지나는 동안 <b>gold−decoy 마진이 정답 쪽으로 얼마나 움직이는지</b>를
+    측정해, 그 움직임(<b>SHIFT</b>)에 보상을 준다.
   </div>
   <div class="lede">
     <span class="tag">의도.</span>
     메타인지는 목적이 아니라 정확도를 끌어올리는 <i>수단</i>이다. 우리는 모델이 신뢰도 숫자를 흉내내게 하지 않는다.
     대신 메타 블록을 여는 순간(<code>ctx_open</code>)과 닫는 순간(<code>ctx_close</code>) 사이에서
-    <b>gold와 decoy 마진이 실제로 얼마나 벌어졌는지</b>를 보상 신호로 삼는다. 그 이동이 곧 "유용한 메타인지"의 증거다.
+    마진이 실제로 얼마나 벌어졌는지를 보상 신호로 삼는다. 그 <b>SHIFT</b>가 곧 "유용한 메타인지"의 증거다.
   </div>
   <div class="trace">
     <span class="t">checkpoint <b>pmishift · gs300</b></span>
@@ -225,11 +281,20 @@
   <span class="rqtag">방법 · PMI-shift</span>
   <h2>메타 블록을 지나며 믿음이 이동하는 만큼 보상한다</h2>
   <p class="sectlead">
-    한 rollout이 <code>&lt;|meta|&gt;…&lt;|/meta|&gt;</code> 블록을 담으면, 고정된 참조 모델로 teacher-forcing 하여
-    블록 <b>직전</b>과 <b>직후</b> 두 지점에서 gold−decoy 마진을 잰다. 두 마진의 차이(SHIFT)가 신호다.
-    핵심 세 가지: <b>스팬-이동</b>(한 지점이 아니라 구간의 변화) · <b>디코이 대조</b>(정답 확률이 아니라 gold−decoy 판별 마진) ·
-    <b>메타 지역화</b>(보상을 메타-콘텐츠 토큰에만 라우팅).
+    <b>언제.</b> 한 rollout이 <code>&lt;|meta|&gt;…&lt;|/meta|&gt;</code> 블록을 담으면 계산이 켜진다.
   </p>
+  <p class="sectlead">
+    <b>어떻게 재나.</b> 고정된 <b>참조 모델</b>(학습 중 갱신되지 않는 채점용 사본)로 <b>teacher-forcing</b> 한다 — 정해진 텍스트를 그대로 먹여 확률만 읽어낸다.
+  </p>
+  <p class="sectlead">
+    <b>무엇을.</b> 블록 <b>직전</b>과 <b>직후</b> 두 지점에서 gold−decoy 마진을 재고, 두 값의 차이 <b>SHIFT</b>를 신호로 삼는다.
+  </p>
+
+  <ul class="pillars">
+    <li><span class="nm">스팬-이동 (= SHIFT)</span> — 한 지점이 아니라 <b>구간의 변화</b>를 본다.</li>
+    <li><span class="nm">디코이 대조</span> — 정답 확률이 아니라 <b>gold−decoy 판별 마진</b>을 본다.</li>
+    <li><span class="nm">메타 지역화</span> — 보상을 <b>메타-콘텐츠 토큰에만</b> 라우팅한다.</li>
+  </ul>
 
   <div style="border-left:3px solid var(--meta); background:rgba(150,150,160,.06); padding:.7em 1em; margin:.2em 0 1.1em; border-radius:4px;">
     <b>왜 그냥 GRPO로는 안 되나.</b> 일반 GRPO는 <b>최종 답이 맞았는지</b>라는 한 비트만 보상한다.
@@ -249,7 +314,7 @@
   <figure>
     <div class="figbox">
       <div class="figtitle">실제 예시 · 부호 실수 → 메타에서 자각 → gold로 복귀
-        <span class="hoverhint">↪ 커서를 올리면 애니메이션이 멈춥니다</span></div>
+        <span class="hoverhint">↪ 커서를 올리면 멈춥니다</span></div>
       <div class="anim">
       <!-- ANIMATED PMI-SHIFT WALKTHROUGH -->
       <svg viewBox="0 0 840 360" role="img" aria-label="PMI-shift walkthrough">
@@ -288,51 +353,53 @@
         <text x="570" y="115" font-size="11" font-weight="700" fill="#2f45b8" text-anchor="middle">ctx_close</text>
 
         <!-- belief axis -->
-        <text x="20" y="150" font-size="12" font-weight="700" fill="#5f6671" letter-spacing="1">믿음 축 · logp(gold) − logp(decoy)</text>
+        <text x="20" y="150" font-size="12" font-weight="700" fill="#5f6671" letter-spacing="1">믿음 축 · logp(gold) − logp(decoy) · 양끝=후보 답</text>
         <rect x="60" y="176" width="720" height="14" rx="7" fill="url(#axisg)"/>
-        <text x="52" y="187" font-size="11" fill="#b3271e" font-weight="800" text-anchor="end">decoy −2</text>
-        <text x="788" y="187" font-size="11" fill="#147a41" font-weight="800" text-anchor="start">gold 16</text>
+        <text x="52" y="187" font-size="11" fill="#b3271e" font-weight="800" text-anchor="end">decoy(−2)</text>
+        <text x="788" y="187" font-size="11" fill="#147a41" font-weight="800" text-anchor="start">gold(16)</text>
         <line x1="420" y1="170" x2="420" y2="196" stroke="#9aa0a8" stroke-width="1.5"/>
         <text x="420" y="210" font-size="10.5" fill="#9aa0a8" text-anchor="middle">0 (동률)</text>
 
-        <!-- ctx_open dot: leaning decoy (left) -->
+        <!-- belief dot: dwells at open (decoy side), slides to close (gold side), fades back -->
         <g>
-          <circle cx="60" cy="183" r="9" fill="#d24040" stroke="#fff" stroke-width="2">
-            <animate attributeName="cx" values="235;235;720;720;235" keyTimes="0;0.18;0.62;0.9;1" dur="5s" repeatCount="indefinite"/>
-            <animate attributeName="fill" values="#d24040;#d24040;#1a9850;#1a9850;#d24040" keyTimes="0;0.3;0.62;0.9;1" dur="5s" repeatCount="indefinite"/>
+          <circle cx="235" cy="183" r="9" fill="#d24040" stroke="#fff" stroke-width="2">
+            <animate attributeName="cx" values="235;235;720;720;235" keyTimes="0;0.22;0.55;0.92;1" dur="6.5s" repeatCount="indefinite"/>
+            <animate attributeName="fill" values="#d24040;#d24040;#1a9850;#1a9850;#d24040" keyTimes="0;0.34;0.6;0.92;1" dur="6.5s" repeatCount="indefinite"/>
+            <animate attributeName="opacity" values="1;1;1;1;0.1;1" keyTimes="0;0.2;0.55;0.9;0.96;1" dur="6.5s" repeatCount="indefinite"/>
           </circle>
         </g>
 
-        <!-- PMI_open bracket -->
+        <!-- PMI_open / PMI_close -->
         <text x="235" y="238" font-size="11" fill="#b3271e" font-weight="700" text-anchor="middle">PMI_open ≈ −0.8</text>
         <text x="720" y="238" font-size="11" fill="#147a41" font-weight="700" text-anchor="middle">PMI_close ≈ +1.5</text>
 
         <!-- SHIFT arrow -->
         <line x1="235" y1="258" x2="720" y2="258" stroke="#3f5bd6" stroke-width="2.5" marker-end="url(#arr)"/>
-        <rect x="410" y="266" width="200" height="26" rx="7" fill="#edeffc" stroke="#c7cef4"/>
-        <text x="510" y="284" font-size="12.5" font-weight="800" fill="#2f45b8" text-anchor="middle">SHIFT = +2.3  (clip ±2 → +2.0)</text>
+        <rect x="400" y="266" width="220" height="26" rx="7" fill="#edeffc" stroke="#c7cef4"/>
+        <text x="510" y="284" font-size="11.5" font-weight="800" fill="#2f45b8" text-anchor="middle">SHIFT = +2.3 (clip ±2 → +2.0)</text>
 
-        <!-- reward routing -->
-        <rect x="268" y="310" width="300" height="34" rx="9" fill="#e8f5ec" stroke="#bfe3cc"/>
-        <text x="418" y="331" font-size="12" font-weight="800" fill="#147a41" text-anchor="middle">＋보상 → 메타-콘텐츠 토큰에만</text>
-        <text x="20" y="331" font-size="11" fill="#5f6671">reversal bonus:</text>
-        <text x="20" y="345" font-size="10.5" fill="#147a41" font-weight="700">decoy→gold SAVE +1.0</text>
-        <text x="600" y="331" font-size="10.5" fill="#b3271e" font-weight="700">gold→decoy DERAIL −2.0</text>
+        <!-- reward routing (localization pillar) -->
+        <rect x="268" y="312" width="300" height="34" rx="9" fill="#e8f5ec" stroke="#bfe3cc"/>
+        <text x="418" y="333" font-size="12" font-weight="800" fill="#147a41" text-anchor="middle">＋보상 → 메타-콘텐츠 토큰에만</text>
       </svg>
       </div>
       <div class="figcap">
-        <b>계산.</b> 고정된 참조 모델로 teacher-forcing:
-        <span class="mono">PMI_open = logp(gold|ctx_open) − logp(decoy|ctx_open)</span>,
-        닫은 뒤 같은 계산이 <span class="mono">PMI_close</span>,
-        <span class="mono">SHIFT = PMI_close − PMI_open</span>.
-        보상 = <span class="mono">scale·clip(SHIFT, ±2)</span> + reversal bonus, 메타-콘텐츠 토큰에 라우팅.
+        <b>계산.</b> 고정된 참조 모델로 teacher-forcing 한 뒤, 아래를 순서대로 구한다.
+      </div>
+      <div class="defblock">
+        <div class="defrow"><span class="dl">열 때 마진</span><span class="df">PMI_open = logp(gold|ctx_open) − logp(decoy|ctx_open)</span></div>
+        <div class="defrow"><span class="dl">닫을 때 마진</span><span class="df">PMI_close = logp(gold|ctx_close) − logp(decoy|ctx_close)</span></div>
+        <div class="defrow res"><span class="dl">그 차이 = SHIFT</span><span class="df">SHIFT = PMI_close − PMI_open</span></div>
+        <div class="defrow res"><span class="dl">보상</span><span class="df">scale·clip(SHIFT, ±2) + reversal bonus → 메타-콘텐츠 토큰</span></div>
+      </div>
+      <div class="figcap small">
         <b>PMI 값은 예시(illustrative)</b>이고, 텍스트·정답·decoy·리전 경계는 실제 rollout이다.
       </div>
     </div>
   </figure>
 
   <div class="callout blue">
-    <b>왜 이동(shift)인가.</b> 한 지점의 gold 확률만 높으면 "원래부터 답을 알던" 경우와
+    <b>왜 한 지점이 아니라 SHIFT인가.</b> 한 지점의 gold 확률만 높으면 "원래부터 답을 알던" 경우와
     "메타에서 고쳐낸" 경우를 구별하지 못한다. 두 지점의 <b>차이</b>를 보상하면, 메타 블록이
     <i>인과적으로</i> 믿음을 옮겼을 때에만 점수가 붙는다. gold와 decoy가 함께 움직이면 SHIFT ≈ 0. 장식적 메타는 걸러진다.
   </div>
@@ -369,10 +436,10 @@
         </svg>
       </div>
       <div class="pb">
-        <span class="them">검증된 해답 c를 조건으로 한 자기증류가 구조·지름길 토큰을 부풀리고
+        <span class="them"><b>그들:</b> 검증된 해답 c를 조건으로 한 자기증류가 구조·지름길 토큰을 부풀리고
         deliberation 토큰("Wait","Maybe")을 깎는다고 진단 → JS divergence를 <b>상승</b>(부호 반전).</span>
-        <span class="us"><b>우리:</b> 토큰별 모방-부호반전이 아니라, 명시적 메타 스팬에서 gold−<b>decoy</b> 판별 마진의
-        <b>스팬-이동</b>을 보상 + 매치드-베이스 트윈. <span class="muted">지름길/보일러플레이트 위험은 공유(우리의 verify-boilerplate = 그들의 shortcut bias).</span></span>
+        <span class="us"><b>우리:</b> 메타 스팬에서 gold−<b>decoy</b> 마진의 <b>SHIFT</b>를 보상하고, 메타만 뺀 <b>매치드-베이스</b>로 인과 분리한다.
+        <span class="muted">지름길/보일러플레이트 위험은 공유 — 우리의 verify-boilerplate = 그들의 shortcut bias.</span></span>
       </div>
     </div>
 
@@ -394,10 +461,10 @@
         </svg>
       </div>
       <div class="pb">
-        <span class="them">추론을 <b>참조 정답의 로그확률</b>로 직접 보상(process reward 합 = 정답 로그확률).
+        <span class="them"><b>그들:</b> 추론을 <b>참조 정답의 로그확률</b>로 직접 보상(process reward 합 = 정답 로그확률).
         필드가 수렴한 "정답-우도" 신호.</span>
-        <span class="us"><b>우리:</b> 더 좁은 novelty: <b>decoy 대조</b> + <b>스팬 이동</b> + <b>메타 지역화</b>.
-        전역 우도가 아니라 두 지점 사이 판별 마진의 변화.</span>
+        <span class="us"><b>우리:</b> 전역 우도 대신 두 지점 사이 <b>gold−decoy 마진의 SHIFT</b>를 본다.
+        <span class="muted">decoy 대조 · 메타 지역화로 좁힌다.</span></span>
       </div>
     </div>
 
@@ -421,9 +488,9 @@
         </svg>
       </div>
       <div class="pb">
-        <span class="them">학생이 스스로의 교사가 되어 정답 조건 분포를 증류하고 RLVR과 결합한다.
+        <span class="them"><b>그들:</b> 학생이 스스로의 교사가 되어 정답 조건 분포를 증류하고 RLVR과 결합한다.
         그러나 gold 조건은 망설임 토큰을 억제해 hard 문제에서 추론 경로를 줄인다.</span>
-        <span class="us"><b>우리:</b> 증류 위에 <b>행동-통제 층</b>을 얹되 <b>priming하지 않는다</b>.
+        <span class="us"><b>우리:</b> 증류 위에 <b>행동-통제 층</b>을 얹되 priming하지 않는다.
         신호는 모델 자신의 rollout 대조에서만 나온다.</span>
       </div>
     </div>
@@ -440,9 +507,9 @@
           <text x="18" y="30" font-size="9" fill="#b3271e" font-weight="700">decoy</text>
           <text x="282" y="30" font-size="9" fill="#147a41" font-weight="700" text-anchor="end">gold</text>
           <line x1="120" y1="34" x2="120" y2="58" stroke="#3f5bd6" stroke-dasharray="3 2"/>
-          <text x="120" y="72" font-size="8" fill="#2f45b8" text-anchor="middle">open</text>
+          <text x="120" y="72" font-size="8" fill="#2f45b8" text-anchor="middle">ctx_open</text>
           <line x1="220" y1="34" x2="220" y2="58" stroke="#3f5bd6" stroke-dasharray="3 2"/>
-          <text x="220" y="72" font-size="8" fill="#2f45b8" text-anchor="middle">close</text>
+          <text x="220" y="72" font-size="8" fill="#2f45b8" text-anchor="middle">ctx_close</text>
           <circle cx="105" cy="46" r="6" fill="#d24040" stroke="#fff" stroke-width="1.5"/>
           <circle cx="235" cy="46" r="6" fill="#1a9850" stroke="#fff" stroke-width="1.5"/>
           <line x1="112" y1="46" x2="228" y2="46" stroke="#3f5bd6" stroke-width="2.2" marker-end="url(#arr)"/>
@@ -450,8 +517,8 @@
         </svg>
       </div>
       <div class="pb">
-        <span class="them">gold−decoy 판별 마진을 메타 <b>스팬</b>의 열림/닫힘 두 지점에서 재고, 그 <b>이동</b>을 보상.
-        메타-콘텐츠 토큰에 지역화. 메타만 뺀 <b>매치드-베이스 트윈</b>으로 인과 분리.</span>
+        <span class="them"><b>방법:</b> gold−decoy 마진을 메타 스팬의 <b>여는 지점과 닫는 지점</b>에서 재고, 그 <b>SHIFT</b>를
+        메타-콘텐츠 토큰에만 보상. 메타만 뺀 <b>매치드-베이스</b>로 인과 분리.</span>
         <span class="us"><b>왜 decoy + 분해가 필요한가:</b> 지름길/보일러플레이트 위험을 AntiSD와 공유하므로,
         RQ2 분해 + placebo 검정이 필수다.</span>
       </div>
@@ -463,10 +530,11 @@
 <!-- ===== RQ1 ===== -->
 <section id="rq1">
   <span class="rqtag real">RQ1 · 실측</span>
-  <h2>메타 arm이 6/6 벤치에서 매치드-베이스를 넘는다</h2>
+  <h2>meta arm이 6/6 벤치에서 매치드-베이스를 넘는다</h2>
   <p class="sectlead">
     PMI-shift(gs300)와 <b>메타 기제만 제거한</b> 매치드-베이스(gs300)를 문제-쌍 부트스트랩으로 비교했다.
     이득은 문제가 어려울수록 커진다.
+    <span class="muted">여기서 <b>meta arm</b> = PMI-shift로 학습한 모델, <b>매치드-베이스</b> = 메타 기제만 뺀 대조군.</span>
   </p>
   <div class="trace">
     <span class="t">pmishift <b>gs300</b> vs matched-base <b>gs300</b></span>
@@ -476,8 +544,7 @@
 
   <figure>
     <div class="figbox">
-      <div class="figtitle">before / after · matched-base(회색) → pmishift(초록)
-        <span class="hoverhint">↪ hover to pause</span></div>
+      <div class="figtitle">직전 / 직후 · 매치드-베이스(회색) → meta arm(초록)</div>
       <div class="anim bars">
 
         <div class="barrow">
@@ -520,18 +587,40 @@
         <div class="dchip"><span class="k">AIME @16k</span><span class="v pos">+13.8pp</span><span class="p">McNemar p≈.06 (n=30)</span></div>
       </div>
       <div class="figcap">
-        <b>4k→16k는 두 arm 모두 평탄</b>(토큰을 더 줘도 이득 없음). 그러나 base는 모든 예산에서
-        <b>더 많이 잘린다</b>(MATH500 ~19% vs 6%, AIME ~73% vs 50%). 즉 16k 비종료 degeneration은
-        base/데이터 성질이고, 메타 기제는 이를 <b>유발이 아니라 완화</b>한다.
+        <b>읽는 법.</b> 4k→16k는 두 arm 모두 평탄 — 토큰을 더 줘도 이득이 없다.
+        그런데 매치드-베이스는 모든 예산에서 <b>더 많이 잘린다</b>(비종료 degeneration).
+        즉 잘림은 base/데이터 성질이고, 메타 기제는 이를 <b>유발이 아니라 완화</b>한다.
+      </div>
+      <div class="tablewrap">
+      <table class="rtable">
+        <thead><tr><th>잘림률 (truncation)</th><th>매치드-베이스</th><th>meta arm</th></tr></thead>
+        <tbody>
+          <tr><td>MATH500</td><td class="num">~19%</td><td class="num">6%</td></tr>
+          <tr><td>AIME @16k</td><td class="num">~73%</td><td class="num">50%</td></tr>
+        </tbody>
+      </table>
       </div>
     </div>
   </figure>
 
   <div class="callout">
-    <b>정직한 caveat: 이건 "패키지" 효과다.</b> 발사된 pmishift arm은 5-head 보상 벡터 + format/len_cost shaping 패키지다:
-    correctness + meta/pmi-shift + cal 0.3 + emit 0.1 (reward 벡터) + format 0.35 + len_cost 0.08 (shaping) + cf_group rollout split.
+    <b>정직한 caveat: 이건 "패키지" 효과다.</b> 발사된 meta arm은 아래 보상 head들에 format/length shaping을 더한 묶음이다.
     따라서 RQ1은 <b>패키지 vs vanilla GRPO</b> 효과이지 <i>PMI-shift 단독</i>이 아니다.
-    PMI-shift만 떼어내는 분해는 <a href="#rq2">RQ2(PENDING)</a>에서 다룬다.
+    분리는 <a href="#rq2">RQ2(PENDING)</a>에서 다룬다.
+    <div class="tablewrap">
+    <table class="rtable">
+      <thead><tr><th>구성요소</th><th>가중치</th><th>역할</th></tr></thead>
+      <tbody>
+        <tr><td>correctness</td><td class="num">—</td><td>최종 답 정답 여부</td></tr>
+        <tr><td>meta / pmi-shift</td><td class="num">—</td><td>SHIFT 신호 (핵심 레버)</td></tr>
+        <tr><td>cal</td><td class="num">0.3</td><td>신뢰도 보정</td></tr>
+        <tr><td>emit</td><td class="num">0.1</td><td>메타 블록 발화 유도</td></tr>
+        <tr><td>format</td><td class="num">0.35</td><td>출력 형식 shaping</td></tr>
+        <tr><td>len_cost</td><td class="num">0.08</td><td>길이 패널티 shaping</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <span class="small">추가로 <b>cf_group rollout split</b> 사용. 가중치가 "—"인 두 head가 핵심이고 나머지는 보조다.</span>
   </div>
 </section>
 
@@ -548,7 +637,7 @@
     <div class="rung">
       <div class="step"><div class="dot">B</div><div class="line"></div></div>
       <div class="body">
-        <h3>매치드-베이스 트윈</h3>
+        <h3>매치드-베이스</h3>
         <div class="arm">arm: base (meta 기제 제거, 5-head 중 pmi-shift·emit·cal·meta OFF)</div>
         <p>모든 비교의 기준선. RQ1에서 이미 확보된 gs300.</p>
       </div>
@@ -559,7 +648,11 @@
         <h3>Gandhi-arm (form-only)</h3>
         <div class="arm">arm: 메타 형식은 보상하되 PMI-shift 신호는 OFF</div>
         <p>메타를 <i>쓰는 것</i>(form)만으로 오르는가, 아니면 신호가 필요한가를 가른다.</p>
-        <div class="rule"><b>규칙:</b> Gandhi ≈ base 면 → form만으로는 부족(신호가 진짜 레버). Gandhi ≫ base 면 → 이득의 상당부가 형식/emit에서 옴 → PMI-shift 주장 약화.</div>
+        <p class="rule-lbl">결정 규칙 (미리 못박음)</p>
+        <div class="ruleset">
+          <div class="ruleline"><span class="cond">Gandhi ≈ base</span><span class="arrow">→</span><span>form만으로는 부족 — <b>신호가 진짜 레버</b>.</span></div>
+          <div class="ruleline"><span class="cond">Gandhi ≫ base</span><span class="arrow">→</span><span>이득의 상당부가 형식/emit에서 옴 — <b>PMI-shift 주장 약화</b>.</span></div>
+        </div>
       </div>
     </div>
     <div class="rung">
@@ -568,7 +661,11 @@
         <h3>shift-only arm</h3>
         <div class="arm">arm: PMI-shift만 ON (cal·emit·len_cost 등 보조 head OFF)</div>
         <p>PMI-shift 단독의 순효과. 이것이 우리가 주장하고 싶은 핵심 레버.</p>
-        <div class="rule"><b>규칙:</b> shift-only &gt; Gandhi 면 → PMI-shift가 form을 넘는 순기여(주장 성립). shift-only ≈ Gandhi 면 → 이득은 신호가 아니라 형식/보일러플레이트(→ <a href="#limits">AntiSD 긴장</a> 현실화).</div>
+        <p class="rule-lbl">결정 규칙 (미리 못박음)</p>
+        <div class="ruleset">
+          <div class="ruleline"><span class="cond">shift-only &gt; Gandhi</span><span class="arrow">→</span><span>PMI-shift가 form을 넘는 <b>순기여</b> (주장 성립).</span></div>
+          <div class="ruleline"><span class="cond">shift-only ≈ Gandhi</span><span class="arrow">→</span><span>이득은 신호가 아니라 형식/보일러플레이트 (→ <a href="#limits">AntiSD 긴장</a> 현실화).</span></div>
+        </div>
       </div>
     </div>
     <div class="rung">
@@ -577,7 +674,11 @@
         <h3>placebo · decoy-shuffle</h3>
         <div class="arm">arm: SHIFT를 무작위/뒤섞은 decoy로 계산</div>
         <p>SHIFT 보상이 진짜 gold−decoy 구조를 잡는지, 아니면 아무 스칼라나 밀어도 오르는지 검정.</p>
-        <div class="rule"><b>규칙:</b> placebo ≈ base 면 → SHIFT의 구조가 인과적(clean). placebo ≈ shift-only 면 → SHIFT는 장식, 다른 head가 진짜 레버.</div>
+        <p class="rule-lbl">결정 규칙 (미리 못박음)</p>
+        <div class="ruleset">
+          <div class="ruleline"><span class="cond">placebo ≈ base</span><span class="arrow">→</span><span>SHIFT의 구조가 <b>인과적</b> (clean).</span></div>
+          <div class="ruleline"><span class="cond">placebo ≈ shift-only</span><span class="arrow">→</span><span>SHIFT는 장식, 다른 head가 진짜 레버.</span></div>
+        </div>
       </div>
     </div>
   </div>
@@ -598,8 +699,7 @@
 
   <figure>
     <div class="figbox">
-      <div class="figtitle">난이도 사분위별 정확도 · base(회색) vs pmishift(초록)
-        <span class="hoverhint">↪ hover to pause</span></div>
+      <div class="figtitle">난이도 사분위별 정확도 · 매치드-베이스(회색) vs meta arm(초록)</div>
       <div class="anim bars">
 
         <div class="barrow">
@@ -654,8 +754,14 @@
   <span class="rqtag real">RQ4 · 실측</span>
   <h2>보정은 대체로 좋지만 AIME에서 과신한다. base는 신뢰도를 아예 안 낸다</h2>
   <p class="sectlead">
-    메타 arm의 verbalized confidence를 ECE(15-bin)로 측정했다. 쉬운 벤치는 잘 맞지만
-    AIME에서는 크게 과신한다. base arm은 메타를 0% 내므로 신뢰도 자체가 없다. 여기서 비교 불가라는 구조적 비대칭이 생기는데, 이 점을 정직하게 밝힌다.
+    <b>측정.</b> meta arm의 verbalized confidence(모델이 스스로 말하는 신뢰도)를 <b>ECE</b>로 쟀다.
+    <span class="muted">ECE = 신뢰도와 실제 정답률의 평균 격차, 낮을수록 좋음(15-bin).</span>
+  </p>
+  <p class="sectlead">
+    <b>결과.</b> 쉬운 벤치는 잘 맞지만, AIME에서는 크게 과신한다.
+  </p>
+  <p class="sectlead">
+    <b>비대칭.</b> 매치드-베이스는 메타를 0% 내므로 신뢰도 축 자체가 없다. 이 지점은 두 arm을 비교할 수 없다.
   </p>
   <div class="trace">
     <span class="t">meta arm only · <b>ECE(15)</b></span>
@@ -665,8 +771,7 @@
 
   <figure>
     <div class="figbox">
-      <div class="figtitle">ECE(15-bin) · 낮을수록 잘 보정됨
-        <span class="hoverhint">↪ hover to pause</span></div>
+      <div class="figtitle">ECE(15-bin) · 낮을수록 잘 보정됨</div>
       <div class="anim">
       <svg viewBox="0 0 820 250" role="img" aria-label="ECE by benchmark">
         <!-- baseline good/bad zones -->
@@ -705,9 +810,9 @@
       </svg>
       </div>
       <div class="figcap">
-        <b>AIME 과신.</b> 정답률이 낮은데도 평균 신뢰도가 높다. AIME에서 <b>81.8%가 과신</b>,
-        ECE 0.402. GSM8K/MATH500은 잘 보정(0.082 / 0.052), pooled 0.053.
-        <b>구조적 비대칭:</b> base는 메타를 0% 내므로 신뢰도 축에서 비교 자체가 불가능하다.
+        <b>읽는 법.</b> AIME만 과신한다 — 정답률이 낮은데 평균 신뢰도가 높아, 샘플의 <b>81.8%가 과신</b>이다.
+        나머지 벤치는 잘 보정된다. <b>구조적 비대칭:</b> 매치드-베이스는 메타를 0% 내므로
+        신뢰도 축에서 비교 자체가 불가능하다(점선 막대).
       </div>
     </div>
   </figure>
