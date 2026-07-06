@@ -231,6 +231,14 @@
     <b>메타 지역화</b>(보상을 메타-콘텐츠 토큰에만 라우팅).
   </p>
 
+  <div style="border-left:3px solid var(--meta); background:rgba(150,150,160,.06); padding:.7em 1em; margin:.2em 0 1.1em; border-radius:4px;">
+    <b>왜 그냥 GRPO로는 안 되나.</b> 일반 GRPO는 <b>최종 답이 맞았는지</b>라는 한 비트만 보상한다.
+    그 신호는 궤적 전체에 뭉개져서, <i>결정적인 검산</i>과 <i>장식적인 망설임</i>을 구분하지 못한다.
+    어느 메타인지 단계가 정답을 만들었는지 짚을 수 없다.
+    <b>PMI-shift는 각 메타 블록을 그 인과 효과로 보상한다.</b> 블록이 모델 자신의 증거를 오답에서 정답 쪽으로
+    얼마나 옮겼는지를 잰다. 그래서 "유용한 메타인지"에만 상이 가고, 형식만 흉내 낸 블록은 상을 받지 못한다.
+  </div>
+
   <div class="legendbar">
     <span class="li"><span class="swatch" style="background:var(--green)"></span> gold(정답) 방향</span>
     <span class="li"><span class="swatch" style="background:var(--red)"></span> decoy(오답) 방향</span>
