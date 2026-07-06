@@ -1,3 +1,6 @@
 [submodule "gnosis_repo"]
 	path = gnosis_repo
 	url = https://github.com/Amirhosein-gh98/Gnosis.git
+[submodule "paper"]
+	path = paper
+	url = https://github.com/iamseungpil/metacognition-paper.git
