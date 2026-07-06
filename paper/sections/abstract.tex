@@ -1,24 +1,38 @@
-% SCOPE: one-paragraph abstract — problem (RL-for-reasoning lacks functional
-% metacognition), method (\pmishift{} reward on \metaopen...\metaclose blocks +
-% matched-base causal twin), analysis suite, and (placeholder) findings.
+% SCOPE: one-paragraph abstract on the MERGED arc — motivation (self-distillation
+% degrades reasoning; calibration reduces overconfidence but does NOT restore
+% accuracy) -> insight (calibration != metacognitive control) -> method
+% (\pmishift{} + matched-base twin) -> preliminary result (6/6 held-out wins,
+% single-seed, PACKAGE-level). No obsolete numbers; preliminary labeled.
 \begin{abstract}
-Reinforcement learning with verifiable rewards has become the standard recipe
-for training reasoning models, yet the resulting models handle their own
+Reinforcement learning with verifiable rewards is the standard recipe for
+training reasoning models, yet the resulting models handle their own
 uncertainty poorly: they are overconfident, rarely notice mid-solution errors,
-and the field's default remedy is to scale the model. Recent evidence suggests
-RL amplifies surface behaviors already present in the base model without
-installing \emph{functional} metacognition---self-assessment that actually
-solves more problems. We define in-reasoning metacognition operationally as
-explicit \metaopen{}\dots\metaclose{} blocks (deciding when to verify or change
-approach) and reinforce each block only by the evidence shift it causes:
-\pmishift{} scores a meta block by how much it moves the model's own
-log-likelihood contrast between the gold answer and a decoy, a form of
-metacognitive self-distillation. A matched-base twin---identical data with
-meta content stripped, byte-audited hyperparameters, correctness-only
-GRPO---isolates the causal contribution. On GSM8K, MATH500, and AIME with
-Qwen3-8B we report main accuracy (\todo{T1}), a mechanism decomposition
-separating SFT priming from RL reward (\todo{T2}), difficulty- and
-OOD-stratified effects (\todo{T3}), and calibration outcomes (\todo{T4}),
-together with a Simpson-artifact warning arguing, with preliminary evidence,
-that aggregate meta-vs-base comparisons can systematically mislead.
+and the field's default remedy is to scale the model. Self-distillation, the
+natural remedy, can instead \emph{degrade} reasoning by suppressing the
+epistemic, hesitation-bearing tokens that mark deliberation. A calibration-first
+response---training the model to report its confidence faithfully---reduces
+overconfidence but, in our earlier study, did not restore accuracy: traces grew
+longer and more hesitant, yet the added hesitation was never closed by a change
+of solution path. We take this as evidence that \emph{calibration is necessary
+but not sufficient for metacognitive control}: the signal worth rewarding is the
+causal effect a metacognitive act has on the model's evidence about the answer,
+not the confidence it reports. We define in-reasoning metacognition
+operationally as explicit \metaopen{}\dots\metaclose{} blocks and reinforce each
+block only by the evidence shift it causes. Our \pmishift{} reward freezes a
+reference model, teacher-forces the gold answer and a rule-based decoy just
+before and just after a block, and scores the block by how much it moves this
+gold-vs-decoy log-likelihood contrast---a form of metacognitive
+self-distillation---plus a reversal bonus when a block flips the preferred
+answer from decoy to gold. A matched-base twin (identical data with meta content
+stripped, byte-audited hyperparameters, correctness-only GRPO) isolates the
+mechanism. On GSM8K, MATH500, and AIME with Qwen3-8B, the meta arm beats its
+matched twin on all six held-out comparisons (preliminary, single seed): GSM8K
+$+4.0$, MATH500 $+18.8$, and AIME $+13.8$~pp (avg@16, 16k tokens, bootstrap
+$p<.001$), with the gain concentrating on the hardest problems ($+34.8$~pp in
+the top difficulty quartile) even though meta emission is difficulty-agnostic.
+Both arms are flat from 4k to 16k tokens and the base truncates far more often,
+so the meta mechanism \emph{mitigates} rather than causes the long-context
+degeneration. We report these as preliminary results for a multi-head reward
+package; a decomposition isolating \pmishift{} from its auxiliary terms is
+ongoing.
 \end{abstract}

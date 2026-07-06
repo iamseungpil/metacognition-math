@@ -70,6 +70,11 @@
   year    = {2026}
 }
 
+% NOTE: AntiSD (arXiv 2605.11609) is defined once as shen2026antisd below
+% (complete author list, verified). The earlier Anonymous stub was a merge
+% duplicate and has been removed. Closest prior work: per-token conditional
+% PMI u_t = log[pi(y_t|x,c,y<t) / pi(y_t|x,y<t)] with c = verified solution.
+
 % ------------------------- (c) cognitive behaviors -------------------------
 
 @article{gandhi2025cognitive,
@@ -157,4 +162,248 @@
   author={Liu, Zichen and Chen, Changyu and Li, Wenjun and Qi, Penghui and Pang, Tianyu and Du, Chao and Lee, Wee Sun and Lin, Min},
   journal={arXiv preprint arXiv:2503.20783},
   year={2025}
+}
+
+% ============================================================================
+% MERGED from neurips-draft/refs.bib (2026-07-06 salvage).
+% Union by key; no key collided with the existing entries above.
+% Merge-phase TODO (semantic duplicates, different keys, same paper):
+%   - lightman2023letsverifystepstep (below) == lightman2024letsverify (above), arXiv:2305.20050
+%   - whydegrade2026 (below) == kim2026selfdistill (above), arXiv:2603.24472
+%   Pick one key per paper before submission.
+% ============================================================================
+@misc{lightman2023letsverifystepstep,
+  title={Let's Verify Step by Step},
+  author={Hunter Lightman and Vineet Kosaraju and Yura Burda and Harri Edwards and Bowen Baker and Teddy Lee and Jan Leike and John Schulman and Ilya Sutskever and Karl Cobbe},
+  year={2023},
+  eprint={2305.20050},
+  archivePrefix={arXiv},
+  primaryClass={cs.LG},
+  url={https://arxiv.org/abs/2305.20050}
+}
+
+@misc{shinn2023reflexionlanguageagentsverbal,
+  title={Reflexion: Language Agents with Verbal Reinforcement Learning},
+  author={Noah Shinn and Federico Cassano and Edward Berman and Ashwin Gopinath and Karthik Narasimhan and Shunyu Yao},
+  year={2023},
+  eprint={2303.11366},
+  archivePrefix={arXiv},
+  primaryClass={cs.AI},
+  url={https://arxiv.org/abs/2303.11366}
+}
+
+@misc{baniharouni2026rewardingdoubtreinforcementlearning,
+  title={Rewarding Doubt: A Reinforcement Learning Approach to Calibrated Confidence Expression of Large Language Models},
+  author={David Bani-Harouni and Chantal Pellegrini and Paul Stangel and Ege {\"O}zsoy and Kamilia Zaripova and Nassir Navab and Matthias Keicher},
+  year={2026},
+  eprint={2503.02623},
+  archivePrefix={arXiv},
+  primaryClass={cs.CL},
+  url={https://arxiv.org/abs/2503.02623}
+}
+
+@misc{liu2026gdpogrouprewarddecouplednormalization,
+  title={GDPO: Group reward-Decoupled Normalization Policy Optimization for Multi-reward RL Optimization},
+  author={Shih-Yang Liu and Xin Dong and Ximing Lu and Shizhe Diao and Peter Belcak and Mingjie Liu and Min-Hung Chen and Hongxu Yin and Yu-Chiang Frank Wang and Kwang-Ting Cheng and Yejin Choi and Jan Kautz and Pavlo Molchanov},
+  year={2026},
+  eprint={2601.05242},
+  archivePrefix={arXiv},
+  primaryClass={cs.CL},
+  url={https://arxiv.org/abs/2601.05242}
+}
+
+% Key kept for back-compat; "Mulgund" was a placeholder hallucination.
+% Actual first author: Chenxu Yang.
+@misc{mulgund2026rlsd,
+  title={Self-Distilled RLVR},
+  author={Chenxu Yang and Chuanyu Qin and Qingyi Si and Minghui Chen and Naibin Gu and Dingyu Yao and Zheng Lin and Weiping Wang and Jiaqi Wang and Nan Duan},
+  year={2026},
+  eprint={2604.03128},
+  archivePrefix={arXiv},
+  primaryClass={cs.LG},
+  url={https://arxiv.org/abs/2604.03128}
+}
+
+@misc{ko2024distillm2,
+  title={DistiLLM-2: A Contrastive Approach Boosts the Distillation of LLMs},
+  author={Jongwoo Ko and Tianyi Chen and Sungnyun Kim and Tianyu Ding and Luming Liang and Ilya Zharkov and Se-Young Yun},
+  year={2025},
+  eprint={2503.07067},
+  archivePrefix={arXiv},
+  primaryClass={cs.CL},
+  url={https://arxiv.org/abs/2503.07067}
+}
+
+% Key suffix "2025" kept for back-compat; arXiv submission is January 2026.
+@misc{opsd2025,
+  title={Self-Distilled Reasoner: On-Policy Self-Distillation for Large Language Models},
+  author={Siyan Zhao and Zhihui Xie and Mengchen Liu and Jing Huang and Guan Pang and Feiyu Chen and Aditya Grover},
+  year={2026},
+  eprint={2601.18734},
+  archivePrefix={arXiv},
+  primaryClass={cs.CL},
+  url={https://arxiv.org/abs/2601.18734}
+}
+
+% Key suffix "2025" kept for back-compat; arXiv submission is February 2026.
+@misc{gates2025,
+  title={GATES: Self-Distillation under Privileged Context with Consensus Gating},
+  author={Alex Stein and Furong Huang and Tom Goldstein},
+  year={2026},
+  eprint={2602.20574},
+  archivePrefix={arXiv},
+  primaryClass={cs.CL},
+  url={https://arxiv.org/abs/2602.20574}
+}
+
+% Key suffix "2025" kept for back-compat; arXiv submission is March 2026.
+@misc{hdpo2025,
+  title={HDPO: Hybrid Distillation Policy Optimization via Privileged Self-Distillation},
+  author={Ken Ding},
+  year={2026},
+  eprint={2603.23871},
+  archivePrefix={arXiv},
+  primaryClass={cs.CL},
+  url={https://arxiv.org/abs/2603.23871}
+}
+
+@misc{yuan2024selfrewarding,
+  title={Self-Rewarding Language Models},
+  author={Weizhe Yuan and Richard Yuanzhe Pang and Kyunghyun Cho and Sainbayar Sukhbaatar and Jing Xu and Jason Weston},
+  year={2024},
+  eprint={2401.10020},
+  archivePrefix={arXiv},
+  primaryClass={cs.CL},
+  url={https://arxiv.org/abs/2401.10020}
+}
+
+@misc{wu2024metarewarding,
+  title={Meta-Rewarding Language Models: Self-Improving Alignment with LLM-as-a-Meta-Judge},
+  author={Tianhao Wu and Weizhe Yuan and Olga Golovneva and Jing Xu and Yuandong Tian and Jiantao Jiao and Jason Weston and Sainbayar Sukhbaatar},
+  year={2024},
+  eprint={2407.19594},
+  archivePrefix={arXiv},
+  primaryClass={cs.CL},
+  url={https://arxiv.org/abs/2407.19594}
+}
+
+@misc{wu2024sppo,
+  title={Self-Play Preference Optimization for Language Model Alignment},
+  author={Yue Wu and Zhiqing Sun and Huizhuo Yuan and Kaixuan Ji and Yiming Yang and Quanquan Gu},
+  year={2024},
+  eprint={2405.00675},
+  archivePrefix={arXiv},
+  primaryClass={cs.LG},
+  url={https://arxiv.org/abs/2405.00675}
+}
+
+@misc{xu2024iterativedpo,
+  title={Iterative Reasoning Preference Optimization},
+  author={Jing Xu and Andrew Lee and Sainbayar Sukhbaatar and Jason Weston},
+  year={2024},
+  eprint={2404.19733},
+  archivePrefix={arXiv},
+  primaryClass={cs.CL},
+  url={https://arxiv.org/abs/2404.19733}
+}
+
+@misc{yang2024rlcd,
+  title={RLCD: Reinforcement Learning from Contrastive Distillation for Language Model Alignment},
+  author={Kevin Yang and Dan Klein and Asli Celikyilmaz and Nanyun Peng and Yuandong Tian},
+  year={2024},
+  eprint={2307.12950},
+  archivePrefix={arXiv},
+  primaryClass={cs.CL},
+  url={https://arxiv.org/abs/2307.12950}
+}
+
+% REDI entry removed (2026-05-11) — no published paper with this exact title
+% and "routed token-level self-distillation for reasoning" mechanism could be
+% verified on arXiv. Citing it would be a hallucination.
+
+@misc{fourhabits2026wn,
+  title={Four PPO Reasoning Habits: An Information-Theoretic Mechanism Analysis (Working Note)},
+  author={Internal Working Note},
+  year={2026},
+  note={Behavior-Uncertainty derivative study, not peer-reviewed},
+}
+
+@misc{whydegrade2026,
+  title={Why Does Self-Distillation (Sometimes) Degrade the Reasoning Capability of LLMs?},
+  author={Jeonghye Kim and Xufang Luo and Minbeom Kim and Sangmook Lee and Dohyung Kim and Jiwon Jeon and Dongsheng Li and Yuqing Yang},
+  year={2026},
+  eprint={2603.24472},
+  archivePrefix={arXiv},
+  primaryClass={cs.CL},
+  url={https://arxiv.org/abs/2603.24472}
+}
+
+@misc{opd2026rethinking,
+  title={Rethinking On-Policy Distillation of Large Language Models: Phenomenology, Mechanism, and Recipe},
+  author={Yaxuan Li and Yuxin Zuo and Bingxiang He and Jinqian Zhang and Chaojun Xiao and Cheng Qian and Tianyu Yu and Huan-ang Gao and Wenkai Yang and Zhiyuan Liu and Ning Ding},
+  year={2026},
+  eprint={2604.13016},
+  archivePrefix={arXiv},
+  primaryClass={cs.CL},
+  url={https://arxiv.org/abs/2604.13016}
+}
+
+@misc{sdzero2026,
+  title={Self-Distillation Zero: Self-Revision Turns Binary Rewards into Dense Supervision},
+  author={Yinghui He and others},
+  year={2026},
+  eprint={2604.12002},
+  archivePrefix={arXiv},
+  primaryClass={cs.CL},
+  url={https://arxiv.org/abs/2604.12002}
+}
+
+@misc{lightning_opd2026,
+  title={Lightning OPD: Efficient Post-Training for Large Reasoning Models with Offline On-Policy Distillation},
+  author={Yecheng Wu and Song Han and Hai Cai},
+  year={2026},
+  eprint={2604.13010},
+  archivePrefix={arXiv},
+  primaryClass={cs.CL},
+  url={https://arxiv.org/abs/2604.13010}
+}
+
+@misc{comt2026,
+  title={From Meta-Thought to Execution: Cognitively Aligned Post-Training for Generalizable and Reliable LLM Reasoning},
+  author={Shaojie Wang and others},
+  year={2026},
+  eprint={2601.21909},
+  archivePrefix={arXiv},
+  primaryClass={cs.CL},
+  url={https://arxiv.org/abs/2601.21909}
+}
+
+@misc{shen2026antisd,
+  title={Anti-Self-Distillation for Reasoning RL via Pointwise Mutual Information},
+  author={Guobin Shen and Xiang Cheng and Chenxiao Zhao and Lei Huang and Jindong Li and Dongcheng Zhao and Xing Yu},
+  year={2026},
+  eprint={2605.11609},
+  archivePrefix={arXiv},
+  primaryClass={cs.LG},
+  url={https://arxiv.org/abs/2605.11609}
+}
+
+@misc{yu2025rlpr,
+  title={RLPR: Extrapolating RLVR to General Domains without Verifiers},
+  author={Tianyu Yu and Bo Ji and Shouli Wang and Shu Yao and Zefan Wang and Ganqu Cui and Lifan Yuan and Ning Ding and Yuan Yao and Zhiyuan Liu and Maosong Sun and Tat-Seng Chua},
+  year={2025},
+  eprint={2506.18254},
+  archivePrefix={arXiv},
+  primaryClass={cs.LG},
+  url={https://arxiv.org/abs/2506.18254}
+}
+
+@misc{zhang2025crm,
+  title={Linking Process to Outcome: Conditional Reward Modeling for LLM Reasoning},
+  author={Zheng Zhang and Ziwei Shan and Kaitao Song and Yexin Li and Kan Ren},
+  year={2025},
+  eprint={2509.26578},
+  archivePrefix={arXiv},
+  primaryClass={cs.LG},
+  url={https://arxiv.org/abs/2509.26578}
 }

@@ -274,8 +274,13 @@ decomposition arm in
 Section~\ref{sec:exp:rq2} (meta-primed SFT followed by vanilla GRPO) further splits
 this package into the contribution of priming versus RL-time shaping.
 The twin also guards against a subtle failure mode we document in
-Section~\ref{sec:exp:rq3}: because meta emission concentrates on hard problems,
-aggregate comparisons between meta-emitting and non-emitting \emph{subsets}
-of a single model are Simpson-confounded, whereas the twin comparison is a
-between-arm contrast on the full, identical evaluation set and does not
-condition on the (endogenous) decision to emit.
+Section~\ref{sec:exp:rq3}: any comparison between meta-emitting and
+non-emitting \emph{subsets} of a single model conditions on the endogenous
+decision to emit, whereas the twin comparison is a between-arm contrast on
+the full, identical evaluation set. This matters because emission and payoff
+dissociate in our runs---the treatment arm emits a meta block on 86--94\% of
+responses across \emph{all} difficulty quartiles (non-selective;
+Section~\ref{sec:exp:rq3}), while the accuracy benefit concentrates on the
+hardest problems---so within-model subset comparisons would mix this
+uniform-emission behavior with the difficulty-dependent payoff, and only the
+between-arm contrast cleanly estimates the effect of the meta package.

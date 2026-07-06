@@ -59,11 +59,15 @@ Internally, the twin design controls what we can byte-audit, but it cannot
 control emergent differences that the reward itself induces in exploration
 (e.g., entropy trajectories); we therefore compare same-step, same-seed
 checkpoints rather than best-checkpoint selections. Statistically, meta
-emission tracks difficulty (preliminary: $\approx$10\% on Q1 vs.\
-$\approx$98\% on Q4), so any aggregate comparison of meta-bearing vs.\
-meta-free responses is Simpson-confounded --- a warning we consider a
-contribution in its own right, and the reason all headline comparisons in
-Section~\ref{sec:experiments} are stratified.
+emission and payoff dissociate (preliminary): emission is
+\emph{non-selective}---86--94\% of responses carry a meta block across all
+difficulty quartiles---while the accuracy benefit concentrates on the
+hardest problems. Any within-model comparison of meta-bearing vs.\ meta-free
+responses therefore conditions on the endogenous emit decision and is
+confounded; the reason all headline comparisons in
+Section~\ref{sec:experiments} are between-arm and difficulty-stratified. The
+uniform emission on easy problems, where a verification detour cannot help,
+is itself an efficiency limitation we flag for future selective-emission work.
 
 \paragraph{What a negative result would still establish.}
 If Table~\ref{tab:t1} shows no accuracy gain over the matched base, the
