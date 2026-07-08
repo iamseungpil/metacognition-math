@@ -1,0 +1,41 @@
+description: metacot-train-node-b
+
+target:
+  service: sing
+  name: msrresrchvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  registry: mcr.microsoft.com
+  image: aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x:latest
+  setup:
+    - echo "export LC_CTYPE=en_US.UTF-8" >> ~/.profile
+    - echo "export CUDA_HOME=/usr/local/cuda-12.6" >> ~/.profile
+    - echo "export PATH=/usr/local/cuda-12.6/bin:/opt/conda/envs/ptca/bin:$$PATH" >> ~/.profile
+    - echo "export LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64:/opt/conda/envs/ptca/lib:$$LD_LIBRARY_PATH" >> ~/.profile
+    - source ~/.profile
+
+code:
+  local_dir: $CONFIG_DIR/
+
+storage:
+  external:
+    storage_account_name: xufluo
+    container_name: zhangquanchen
+    mount_dir: /mnt/input
+    is_output: True
+
+jobs:
+  - name: metacognition_train_b
+    sku: 80G4-A100-NvLink
+    sla_tier: premium
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 1209600
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+    command:
+      - nvidia-smi
+      - nohup bash -c 'while true; do sleep 3600; done' &
+      - sleep infinity

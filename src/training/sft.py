@@ -367,7 +367,24 @@ def run_sft(config_path: str):
     os.environ["WANDB_NAME"] = config.get("run_name", "metacot-sft")
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    if tokenizer.pad_token is None:
+    # EOS/PAD invariant (Qwen3): terminator = <|im_end|> (151645), pad = <|endoftext|>
+    # (151643), distinct so the true eos is never masked as pad. On Qwen3-8B-Base the
+    # tokenizer default eos is <|endoftext|>, but the ChatML template terminates the
+    # assistant turn with <|im_end|>, which this SFT trains into the lm-head; verl/vLLM/
+    # eval all derive their stop from tokenizer.eos_token_id, so it MUST equal the SFT
+    # terminator. See docs/redesign/SPEC.md §2 (EOS termination checklist).
+    _vocab = tokenizer.get_vocab()
+    if "<|im_end|>" in _vocab and "<|endoftext|>" in _vocab:
+        tokenizer.eos_token = "<|im_end|>"
+        tokenizer.pad_token = "<|endoftext|>"
+        assert (
+            tokenizer.eos_token_id != tokenizer.pad_token_id
+        ), f"eos({tokenizer.eos_token_id}) must differ from pad({tokenizer.pad_token_id})"
+        print(
+            f"[eos-fix] eos={tokenizer.eos_token}({tokenizer.eos_token_id}) "
+            f"pad={tokenizer.pad_token}({tokenizer.pad_token_id})"
+        )
+    elif tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     # Add <|meta|> as regular tokens (NOT special tokens) so they survive
@@ -386,6 +403,15 @@ def run_sft(config_path: str):
     if num_added > 0:
         model.resize_token_embeddings(len(tokenizer))
         print(f"Resized embeddings to {len(tokenizer)}")
+
+    # Keep the model's eos/pad ids consistent with the tokenizer so the SAVED
+    # checkpoint's config.json + generation_config.json drive the SAME stop token
+    # (151645) that verl's response-mask and vLLM rollout read. See SPEC.md §2 C/F.
+    model.config.eos_token_id = tokenizer.eos_token_id
+    model.config.pad_token_id = tokenizer.pad_token_id
+    if getattr(model, "generation_config", None) is not None:
+        model.generation_config.eos_token_id = tokenizer.eos_token_id
+        model.generation_config.pad_token_id = tokenizer.pad_token_id
 
     import os as _os
     if _os.environ.get("S3B_META_EMB_TRANSPLANT", "0") == "1":

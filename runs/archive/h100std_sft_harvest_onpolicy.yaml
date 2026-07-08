@@ -1,0 +1,132 @@
+description: "ON-POLICY functional-redirect SFT-example harvest. Rolls out the rv warm-up SFT student (v8_rv_confidence_warmup, the RL init) on the meta-mix RL train pool via vLLM, keeps wrong rollouts in the frozen pass-rate band [0.125,0.5], splices each wrong prefix at frac~U[0.3,0.7], regenerates 3 answer-blind arms (R redirect / N' null-meta / Nc plain) k=8, and ACCEPTS only splices whose redirect CAUSALLY flips wrong->right on the lower-CI margin gate (scripts/harvest_redirect_cf.accept_redirect — reused, not reimplemented). The accepted (prompt + spliced wrong prefix + redirect continuation) rows are written to a parquet (--out, the minimal writer added to scripts/pg0_yield_pilot.py) — these are the functional-redirect SFT examples for the SFT-prime->RL re-train. Parquet + yield summary uploaded to iamseungpil/metacot-rv under data/onpolicy_redirect_harvest/. Standard 80G4-H100. Tokens via env only."
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  registry: mcr.microsoft.com
+  image: aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x:latest
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: onpolicy_redirect_harvest
+    sku: 80G4-H100
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 43200
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        CODE_TAR_REVISION: "454539805"
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        VLLM_WORKER_MULTIPROC_METHOD: spawn
+        HF_HUB_DISABLE_XET: "1"
+        WARMUP_MODEL: v8_rv_confidence_warmup
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -o pipefail
+        set -x
+        mkdir -p /scratch/logs /scratch/models /scratch/eval_results
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        nohup python -c "
+        import torch, time
+        g = torch.cuda.device_count()
+        ts = [torch.randn(2048, 2048, device=f\"cuda:{i}\", dtype=torch.float16) for i in range(g)]
+        while True:
+            for i in range(g): ts[i] = (ts[i] @ ts[i]) * 0.5
+            time.sleep(2)
+        " > /scratch/logs/gpu_keeper_inline.log 2>&1 &
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        PYBIN=$${SIMPLERL_DIR}/bin/python
+        pip uninstall -y hf_xet 2>&1 | tail -1 || true
+
+        # 1. pull the RL parquets (meta-mix train carries split_tags difficulty/scenario/trigger).
+        $${PYBIN} /scratch/metacognition/scripts/pull_parquets.py 2>&1 | tail -3
+        POOL=/scratch/metacognition/data/verl_train_meta_mix.parquet
+        ls -la $${POOL} || { echo "[YAML] train pool parquet missing"; exit 1; }
+
+        # 2. download the HF-format warm-up SFT student (RL init) from the CLEAN metacot-rv repo.
+        $${PYBIN} -c "
+        from huggingface_hub import snapshot_download
+        import os, shutil
+        m=os.environ[\"WARMUP_MODEL\"]
+        snapshot_download(repo_id=\"iamseungpil/metacot-rv\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/\"+m+\"/**\"], local_dir=\"/scratch/models_dl\")
+        src=\"/scratch/models_dl/models/\"+m; dst=\"/scratch/models/\"+m
+        shutil.rmtree(dst, ignore_errors=True); shutil.copytree(src, dst); print(\"warm-up model staged\")
+        "
+        MODEL=/scratch/models/$${WARMUP_MODEL}
+        $${PYBIN} -c "
+        import json, os
+        p=\"$${MODEL}/tokenizer_config.json\"
+        if os.path.exists(p):
+            c=json.load(open(p)); c.pop(\"extra_special_tokens\", None); json.dump(c, open(p,\"w\"), indent=2); print(\"tok patched\")
+        "
+
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+        HARVEST_OUT=/scratch/eval_results/onpolicy_redirect_harvest.parquet
+        VERDICT_DIR=/scratch/eval_results/pg0_yield_pilot
+        # 3. FULL on-policy harvest: roll out the warm-up student over the WHOLE meta-mix
+        #    pool (pool_size = full_pool = 5344), keep in-band wrong, splice, 3-arm regen,
+        #    accept on the CF lower-CI margin gate, and WRITE accepted examples to --out.
+        $${PYBIN} scripts/pg0_yield_pilot.py \
+          --model_path $${MODEL} \
+          --train_parquet $${POOL} \
+          --pool_size 5344 --full_pool 5344 --target 1500 \
+          --rollout_k 8 --arm_k 8 --max_wrong_splices 4000 \
+          --max_new_tokens 2048 --tp_size 4 --gpu_memory_utilization 0.85 \
+          --max_model_len 8192 --seed 42 \
+          --output_dir $${VERDICT_DIR} --out $${HARVEST_OUT} \
+          2>&1 | tee /scratch/eval_results/onpolicy_harvest.log
+        HARV_RC=$${PIPESTATUS[0]}
+        # pg0 raises SystemExit on a STOP verdict (rc!=0) but the --out parquet is written
+        # BEFORE that check, so accepted examples are saved regardless of GO/STOP.
+        echo "[YAML] harvest rc=$${HARV_RC}"
+        ls -la $${HARVEST_OUT} || { echo "[YAML] harvest parquet missing"; exit 1; }
+
+        echo "================ ON-POLICY HARVEST SUMMARY ================"
+        grep -E "\[pg0\] (pilot pool|in-band|attempted|wrote)|\[pg0-raw\]|verdict|harvest_n" /scratch/eval_results/onpolicy_harvest.log | tee /scratch/eval_results/onpolicy_harvest_summary.txt
+        echo "=========================================================="
+
+        # 4. upload the accepted-examples parquet + yield summary/verdict to metacot-rv.
+        $${PYBIN} -c "
+        from huggingface_hub import HfApi
+        import os
+        api=HfApi(token=os.environ[\"HF_TOKEN\"])
+        base=\"data/onpolicy_redirect_harvest/\"
+        for fn in [\"$${HARVEST_OUT}\",
+                   \"/scratch/eval_results/onpolicy_harvest_summary.txt\",
+                   \"$${VERDICT_DIR}/pg0_verdict.json\",
+                   \"/scratch/eval_results/onpolicy_harvest.log\"]:
+            try:
+                api.upload_file(path_or_fileobj=fn, path_in_repo=base+os.path.basename(fn),
+                    repo_id=\"iamseungpil/metacot-rv\", repo_type=\"dataset\")
+                print(\"uploaded\", fn)
+            except Exception as e: print(\"upload skip\", fn, str(e)[:80])
+        print(\"on-policy harvest uploaded\")
+        " || echo "[YAML] upload skipped"
+        echo "[YAML] onpolicy_redirect_harvest DONE"
+        sleep 600
+        '

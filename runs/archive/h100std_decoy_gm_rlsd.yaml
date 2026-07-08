@@ -1,0 +1,130 @@
+description: "FINAL 2-ARM (Arm RLSD, MULTIPLICATIVE ABLATION): TRIOBJ_DCPO_V4 with dcpo_rmeta_source=decoy_did_rlsd — the SAME gm CONTRAST scalar (logp(gold|body+meta)−logp(gold|body+placebo)) − (decoy), scored AFTER <|/meta|>, token-level mean_min over divergent answer-value tokens, converted to a per-row weight w=exp(sign(A_corr)·clip(gm)) and MULTIPLIED into the correctness advantage on META tokens: A_t = A_corr·((1−λ)+λ·w). SHACKLED to the correctness sign (a gold-reaching meta on a WRONG rollout is punished). Initialized from the FUNCTIONAL SFT (v8_rv_functional_sft). gm prereq PASSED within-AUC 0.685. Structure isolation vs the RLSD (multiplicative) arm: same gm scalar, different routing. Prediction: this RLSD arm LOSES to the additive DCPO arm (shackling harm); this run EMPIRICALLY demonstrates it. Decision metric = held-out accuracy Δ + epistemic verbalization preserved (dcpo/epistemic_*). H100x4 Standard. Launch with `amlt run -y`."
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  registry: mcr.microsoft.com
+  image: aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x:latest
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: triobj_dcpo_v4_gm_rlsd
+    sku: 80G4-H100
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 604800
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        CODE_TAR_REVISION: "457098381"
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        WANDB_API_KEY: ${WANDB_API_KEY}
+        WANDB_KEY: ${WANDB_API_KEY}
+        WANDB_PROJECT: metacot-dcpo-v4
+        WANDB_RUN_GROUP: directional_gm
+        WANDB_NAME: triobj_dcpo_v4_gm_rlsd
+        WANDB_TAGS: TRIOBJ,DCPO,v4,gm,decoy_did_rlsd,multiplicative,directional,from-rv-functional,TRIOBJ_DCPO_V4
+        DCPO_WANDB_ROLLOUTS: "1"
+        DCPO_WANDB_ROLLOUTS_EVERY: "1"
+        DCPO_META_CLOSE_FORCE: "1"
+        DCPO_META_CLOSE_N: "96"
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        DCPO_DEBUG: "1"
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints /scratch/models
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        # inline GPU spinner from t~0 (close the Singularity suspend-on-idle window).
+        nohup python -c "
+        import torch, time
+        g = torch.cuda.device_count()
+        ts = [torch.randn(2048, 2048, device=f\"cuda:{i}\", dtype=torch.float16) for i in range(g)]
+        while True:
+            for i in range(g): ts[i] = (ts[i] @ ts[i]) * 0.5
+            time.sleep(2)
+        " > /scratch/logs/gpu_keeper_inline.log 2>&1 &
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+        echo "$${CODE_TAR_REVISION}" > /scratch/metacognition/.bootstrap_version
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper_early.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        # hard-remove hf_xet (env flag + pip uninstall insufficient — memory hf-xet-pitfall).
+        pip uninstall -y hf_xet 2>&1 | tail -1 || true
+        find $${SIMPLERL_DIR}/lib -maxdepth 3 -name "hf_xet*" -exec rm -rf {} + 2>/dev/null || true
+        python /scratch/metacognition/scripts/pull_parquets.py 2>&1 | tail -3
+
+        # ── stage the rv functional SFT (RL init + frozen gm ref worker) from CLEAN metacot-rv ──
+        python -c "
+        from huggingface_hub import snapshot_download
+        import os, shutil
+        snapshot_download(repo_id=\"iamseungpil/metacot-rv\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/v8_rv_functional_sft/**\"], local_dir=\"/scratch/models_dl\")
+        src=\"/scratch/models_dl/models/v8_rv_functional_sft\"; dst=\"/scratch/models/v8_rv_functional_sft\"
+        shutil.rmtree(dst, ignore_errors=True); shutil.copytree(src, dst); print(\"rv functional SFT staged\")
+        "
+        python -c "
+        import json, os; p=\"/scratch/models/v8_rv_functional_sft/tokenizer_config.json\"
+        if os.path.exists(p):
+            cfg=json.load(open(p)); cfg.pop(\"extra_special_tokens\", None); json.dump(cfg, open(p,\"w\"), indent=2); print(\"tokenizer patched\")
+        "
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/triobj_dcpo_v4_gm_rlsd_h100_4x4k --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --token $${HF_TOKEN} --interval 90 --config_name triobj_dcpo_v4_gm_rlsd_h100_4x4k > /scratch/logs/push_dcpo.log 2>&1 &
+
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+        # RESUME-FROM-HF durability for this RL run.
+        python /scratch/metacognition/scripts/pull_resume_ckpt.py --repo iamseungpil/metacot-h200-triobj-dcpo-v3 --config_name triobj_dcpo_v4_gm_rlsd_h100_4x4k --local_dir /scratch/checkpoints/triobj_dcpo_v4_gm_rlsd_h100_4x4k --token $${HF_TOKEN} 2>&1 | tail -5
+        # `amlt run -i` sets LOCAL_RANK='' (empty); export a valid "0" so Ray
+        # worker actors inherit a valid value when spawned (memory amlt-i pitfall).
+        export LOCAL_RANK=0
+        # Arm RLSD (MULTIPLICATIVE ABLATION): dcpo_rmeta_source=decoy_did_rlsd —
+        # SAME gm contrast (mean_min / alpha=1.0) → per-row factor ((1−λ)+λ·w),
+        # w=exp(sign(A_corr)·clip(gm)), MULTIPLIES Â_corr on META tokens. The meta
+        # head carries R_corr so A_meta==A_corr; dcpo_w_meta=1.0 keeps the
+        # multiply at full Â_corr scale; dcpo_rlsd_lambda=1.0 = fully RLSD-weighted.
+        # dcpo_w_over=0.05 = over-emission/selectivity penalty (CF's +0.040 driver,
+        # spec §26): a meta row in an already-fully-correct GROUP pays 0.05 off
+        # correctness (AdaCoT P_over), same group-proxy fold as the DCPO arm.
+        WANDB_NAME=triobj_dcpo_v4_gm_rlsd /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
+            --config-name=triobj_dcpo_v4_stage3b_h100_4x4k \
+            trainer.experiment_name=triobj_dcpo_v4_gm_rlsd_h100_4x4k \
+            trainer.default_local_dir=/scratch/checkpoints/triobj_dcpo_v4_gm_rlsd_h100_4x4k \
+            trainer.project_name=metacot-dcpo-v4 \
+            actor_rollout_ref.model.path=/scratch/models/v8_rv_functional_sft \
+            ++algorithm.dcpo_rmeta_source=decoy_did_rlsd \
+            ++algorithm.dcpo_gm_agg=mean_min \
+            ++algorithm.dcpo_gm_alpha=1.0 \
+            ++algorithm.dcpo_rlsd_lambda=1.0 \
+            ++algorithm.dcpo_rlsd_clip_w=2.0 \
+            ++algorithm.dcpo_w_meta=1.0 \
+            ++algorithm.dcpo_w_over=0.05 \
+            trainer.resume_mode=auto \
+            ++trainer.val_before_train=False \
+            ++hydra.searchpath=[pkg://verl/trainer/config] \
+            > /scratch/logs/verl_main.log 2>&1
+        VERL_RC=$$?
+        echo "[YAML] verl_sdc gm_dcpo rc=$${VERL_RC}; tail of verl_main.log:"
+        tail -40 /scratch/logs/verl_main.log 2>/dev/null
+        sleep 86400
+        '

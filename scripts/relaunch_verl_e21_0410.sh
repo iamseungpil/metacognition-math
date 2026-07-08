@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd /scratch/metacognition
 export PYTHONPATH=/scratch/metacognition:${PYTHONPATH:-}
-export WANDB_API_KEY="${WANDB_API_KEY:-2f4e627868f1f9dad10bcb1a14fbf96817e6baa9}"
+export WANDB_API_KEY="${WANDB_API_KEY:-${WANDB_API_KEY}}"
 export WANDB_PROJECT="${WANDB_PROJECT:-metacot-math}"
 export WANDB_NAME="${WANDB_NAME:-verl_e21_historical_0410}"
 export WANDB_RUN_GROUP="${WANDB_RUN_GROUP:-e21-historical}"

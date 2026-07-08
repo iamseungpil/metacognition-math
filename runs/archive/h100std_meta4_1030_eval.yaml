@@ -1,0 +1,125 @@
+description: "4 meta methods ABSOLUTE 1030 benchmark eval on a SINGLE node, SEQUENTIAL (cf gs130 / pmi gs200 / gmadd gs170 / gmmult gs301). One node request (avoids the 4-simultaneous node-admission rejection that failed the per-method jobs while training holds a basicvc H100). For each: pull verl FSDP ckpt -> merge FSDP->HF -> eval_vllm_1030.py @16k single-pass@1 meta-ON (gsm8k500+math500+aime) -> upload to eval/<tag>_1030_gs<gs>/. Continue-on-error so one bad ckpt doesn't kill the rest. H100 Standard. Tokens via env only."
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  registry: mcr.microsoft.com
+  image: aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x:latest
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: meta4_1030_eval
+    sku: 80G4-H100
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 43200
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        CODE_TAR_REVISION: "457098381"
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        VLLM_WORKER_MULTIPROC_METHOD: spawn
+        HF_HUB_DISABLE_XET: "1"
+        REPO: iamseungpil/metacot-h200-triobj-dcpo-v3
+        SPECS: "func_cf:130:cf func_pmi:200:pmi gm_dcpo:170:gmadd gm_rlsd:301:gmmult"
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -o pipefail
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints /scratch/eval_results
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        nohup python -c "
+        import torch, time
+        g = torch.cuda.device_count()
+        ts = [torch.randn(2048, 2048, device=f\"cuda:{i}\", dtype=torch.float16) for i in range(g)]
+        while True:
+            for i in range(g): ts[i] = (ts[i] @ ts[i]) * 0.5
+            time.sleep(2)
+        " > /scratch/logs/gpu_keeper_inline.log 2>&1 &
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        PYBIN=$${SIMPLERL_DIR}/bin/python
+        pip uninstall -y hf_xet 2>&1 | tail -1 || true
+
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+
+        for SPEC in $${SPECS}; do
+          BASE=$${SPEC%%:*}; REST=$${SPEC#*:}; GS=$${REST%%:*}; TAG=$${REST##*:}
+          CONFIG=triobj_dcpo_v4_$${BASE}_h100_4x4k
+          MODEL_NAME=$${TAG}_gs$${GS}_1030_16k
+          echo "================ START $${TAG} ($${CONFIG} gs$${GS}) ================"
+
+          $${PYBIN} -c "
+        from huggingface_hub import snapshot_download
+        import os
+        snapshot_download(repo_id=os.environ[\"REPO\"], repo_type=\"model\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"checkpoints/$${CONFIG}/global_step_$${GS}/**\"], local_dir=\"/scratch\")
+        print(\"$${TAG} gs$${GS} downloaded\")
+        " || { echo "[YAML] $${TAG} download FAILED, skip"; continue; }
+
+          CKPT=/scratch/checkpoints/$${CONFIG}/global_step_$${GS}/actor
+          MERGED=/scratch/eval_results/merged_$${TAG}_gs$${GS}
+          OUTDIR=/scratch/eval_results/eval_1030_$${TAG}_gs$${GS}_16k
+          mkdir -p $${MERGED} $${OUTDIR}
+
+          $${PYBIN} -m verl.model_merger merge --backend fsdp --local_dir $${CKPT} --target_dir $${MERGED}
+          if [ "$$?" -ne 0 ]; then echo "[YAML] $${TAG} merge FAILED, skip"; continue; fi
+          $${PYBIN} -c "
+        import json, os
+        p=\"$${MERGED}/tokenizer_config.json\"
+        if os.path.exists(p):
+            c=json.load(open(p)); c.pop(\"extra_special_tokens\", None); json.dump(c, open(p,\"w\"), indent=2); print(\"tok patched\")
+        "
+
+          $${PYBIN} scripts/eval_vllm_1030.py \
+            --model_path $${MERGED} --model_name $${MODEL_NAME} --output_dir $${OUTDIR} \
+            --benchmarks gsm8k math500 aime2024 --max_problems 500 \
+            --max_tokens 16384 --temperature 0.7 --top_p 0.95 --tp_size 4 --num_samples 1 \
+            2>&1 | tee /scratch/eval_results/$${TAG}_1030_gs$${GS}.log
+          if [ "$${PIPESTATUS[0]}" -ne 0 ]; then echo "[YAML] $${TAG} 1030 eval FAILED, skip"; continue; fi
+
+          echo "================ $${TAG} gs$${GS} 1030 SUMMARY ================"
+          tail -40 /scratch/eval_results/$${TAG}_1030_gs$${GS}.log
+          echo "============================================================="
+
+          $${PYBIN} -c "
+        from huggingface_hub import HfApi
+        import os, glob
+        api=HfApi(token=os.environ[\"HF_TOKEN\"])
+        files=glob.glob(\"$${OUTDIR}/**\", recursive=True)+[\"/scratch/eval_results/$${TAG}_1030_gs$${GS}.log\"]
+        for fn in files:
+            if not os.path.isfile(fn): continue
+            try:
+                api.upload_file(path_or_fileobj=fn, path_in_repo=\"eval/$${TAG}_1030_gs$${GS}/\"+os.path.basename(fn),
+                    repo_id=\"iamseungpil/metacot-rv\", repo_type=\"dataset\")
+            except Exception as e: print(\"upload skip\", fn, str(e)[:80])
+        print(\"$${TAG} 1030 eval uploaded\")
+        " || echo "[YAML] $${TAG} upload skipped"
+          echo "[YAML] $${TAG}_1030_eval gs$${GS} DONE"
+          rm -rf $${MERGED} /scratch/checkpoints/$${CONFIG} 2>/dev/null
+        done
+        echo "[YAML] ALL 4 meta 1030 evals DONE"
+        sleep 600
+        '

@@ -79,7 +79,7 @@ copy_to_remote "$URL_EVAL" "$ROOT/scripts/launch_control_v5_rl_eval_lane_remote.
 copy_to_remote "$URL_TRAIN_B" "$ROOT/scripts/launch_control_v5_rl_train_b_lane_remote.sh" "/scratch/metacognition/scripts/launch_control_v5_rl_train_b_lane_remote.sh"
 
 echo "[hf] uploading unified control-v5 all SFT from e8 node"
-proxy_ssh "$URL_E8" "bash -lc 'cd /scratch/metacognition && source /opt/conda/etc/profile.d/conda.sh && conda activate $REMOTE_CONDA_ENV && export PYTHONPATH=/scratch/metacognition && export HF_TOKEN=${HF_TOKEN:-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} && nohup python scripts/push_models_hf.py --model_path checkpoints/qwen3_metacot_control_v5_all_sft --model_name qwen3_metacot_control_v5_all_sft > results/control_v5_all_sft_hf_upload.log 2>&1 < /dev/null & echo \$!'" | tee "$LOG_DIR/hf_upload.pid"
+proxy_ssh "$URL_E8" "bash -lc 'cd /scratch/metacognition && source /opt/conda/etc/profile.d/conda.sh && conda activate $REMOTE_CONDA_ENV && export PYTHONPATH=/scratch/metacognition && export HF_TOKEN=${HF_TOKEN:-${HF_TOKEN}} && nohup python scripts/push_models_hf.py --model_path checkpoints/qwen3_metacot_control_v5_all_sft --model_name qwen3_metacot_control_v5_all_sft > results/control_v5_all_sft_hf_upload.log 2>&1 < /dev/null & echo \$!'" | tee "$LOG_DIR/hf_upload.pid"
 
 echo "[launch] probe lane on metacognition_e8"
 launch_remote_nohup "$URL_E8" "launch_control_v5_rl_probe_lane_remote.sh" "control_v5_probe_lane.out" | tee "$LOG_DIR/probe_lane.pid"

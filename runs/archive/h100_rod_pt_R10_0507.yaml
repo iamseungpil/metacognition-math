@@ -1,0 +1,170 @@
+description: ROD-PT (Plan v5.7) — R5 SDC factor + position teacher (decoy off). Cold = base meta SFT v8.
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  registry: mcr.microsoft.com
+  image: aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x:latest
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: rod_pt_r10
+    sku: 141G4-H200
+    sla_tier: Basic
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 604800
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        WANDB_API_KEY: ${WANDB_API_KEY}
+        WANDB_KEY: ${WANDB_API_KEY}
+        WANDB_PROJECT: skilldiscovery2
+        WANDB_NAME: rod_pt_R10_h100_0507
+        WANDB_RUN_GROUP: rod-pt-R10-2026-05-07
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        # PYTORCH_CUDA_ALLOC_CONF removed: expandable_segments=True breaks vLLM custom_all_reduce IPC
+        # (custom_all_reduce.cuh:455 'invalid argument' error). Default allocator handles fragmentation acceptably.
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints
+        cd /scratch
+
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        python -c "
+        from huggingface_hub import hf_hub_download
+        import os, tarfile
+        p = hf_hub_download(repo_id=\"iamseungpil/metacot\", filename=\"code_snapshots/metacognition.tar.gz\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"])
+        t = tarfile.open(p); t.extractall(\"/scratch\"); t.close()
+        print(\"code extracted\")
+        "
+
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+
+        python /scratch/metacognition/scripts/pull_parquets.py 2>&1 | tail -3
+
+        echo "[YAML] staging base meta SFT (used as both cold start AND teacher)"
+        mkdir -p /scratch/models
+        python -c "
+        from huggingface_hub import snapshot_download
+        import os, shutil
+        p = snapshot_download(
+            repo_id=\"iamseungpil/metacot\",
+            repo_type=\"dataset\",
+            token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/v8_meta_inside_strict_sft/checkpoint-254/*\"],
+            local_dir=\"/scratch/models_dl\",
+        )
+        src = \"/scratch/models_dl/models/v8_meta_inside_strict_sft/checkpoint-254\"
+        dst = \"/scratch/models/v8_meta_inside_strict_sft\"
+        if os.path.exists(dst): shutil.rmtree(dst)
+        shutil.copytree(src, dst)
+        print(\"base meta SFT staged at\", dst)
+        "
+        python -c "
+        import json
+        p = \"/scratch/models/v8_meta_inside_strict_sft/tokenizer_config.json\"
+        cfg = json.load(open(p))
+        cfg.pop(\"extra_special_tokens\", None)
+        json.dump(cfg, open(p, \"w\"), indent=2)
+        print(\"tokenizer patched\")
+        "
+
+        mkdir -p /scratch/checkpoints/rod_pt_R10
+
+        # Resume from HF — auto-detect latest checkpoint-XX/ pushed (preempt-safe)
+        python -c "
+        from huggingface_hub import HfApi, snapshot_download
+        import os, re
+        repo = \"iamseungpil/metacot-h100-rod-pt-R10-0507\"
+        api = HfApi()
+        try:
+            files = api.list_repo_files(repo, repo_type=\"model\", token=os.environ[\"HF_TOKEN\"])
+        except Exception as exc:
+            print(f\"[resume] no HF repo yet ({exc}) — fresh start\")
+            files = []
+        steps = sorted({int(m.group(1)) for f in files for m in [re.match(r\"checkpoint-(\d+)/\", f)] if m})
+        if steps:
+            latest = max(steps)
+            print(f\"[resume] downloading checkpoint-{latest} (available: {steps})\")
+            snapshot_download(
+                repo_id=repo, repo_type=\"model\", token=os.environ[\"HF_TOKEN\"],
+                allow_patterns=[f\"checkpoint-{latest}/*\"],
+                local_dir=\"/scratch/checkpoints/rod_pt_R10\",
+            )
+            with open(\"/scratch/checkpoints/rod_pt_R10/_resume_step.txt\", \"w\") as f:
+                f.write(str(latest))
+            print(f\"[resume] OK at checkpoint-{latest}\")
+        else:
+            print(\"[resume] no ckpt on HF — fresh start\")
+        "
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rod_pt_R10 --repo_id iamseungpil/metacot-h100-rod-pt-R10-0507 --token $HF_TOKEN --interval 5 --config_name rod_pt_R10 > /scratch/logs/push_rod_pt.log 2>&1 &
+
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+
+        python -c "
+        import yaml, os
+        cfg = yaml.safe_load(open(\"configs/meta_rod_pt_R10_h100_4x4k.yaml\"))
+        cfg[\"student_init\"] = \"/scratch/models/v8_meta_inside_strict_sft\"
+        cfg[\"teacher_init\"] = \"/scratch/models/v8_meta_inside_strict_sft\"
+        cfg[\"output_dir\"] = \"/scratch/checkpoints/rod_pt_R10\"
+        # Resume from latest downloaded ckpt (if any)
+        rs = \"/scratch/checkpoints/rod_pt_R10/_resume_step.txt\"
+        if os.path.exists(rs):
+            with open(rs) as f: step = f.read().strip()
+            cfg[\"resume_from_checkpoint\"] = f\"/scratch/checkpoints/rod_pt_R10/checkpoint-{step}\"
+            print(f\"[runtime] resume_from_checkpoint = {cfg['resume_from_checkpoint']}\")
+        yaml.safe_dump(cfg, open(\"/tmp/rod_pt_runtime.yaml\", \"w\"))
+        print(\"runtime config OK\")
+        "
+
+        accelerate launch --num_processes=4 \
+            scripts/train_meta_rod_pt.py --config /tmp/rod_pt_runtime.yaml --skip_preflight
+        TRAIN_RC=$$?
+        echo "[YAML] train_meta_rod_pt rc=$$TRAIN_RC"
+
+        if [ "$$TRAIN_RC" = "0" ]; then
+            EVAL_DIR=/scratch/eval_results/eval_rod_pt_R10_step_final
+            mkdir -p $$EVAL_DIR
+            export VLLM_WORKER_MULTIPROC_METHOD=spawn
+            python /scratch/metacognition/scripts/eval_vllm_1030.py \
+                --model_path /scratch/checkpoints/rod_pt_R10/final \
+                --model_name rod_pt_R10_step_final \
+                --output_dir $$EVAL_DIR \
+                --max_tokens 16384 \
+                --tp_size 4
+            python -c "
+            from huggingface_hub import HfApi
+            import os
+            HfApi().upload_folder(
+                folder_path=\"$$EVAL_DIR\",
+                path_in_repo=\"eval/rod_pt_R10_2026_05_07\",
+                repo_id=\"iamseungpil/metacot\",
+                repo_type=\"dataset\",
+                token=os.environ[\"HF_TOKEN\"],
+                allow_patterns=[\"*.json\", \"*.parquet\"],
+            )
+            print(\"[ROD-PT eval] pushed\")
+            "
+        fi
+        sleep 86400
+        '

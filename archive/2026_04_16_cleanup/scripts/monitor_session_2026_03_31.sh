@@ -184,7 +184,7 @@ echo "$(date -u "+%a %b %d %H:%M:%S %Y UTC"): Starting Base SFT..." >> "$LOG"
 source /opt/conda/etc/profile.d/conda.sh
 conda activate grpo
 export PYTHONPATH=/scratch/metacognition
-export WANDB_API_KEY=2f4e627868f1f9dad10bcb1a14fbf96817e6baa9
+export WANDB_API_KEY=${WANDB_API_KEY}
 accelerate launch --config_file configs/accelerate_sft.yaml src/training/sft.py --config configs/sft_base.yaml > /scratch/metacognition/base_sft.log 2>&1
 echo "$(date -u "+%a %b %d %H:%M:%S %Y UTC"): Base SFT done" >> "$LOG"
 echo "$(date -u "+%a %b %d %H:%M:%S %Y UTC"): Starting E5 GRPO (500 steps, from qwen3_metacot_v2_sft)..." >> "$LOG"
@@ -215,7 +215,7 @@ set -euo pipefail
 cd /scratch/metacognition
 source /opt/conda/etc/profile.d/conda.sh
 conda activate grpo
-nohup bash -lc "cd /scratch/metacognition && source /opt/conda/etc/profile.d/conda.sh && conda activate grpo && python -c 'from huggingface_hub import HfApi; api = HfApi(token=\"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\"); api.upload_folder(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", folder_path=\"$model_dir\", path_in_repo=\"models/$repo_subdir\", commit_message=\"Upload $repo_subdir\", ignore_patterns=[\"checkpoint-*\", \"optimizer*\", \"scheduler*\", \"trainer_state*\", \"training_args*\", \"wandb/*\", \"runs/*\"]); print(\"UPLOADED_$repo_subdir\")'" >/scratch/metacognition/${repo_subdir}_hf_upload.log 2>&1" >/dev/null 2>&1 &
+nohup bash -lc "cd /scratch/metacognition && source /opt/conda/etc/profile.d/conda.sh && conda activate grpo && python -c 'from huggingface_hub import HfApi; api = HfApi(token=\"${HF_TOKEN}\"); api.upload_folder(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", folder_path=\"$model_dir\", path_in_repo=\"models/$repo_subdir\", commit_message=\"Upload $repo_subdir\", ignore_patterns=[\"checkpoint-*\", \"optimizer*\", \"scheduler*\", \"trainer_state*\", \"training_args*\", \"wandb/*\", \"runs/*\"]); print(\"UPLOADED_$repo_subdir\")'" >/scratch/metacognition/${repo_subdir}_hf_upload.log 2>&1" >/dev/null 2>&1 &
 EOF
 )"
 }

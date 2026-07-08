@@ -22,8 +22,8 @@ conda activate ptca
 
 cd /scratch/metacognition
 export PYTHONPATH=/scratch/metacognition
-export WANDB_API_KEY="${WANDB_API_KEY:-$(cat ~/.wandb_key 2>/dev/null || echo 2f4e627868f1f9dad10bcb1a14fbf96817e6baa9)}"
-export HF_TOKEN="${HF_TOKEN:-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}"
+export WANDB_API_KEY="${WANDB_API_KEY:-$(cat ~/.wandb_key 2>/dev/null || echo ${WANDB_API_KEY})}"
+export HF_TOKEN="${HF_TOKEN:-${HF_TOKEN}}"
 
 # ─── Paths ───
 MODEL_PATH="checkpoints/qwen3_metacot_control_v5_all_sft"

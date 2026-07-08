@@ -125,7 +125,14 @@ def main() -> None:
     )
     tokenizer = llm.get_tokenizer()
     ensure_meta_tokens_not_special(tokenizer, [META_START, META_END])
-    if tokenizer.pad_token is None:
+    # EOS/PAD invariant (Qwen3): eos=<|im_end|>(151645), pad=<|endoftext|>(151643),
+    # distinct. Matches the SFT terminator so eval stops on the same id the model was
+    # trained to emit. See docs/redesign/SPEC.md §2 E.
+    _vocab = tokenizer.get_vocab()
+    if "<|im_end|>" in _vocab and "<|endoftext|>" in _vocab:
+        tokenizer.eos_token = "<|im_end|>"
+        tokenizer.pad_token = "<|endoftext|>"
+    elif tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     prompts = [render_chat_prompt(tokenizer, p["question"]) for p in problems]
@@ -141,6 +148,14 @@ def main() -> None:
         seed=args.seed,
         skip_special_tokens=False,
     )
+    # Belt-and-suspenders stop: stop on both Qwen3 terminators so a mis-saved
+    # generation_config cannot cause runaway non-termination. eos(151645) first.
+    _stop_ids = [i for i in (
+        tokenizer.convert_tokens_to_ids("<|im_end|>"),
+        tokenizer.convert_tokens_to_ids("<|endoftext|>"),
+    ) if isinstance(i, int) and i >= 0]
+    if _stop_ids:
+        sp_kwargs["stop_token_ids"] = _stop_ids
     # anti-degeneration knobs: only attach when non-default so baseline is byte-identical.
     if args.repetition_penalty and args.repetition_penalty != 1.0:
         sp_kwargs["repetition_penalty"] = args.repetition_penalty

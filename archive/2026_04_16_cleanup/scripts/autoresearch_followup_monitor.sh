@@ -96,7 +96,7 @@ set -euo pipefail
 cd /scratch/metacognition
 source /opt/conda/etc/profile.d/conda.sh
 conda activate grpo
-nohup bash -lc "cd /scratch/metacognition && source /opt/conda/etc/profile.d/conda.sh && conda activate grpo && python -c 'from huggingface_hub import HfApi; api = HfApi(token=\"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\"); api.upload_folder(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", folder_path=\"/scratch/metacognition/checkpoints/grpo_v2_E8/final\", path_in_repo=\"models/grpo_v2_E8\", commit_message=\"Upload grpo_v2_E8\", ignore_patterns=[\"checkpoint-*\", \"optimizer*\", \"scheduler*\", \"trainer_state*\", \"training_args*\", \"wandb/*\", \"runs/*\"]); print(\"UPLOADED_E8\")' >/scratch/metacognition/grpo_v2_E8_hf_upload.log 2>&1" >/dev/null 2>&1 &
+nohup bash -lc "cd /scratch/metacognition && source /opt/conda/etc/profile.d/conda.sh && conda activate grpo && python -c 'from huggingface_hub import HfApi; api = HfApi(token=\"${HF_TOKEN}\"); api.upload_folder(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", folder_path=\"/scratch/metacognition/checkpoints/grpo_v2_E8/final\", path_in_repo=\"models/grpo_v2_E8\", commit_message=\"Upload grpo_v2_E8\", ignore_patterns=[\"checkpoint-*\", \"optimizer*\", \"scheduler*\", \"trainer_state*\", \"training_args*\", \"wandb/*\", \"runs/*\"]); print(\"UPLOADED_E8\")' >/scratch/metacognition/grpo_v2_E8_hf_upload.log 2>&1" >/dev/null 2>&1 &
 EOF
 )"
 }

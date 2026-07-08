@@ -1,0 +1,343 @@
+description: "E.4 Self-Distill RL Contrastive Teacher 4-arm A/B (baseline/gold_decoy/gold_stance/gold_conf_down) H200 Basic - plan_ctsd_E4_selfdistill_rl. 4 jobs differ only in verl_sdc teacher; overlay in one wandb group e4_self_distill; tokens via env only."
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  registry: mcr.microsoft.com
+  image: aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x:latest
+
+code:
+  local_dir: $CONFIG_DIR/
+
+storage:
+  external:
+    storage_account_name: xufluo
+    container_name: zhangquanchen
+    mount_dir: /mnt/input
+    is_output: True
+
+# ── shared bootstrap (mirrors h200_ctsd_inject_C_smoke.yaml) ──────────────────
+# Each job below sets its arm-specific env (WANDB_NAME / WANDB_TAGS) and launch
+# line; the bootstrap flow (GH-release curl, parquet pull, v8_strict staging,
+# tokenizer patch, gpu_keeper + push daemons) is identical across jobs.
+
+jobs:
+  # ── ARM 1: baseline — plain RLVR / GRPO control (teacher OFF, β=0) ──────────
+  - name: e4_baseline
+    sku: 141G4-H200
+    sla_tier: Basic
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 604800
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        CODE_TAR_REVISION: "437737499"
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        WANDB_API_KEY: ${WANDB_API_KEY}
+        WANDB_KEY: ${WANDB_API_KEY}
+        WANDB_PROJECT: skilldiscovery2
+        WANDB_RUN_GROUP: e4_self_distill
+        WANDB_NAME: e4_baseline
+        WANDB_TAGS: CTSD,E4,self_distill,baseline
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+        echo "$${CODE_TAR_REVISION}" > /scratch/metacognition/.bootstrap_version
+
+        mkdir -p /scratch/logs
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper_early.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        python /scratch/metacognition/scripts/pull_parquets.py 2>&1 | tail -3
+
+        mkdir -p /scratch/models
+        python -c "
+        from huggingface_hub import snapshot_download
+        import os, shutil
+        snapshot_download(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/v8_meta_inside_strict_sft/checkpoint-254/*\"], local_dir=\"/scratch/models_dl\")
+        src=\"/scratch/models_dl/models/v8_meta_inside_strict_sft/checkpoint-254\"; dst=\"/scratch/models/v8_meta_inside_strict_sft\"
+        shutil.rmtree(dst, ignore_errors=True); shutil.copytree(src, dst); print(\"base SFT staged\")
+        "
+        python -c "
+        import json; p=\"/scratch/models/v8_meta_inside_strict_sft/tokenizer_config.json\"
+        cfg=json.load(open(p)); cfg.pop(\"extra_special_tokens\", None); json.dump(cfg, open(p,\"w\"), indent=2); print(\"tokenizer patched\")
+        "
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/verl_e4_baseline --repo_id iamseungpil/metacot-h200-e4-baseline --token $${HF_TOKEN} --interval 90 --config_name verl_e4_baseline > /scratch/logs/push_e4.log 2>&1 &
+
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+        # ARM 1 baseline = plain GRPO (VANILLA_GRPO: teacher OFF, β=0).
+        /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
+            --config-name=verl_e4_selfdistill_h200_4x4k \
+            mode=VANILLA_GRPO \
+            algorithm.sdc_mode=VANILLA_GRPO \
+            algorithm.sdc_enabled=false \
+            algorithm.sdc_beta_contrast=0 \
+            algorithm.gdpo_reward_keys=[correctness] \
+            algorithm.gdpo_reward_weights=[1.0] \
+            trainer.experiment_name=verl_e4_baseline \
+            trainer.default_local_dir=/scratch/checkpoints/verl_e4_baseline \
+            trainer.resume_mode=auto \
+            ++hydra.searchpath=[pkg://verl/trainer/config]
+        VERL_RC=$$?
+        echo "[YAML] verl_sdc rc=$${VERL_RC}"
+        if [ "$${VERL_RC}" -ne 0 ]; then echo "[YAML] verl_sdc failed, exit 1"; exit 1; fi
+        sleep 86400
+        '
+
+  # ── ARM 2: gold_decoy — T+=prompt+gold, T-=prompt+decoy (answer axis) ──────
+  - name: e4_gold_decoy
+    sku: 141G4-H200
+    sla_tier: Basic
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 604800
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        CODE_TAR_REVISION: "437737499"
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        WANDB_API_KEY: ${WANDB_API_KEY}
+        WANDB_KEY: ${WANDB_API_KEY}
+        WANDB_PROJECT: skilldiscovery2
+        WANDB_RUN_GROUP: e4_self_distill
+        WANDB_NAME: e4_gold_decoy
+        WANDB_TAGS: CTSD,E4,self_distill,decoy
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+        echo "$${CODE_TAR_REVISION}" > /scratch/metacognition/.bootstrap_version
+
+        mkdir -p /scratch/logs
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper_early.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        python /scratch/metacognition/scripts/pull_parquets.py 2>&1 | tail -3
+
+        mkdir -p /scratch/models
+        python -c "
+        from huggingface_hub import snapshot_download
+        import os, shutil
+        snapshot_download(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/v8_meta_inside_strict_sft/checkpoint-254/*\"], local_dir=\"/scratch/models_dl\")
+        src=\"/scratch/models_dl/models/v8_meta_inside_strict_sft/checkpoint-254\"; dst=\"/scratch/models/v8_meta_inside_strict_sft\"
+        shutil.rmtree(dst, ignore_errors=True); shutil.copytree(src, dst); print(\"base SFT staged\")
+        "
+        python -c "
+        import json; p=\"/scratch/models/v8_meta_inside_strict_sft/tokenizer_config.json\"
+        cfg=json.load(open(p)); cfg.pop(\"extra_special_tokens\", None); json.dump(cfg, open(p,\"w\"), indent=2); print(\"tokenizer patched\")
+        "
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/verl_e4_gold_decoy --repo_id iamseungpil/metacot-h200-e4-gold-decoy --token $${HF_TOKEN} --interval 90 --config_name verl_e4_gold_decoy > /scratch/logs/push_e4.log 2>&1 &
+
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+        # ARM 2 gold_decoy = ROD_MQ_CONTRAST, decoy variant (β>0).
+        /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
+            --config-name=verl_e4_selfdistill_h200_4x4k \
+            algorithm.sdc_contrast_variant=decoy \
+            trainer.experiment_name=verl_e4_gold_decoy \
+            trainer.default_local_dir=/scratch/checkpoints/verl_e4_gold_decoy \
+            trainer.resume_mode=auto \
+            ++hydra.searchpath=[pkg://verl/trainer/config]
+        VERL_RC=$$?
+        echo "[YAML] verl_sdc rc=$${VERL_RC}"
+        if [ "$${VERL_RC}" -ne 0 ]; then echo "[YAML] verl_sdc failed, exit 1"; exit 1; fi
+        sleep 86400
+        '
+
+  # ── ARM 3: gold_stance — gold both sides + CAUTIOUS/CONFIDENT (the LEAD) ────
+  - name: e4_gold_stance
+    sku: 141G4-H200
+    sla_tier: Basic
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 604800
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        CODE_TAR_REVISION: "437737499"
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        WANDB_API_KEY: ${WANDB_API_KEY}
+        WANDB_KEY: ${WANDB_API_KEY}
+        WANDB_PROJECT: skilldiscovery2
+        WANDB_RUN_GROUP: e4_self_distill
+        WANDB_NAME: e4_gold_stance
+        WANDB_TAGS: CTSD,E4,self_distill,stance
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+        echo "$${CODE_TAR_REVISION}" > /scratch/metacognition/.bootstrap_version
+
+        mkdir -p /scratch/logs
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper_early.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        python /scratch/metacognition/scripts/pull_parquets.py 2>&1 | tail -3
+
+        mkdir -p /scratch/models
+        python -c "
+        from huggingface_hub import snapshot_download
+        import os, shutil
+        snapshot_download(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/v8_meta_inside_strict_sft/checkpoint-254/*\"], local_dir=\"/scratch/models_dl\")
+        src=\"/scratch/models_dl/models/v8_meta_inside_strict_sft/checkpoint-254\"; dst=\"/scratch/models/v8_meta_inside_strict_sft\"
+        shutil.rmtree(dst, ignore_errors=True); shutil.copytree(src, dst); print(\"base SFT staged\")
+        "
+        python -c "
+        import json; p=\"/scratch/models/v8_meta_inside_strict_sft/tokenizer_config.json\"
+        cfg=json.load(open(p)); cfg.pop(\"extra_special_tokens\", None); json.dump(cfg, open(p,\"w\"), indent=2); print(\"tokenizer patched\")
+        "
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/verl_e4_gold_stance --repo_id iamseungpil/metacot-h200-e4-gold-stance --token $${HF_TOKEN} --interval 90 --config_name verl_e4_gold_stance > /scratch/logs/push_e4.log 2>&1 &
+
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+        # ARM 3 gold_stance = ROD_MQ_CONTRAST, stance variant (gold both sides, answer cancels).
+        /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
+            --config-name=verl_e4_selfdistill_h200_4x4k \
+            algorithm.sdc_contrast_variant=stance \
+            trainer.experiment_name=verl_e4_gold_stance \
+            trainer.default_local_dir=/scratch/checkpoints/verl_e4_gold_stance \
+            trainer.resume_mode=auto \
+            ++hydra.searchpath=[pkg://verl/trainer/config]
+        VERL_RC=$$?
+        echo "[YAML] verl_sdc rc=$${VERL_RC}"
+        if [ "$${VERL_RC}" -ne 0 ]; then echo "[YAML] verl_sdc failed, exit 1"; exit 1; fi
+        sleep 86400
+        '
+
+  # ── ARM 4: gold_conf_down — gold both sides + confidence 0.15/0.95 (ECE) ───
+  - name: e4_gold_conf_down
+    sku: 141G4-H200
+    sla_tier: Basic
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 604800
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        CODE_TAR_REVISION: "437737499"
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        WANDB_API_KEY: ${WANDB_API_KEY}
+        WANDB_KEY: ${WANDB_API_KEY}
+        WANDB_PROJECT: skilldiscovery2
+        WANDB_RUN_GROUP: e4_self_distill
+        WANDB_NAME: e4_gold_conf_down
+        WANDB_TAGS: CTSD,E4,self_distill,conf
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+        echo "$${CODE_TAR_REVISION}" > /scratch/metacognition/.bootstrap_version
+
+        mkdir -p /scratch/logs
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper_early.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        python /scratch/metacognition/scripts/pull_parquets.py 2>&1 | tail -3
+
+        mkdir -p /scratch/models
+        python -c "
+        from huggingface_hub import snapshot_download
+        import os, shutil
+        snapshot_download(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/v8_meta_inside_strict_sft/checkpoint-254/*\"], local_dir=\"/scratch/models_dl\")
+        src=\"/scratch/models_dl/models/v8_meta_inside_strict_sft/checkpoint-254\"; dst=\"/scratch/models/v8_meta_inside_strict_sft\"
+        shutil.rmtree(dst, ignore_errors=True); shutil.copytree(src, dst); print(\"base SFT staged\")
+        "
+        python -c "
+        import json; p=\"/scratch/models/v8_meta_inside_strict_sft/tokenizer_config.json\"
+        cfg=json.load(open(p)); cfg.pop(\"extra_special_tokens\", None); json.dump(cfg, open(p,\"w\"), indent=2); print(\"tokenizer patched\")
+        "
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/verl_e4_gold_conf_down --repo_id iamseungpil/metacot-h200-e4-gold-conf-down --token $${HF_TOKEN} --interval 90 --config_name verl_e4_gold_conf_down > /scratch/logs/push_e4.log 2>&1 &
+
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+        # ARM 4 gold_conf_down = ROD_MQ_CONTRAST, conf variant (gold both sides + confidence 0.15/0.95).
+        /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
+            --config-name=verl_e4_selfdistill_h200_4x4k \
+            algorithm.sdc_contrast_variant=conf \
+            trainer.experiment_name=verl_e4_gold_conf_down \
+            trainer.default_local_dir=/scratch/checkpoints/verl_e4_gold_conf_down \
+            trainer.resume_mode=auto \
+            ++hydra.searchpath=[pkg://verl/trainer/config]
+        VERL_RC=$$?
+        echo "[YAML] verl_sdc rc=$${VERL_RC}"
+        if [ "$${VERL_RC}" -ne 0 ]; then echo "[YAML] verl_sdc failed, exit 1"; exit 1; fi
+        sleep 86400
+        '

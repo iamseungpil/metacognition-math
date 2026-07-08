@@ -282,7 +282,7 @@ print("=" * 60)
 
 try:
     from huggingface_hub import HfApi
-    api = HfApi(token="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")
+    api = HfApi(token="${HF_TOKEN}")
 
     # Upload merged V3 all
     if os.path.exists("/tmp/metacot_v3_all.parquet"):

@@ -8,8 +8,8 @@ export PYTHONPATH=/scratch/metacognition
 source /opt/conda/etc/profile.d/conda.sh
 conda activate grpo
 
-export WANDB_API_KEY=2f4e627868f1f9dad10bcb1a14fbf96817e6baa9
-export HF_TOKEN=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
+export WANDB_API_KEY=${WANDB_API_KEY}
+export HF_TOKEN=${HF_TOKEN}
 
 LOG=/scratch/metacognition/sequential.log
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S'): $*" | tee -a "$LOG"; }

@@ -1,0 +1,145 @@
+description: ROD-PT veRL R10 v2 (Plan v5.17 FINAL) — R5 framework + position teacher multiplicative amplify. Cold start = Meta SFT v8 (same as R5 baseline). total_steps=100.
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  registry: mcr.microsoft.com
+  image: aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x:latest
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: r5_forced_meta_rl
+    sku: 141G4-H200
+    sla_tier: Basic
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 604800
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        WANDB_API_KEY: ${WANDB_API_KEY}
+        WANDB_KEY: ${WANDB_API_KEY}
+        WANDB_PROJECT: skilldiscovery2
+        WANDB_NAME: rod_pt_R10_h200_verl_v2
+        WANDB_RUN_GROUP: meta-rlsd-r5-forced-meta-2026-05-04
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -x
+        echo "[YAML] step start"
+        mkdir -p /scratch/logs /scratch/checkpoints
+        cd /scratch
+
+        # 1. Install huggingface_hub (use ptca env since hub not in default python)
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        # 2. Pull code tarball
+        python -c "
+        from huggingface_hub import hf_hub_download
+        import os, tarfile
+        p = hf_hub_download(repo_id=\"iamseungpil/metacot\", filename=\"code_snapshots/metacognition.tar.gz\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"])
+        t = tarfile.open(p); t.extractall(\"/scratch\"); t.close()
+        print(\"code extracted\")
+        "
+
+        # 3. Bootstrap simplerl env (idempotent fast-path)
+        echo "[YAML] before bootstrap"
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+        echo "[YAML] after bootstrap rc=$$?"
+
+        # 4. Activate simplerl via PATH
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        which python && python --version
+        echo "[YAML] after activate"
+
+        # 5. (skip — tokenizer patch moved to step 6.5 after base SFT staging)
+        true
+
+        # 6. Stage parquet
+        python /scratch/metacognition/scripts/pull_parquets.py 2>&1 | tail -3
+
+        # 6.5. ★ CRITICAL: Stage base SFT model (not done by bootstrap)
+        echo "[YAML] staging base SFT"
+        mkdir -p /scratch/models
+        python -c "
+        from huggingface_hub import snapshot_download
+        import os, shutil
+        p = snapshot_download(
+            repo_id=\"iamseungpil/metacot\",
+            repo_type=\"dataset\",
+            token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/v8_meta_inside_strict_sft/checkpoint-254/*\"],
+            local_dir=\"/scratch/models_dl\",
+        )
+        src = \"/scratch/models_dl/models/v8_meta_inside_strict_sft/checkpoint-254\"
+        dst = \"/scratch/models/v8_meta_inside_strict_sft\"
+        if os.path.exists(dst): shutil.rmtree(dst)
+        shutil.copytree(src, dst)
+        print(\"base SFT staged at\", dst)
+        "
+        ls /scratch/models/v8_meta_inside_strict_sft/ | head
+        # Patch tokenizer (extra_special_tokens list issue must apply AFTER staging)
+        python -c "
+        import json
+        p = \"/scratch/models/v8_meta_inside_strict_sft/tokenizer_config.json\"
+        cfg = json.load(open(p))
+        cfg.pop(\"extra_special_tokens\", None)
+        json.dump(cfg, open(p, \"w\"), indent=2)
+        print(\"tokenizer patched\")
+        "
+
+        # 7. Resume from HF — auto-detect latest available global_step (v5.1 fix for exit 255)
+        python -c "
+        from huggingface_hub import HfApi, snapshot_download
+        import os
+        repo = \"iamseungpil/metacot-h200-rod-pt-R10-veRL\"
+        api = HfApi()
+        files = api.list_repo_files(repo, repo_type=\"model\", token=os.environ[\"HF_TOKEN\"])
+        steps = sorted({int(f.split(\"global_step_\")[1].split(\"/\")[0]) for f in files if \"global_step_\" in f})
+        if not steps:
+            raise SystemExit(\"no global_step found on HF — fresh start fallback\")
+        latest = max(steps)
+        print(f\"[resume] downloading global_step_{latest} (steps available: {steps})\")
+        snapshot_download(
+            repo_id=repo, repo_type=\"model\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[f\"checkpoints/verl_rod_pt_R10_h200_4x4k/global_step_{latest}/**\"],
+            local_dir=\"/scratch\",
+        )
+        ckpt_dir = \"/scratch/checkpoints/verl_rod_pt_R10_h200_4x4k\"
+        os.makedirs(ckpt_dir, exist_ok=True)
+        with open(f\"{ckpt_dir}/latest_checkpointed_iteration.txt\", \"w\") as f:
+            f.write(str(latest))
+        print(f\"[resume] latest_checkpointed_iteration.txt = {latest}\")
+        "
+        ls /scratch/checkpoints/verl_rod_pt_R10_h200_4x4k/
+
+        # 8. Background daemons
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/verl_rod_pt_R10_h200_4x4k --repo_id iamseungpil/metacot-h200-rod-pt-R10-veRL --token $HF_TOKEN --interval 90 --config_name verl_rod_pt_R10_h200_4x4k > /scratch/logs/push_R5.log 2>&1 &
+
+        # 9. Foreground verl R5 training
+        echo "[YAML] before verl_sdc launch"
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+        python -u -m src.training.verl_sdc \
+            --config-name=verl_rod_pt_R10_h200_4x4k \
+            trainer.total_training_steps=100 \
+            ++hydra.searchpath=[pkg://verl/trainer/config]
+        echo "[YAML] verl_sdc rc=$$?"
+
+        # 10. After training, sleep so we can SSH for inspection
+        sleep 86400
+        '

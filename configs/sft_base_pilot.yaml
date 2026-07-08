@@ -1,0 +1,25 @@
+# BASE PILOT meta-SFT — the FIRST redesign experiment.
+# Starts from the TRUE pretrained-only Qwen/Qwen3-8B-Base (NOT the instruct
+# Qwen/Qwen3-8B). Goal: prove the base substrate + EOS invariant (im_end=151645,
+# pad=endoftext=151643, enforced in sft.py) TERMINATES cleanly under our ChatML
+# template before spending RL compute.
+#
+# THINK-ON, META PRESERVED: reuses the existing meta corpus that keeps the meta
+# reasoning INSIDE <think>...</think> with <|meta|> spans intact. We do NOT strip
+# <think> and we do NOT set enable_thinking=false — think stays ON, matching how
+# the reference RLRT/SRPO base runs leave enable_thinking at the Qwen3 chat-template
+# default. The pilot isolates substrate+eos, not data. 1 epoch (cheap).
+# See docs/redesign/base_rl_recipe.md and docs/redesign/SPEC.md §3.
+model_name_or_path: Qwen/Qwen3-8B-Base
+dataset_path: data/v8_meta_inside_think.parquet   # think-ON, <|meta|> spans preserved
+output_dir: checkpoints/base_pilot_meta_sft
+run_name: base-pilot-meta-sft
+wandb_project: metacot-math
+
+num_train_epochs: 1
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 4
+learning_rate: 2.0e-6
+max_length: 8192
+save_strategy: epoch
+eval_strategy: "no"

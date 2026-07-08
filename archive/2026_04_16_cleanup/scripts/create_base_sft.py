@@ -141,7 +141,7 @@ def upload_to_hf(file_path: str, repo_id: str = HF_REPO_ID) -> None:
     """Upload the parquet file to HuggingFace."""
     from huggingface_hub import HfApi
 
-    token = os.environ.get("HF_TOKEN", "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")
+    token = os.environ.get("HF_TOKEN", "${HF_TOKEN}")
     api = HfApi(token=token)
     api.upload_file(
         path_or_fileobj=file_path,

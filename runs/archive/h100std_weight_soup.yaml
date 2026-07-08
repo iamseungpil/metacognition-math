@@ -1,0 +1,143 @@
+description: "Weight-averaging verification (exp2): interpolate pmishift gs300 (RL, alpha=1) toward its OWN pre-RL init v8_rv_functional_sft (alpha=0); theta(a)=(1-a)*SFT+a*RL for a in {0,0.25,0.5,0.75,1.0}; eval each at 16k baseline on math500(200)+aime. Tests whether the RL-induced degeneration is a weight-space perturbation that pulling back toward pre-RL undoes (termination restored) while keeping accuracy/meta. Same lineage => identical vocab => clean interpolation. Single node, continue-on-error. H100 Standard. Tokens via env only."
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  registry: mcr.microsoft.com
+  image: aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x:latest
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: weight_soup
+    sku: 80G4-H100
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 43200
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        CODE_TAR_REVISION: "460734702"
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        VLLM_WORKER_MULTIPROC_METHOD: spawn
+        HF_HUB_DISABLE_XET: "1"
+        REPO: iamseungpil/metacot-h200-triobj-dcpo-v3
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -o pipefail
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints /scratch/eval_results /scratch/models
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        nohup python -c "
+        import torch, time
+        g = torch.cuda.device_count()
+        ts = [torch.randn(2048, 2048, device=f\"cuda:{i}\", dtype=torch.float16) for i in range(g)]
+        while True:
+            for i in range(g): ts[i] = (ts[i] @ ts[i]) * 0.5
+            time.sleep(2)
+        " > /scratch/logs/gpu_keeper_inline.log 2>&1 &
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        set +x  # do NOT leak GH_TOKEN into xtrace logs
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        set -x
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        PYBIN=$${SIMPLERL_DIR}/bin/python
+        pip uninstall -y hf_xet 2>&1 | tail -1 || true
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+
+        # ---- stage SFT init (alpha=0 endpoint) ----
+        $${PYBIN} -c "
+        from huggingface_hub import snapshot_download
+        import os, shutil
+        snapshot_download(repo_id=\"iamseungpil/metacot-rv\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/v8_rv_functional_sft/**\"], local_dir=\"/scratch/models_dl\")
+        src=\"/scratch/models_dl/models/v8_rv_functional_sft\"; dst=\"/scratch/models/v8_rv_functional_sft\"
+        shutil.rmtree(dst, ignore_errors=True); shutil.copytree(src, dst); print(\"SFT staged\")
+        "
+        $${PYBIN} -c "
+        import json, os; p=\"/scratch/models/v8_rv_functional_sft/tokenizer_config.json\"
+        if os.path.exists(p):
+            c=json.load(open(p)); c.pop(\"extra_special_tokens\", None); json.dump(c, open(p,\"w\"), indent=2); print(\"tok patched\")
+        "
+        SFT=/scratch/models/v8_rv_functional_sft
+
+        # ---- merge RL ckpt (alpha=1 endpoint) ----
+        $${PYBIN} -c "
+        from huggingface_hub import snapshot_download
+        import os
+        snapshot_download(repo_id=os.environ[\"REPO\"], repo_type=\"model\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"checkpoints/triobj_dcpo_v4_pmishift_h100_4x4k/global_step_300/**\"], local_dir=\"/scratch\")
+        print(\"RL ckpt downloaded\")
+        "
+        RL=/scratch/eval_results/merged_pmishift_gs300
+        $${PYBIN} -m verl.model_merger merge --backend fsdp \
+          --local_dir /scratch/checkpoints/triobj_dcpo_v4_pmishift_h100_4x4k/global_step_300/actor --target_dir $${RL}
+        $${PYBIN} -c "
+        import json, os; p=\"$${RL}/tokenizer_config.json\"
+        if os.path.exists(p):
+            c=json.load(open(p)); c.pop(\"extra_special_tokens\", None); json.dump(c, open(p,\"w\"), indent=2); print(\"tok patched\")
+        "
+
+        # ---- build interpolated models for alpha in 0.25/0.5/0.75 ----
+        for A in 0.25 0.5 0.75; do
+          $${PYBIN} scripts/weight_soup.py --model_a $${SFT} --model_b $${RL} --alpha $${A} \
+            --out /scratch/models/soup_a$${A} 2>&1 | tail -3 || echo "[YAML] soup $${A} FAILED"
+        done
+
+        OUT=/scratch/eval_results/weight_soup
+        mkdir -p $${OUT}
+        # NAME|MODEL (all at 16k baseline temp0.7) — alpha endpoints + 3 souped
+        CFGS=(
+          "soup_a00_sft|$${SFT}"
+          "soup_a025|/scratch/models/soup_a0.25"
+          "soup_a050|/scratch/models/soup_a0.5"
+          "soup_a075|/scratch/models/soup_a0.75"
+          "soup_a10_rl|$${RL}"
+        )
+        for C in "$${CFGS[@]}"; do
+          IFS="|" read -r NAME MODEL <<< "$${C}"
+          echo "================ SOUP $${NAME} ($${MODEL}) ================"
+          $${PYBIN} scripts/eval_vllm_1030.py \
+            --model_path $${MODEL} --model_name $${NAME} --output_dir $${OUT}/$${NAME} \
+            --benchmarks math500 aime2024 --max_problems 200 \
+            --max_tokens 16384 --temperature 0.7 --top_p 0.95 --tp_size 4 --num_samples 1 \
+            2>&1 | tee $${OUT}/$${NAME}.log || echo "[YAML] $${NAME} eval FAILED, continue"
+        done
+
+        $${PYBIN} -c "
+        from huggingface_hub import HfApi
+        import os, glob
+        api=HfApi(token=os.environ[\"HF_TOKEN\"])
+        for fn in glob.glob(\"$${OUT}/**\", recursive=True):
+            if not os.path.isfile(fn): continue
+            if not (fn.endswith(\".parquet\") or fn.endswith(\".json\") or fn.endswith(\".log\")): continue
+            rel=os.path.relpath(fn, \"$${OUT}\")
+            try:
+                api.upload_file(path_or_fileobj=fn, path_in_repo=\"eval/weight_soup_v1/\"+rel,
+                    repo_id=\"iamseungpil/metacot-rv\", repo_type=\"dataset\")
+            except Exception as e: print(\"upload skip\", fn, str(e)[:80])
+        print(\"weight_soup uploaded\")
+        " || echo "[YAML] upload skipped"
+        echo "[YAML] weight_soup DONE"
+        sleep 600
+        '

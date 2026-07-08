@@ -22,7 +22,7 @@ files = ["config.json","tokenizer.json","tokenizer_config.json","special_tokens_
 for f in files:
     print(f"Downloading {f}")
     hf_hub_download("iamseungpil/metacot", f"models/qwen3_metacot_v2_sft/{f}",
-                    repo_type="dataset", local_dir=".", token="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")
+                    repo_type="dataset", local_dir=".", token="${HF_TOKEN}")
 shutil.copytree("models/qwen3_metacot_v2_sft", "checkpoints/qwen3_metacot_v2_sft", dirs_exist_ok=True)
 print("MODEL_READY")
 EOF
@@ -34,7 +34,7 @@ import os
 os.makedirs("data", exist_ok=True)
 for f in ["metacot_v2_trapi.parquet", "base_sft.parquet"]:
     hf_hub_download("iamseungpil/metacot", f, repo_type="dataset",
-                    local_dir="data", token="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")
+                    local_dir="data", token="${HF_TOKEN}")
 print("DATA_READY")
 EOF
 

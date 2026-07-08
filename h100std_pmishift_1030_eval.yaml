@@ -15,7 +15,8 @@ target:
   workspace_name: msra-sh-aml-ws
 
 environment:
-  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+  registry: mcr.microsoft.com
+  image: aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x:latest
 
 code:
   local_dir: $CONFIG_DIR/

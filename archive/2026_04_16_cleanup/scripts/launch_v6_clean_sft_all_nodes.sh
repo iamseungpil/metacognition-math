@@ -20,7 +20,7 @@ URL_TRAIN_B="wss://ssh-2etszrmvdrq4cwqdql4al50f3c67aahzqkey85y2iajsy6y4t5c.westu
 URL_E8="wss://ssh-2etszrmvdrq4cwqdql4al50f38gyq2afb9nhuq49bngbf1buj3c.westus2.nodes.azureml.ms"
 
 MERGED_DATA="data/v6_clean_10k_merged.parquet"
-HF_TOKEN="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"
+HF_TOKEN="${HF_TOKEN}"
 HF_REPO="iamseungpil/metacot"
 
 run_remote() {
@@ -112,7 +112,7 @@ cd /scratch/metacognition
 source /opt/conda/etc/profile.d/conda.sh
 conda activate grpo
 export PYTHONPATH=/scratch/metacognition
-export WANDB_API_KEY=\$(cat ~/.wandb_key 2>/dev/null || echo 2f4e627868f1f9dad10bcb1a14fbf96817e6baa9)
+export WANDB_API_KEY=\$(cat ~/.wandb_key 2>/dev/null || echo ${WANDB_API_KEY})
 
 # Print launcher contract
 echo "plan_id: v6.4-CaseB"

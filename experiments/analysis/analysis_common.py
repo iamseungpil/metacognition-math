@@ -124,10 +124,24 @@ class Grader:
     def __init__(self) -> None:
         self._cache: dict[tuple[str, str], bool] = {}
 
-    def grade(self, pred_text: str, gold: str) -> bool:
+    def grade(self, pred_text: str, gold: str, fallback_answer=None) -> bool:
         box = extract_last_boxed(str(pred_text))
         if box is None:
-            return False
+            # Format-fair fallback: some arms state the final answer in prose
+            # ("the verified answer is 540.") WITHOUT a \boxed{} wrapper, which
+            # extract_last_boxed cannot see. Rather than score those legitimate
+            # answers as wrong (a per-arm format bias — see the gandhi arm, which
+            # boxes only ~85% of GSM8K vs ~100% for base/pmishift), grade the
+            # runtime-extracted answer through the SAME validated math_verify path
+            # by wrapping it in \boxed{}. Arms that always emit \boxed{} never
+            # reach this branch, so this is uniform and cannot inflate them.
+            fb = None if fallback_answer is None else str(fallback_answer).strip()
+            if not fb or fb.lower() in ("none", "nan"):
+                return False
+            key = ("FB:" + fb, str(gold))
+            if key not in self._cache:
+                self._cache[key] = bool(robust_grade(r"\boxed{" + fb + "}", gold))
+            return self._cache[key]
         key = (box, str(gold))
         if key not in self._cache:
             self._cache[key] = bool(robust_grade(str(pred_text), gold))
@@ -135,10 +149,20 @@ class Grader:
 
 
 def regrade_frame(df: pd.DataFrame, grader: Grader | None = None) -> pd.Series:
-    """Re-grade every completion against its gold with the robust grader."""
+    """Re-grade every completion against its gold with the robust grader.
+
+    When a completion carries no \\boxed{} answer, fall back to the stored
+    runtime `answer_extracted` (graded through the same math_verify path) so a
+    prose-only final answer is not scored wrong purely for lacking the wrapper.
+    """
     grader = grader or Grader()
+    has_fb = "answer_extracted" in df.columns
     return df.apply(
-        lambda r: grader.grade(r["completion"], r["gold_answer"]), axis=1
+        lambda r: grader.grade(
+            r["completion"], r["gold_answer"],
+            r["answer_extracted"] if has_fb else None,
+        ),
+        axis=1,
     )
 
 

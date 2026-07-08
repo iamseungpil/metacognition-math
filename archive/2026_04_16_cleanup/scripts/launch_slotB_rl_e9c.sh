@@ -5,7 +5,7 @@ source /opt/conda/etc/profile.d/conda.sh
 conda activate ptca
 cd /scratch/metacognition
 export PYTHONPATH=/scratch/metacognition
-export WANDB_API_KEY="2f4e627868f1f9dad10bcb1a14fbf96817e6baa9"
+export WANDB_API_KEY="${WANDB_API_KEY}"
 
 PLAN_ID="${PLAN_ID:-}"
 EXPERIMENT_ROLE="${EXPERIMENT_ROLE:-side_evidence}"

@@ -1,0 +1,120 @@
+description: "decoy-DiD PRE-GATE (PG0-real): score the DECOUPLED gold-vs-decoy reachability DiD = [logp(gold_cont|body+meta) - logp(decoy_cont|body+meta)] - [same with placebo meta] on the functional-SFT model (v8_rv_functional_sft), over the live PMI run's rollout metas (pulled from wandb). Tests whether the meta-region CONTENT discriminates gold over decoy continuations (the make-or-break the cheap log proxy could NOT answer — that proxy's R_meta sign = correctness = A.6 answer-leak). Gate: within-problem AUC >= 0.60 + mean DiD>0. Standard 80G4-H100 (1 GPU used). Tokens via env only."
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  registry: mcr.microsoft.com
+  image: aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x:latest
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: decoy_did_pregate
+    sku: 80G4-H100
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 21600
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        WANDB_API_KEY: ${WANDB_API_KEY}
+        CODE_TAR_REVISION: "456920494"
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        HF_HUB_DISABLE_XET: "1"
+        WANDB_ENTITY: gistdslab
+        WANDB_PROJECT: metacot-dcpo-v4
+        WANDB_RUN_NAME: triobj_dcpo_v4_func_pmi_h100_4x4k
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -o pipefail
+        set -x
+        mkdir -p /scratch/logs /scratch/eval_results
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        nohup python -c "
+        import torch, time
+        g = torch.cuda.device_count()
+        ts = [torch.randn(2048, 2048, device=f\"cuda:{i}\", dtype=torch.float16) for i in range(g)]
+        while True:
+            for i in range(g): ts[i] = (ts[i] @ ts[i]) * 0.5
+            time.sleep(2)
+        " > /scratch/logs/gpu_keeper_inline.log 2>&1 &
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        PYBIN=$${SIMPLERL_DIR}/bin/python
+        pip uninstall -y hf_xet 2>&1 | tail -1 || true
+        $${PYBIN} -m pip install -q wandb 2>&1 | tail -1
+
+        # ── stage the functional SFT (the substrate decoy-DiD would train on) ──
+        $${PYBIN} -c "
+        from huggingface_hub import snapshot_download
+        import shutil
+        snapshot_download(repo_id=\"iamseungpil/metacot-rv\", repo_type=\"dataset\", token=__import__(\"os\").environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/v8_rv_functional_sft/**\"], local_dir=\"/scratch/models_dl\")
+        shutil.rmtree(\"/scratch/models/v8_rv_functional_sft\", ignore_errors=True)
+        shutil.copytree(\"/scratch/models_dl/models/v8_rv_functional_sft\", \"/scratch/models/v8_rv_functional_sft\")
+        print(\"functional SFT staged\")
+        "
+        $${PYBIN} -c "
+        import json, os; p=\"/scratch/models/v8_rv_functional_sft/tokenizer_config.json\"
+        if os.path.exists(p):
+            c=json.load(open(p)); c.pop(\"extra_special_tokens\", None); json.dump(c, open(p,\"w\"), indent=2); print(\"tok patched\")
+        "
+
+        # ── pull the rollouts CSV from HF (the job WANDB key cannot list the
+        #    gistdslab runs; HF_TOKEN works, so the CSV was staged to metacot-rv) ──
+        $${PYBIN} -c "
+        from huggingface_hub import hf_hub_download
+        import os, shutil
+        p=hf_hub_download(repo_id=\"iamseungpil/metacot-rv\", repo_type=\"dataset\",
+            filename=\"eval/decoy_did_pregate/pmi_rollouts.csv\", token=os.environ[\"HF_TOKEN\"])
+        shutil.copy(p, \"/scratch/eval_results/pmi_rollouts.csv\")
+        print(\"rollouts CSV staged from HF\")
+        "
+        CSV=/scratch/eval_results/pmi_rollouts.csv
+        ls -la $${CSV} || { echo "[YAML] rollouts CSV missing"; exit 1; }
+
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+        OUT=/scratch/eval_results/decoy_did_pregate.json
+        $${PYBIN} -m src.eval.decoy_did_pregate \
+          --model_path /scratch/models/v8_rv_functional_sft \
+          --rollouts_csv $${CSV} --out $${OUT} \
+          2>&1 | tee /scratch/eval_results/decoy_did_pregate.log
+        EVAL_RC=$$?
+        echo "================ DECOY-DiD PRE-GATE SUMMARY ================"
+        $${PYBIN} -c "import json;print(json.dumps(json.load(open(\"$${OUT}\"))[\"summary\"], indent=2))" 2>/dev/null
+        echo "==========================================================="
+
+        $${PYBIN} -c "
+        from huggingface_hub import HfApi
+        import os; api=HfApi(token=os.environ[\"HF_TOKEN\"])
+        for fn in [\"$${OUT}\", \"/scratch/eval_results/decoy_did_pregate.log\"]:
+            try:
+                api.upload_file(path_or_fileobj=fn, path_in_repo=\"eval/decoy_did_pregate/\"+os.path.basename(fn),
+                    repo_id=\"iamseungpil/metacot-rv\", repo_type=\"dataset\")
+            except Exception as e: print(\"upload skip\", fn, str(e)[:80])
+        print(\"decoy-DiD pre-gate uploaded\")
+        " || echo "[YAML] upload skipped"
+        echo "[YAML] decoy_did_pregate DONE rc=$${EVAL_RC}"
+        sleep 600
+        '

@@ -1,0 +1,127 @@
+description: "Stage-2 RL (PMI mean_min) for the confidence redirect/verify pipeline: TRIOBJ_DCPO_V4 (R_corr + PMI R_meta + R_cal) initialized from the FUNCTIONAL SFT (v8_rv_functional_sft; C-gate PARTIAL 0623: acc_with 0.684 baseline-preserved + SELECTIVE meta-emission 0.448, but Δ−0.010 still net-neg — verify net-hurts on hard tokens, medium/redirect +0.005 seed). PMI overrides: dcpo_rmeta_source=pmi + agent_loop_config_path=null (sync rollout, deadlock-free) + dcpo_pmi_agg=mean_min (RLT 2506.08388 worst-token term) + dcpo_pmi_alpha=0.5 — the min term targets the verify-breaks-hard-token failure. Goal = flip Δ>0 by amplifying useful redirect/verify only. D-gate: wellformed≥0.40 no-collapse + utility-conditioned Δ>0. Pushes checkpoints to metacot-h200-triobj-dcpo-v3 under triobj_dcpo_v4_func_pmi_h100_4x4k/. H100x4 Standard."
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  registry: mcr.microsoft.com
+  image: aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x:latest
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: triobj_dcpo_v4_rv
+    sku: 80G4-H100
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 604800
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        CODE_TAR_REVISION: "455935894"
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        WANDB_API_KEY: ${WANDB_API_KEY}
+        WANDB_KEY: ${WANDB_API_KEY}
+        WANDB_PROJECT: metacot-dcpo-v4
+        WANDB_RUN_GROUP: rv_confidence
+        WANDB_NAME: dcpo_v4_func_pmi
+        WANDB_TAGS: TRIOBJ,DCPO,v4,rv,confidence,from-rv-warmup,pmi,anchor,emit-route,meta-mix,TRIOBJ_DCPO_V4
+        DCPO_WANDB_ROLLOUTS: "1"
+        DCPO_WANDB_ROLLOUTS_EVERY: "1"
+        DCPO_META_CLOSE_FORCE: "1"
+        DCPO_META_CLOSE_N: "96"
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        DCPO_DEBUG: "1"
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints /scratch/models
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        # inline GPU spinner from t~0 (close the Singularity suspend-on-idle window).
+        nohup python -c "
+        import torch, time
+        g = torch.cuda.device_count()
+        ts = [torch.randn(2048, 2048, device=f\"cuda:{i}\", dtype=torch.float16) for i in range(g)]
+        while True:
+            for i in range(g): ts[i] = (ts[i] @ ts[i]) * 0.5
+            time.sleep(2)
+        " > /scratch/logs/gpu_keeper_inline.log 2>&1 &
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+        echo "$${CODE_TAR_REVISION}" > /scratch/metacognition/.bootstrap_version
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper_early.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        # hard-remove hf_xet (env flag + pip uninstall insufficient — memory hf-xet-pitfall).
+        pip uninstall -y hf_xet 2>&1 | tail -1 || true
+        find $${SIMPLERL_DIR}/lib -maxdepth 3 -name "hf_xet*" -exec rm -rf {} + 2>/dev/null || true
+        python /scratch/metacognition/scripts/pull_parquets.py 2>&1 | tail -3
+
+        # ── stage the rv warm-up SFT (RL init + frozen PMI ref worker) from CLEAN metacot-rv ──
+        python -c "
+        from huggingface_hub import snapshot_download
+        import os, shutil
+        snapshot_download(repo_id=\"iamseungpil/metacot-rv\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/v8_rv_functional_sft/**\"], local_dir=\"/scratch/models_dl\")
+        src=\"/scratch/models_dl/models/v8_rv_functional_sft\"; dst=\"/scratch/models/v8_rv_functional_sft\"
+        shutil.rmtree(dst, ignore_errors=True); shutil.copytree(src, dst); print(\"rv warm-up SFT staged\")
+        "
+        python -c "
+        import json, os; p=\"/scratch/models/v8_rv_functional_sft/tokenizer_config.json\"
+        if os.path.exists(p):
+            cfg=json.load(open(p)); cfg.pop(\"extra_special_tokens\", None); json.dump(cfg, open(p,\"w\"), indent=2); print(\"tokenizer patched\")
+        "
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/triobj_dcpo_v4_func_pmi_h100_4x4k --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --token $${HF_TOKEN} --interval 90 --config_name triobj_dcpo_v4_func_pmi_h100_4x4k > /scratch/logs/push_dcpo.log 2>&1 &
+
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+        # RESUME-FROM-HF durability for this RL run.
+        python /scratch/metacognition/scripts/pull_resume_ckpt.py --repo iamseungpil/metacot-h200-triobj-dcpo-v3 --config_name triobj_dcpo_v4_func_pmi_h100_4x4k --local_dir /scratch/checkpoints/triobj_dcpo_v4_func_pmi_h100_4x4k --token $${HF_TOKEN} 2>&1 | tail -5
+        # TRIOBJ_DCPO_V4 (stage-3b config) initialized from the rv warm-up SFT.
+        # `amlt run -i` sets LOCAL_RANK='' (empty) in the job env; verl worker init
+        # does int(os.getenv("LOCAL_RANK","0")) which crashes on '' (the "0" default
+        # only applies when UNSET). EXPORT a valid "0" (not unset): Ray worker actors
+        # inherit the env when spawned (incl. late respawns), and a bare `unset` in
+        # the driver shell does not guarantee the raylet/actor env loses the ''. "0"
+        # matches single-node Ray (devices placed via CUDA_VISIBLE_DEVICES, not this).
+        export LOCAL_RANK=0
+        WANDB_NAME=dcpo_v4_func_pmi /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
+            --config-name=triobj_dcpo_v4_stage3b_h100_4x4k \
+            trainer.experiment_name=triobj_dcpo_v4_func_pmi_h100_4x4k \
+            trainer.default_local_dir=/scratch/checkpoints/triobj_dcpo_v4_func_pmi_h100_4x4k \
+            trainer.project_name=metacot-dcpo-v4 \
+            actor_rollout_ref.model.path=/scratch/models/v8_rv_functional_sft \
+            trainer.resume_mode=auto \
+            ++trainer.val_before_train=False \
+            ++algorithm.dcpo_rmeta_source=pmi \
+            ++actor_rollout_ref.rollout.agent.agent_loop_config_path=null \
+            ++algorithm.dcpo_pmi_agg=mean_min \
+            ++algorithm.dcpo_pmi_alpha=0.5 \
+            ++hydra.searchpath=[pkg://verl/trainer/config] \
+            > /scratch/logs/verl_main.log 2>&1
+        VERL_RC=$$?
+        # -i pty swallows verl stdout; the file capture above keeps the full
+        # traceback on disk (retrieve via amlt ssh tail) when a run dies early.
+        echo "[YAML] verl exited rc=$${VERL_RC}; tail of verl_main.log:"
+        tail -40 /scratch/logs/verl_main.log 2>/dev/null
+        echo "[YAML] verl_sdc rv rc=$${VERL_RC}"
+        sleep 86400
+        '

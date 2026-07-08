@@ -1,0 +1,95 @@
+description: "TRIOBJ_DCPO_V4 STAGE-2 FROM SFT — dense placebo-corrected PMI R_meta (300 steps) launched DIRECTLY from the v8_strict SFT, NOT from a stage-1b ckpt. User decision 2026-06-13: the first stage-2 launch (from s1b-final) collapsed emission 0.61->0.27 in 14 steps — two causes, both fixed here: (1) the stage-2 yaml had NEITHER dcpo_format_neg NOR dcpo_w_emit set, so the harsh defaults (format_neg 1.0 / w_emit 0.0) reopened the abstention escape; (2) the s1b init had length-farmed to ~2000 tok / 57% truncation, and truncated rows can't close <|meta|>. Restart from SFT (short responses, no inflation) + the validated chain6 emission fixes (format_neg 0.2 + per-token w_emit 0.4) keeps emission alive while PMI grades content. SFT was already probed (PASS, clip 0.1085) so NO new probe/gate needed — clip 0.1085 is the matched SFT-lineage value already in the config. Pushes to iamseungpil/metacot-h200-triobj-dcpo-v3 under checkpoints/triobj_dcpo_v4_stage2b_h100_4x4k/."
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  registry: mcr.microsoft.com
+  image: aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x:latest
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: triobj_dcpo_v4_s2b
+    sku: 80G4-H100
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 604800
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        CODE_TAR_REVISION: "446781542"
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        WANDB_API_KEY: ${WANDB_API_KEY}
+        WANDB_KEY: ${WANDB_API_KEY}
+        WANDB_PROJECT: metacot-dcpo-v4
+        WANDB_RUN_GROUP: dcpo_v4_useful_meta
+        WANDB_NAME: dcpo_v4_s2b
+        WANDB_TAGS: TRIOBJ,DCPO,v4,stage2,from-sft,pmi,placebo,emission-fix,TRIOBJ_DCPO_V4
+        DCPO_WANDB_ROLLOUTS: "1"
+        DCPO_WANDB_ROLLOUTS_EVERY: "1"
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        DCPO_DEBUG: "1"
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints /scratch/models
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+        echo "$${CODE_TAR_REVISION}" > /scratch/metacognition/.bootstrap_version
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper_early.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        python /scratch/metacognition/scripts/pull_parquets.py 2>&1 | tail -3
+
+        # ── stage the v8_strict SFT (stage-2 init + frozen PMI ref worker) ───
+        python -c "
+        from huggingface_hub import snapshot_download
+        import os, shutil
+        snapshot_download(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/v8_meta_inside_strict_sft/checkpoint-254/*\"], local_dir=\"/scratch/models_dl\")
+        src=\"/scratch/models_dl/models/v8_meta_inside_strict_sft/checkpoint-254\"; dst=\"/scratch/models/v8_meta_inside_strict_sft\"
+        shutil.rmtree(dst, ignore_errors=True); shutil.copytree(src, dst); print(\"base SFT staged\")
+        "
+        python -c "
+        import json; p=\"/scratch/models/v8_meta_inside_strict_sft/tokenizer_config.json\"
+        cfg=json.load(open(p)); cfg.pop(\"extra_special_tokens\", None); json.dump(cfg, open(p,\"w\"), indent=2); print(\"tokenizer patched\")
+        "
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/triobj_dcpo_v4_stage2b_h100_4x4k --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --token $${HF_TOKEN} --interval 90 --config_name triobj_dcpo_v4_stage2b_h100_4x4k > /scratch/logs/push_dcpo.log 2>&1 &
+
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+        # RESUME-FROM-HF durability for stage-2 itself.
+        python /scratch/metacognition/scripts/pull_resume_ckpt.py --repo iamseungpil/metacot-h200-triobj-dcpo-v3 --config_name triobj_dcpo_v4_stage2b_h100_4x4k --local_dir /scratch/checkpoints/triobj_dcpo_v4_stage2b_h100_4x4k --token $${HF_TOKEN} 2>&1 | tail -5
+        # TRIOBJ_DCPO_V4 STAGE-2 = dense placebo-PMI R_meta + emission/format
+        # fixes, init+ref = the v8_strict SFT (matched clip 0.1085).
+        WANDB_NAME=dcpo_v4_s2b /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
+            --config-name=triobj_dcpo_v4_stage2b_h100_4x4k \
+            trainer.experiment_name=triobj_dcpo_v4_stage2b_h100_4x4k \
+            trainer.default_local_dir=/scratch/checkpoints/triobj_dcpo_v4_stage2b_h100_4x4k \
+            actor_rollout_ref.model.path=/scratch/models/v8_meta_inside_strict_sft \
+            trainer.resume_mode=auto \
+            ++hydra.searchpath=[pkg://verl/trainer/config]
+        VERL_RC=$$?
+        echo "[YAML] verl_sdc stage2-from-sft rc=$${VERL_RC}"
+        sleep 86400
+        '

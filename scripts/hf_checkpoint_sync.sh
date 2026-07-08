@@ -14,7 +14,7 @@
 set -euo pipefail
 
 INTERVAL_SEC="${INTERVAL_SEC:-60}"  # poll every minute
-HF_TOKEN="${HF_TOKEN:-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}"
+HF_TOKEN="${HF_TOKEN:-${HF_TOKEN}}"
 REPO_ID="${REPO_ID:-iamseungpil/metacot}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/scratch/metacognition/checkpoints/metacot-math}"
 PYTHON="${PYTHON:-/scratch/simplerl_venv/bin/python3}"

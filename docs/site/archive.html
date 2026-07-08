@@ -1,0 +1,1110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Metacog — result archive</title>
+
+<!-- No external dependencies: formulas are shown as their plain LaTeX source in legible monospace. -->
+<noscript>
+  <style>.noscript-note{display:block!important}</style>
+</noscript>
+
+<style>
+  :root{
+    --ink:#1d1d1f; --muted:#5f6671; --line:#e7e7ea; --bg:#ffffff; --soft:#fafbfc;
+    /* shared color language */
+    --green:#1a9850; --green-soft:#e6f4ea;   /* --green is a GRAPHIC fill only (swatches/SVG) */
+    --green-ink:#157a43;                      /* --green-ink is the AA-passing green for TEXT */
+    --red:#d73027;   --red-soft:#fdeaea;
+    --blue:#4a4ae0;  --blue-soft:#ecedfd;
+    --gray:#9aa0a8;  --gray-soft:#f1f3f6;     /* --gray is a GRAPHIC fill only */
+    --gray-ink:#5f6671;                       /* --gray-ink is the AA-passing gray for TEXT */
+    --svg-label:#475569;                      /* AA-passing label/annotation gray for SVG text */
+    /* mechanism colors */
+    --c-sel:#2563eb;    /* selectivity  = blue   */
+    --c-on:#dc2626;     /* always-on    = red    */
+    --c-form:#c2410c;   /* form         = orange (darkened for AA text) */
+    --c-couple:#7c3aed; /* coupling     = purple */
+    --c-ceil:#475569;   /* ceiling      = slate  */
+    --c-easy:#b45309;   /* easy-data    = amber  (darkened for AA text) */
+    --c-inert:#6b7280;  /* inert        = gray   (darkened for AA text) */
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth; scroll-padding-top:64px}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,"Liberation Sans",sans-serif;
+    font-size:17px; line-height:1.68; -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:860px; margin:0 auto; padding:0 24px}
+  h1{font-size:2.25rem; line-height:1.16; letter-spacing:-.025em; margin:.2em 0 .15em; font-weight:740}
+  h2{font-size:1.55rem; letter-spacing:-.015em; margin:0 0 .35em; font-weight:680; scroll-margin-top:64px}
+  h3{font-size:1.12rem; margin:0 0 .3em; font-weight:660}
+  p{margin:.6em 0}
+  a{color:var(--c-sel); text-decoration:none}
+  a:hover{text-decoration:underline}
+  code,kbd,.mono{font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace}
+  .muted{color:var(--muted)}
+  .small{font-size:.86rem}
+  .lead{font-size:1.12rem; color:#3a3a3f; line-height:1.6}
+
+  /* sticky nav */
+  nav.sticky{
+    position:sticky; top:0; z-index:50; background:rgba(255,255,255,.94);
+    backdrop-filter:saturate(180%) blur(10px); border-bottom:1px solid var(--line);
+    box-shadow:0 1px 4px rgba(0,0,0,.03);
+  }
+  nav.sticky .inner{max-width:860px; margin:0 auto; padding:9px 24px; display:flex; flex-wrap:wrap; gap:5px 6px; align-items:center}
+  nav.sticky a{color:var(--ink); font-size:.86rem; font-weight:540; letter-spacing:.01em; padding:3px 9px; border-radius:7px}
+  nav.sticky a.brand{font-weight:740; color:var(--ink); padding-left:0}
+  nav.sticky a:hover{color:var(--ink); text-decoration:none; background:#eef1f5}
+
+  header.hero{padding:54px 0 30px; border-bottom:1px solid var(--line)}
+  .eyebrow{font-size:.8rem; font-weight:700; letter-spacing:.1em; text-transform:uppercase; color:var(--blue); margin-bottom:.6em}
+  .subtitle{font-size:1.2rem; color:#333; margin:.35em 0 1em; line-height:1.45}
+  .subtitle b{color:var(--green-ink)}
+  .lede{font-size:1.0rem; color:#2c2c30; background:var(--soft); border:1px solid var(--line);
+        border-radius:12px; padding:16px 18px; margin-top:6px}
+  .lede code{background:#eef1f5; padding:1px 5px; border-radius:4px; font-size:.92em}
+  .lede .tag{display:inline-block; font-weight:700; color:var(--blue)}
+
+  section{padding:46px 0; border-bottom:1px solid var(--line)}
+  section:last-of-type{border-bottom:none}
+  .sectlead{font-size:1.02rem; color:#444; margin-top:0}
+
+  /* color legend */
+  .legendbar{display:flex; flex-wrap:wrap; gap:8px 18px; margin:14px 0 4px; padding:12px 16px;
+             background:var(--soft); border:1px solid var(--line); border-radius:10px; font-size:.9rem}
+  .legendbar .li{display:inline-flex; align-items:center; gap:7px}
+  .swatch{width:15px; height:15px; border-radius:4px; flex:0 0 auto; display:inline-block}
+
+  /* figure shell */
+  figure{margin:18px 0 8px; padding:0}
+  .figbox{border:1px solid var(--line); border-radius:14px; background:#fff; padding:18px 18px 12px;
+          box-shadow:0 1px 3px rgba(0,0,0,.03)}
+  .figbox.hero-fig{background:linear-gradient(180deg,#fcfdff,#fafbfc)}
+  .figcap{font-size:.86rem; color:var(--muted); margin:10px 2px 0; line-height:1.5}
+  .figcap b{color:#3a3a3f}
+  .figtitle{font-size:.78rem; font-weight:700; letter-spacing:.05em; text-transform:uppercase; color:var(--muted); margin-bottom:10px}
+  .btnrow{display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:6px}
+  button.ctl{font:inherit; font-size:.84rem; font-weight:600; cursor:pointer; border:1px solid var(--line);
+             background:#fff; color:var(--ink); padding:6px 14px; border-radius:8px; transition:.12s}
+  button.ctl:hover{background:#f1f3f6; border-color:#d4d8de}
+  button.ctl:active{transform:translateY(1px)}
+  button.ctl.primary{background:var(--blue); color:#fff; border-color:var(--blue)}
+  button.ctl.primary:hover{background:#3a3acc}
+  .stepdots{display:inline-flex; gap:7px; margin-left:auto; align-items:center}
+  .stepdots .d{width:9px; height:9px; border-radius:50%; background:#d7dae0; cursor:pointer; transition:.15s}
+  .stepdots .d.on{background:var(--blue); transform:scale(1.25)}
+  svg{max-width:100%; height:auto; display:block}
+
+  /* chips */
+  .chip{display:inline-block; font-size:.74rem; font-weight:650; letter-spacing:.02em;
+        padding:2px 9px; border-radius:999px; color:#fff; white-space:nowrap; line-height:1.55}
+  .chip.sel{background:var(--c-sel)} .chip.on{background:#c81e1e} .chip.form{background:var(--c-form)}
+  .chip.couple{background:var(--c-couple)} .chip.ceil{background:var(--c-ceil)}
+  .chip.easy{background:var(--c-easy)} .chip.inert{background:var(--c-inert)}
+
+  .intent{display:inline-flex; gap:8px; align-items:baseline; font-size:.92rem;
+          color:#374151; background:var(--blue-soft); border-left:3px solid var(--blue);
+          padding:7px 12px; border-radius:0 7px 7px 0; margin:.4em 0}
+  .intent b{font-size:.7rem; text-transform:uppercase; letter-spacing:.08em; color:var(--blue)}
+
+  /* legend grid (mechanisms) */
+  .legend{display:grid; grid-template-columns:1fr 1fr; gap:11px; margin-top:8px}
+  .legend .item{border:1px solid var(--line); border-radius:10px; padding:12px 14px; background:#fff; display:flex; gap:12px; align-items:flex-start}
+  .legend .num{font-weight:700; font-size:1rem; width:28px; height:28px; border-radius:50%;
+       display:inline-flex; align-items:center; justify-content:center; color:#fff; flex:0 0 auto}
+  .legend .item .top{display:flex; align-items:center; gap:8px; margin-bottom:4px; flex-wrap:wrap}
+  .legend .item p{margin:0; font-size:.88rem; color:#444}
+
+  /* worked example two-up */
+  .twoup{display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:14px}
+  .exq{border:1px solid var(--line); border-radius:14px; overflow:hidden; background:#fff}
+  .exq .head{padding:10px 15px; font-size:.82rem; font-weight:700; letter-spacing:.03em; color:#fff}
+  .exq.bad .head{background:#6b7280}
+  .exq.good .head{background:var(--green-ink)}
+  .exq .body{padding:13px 15px; font-size:.9rem; line-height:1.6}
+  .exq .q{font-weight:600; color:#222}
+  .exq .step{color:#444; margin:.4em 0}
+  .exq .metablk{background:var(--blue-soft); border-left:3px solid var(--blue); border-radius:0 6px 6px 0;
+                padding:8px 11px; margin:.55em 0; font-size:.84rem; font-family:"SFMono-Regular",Consolas,monospace; color:#33337a}
+  .exq .verdict{font-size:.86rem; font-weight:650; margin-top:.5em; display:flex; align-items:center; gap:7px}
+  .exq.bad .verdict{color:var(--muted)} .exq.good .verdict{color:var(--green-ink)}
+  .mini-bar{margin-top:8px}
+
+  /* data evolution */
+  .datarow{border:1px solid var(--line); border-radius:10px; padding:12px 15px; margin:10px 0; background:#fff}
+  .datarow .h{font-weight:660}
+  .badge{display:inline-block; font-size:.8rem; padding:2px 8px; border-radius:5px; background:#eef1f5; color:#334155; margin-left:6px}
+  .badge.warn{background:#fcd34d; color:#78350f; font-weight:600}
+
+  .scrollhint{display:none; font-size:.78rem; color:var(--muted); margin:0 0 6px; font-style:italic}
+
+  /* table */
+  .tablewrap{overflow-x:auto; -webkit-overflow-scrolling:touch; border:1px solid var(--line); border-radius:12px}
+  table{border-collapse:collapse; width:100%; min-width:680px; font-size:.9rem}
+  th,td{text-align:left; padding:10px 13px; border-bottom:1px solid var(--line); vertical-align:top}
+  th{background:var(--soft); font-weight:660; font-size:.78rem; text-transform:uppercase; letter-spacing:.03em; color:#444}
+  tr:last-child td{border-bottom:none}
+  td .mono{font-size:.79rem; color:#334155}
+  .name{font-weight:700; white-space:nowrap}
+  .res{font-weight:600}
+
+  /* no-JS fallback notice (hidden unless triggered) */
+  .noscript-note{display:none; background:#fff7ed; border:1px solid #fdba74; border-left:4px solid #c2410c;
+                 border-radius:10px; padding:11px 15px; margin:14px 0; font-size:.9rem; color:#7c2d12}
+  .noscript-note b{color:#7c2d12}
+  /* Formulas are presented as their raw LaTeX source in legible monospace — no external typesetting library */
+  .formulabox{font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+              font-size:.84rem; color:#334155; white-space:pre-wrap; word-break:break-word}
+
+  /* method cards */
+  .card{border:1px solid var(--line); border-radius:14px; padding:17px 19px; margin:15px 0; background:#fff}
+  .card .hd{display:flex; align-items:center; gap:9px; flex-wrap:wrap; margin-bottom:7px}
+  .card .hd h3{margin:0}
+  .selfdistill{font-size:.74rem; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:#11633a; background:var(--green-soft); padding:2px 9px; border-radius:6px}
+  .formulabox{background:var(--soft); border:1px solid var(--line); border-radius:9px;
+              padding:13px 15px; margin:9px 0; overflow-x:auto; -webkit-overflow-scrolling:touch}
+  .intuition{font-size:.97rem; color:#333; margin:6px 0}
+  .why{border-left:4px solid var(--c-ceil); background:#fbfbfc; border-radius:0 9px 9px 0;
+       padding:10px 14px; margin-top:9px; font-size:.92rem}
+  .why b{display:block; font-size:.84rem; text-transform:uppercase; letter-spacing:.05em; margin:4px 0 1px; font-weight:700}
+  .why b:first-child{margin-top:0}
+  .why.sel{border-color:var(--c-sel)} .why.sel b{color:var(--c-sel)}
+  .why.on{border-color:var(--c-on)} .why.on b{color:var(--c-on)}
+  .why.form{border-color:var(--c-form)} .why.form b{color:var(--c-form)}
+  .why.couple{border-color:var(--c-couple)} .why.couple b{color:var(--c-couple)}
+  .why.ceil{border-color:var(--c-ceil)} .why.ceil b{color:var(--c-ceil)}
+  .why.inert{border-color:var(--c-inert)} .why.inert b{color:var(--c-inert)}
+
+  /* bar chart */
+  .bars{margin-top:8px}
+  .bar{display:flex; align-items:center; gap:10px; margin:7px 0}
+  .bar .lab{width:78px; font-size:.84rem; font-weight:600; text-align:right; flex:0 0 auto}
+  .bar .track{flex:1; background:#f1f3f6; border-radius:7px; height:28px; position:relative; overflow:hidden}
+  .bar .fill{height:100%; border-radius:7px; display:flex; align-items:center; justify-content:flex-end;
+             padding-right:10px; color:#fff; font-size:.82rem; font-weight:680}
+
+  /* delta chips */
+  .deltas{display:flex; flex-wrap:wrap; gap:10px; margin-top:8px}
+  .dchip{border:1px solid var(--line); border-radius:10px; padding:9px 13px; font-size:.86rem; background:#fff}
+  .dchip .v{font-weight:700; font-size:1.05rem}
+  .dchip .pos{color:#15803d} .dchip .neg{color:#b91c1c} .dchip .neu{color:#475569}
+
+  .callout{background:#fff7ed; border:1px solid #fdba74; border-left:4px solid #ea580c; border-radius:10px; padding:13px 16px; margin-top:14px; font-size:.93rem}
+  .callout b{color:#9a3412}
+
+  /* two-axes grid (target × contrast) */
+  .twoaxes{display:grid; grid-template-columns:96px repeat(3,1fr); gap:7px; margin-top:4px}
+  .twoaxes .ta-corner{}
+  .twoaxes .ta-col{font-size:.78rem; font-weight:680; color:#475569; text-align:center; padding:6px 4px; background:var(--soft); border-radius:7px; align-self:stretch; display:flex; flex-direction:column; align-items:center; justify-content:center}
+  .twoaxes .ta-sub{font-weight:500; color:var(--muted); font-size:.92em}
+  .twoaxes .ta-row{font-size:.78rem; font-weight:680; color:#475569; text-align:center; padding:6px 4px; background:var(--soft); border-radius:7px; display:flex; align-items:center; justify-content:center}
+  .twoaxes .ta-cell{border:1px solid var(--line); border-radius:9px; padding:9px 10px; background:#fff; display:flex; flex-direction:column; gap:5px; align-items:flex-start; min-height:62px; justify-content:center}
+  .twoaxes .ta-cell.ta-empty{background:repeating-linear-gradient(135deg,#fbfbfc,#fbfbfc 7px,#f1f3f6 7px,#f1f3f6 14px); color:#b6bcc4; align-items:center; font-size:1.1rem; font-weight:700}
+  .twoaxes .ta-note{font-size:.76rem; color:#555; line-height:1.35}
+  .ta-axislabels{display:flex; flex-wrap:wrap; gap:6px 22px; margin-top:9px; font-size:.78rem; color:var(--muted)}
+  .ta-axislabels b{color:#475569}
+  @media (max-width:680px){
+    .twoaxes{grid-template-columns:70px repeat(3,1fr); gap:5px}
+    .twoaxes .ta-col,.twoaxes .ta-row{font-size:.66rem}
+    .twoaxes .ta-note{font-size:.66rem}
+  }
+
+  /* reward calculator */
+  .calc-example{border:1px solid var(--line); border-radius:12px; background:var(--soft); padding:11px 14px; margin:12px 0 4px}
+  .calc-example .ce-row{display:flex; gap:11px; align-items:baseline; margin:5px 0; flex-wrap:wrap}
+  .calc-example .ce-tag{font-size:.72rem; font-weight:700; letter-spacing:.02em; padding:2px 9px; border-radius:6px; white-space:nowrap; flex:0 0 auto}
+  .calc-example .ce-txt{font-family:"SFMono-Regular",Consolas,monospace; font-size:.82rem; color:#333; line-height:1.5}
+  button.ctl[data-calctab].on{background:var(--blue); color:#fff; border-color:var(--blue)}
+  .calc-cap{font-size:.86rem; color:#444; margin-top:9px; line-height:1.5; min-height:42px}
+  .calc-cap b{color:#222}
+  .calc-cap .pos{color:#15803d; font-weight:700} .calc-cap .neg{color:#b91c1c; font-weight:700} .calc-cap .neu{color:#475569; font-weight:700}
+
+  .statusgrid{display:grid; grid-template-columns:1fr; gap:11px; margin-top:8px}
+  .statusgrid .s{border:1px solid var(--line); border-radius:10px; padding:13px 16px; background:#fff}
+  .statusgrid .s.ok{border-left:4px solid var(--green)}
+  .statusgrid .s.open{border-left:4px solid var(--red)}
+  .statusgrid .s.next{border-left:4px solid var(--blue)}
+  .statusgrid .s .mk{font-size:.8rem; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--muted)}
+
+  details{border:1px solid var(--line); border-radius:9px; padding:9px 14px; margin:10px 0; background:var(--soft)}
+  details summary{cursor:pointer; font-weight:600; font-size:.92rem}
+  details[open] summary{margin-bottom:7px}
+
+  footer{padding:34px 0 56px; color:var(--muted); font-size:.84rem; text-align:center}
+
+  @media (max-width:680px){
+    body{font-size:16px}
+    h1{font-size:1.78rem}
+    .wrap{padding:0 18px}
+    .legend{grid-template-columns:1fr}
+    .twoup{grid-template-columns:1fr}
+    nav.sticky a{font-size:.8rem; padding:3px 7px}
+    .scrollhint{display:block}
+    svg text{font-size:13px}
+  }
+
+  /* twin section + PMI-shift anatomy additions */
+  .hl-div{background:#fde68a; border-radius:3px; padding:0 2px}
+  .rollout{white-space:pre-wrap; word-break:break-word; max-height:220px; overflow:auto;
+           font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace; font-size:.78rem;
+           color:#333; background:var(--soft); border:1px solid var(--line); border-left:3px solid #9aa0a8;
+           border-radius:8px; padding:10px 12px; margin:4px 0 10px}
+  .rollout.r-meta{background:var(--blue-soft); border-left-color:var(--blue); color:#33337a}
+  .rollout.r-cont{background:var(--green-soft); border-left-color:var(--green)}
+  .rollout.r-q{border-left-color:#cbd5e1; color:var(--muted); max-height:120px}
+  .rtag{display:inline-block; font-size:.7rem; font-weight:700; letter-spacing:.03em; padding:1px 8px; border-radius:6px}
+  button.ctl[data-shiftex].on{background:var(--blue); color:#fff; border-color:var(--blue)}
+  .pairbars .bar{margin:3px 0}
+  .pairbars .bar .lab{width:172px; font-size:.76rem}
+  .pairbars .bar .track{height:14px}
+  .pairbars .bar .fill{font-size:.66rem; padding-right:6px}
+  .pairbars .bar .dv{width:56px; font-size:.8rem; font-weight:700; text-align:left; flex:0 0 auto}
+  .pairbars .bar.gap{margin-bottom:11px}
+  .routband{display:flex; width:100%; border-radius:8px; overflow:hidden; margin:10px 0}
+  .routband .rb{color:#fff; font-size:.72rem; font-weight:700; padding:12px 6px; text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  /* keep the step controls (now above) and the caption (below) from jumping between steps */
+  #shiftAnat{min-height:380px}
+  /* wide twin chart scrolls inside its own container on narrow screens instead of shrinking to unreadable */
+  #twin-curve-svg{overflow-x:auto; -webkit-overflow-scrolling:touch}
+  #twin-curve-svg svg{min-width:680px}
+  @media (max-width:680px){ .pairbars .bar .lab{width:104px} #shiftAnat{min-height:0} }
+</style>
+</head>
+<body>
+
+<!-- ===== STICKY NAV ===== -->
+<nav class="sticky">
+  <div class="inner">
+    <a href="index.html" class="brand">Self-Evolving Meta</a>
+    <a href="index.html">&larr; Home</a>
+    <a href="#contrastive">Contrastive</a>
+    <a href="#example">Example</a>
+    <a href="#signals">Signals</a>
+    <a href="#results">Results</a>
+    <a href="#mechanisms">Why</a>
+  </div>
+</nav>
+
+<div class="wrap" id="top">
+
+<noscript>
+  <div class="noscript-note" style="display:block">
+    <b>JavaScript is off.</b> The figures on this page are drawn with JavaScript, so they need scripting.
+    The text, tables, results and reasoning below are all readable without it.
+  </div>
+</noscript>
+
+<!-- ===== ARCHIVE HEADER ===== -->
+<header class="hero" style="padding:40px 0 26px">
+  <div class="eyebrow">Result archive</div>
+  <h1>Metacog — result archive</h1>
+  <div class="lede">
+    <span class="tag">Note.</span>
+    Historical results &amp; deep-dives. The headline comparison lives on the
+    <a href="index.html">main page</a> — these earlier comparisons used a <b>CONFOUNDED base</b>
+    (different SFT/RL data) and are superseded by the
+    <a href="index.html#twin">matched-base twin</a>.
+  </div>
+</header>
+
+<!-- ===== CONTRASTIVE (FIGURES B + C) ===== -->
+<section id="contrastive">
+  <h2>Contrastive = compare two worlds</h2>
+  <p class="sectlead">
+    This is the heart. The reward is not "did the model do meta?" — it is "what <b>difference</b> did the meta
+    make?" To get that, we run the same problem twice and contrast the two rollouts.
+  </p>
+
+  <!-- FIGURE B -->
+  <figure>
+    <div class="figbox">
+      <div class="figtitle">Figure&nbsp;B · Two worlds — meta OFF vs. meta ON (the CF counterfactual)</div>
+      <div id="figB"></div>
+      <div class="btnrow">
+        <button class="ctl primary" data-replay="figB">⟳ Replay</button>
+        <span class="muted small" style="margin-left:auto">reward = (✓ with meta) − (✗ without meta)</span>
+      </div>
+    </div>
+    <figcaption class="figcap">
+      <b>Same reasoning, two endings.</b> Without meta the belief dot drifts to <span style="color:var(--red)">red</span>
+      and the answer is wrong (✗). With meta, the moment the <span style="color:var(--blue)">blue meta block</span>
+      appears the dot <b>leaps</b> to <span style="color:var(--green-ink)">green</span> (✓). The bracket is the credit:
+      the meta is rewarded for the <i>outcome difference it caused</i> — not for existing.
+    </figcaption>
+  </figure>
+
+  <h3 style="margin-top:30px">The lens got sharper</h3>
+  <p>
+    Our methodological through-line: the same rollout, measured four progressively sharper ways. Each step
+    isolates causation a little more — the same contrastive tool, aimed more precisely.
+  </p>
+
+  <!-- FIGURE C -->
+  <figure>
+    <div class="figbox">
+      <div class="figtitle">Figure&nbsp;C · Contrastive evolution — correlation → outcome → preference → causal shift</div>
+      <div id="figC"></div>
+      <div class="btnrow">
+        <button class="ctl" data-step="figC" data-dir="prev">‹ Prev</button>
+        <button class="ctl" data-step="figC" data-dir="next">Next ›</button>
+        <button class="ctl primary" data-autostep="figC">⟳ Auto</button>
+        <span class="stepdots" id="figC-dots"></span>
+      </div>
+    </div>
+    <figcaption class="figcap" id="figC-cap"></figcaption>
+  </figure>
+
+  <div class="callout" style="background:var(--blue-soft); border-color:#c3c3f5; border-left-color:var(--blue)">
+    <b style="color:var(--blue)">The through-line.</b> correlation → outcome → answer-preference → causal
+    belief-shift. Same tool (contrast), progressively isolating causation — and every step reads the model's
+    <i>own</i> rollouts, never an external label.
+  </div>
+</section>
+
+<!-- ===== WORKED EXAMPLE ===== -->
+<section id="example">
+  <h2>What makes a meta "good"?</h2>
+  <p class="sectlead">
+    A good meta is one that <b>moves the belief dot</b>. Most meta in our data does not — it decorates an
+    already-correct answer. Both panels below are <i>illustrative</i>.
+  </p>
+
+  <div class="twoup">
+    <!-- BAD -->
+    <div class="exq bad">
+      <div class="head">BAD META · decoration (the data is full of this)</div>
+      <div class="body">
+        <div class="q">If 2x − y = 5 and x + 2y = 5, what is x?</div>
+        <div class="step">→ solve: x = <b>3</b> ✓ (already correct)</div>
+        <div class="metablk">&lt;|meta|&gt; confidence: 0.78 · the approach seems right · verify by working backwards &lt;|/meta|&gt;</div>
+        <div class="mini-bar" id="figEbad"></div>
+        <div class="verdict">● belief dot does not move — meta added nothing</div>
+      </div>
+    </div>
+
+    <!-- GOOD -->
+    <div class="exq good">
+      <div class="head">GOOD META · illustrative · catches a slip</div>
+      <div class="body">
+        <div class="q">Compute 7 − 3(2 − 5).</div>
+        <div class="step">→ first pass: 7 − 3·(−3) = 7 − 9 = <b style="color:var(--red)">−2</b> ✗ (sign slip)</div>
+        <div class="metablk">&lt;|meta|&gt; check: substitute back — 3·(2−5) = −9, so 7 − (−9) = 16, not −2. correct it. &lt;|/meta|&gt;</div>
+        <div class="step">→ corrected: <b style="color:var(--green-ink)">16</b> ✓</div>
+        <div class="mini-bar" id="figEgood"></div>
+        <div class="verdict">✓ belief dot moves red → green — meta did real work</div>
+      </div>
+    </div>
+  </div>
+  <p class="small muted" style="margin-top:12px">
+    Real saves like the right panel are rare in our data (hence "illustrative"). The reward methods below all exist
+    to find and amplify the rare good meta while not paying for the common decoration.
+  </p>
+</section>
+
+<!-- ===== SIGNALS (moved method deep-dive) ===== -->
+<section id="signals">
+  <h2>The five self-distillation signals — full detail</h2>
+  <p class="sectlead">
+    Each method is one way to mine a contrast from the model's own rollouts. Formula + a one-line intuition +
+    a colored <b>Why (mechanism)</b> callout — the Why is the substance.
+  </p>
+
+  <!-- TWO AXES legend -->
+  <figure>
+    <div class="figbox">
+      <div class="figtitle">The three rewards differ on two axes — TARGET × CONTRAST</div>
+      <div class="twoaxes" aria-label="Two-axis grid placing PMI, gm and PMI-shift by target and contrast">
+        <div class="ta-corner"></div>
+        <div class="ta-col">meta on / off</div>
+        <div class="ta-col">meta vs placebo<br><span class="ta-sub">(condition)</span></div>
+        <div class="ta-col">before vs after meta<br><span class="ta-sub">(time)</span></div>
+
+        <div class="ta-row">own<br>continuation</div>
+        <div class="ta-cell"><span class="chip on">PMI</span><span class="ta-note">does the meta lift MY own following answer?</span></div>
+        <div class="ta-cell ta-empty">—</div>
+        <div class="ta-cell ta-empty">—</div>
+
+        <div class="ta-row">gold vs<br>decoy</div>
+        <div class="ta-cell ta-empty">—</div>
+        <div class="ta-cell"><span class="chip couple">gm</span><span class="ta-note">does meta favor gold over a decoy?</span></div>
+        <div class="ta-cell"><span class="chip form">PMI-shift</span><span class="ta-note">did the gold−decoy gap move?</span></div>
+      </div>
+      <div class="ta-axislabels">
+        <span><b>columns = CONTRAST axis</b> (what is held against what)</span>
+        <span><b>rows = TARGET</b> (whose probability is scored)</span>
+      </div>
+    </div>
+    <figcaption class="figcap">
+      <b>Same contrastive idea, three knobs.</b> PMI targets the model's <i>own continuation</i> under meta on/off;
+      gm and PMI-shift both target the <span style="color:var(--green-ink)">gold</span>–<span style="color:var(--red)">decoy</span>
+      gap, but gm contrasts a <i>condition</i> (meta vs placebo) while PMI-shift contrasts <i>time</i> (before vs after the meta).
+    </figcaption>
+  </figure>
+
+  <!-- ⚠ name collision -->
+  <div class="callout">
+    <b>⚠ Two "PMI"s:</b> the <b>PMI method</b> scores the model's own continuation (meta on/off);
+    <b>PMI-shift</b>'s PMI<sub>open</sub>/PMI<sub>close</sub> is the
+    <span style="color:var(--green-ink)">gold</span>−<span style="color:var(--red)">decoy</span> gap at two positions of one rollout.
+  </div>
+
+  <!-- PMI -->
+  <div class="card">
+    <div class="hd"><h3>PMI</h3><span class="selfdistill">self-distill: own continuation, meta on vs off</span><span class="chip on">always-on</span></div>
+    <div class="intent"><b>Intent</b> reward meta that makes the model's OWN following answer likelier.</div>
+    <div class="formulabox">$$R = \operatorname{mean\_min}_{t\in C}\Big[\log p(c_t\mid \text{prefix}+\text{meta}) - \log p(c_t\mid \text{prefix})\Big]\;-\;\text{placebo}$$</div>
+    <p class="intuition">Scores the model's own continuation over the byte-identical span, with-meta vs without-meta; the slip-correcting meta lifts every token → positive PMI.</p>
+    <div class="why on"><b>Why · Always-on</b>No necessity check: confident meta lifts everything, emission drifts to ~0.96 and breaks already-solved problems. Held-out Δ <b>+0.010</b>.</div>
+  </div>
+
+  <!-- CF -->
+  <div class="card">
+    <div class="hd"><h3>CF ★</h3><span class="selfdistill">self-distill: meta ON vs OFF</span><span class="chip sel">selectivity</span></div>
+    <div class="intent"><b>Intent</b> reward meta only when it changes the OUTCOME.</div>
+    <div class="formulabox">$$R_{\text{meta}} \propto \mathrm{acc}(\text{with meta}) - \mathrm{acc}(\text{without meta}),\quad \text{per group; over-penalty on already-solved}$$</div>
+    <p class="intuition">The counterfactual contrast (Figure B): does the meta actually flip the model's own outcome?</p>
+    <div class="why sel"><b>Why · Selectivity</b>Zero reward on already-solved + over-penalty ⇒ meta fires only where it flips wrong→right (emit <b>0.20</b>). Best held-out Δ <b>+0.040</b> (hard <b>+0.052</b>); capped by the self-verification ceiling (mechanism 5).</div>
+  </div>
+
+  <!-- gm -->
+  <div class="card">
+    <div class="hd"><h3>gm — additive vs multiplicative</h3><span class="selfdistill">self-distill: gold vs decoy × meta vs placebo</span><span class="chip on">always-on</span> <span class="chip couple">coupling</span></div>
+    <div class="intent"><b>Intent</b> self-distill via a decoy contrast; additive keeps meta as an independent head, multiplicative shackles it to correctness.</div>
+    <div class="formulabox">$$gm = \big[\log p(\text{gold}\mid\text{meta}) - \log p(\text{gold}\mid\text{plac})\big] - \big[\log p(\text{decoy}\mid\text{meta}) - \log p(\text{decoy}\mid\text{plac})\big]$$
+$$\text{additive: } R = R_{\text{corr}} \oplus gm \qquad\qquad \text{multiplicative: } R_{\text{meta}} = R_{\text{corr}}\cdot \exp\!\big(\mathrm{sign}(A_{\text{corr}})\cdot gm\big)$$</div>
+    <p class="intuition">Teacher-force both answers: a real catch lifts <b style="color:var(--green-ink)">gold</b>, not the <b style="color:var(--red)">decoy</b> (gm &gt; 0); decoration lifts both equally (gm ≈ 0). Two variants, two failure modes.</p>
+    <div class="why on"><b>(A) Additive · Always-on</b>The independent head keeps the meta signal separate, so epistemic hedging is preserved. But with no necessity check, meta still fires everywhere — held-out Δ <b>−0.003</b> (neutral). Failure is mechanism (2), not coupling.</div>
+    <div class="why couple" style="margin-top:8px"><b>(B) Multiplicative · Correctness-coupling</b>Coupling meta to the correctness sign collapses epistemic hedging (epi-words/meta <b>0.2</b> vs <b>1.4</b>) → held-out Δ <b>−0.029</b> (net-harm; SDPO effect).</div>
+  </div>
+
+  <!-- asym_cf -->
+  <div class="card">
+    <div class="hd"><h3>asym_cf <span class="badge">now</span></h3><span class="selfdistill">self-distill: asymmetric ON/OFF gate</span><span class="chip on">always-on</span> <span class="chip inert">inert-centering</span></div>
+    <div class="intent"><b>Intent</b> a GATE — penalize harmful meta harder than reward helpful meta (β &gt; α).</div>
+    <div class="formulabox">$$R_{\text{gate}} = \alpha\cdot\max(0,\,c_1-c_0)\;-\;\beta\cdot\max(0,\,c_0-c_1)\;-\;\gamma\cdot\mathbf{1}[c_0\approx c_1\approx 1],\qquad \beta>\alpha$$</div>
+    <p class="intuition">An asymmetric counterfactual: harmful meta costs more than helpful meta earns, so the drift to "meta everywhere" is taxed.</p>
+    <div class="why inert"><b>Why · Inert-centering (bug, now fixed)</b>Group-constant gate centered within its own mask averaged to 0 — the suppression signal silently vanished (rmeta_neg_rate = 0, emit → <b>0.92</b>). Fixed by whole-group centering; suppression still weak (γ↑ next).</div>
+  </div>
+
+  <!-- PMI-shift -->
+  <div class="card">
+    <div class="hd"><h3>PMI-shift <span class="badge">now</span></h3><span class="selfdistill">self-distill: before vs after the meta</span><span class="chip form">form ≠ behavior</span> <span class="chip ceil">ceiling</span></div>
+    <div class="intent"><b>Intent</b> reward meta that causally MOVES belief toward the right answer.</div>
+    <div class="formulabox">$$\text{PMI}_t = \sum \big[\log p(\text{gold}) - \log p(\text{decoy})\big]@t,\qquad \text{shift} = \text{PMI}_{\text{close}} - \text{PMI}_{\text{open}}$$
+$$\text{reward sign-reversal:}\quad (\text{decoy}\!\to\!\text{gold}) \;+\;,\qquad (\text{gold}\!\to\!\text{decoy}) \;-$$</div>
+    <p class="intuition">The <span style="color:var(--green-ink)">gold</span>−<span style="color:var(--red)">decoy</span> gap at meta-OPEN vs meta-CLOSE: a decoy→gold reversal is the rewarded case. Step through a real rollout in the calculator on the <a href="index.html#calc">main page</a>.</p>
+    <div class="why form"><b>Why · breaks Form ≠ Behavior (content level)</b>It measures the meta's CAUSAL belief update before vs after the meta. Re-derivation / decoration produces no shift; a genuine catch produces a decoy→gold reversal. Rewarding only the reversal targets real cognition, not shape. Live: bidirectional signal (neg_rate ~0.10), acc maintained.</div>
+    <div class="why ceil" style="margin-top:8px"><b>Why · Self-verification ceiling (residual)</b>The meta is still generated by the SAME model that erred, so it inherits the blind spot — the shift can confirm rather than catch. Before/after differencing only PARTLY cancels this: it removes the shared baseline, not the shared blind spot.</div>
+  </div>
+</section>
+
+<!-- ===== RESULTS ===== -->
+<section id="results">
+  <h2>Results</h2>
+
+  <h3>The sweet spot</h3>
+  <p class="small muted" style="margin-top:0">
+    "Meta helps on medium" is a <b>result</b>, not the intent — reward shaping must select for the middle.
+  </p>
+  <figure>
+    <div class="figbox">
+      <svg viewBox="0 0 760 250" role="img" aria-label="Meta's effect on accuracy by difficulty: hurts easy, helps medium, hurts hard">
+        <rect x="287" y="30" width="216" height="170" fill="#e6f4ea" opacity="0.7"/>
+        <line x1="287" y1="30" x2="287" y2="200" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="5 4"/>
+        <line x1="503" y1="30" x2="503" y2="200" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="5 4"/>
+        <line x1="70" y1="200" x2="720" y2="200" stroke="#cbd5e1" stroke-width="1.5"/>
+        <line x1="70" y1="30"  x2="70"  y2="200" stroke="#cbd5e1" stroke-width="1.5"/>
+        <text x="395" y="244" text-anchor="middle" font-size="14" fill="#666">problem difficulty →</text>
+        <text x="20" y="115" text-anchor="middle" font-size="14" fill="#666" transform="rotate(-90 20 115)">meta's effect on accuracy</text>
+        <line x1="70" y1="118" x2="720" y2="118" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="4 4"/>
+        <text x="715" y="113" text-anchor="end" font-size="12" fill="#475569">0 (no effect)</text>
+        <path d="M70,150 C160,182 200,182 260,150 C320,118 360,70 420,72 C480,74 520,120 580,160 C640,196 690,205 720,206"
+              fill="none" stroke="#1a9850" stroke-width="3"/>
+        <text x="170" y="55" text-anchor="middle" font-size="14" fill="#b45309" font-weight="650">easy</text>
+        <text x="170" y="73" text-anchor="middle" font-size="12" fill="#475569">decoration → HURTS</text>
+        <text x="395" y="48" text-anchor="middle" font-size="14" fill="#157a43" font-weight="650">medium</text>
+        <text x="395" y="66" text-anchor="middle" font-size="12" fill="#475569">catches slips → HELPS</text>
+        <text x="620" y="55" text-anchor="middle" font-size="14" fill="#dc2626" font-weight="650">hard / AIME</text>
+        <text x="620" y="73" text-anchor="middle" font-size="12" fill="#475569">derails → HURTS</text>
+        <circle cx="170" cy="166" r="4" fill="#d97706"/>
+        <circle cx="395" cy="72"  r="4" fill="#15803d"/>
+        <circle cx="620" cy="174" r="4" fill="#dc2626"/>
+      </svg>
+    </div>
+  </figure>
+
+  <h3 style="margin-top:26px">Experiment ladder</h3>
+  <p class="muted small" style="margin-top:0">
+    math_verify-graded on the 1030-eval; held-out Δ = acc_with − acc_without on the 594 confidence-rv set.
+  </p>
+  <p class="scrollhint">← swipe to scroll the table →</p>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>Name</th><th>Contrast (self-distill)</th><th>Result</th><th>Why</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="name">Base GRPO</td>
+          <td class="mono">final-answer correctness only (no meta)</td>
+          <td class="res">gsm8k <b>0.93</b> · aime <b>0.37</b><br><span class="muted small">math500 0.63–0.72 (grader-sensitive)</span></td>
+          <td><span class="chip" style="background:#cbd5e1;color:#334155">reference</span></td>
+        </tr>
+        <tr>
+          <td class="name">e21 (Meta-CoT)</td>
+          <td class="mono">meta inside &lt;think&gt; + GRPO on correctness</td>
+          <td class="res">aime <b>0.13</b><br><span class="muted small">gsm8k 0.93 (tie) · math500 0.64–0.76</span></td>
+          <td><span class="chip on">always-on</span><br><span class="small muted">aime collapses 0.37→0.13 (robust); overall gap within grader noise</span></td>
+        </tr>
+        <tr>
+          <td class="name">r10v2 / SDC</td>
+          <td class="mono">KL toward a gold-conditioned (priming) teacher</td>
+          <td class="res">steering AUC ≈ 0.49<br><span class="muted small">(≈ chance)</span></td>
+          <td><span class="chip couple">coupling</span><br><span class="small muted">priming suppresses epistemic (SDPO); not self-distill</span></td>
+        </tr>
+        <tr>
+          <td class="name">PMI</td>
+          <td class="mono">gold vs no-meta</td>
+          <td class="res">held-out Δ <b>+0.010</b><br><span class="muted small">emit 0.96</span></td>
+          <td><span class="chip on">always-on</span></td>
+        </tr>
+        <tr>
+          <td class="name">CF ★</td>
+          <td class="mono">meta ON vs OFF; over-penalty on solved</td>
+          <td class="res">held-out Δ <b>+0.040</b> (best)<br><span class="muted small">emit 0.20 · hard +0.052</span></td>
+          <td><span class="chip sel">selectivity</span></td>
+        </tr>
+        <tr>
+          <td class="name">cf_group</td>
+          <td class="mono">score the presence / shape of meta</td>
+          <td class="res">meta emission → <b>0</b><br><span class="muted small">(full abstention)</span></td>
+          <td><span class="chip form">form ≠ behavior</span><br><span class="small muted">CF correctly found form added nothing</span></td>
+        </tr>
+        <tr>
+          <td class="name">gm additive</td>
+          <td class="mono">gold vs decoy × meta vs placebo; R = R_corr ⊕ gm</td>
+          <td class="res">held-out Δ <b>−0.003</b><br><span class="muted small">(neutral)</span></td>
+          <td><span class="chip on">always-on</span><br><span class="small muted">epistemic preserved, no net gain</span></td>
+        </tr>
+        <tr>
+          <td class="name">gm multiplicative</td>
+          <td class="mono">R_meta = R_corr · exp(sign(A_corr)·gm)</td>
+          <td class="res">held-out Δ <b>−0.029</b><br><span class="muted small">(net-harm)</span></td>
+          <td><span class="chip couple">coupling</span><br><span class="small muted">epi-words/meta 0.2 vs 1.4</span></td>
+        </tr>
+        <tr>
+          <td class="name">asym_cf <span class="badge">now</span></td>
+          <td class="mono">asymmetric ON/OFF gate, β&gt;α</td>
+          <td class="res">fix confirmed<br><span class="muted small">blocks drift; suppression weak (γ↑)</span></td>
+          <td><span class="chip on">always-on</span> <span class="chip inert">inert</span></td>
+        </tr>
+        <tr>
+          <td class="name">PMI-shift <span class="badge">now</span></td>
+          <td class="mono">gold vs decoy × before vs after meta</td>
+          <td class="res">held-out Δ <b>+0.019</b> (2nd)<br><span class="muted small">1030 overall 0.786 (closest to base) · gsm8k 0.94 ≥ base</span><br><a href="index.html#twin" class="small">↳ matched-base twin: above base at every same-step val point (PRELIMINARY, held-in) →</a></td>
+          <td><span class="chip sel">selectivity</span> <span class="chip ceil">ceiling</span><br><span class="small muted">narrows the gap most; hard-math still lost</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 style="margin-top:26px">Absolute accuracy on 1030, by method &amp; step <span class="muted small">(math_verify re-grade)</span></h3>
+  <p class="small muted" style="margin-top:0">
+    Same 1030 benchmark, math_verify re-grade. <b>None beats old Base GRPO overall</b>; the gap is all hard-math;
+    <b>PMI-shift narrows it most (−4.3pp)</b> at matched step 300. But this base carries a lineage confound —
+    see the <a href="index.html#twin">matched-base twin</a> on the main page.
+  </p>
+  <p class="scrollhint">← swipe to scroll the table →</p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Method</th><th>step</th><th>gsm8k</th><th>math500</th><th>aime</th><th>overall</th><th>vs base</th></tr></thead>
+      <tbody>
+        <tr><td class="name">Base GRPO</td><td>300</td><td>0.934</td><td>0.752</td><td>0.367</td><td><b>0.829</b></td><td><span class="chip" style="background:#cbd5e1;color:#334155">reference</span></td></tr>
+        <tr><td class="name">CF</td><td>130</td><td>0.920</td><td>0.604</td><td>0.100</td><td>0.743</td><td><span class="v neg">−8.6pp</span></td></tr>
+        <tr><td class="name">PMI</td><td>200</td><td>0.930</td><td>0.632</td><td>0.133</td><td>0.762</td><td><span class="v neg">−6.7pp</span></td></tr>
+        <tr><td class="name">gm additive</td><td>170</td><td>0.930</td><td>0.608</td><td>0.200</td><td>0.752</td><td><span class="v neg">−7.7pp</span></td></tr>
+        <tr><td class="name">gm multiplicative</td><td>301</td><td>0.928</td><td>0.638</td><td>0.233</td><td>0.767</td><td><span class="v neg">−6.2pp</span></td></tr>
+        <tr><td class="name">PMI-shift ★</td><td>300</td><td><b>0.940</b></td><td>0.666</td><td>0.233</td><td><b>0.786</b></td><td><span class="v neg">−4.3pp</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="small muted">
+    <b>Caveats:</b> steps differ (not a clean method ranking; the clean signal is the paired held-out Δ)
+    and aime is n=30 (±1 problem = ±3.3pp). Robust: <b>gsm8k ≈ base everywhere</b>;
+    <b>every method collapses on aime vs base 0.37</b>.
+  </p>
+
+  <h3 style="margin-top:26px">Is meta below base? The overall gap is <span style="color:var(--c-form)">not robust</span></h3>
+  <p class="small muted" style="margin-top:0">The base − meta gap's <b>sign flips with the grader</b> (math500 LaTeX checker swings ±10pp): three consistent graders below.</p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Grader</th><th>base</th><th>e21r-meta</th><th>overall gap</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">old check_correctness</td><td>0.770</td><td>0.817</td><td><span class="v pos">meta +4.7pp</span></td></tr>
+        <tr><td class="mono">completion·math_verify</td><td>0.813</td><td>0.762</td><td><span class="v neg">base +5.0pp</span></td></tr>
+        <tr><td class="mono">union (either correct)</td><td>0.815</td><td>0.821</td><td><span class="v neu">−0.7pp (tie)</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="small muted">Honest reading: <b>meta ≈ base on easy/medium; the only robust degradation is on hard (aime).</b> The trustworthy reward-quality signal is the <i>paired</i> held-out Δ below, not these fragile absolutes.</p>
+
+  <h3 style="margin-top:26px">Difficulty: where meta collapses</h3>
+  <p class="small muted" style="margin-top:0">gsm8k ≈ tie · math500 within grader noise · <b>aime collapses 0.13 vs base 0.37</b> (robust across every grader — the one clear degradation).</p>
+  <figure>
+    <div class="figbox">
+      <svg viewBox="0 0 760 250" role="img" aria-label="Meta tracks base on gsm8k and math500 but collapses on AIME">
+        <line x1="80" y1="210" x2="710" y2="210" stroke="#cbd5e1" stroke-width="1.5"/>
+        <line x1="80" y1="20"  x2="80"  y2="210" stroke="#cbd5e1" stroke-width="1.5"/>
+        <text x="72" y="30"  text-anchor="end" font-size="13" fill="#475569">~95</text>
+        <text x="72" y="120" text-anchor="end" font-size="13" fill="#475569">~55</text>
+        <text x="72" y="214" text-anchor="end" font-size="13" fill="#475569">10</text>
+        <text x="190" y="232" text-anchor="middle" font-size="14" fill="#666">gsm8k (easy)</text>
+        <text x="395" y="232" text-anchor="middle" font-size="14" fill="#666">math500 (medium)</text>
+        <text x="600" y="232" text-anchor="middle" font-size="14" fill="#666">aime (hard)</text>
+        <polyline points="190,38 395,47 600,153" fill="none" stroke="#475569" stroke-width="3"/>
+        <circle cx="190" cy="38" r="5" fill="#475569"/><circle cx="395" cy="47" r="5" fill="#475569"/><circle cx="600" cy="153" r="5" fill="#475569"/>
+        <text x="615" y="150" font-size="14" fill="#475569" font-weight="650">base 37</text>
+        <polyline points="190,44 395,56 600,200" fill="none" stroke="#d73027" stroke-width="3" stroke-dasharray="6 4"/>
+        <circle cx="190" cy="44" r="5" fill="#d73027"/><circle cx="395" cy="56" r="5" fill="#d73027"/><circle cx="600" cy="200" r="5" fill="#d73027"/>
+        <text x="615" y="204" font-size="14" fill="#d73027" font-weight="650">meta 13</text>
+        <line x1="430" y1="32" x2="460" y2="32" stroke="#475569" stroke-width="3"/><text x="466" y="36" font-size="13" fill="#475569">base</text>
+        <line x1="510" y1="32" x2="540" y2="32" stroke="#d73027" stroke-width="3" stroke-dasharray="6 4"/><text x="546" y="36" font-size="13" fill="#d73027">meta</text>
+      </svg>
+    </div>
+  </figure>
+
+  <h3 style="margin-top:26px">Held-out Δ ranking</h3>
+  <div class="deltas">
+    <div class="dchip"><span class="chip sel">CF</span> <span class="v pos">+0.040</span><br><span class="small muted">only significant +</span></div>
+    <div class="dchip"><span class="chip sel">PMI-shift</span> <span class="v pos">+0.019</span><br><span class="small muted">2nd · step 300</span></div>
+    <div class="dchip"><span class="chip on">PMI</span> <span class="v pos">+0.010</span></div>
+    <div class="dchip"><span class="chip on">gm-add</span> <span class="v neu">−0.003</span></div>
+    <div class="dchip"><span class="chip couple">gm-mult</span> <span class="v neg">−0.029</span></div>
+  </div>
+
+  <div class="callout">
+    <b>The math500 checker mis-scores LaTeX answers in both directions</b> (base math500 ranges 0.63–0.72), so
+    <b>every absolute 1030 number carries a grading caveat</b> — hence we lean on the <i>paired</i> held-out Δ
+    and the grader-independent aime collapse.
+  </div>
+
+  <div class="callout" id="oldbase-box">
+    <b>Why does the new base look "worse" than the old base GRPO? A measurement artifact, not capability loss.</b>
+    <div class="tablewrap" style="margin-top:9px; background:#fff">
+      <table style="min-width:0">
+        <thead><tr><th>metric</th><th>old base GRPO (0410)</th><th>new matched-base</th></tr></thead>
+        <tbody>
+          <tr><td class="name">gsm8k</td><td>0.934</td><td>0.89–0.92</td></tr>
+          <tr><td class="name">overall</td><td>77.0% (1030 held-out: gsm500+math500+aime30, 16k)</td>
+              <td>0.62 macro (9-domain held-in incl. precalc 0.24 / int-alg 0.38)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="small" style="margin:.6em 0 0">
+      The old base also used a different SFT (legacy base_sft 4996) and different RL data (redirect_base 2935,
+      0% gsm8k) — the old meta-vs-base comparison was <b>confounded</b>; the matched-base twin
+      (<a href="index.html#twin">↗</a>) removes exactly that.
+    </p>
+  </div>
+</section>
+
+<!-- ===== MECHANISMS (WHY) ===== -->
+<section id="mechanisms">
+  <h2>Why it succeeded / failed</h2>
+  <p class="sectlead">Seven recurring mechanisms. Every method maps to ≥1. Colors are reused across the page.</p>
+  <div class="legend">
+    <div class="item">
+      <span class="num" style="background:var(--c-sel)">1</span>
+      <div><div class="top"><span class="chip sel">Selectivity</span> ✅</div>
+        <p>Emit meta only when needed → helps. <span class="muted">(CF)</span></p></div>
+    </div>
+    <div class="item">
+      <span class="num" style="background:var(--c-on)">2</span>
+      <div><div class="top"><span class="chip on">Always-on</span> ❌</div>
+        <p>No necessity check → meta fires everywhere → breaks already-solved problems. <span class="muted">(PMI, gm)</span></p></div>
+    </div>
+    <div class="item">
+      <span class="num" style="background:var(--c-form)">3</span>
+      <div><div class="top"><span class="chip form">Form ≠ Behavior</span> ❌</div>
+        <p>Reward the SHAPE of meta, not real cognition → decoration with no causal substance. <span class="muted">(cf_group)</span></p></div>
+    </div>
+    <div class="item">
+      <span class="num" style="background:var(--c-couple)">4</span>
+      <div><div class="top"><span class="chip couple">Correctness-coupling</span> ❌</div>
+        <p>Tie meta reward to the correctness sign → over-confident meta → suppresses epistemic hedging → worse. <span class="muted">(gm mult; SDPO)</span></p></div>
+    </div>
+    <div class="item">
+      <span class="num" style="background:var(--c-ceil)">5</span>
+      <div><div class="top"><span class="chip ceil">Self-verification ceiling</span> ❌</div>
+        <p>Meta comes from the SAME model that erred → inherits the blind spot → confirms the error. <span class="muted">(root cause)</span></p></div>
+    </div>
+    <div class="item">
+      <span class="num" style="background:var(--c-easy)">6</span>
+      <div><div class="top"><span class="chip easy">Easy data</span> ❌</div>
+        <p>SFT on easy / decorative meta degrades the base's hard-math capability + no save signal. <span class="muted">(rv data)</span></p></div>
+    </div>
+    <div class="item">
+      <span class="num" style="background:var(--c-inert)">7</span>
+      <div><div class="top"><span class="chip inert">Inert-centering</span> ⚙️</div>
+        <p>A group-CONSTANT reward, centered within its own group, averages to itself → signal vanishes silently. <span class="muted">(asym_cf, fixed)</span></p></div>
+    </div>
+  </div>
+
+  <details>
+    <summary>▸ The data we trained on (SFT evolution)</summary>
+    <div class="datarow"><div class="h">base_sft <span class="badge">legacy · ~5k · meta stripped</span></div>
+      <p class="small muted" style="margin:.3em 0 0">Plain solutions.</p></div>
+    <div class="datarow"><div class="h">v8 series <span class="badge">matched difficulty</span></div>
+      <p class="small" style="margin:.3em 0 0"><code>v8_base_matched</code> (6329 rows, hard 24%) vs <code>v8_meta_inside</code> (4264 rows, hard 31%, meta inside <code>&lt;think&gt;</code>). <span class="muted">e21 trained here.</span></p></div>
+    <div class="datarow"><div class="h">rv_redirect_verify <span class="badge warn">1763 rows · hard 0%</span></div>
+      <p class="small" style="margin:.3em 0 0">Redirect / verify scenarios + confidence labels. <span class="muted">CF / gm / asym_cf trained here. Mechanism (6): all easy/medium.</span></p></div>
+  </details>
+</section>
+
+<footer>
+  Result archive — historical comparisons on a confounded base, superseded by the matched-base twin.<br>
+  Headline comparison: <a href="index.html">main page</a> · numbers verbatim, not invented.
+</footer>
+
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   Shared belief-bar geometry. Axis: x in [X0..X1], dot moves
+   horizontally. left=red(decoy), right=green(gold), mid=neutral.
+   ============================================================ */
+const SVGNS = "http://www.w3.org/2000/svg";
+const GREEN="#1a9850", RED="#d73027", BLUE="#4a4ae0", GRAY="#9aa0a8";
+/* AA-passing variants for SVG <text> (4.5:1 on white); the bright ones above stay for graphic fills */
+const GREEN_TXT="#157a43", GRAY_TXT="#5f6671";
+
+function el(tag, attrs){ const e=document.createElementNS(SVGNS,tag);
+  for(const k in attrs) e.setAttribute(k, attrs[k]); return e; }
+
+/* draw the belief axis into a <g>; returns {x0,x1,y,mid,toX} */
+function beliefAxis(parent, x0, x1, y, opts){
+  opts = opts||{};
+  const grad = (x0+x1)/2;
+  // resolve the host SVG's unique gradient id (IDs are document-global; each figure gets its own)
+  let svgRoot = parent;
+  while(svgRoot && svgRoot.tagName!=="svg") svgRoot = svgRoot.parentNode;
+  const gid = (svgRoot && svgRoot.dataset && svgRoot.dataset.beliefgrad) || "beliefgrad";
+  // track gradient bar
+  const track = el("rect",{x:x0, y:y-5, width:x1-x0, height:10, rx:5, fill:`url(#${gid})`});
+  parent.appendChild(track);
+  // end labels
+  if(opts.labels!==false){
+    const lL=el("text",{x:x0, y:y+24, "text-anchor":"start", "font-size":12, fill:RED, "font-weight":650});
+    lL.textContent="decoy (wrong)";
+    const lR=el("text",{x:x1, y:y+24, "text-anchor":"end", "font-size":12, fill:GREEN_TXT, "font-weight":650});
+    lR.textContent="gold (correct)";
+    parent.appendChild(lL); parent.appendChild(lR);
+  }
+  // center tick
+  parent.appendChild(el("line",{x1:grad, y1:y-9, x2:grad, y2:y+9, stroke:"#cbd5e1", "stroke-width":1.5}));
+  return { x0, x1, y, mid:grad, toX:(b)=> grad + b*((x1-x0)/2) }; // b in [-1,1]
+}
+let _gradSeq = 0;
+function defsGrad(svg){
+  // unique per-SVG gradient id (document-global IDs must not collide across figures)
+  const gid = "beliefgrad-" + (++_gradSeq);
+  svg.dataset.beliefgrad = gid;
+  const defs=el("defs",{});
+  const g=el("linearGradient",{id:gid, x1:"0", y1:"0", x2:"1", y2:"0"});
+  g.appendChild(el("stop",{offset:"0%","stop-color":"#f3a5a0"}));
+  g.appendChild(el("stop",{offset:"50%","stop-color":"#eef1f5"}));
+  g.appendChild(el("stop",{offset:"100%","stop-color":"#9ed6b4"}));
+  defs.appendChild(g);
+  svg.appendChild(defs);
+}
+function makeSVG(host, vw, vh){
+  host.innerHTML="";
+  const svg=el("svg",{viewBox:`0 0 ${vw} ${vh}`, role:"img"});
+  defsGrad(svg);
+  host.appendChild(svg);
+  return svg;
+}
+function clamp(v,a,b){return Math.max(a,Math.min(b,v));}
+const easeIO=t=> t<.5 ? 2*t*t : 1-Math.pow(-2*t+2,2)/2;
+
+/* a self-cancelling animation registry per host so Replay restarts cleanly */
+const anim = {};
+function loop(id, dur, draw, opts){
+  opts=opts||{};
+  if(anim[id]) cancelAnimationFrame(anim[id].raf);
+  const start=performance.now();
+  function frame(now){
+    let t=(now-start)/dur;
+    let done = t>=1;
+    if(opts.repeat){ t = (t%1); done=false; }
+    else t = clamp(t,0,1);
+    draw(t, done);
+    if(!done){ anim[id]={raf:requestAnimationFrame(frame)}; }
+  }
+  anim[id]={raf:requestAnimationFrame(frame)};
+}
+
+
+/* ===================== FIGURE B ===================== */
+function buildB(){
+  const host=document.getElementById("figB");
+  const svg=makeSVG(host,760,360);
+  // Two tracks
+  const tracks=[
+    {label:"meta OFF", y0:30, axy:78, endB:-0.7, meta:false, color:GRAY},
+    {label:"meta ON",  y0:170, axy:218, endB:+0.75, meta:true, color:GRAY}
+  ];
+  const objs=[];
+  tracks.forEach((tk,i)=>{
+    const lab=el("text",{x:90, y:tk.y0+6, "font-size":13, fill:"#555","font-weight":700});
+    lab.textContent=tk.label; svg.appendChild(lab);
+    // streaming token blocks
+    const toks=[];
+    for(let k=0;k<6;k++){
+      const r=el("rect",{x:200+k*38, y:tk.y0-9, width:30, height:16, rx:3, fill:"#e7e7ea", opacity:0});
+      svg.appendChild(r); toks.push(r);
+    }
+    // meta block (blue), only on ON track
+    let metaRect=null, metaTxt=null;
+    if(tk.meta){
+      metaRect=el("rect",{x:200+6*38+6, y:tk.y0-12, width:120, height:22, rx:5, fill:BLUE, opacity:0});
+      metaTxt=el("text",{x:200+6*38+6+60, y:tk.y0+3, "text-anchor":"middle","font-size":11, fill:"#fff","font-weight":650, opacity:0});
+      metaTxt.textContent="<|meta|> check";
+      svg.appendChild(metaRect); svg.appendChild(metaTxt);
+    }
+    const ax=beliefAxis(svg,200,560,tk.axy,{labels:i===1});
+    const dot=el("circle",{cx:ax.mid, cy:ax.y, r:10, fill:GRAY, stroke:"#fff","stroke-width":3});
+    svg.appendChild(dot);
+    // result mark
+    const mark=el("text",{x:585, y:tk.axy+6, "font-size":26, "font-weight":700, opacity:0});
+    svg.appendChild(mark);
+    objs.push({tk, toks, metaRect, metaTxt, ax, dot, mark});
+  });
+  // bracket + reward (drawn at end)
+  const brk=el("path",{d:"", fill:"none", stroke:"#444","stroke-width":1.6, opacity:0});
+  svg.appendChild(brk);
+  const rew=el("text",{x:660, y:152, "text-anchor":"middle","font-size":14, fill:"#222","font-weight":700, opacity:0});
+  svg.appendChild(rew);
+  const rew2=el("text",{x:660, y:172, "text-anchor":"middle","font-size":11, fill:"#666", opacity:0});
+  rew2.textContent="counterfactual (CF)";
+  svg.appendChild(rew2);
+
+  loop("figB", 5600, (t)=>{
+    objs.forEach((o)=>{
+      // phase 1 (0-.45): tokens stream + dot drifts toward base end (both drift red-ish first)
+      const stream = clamp(t/0.45,0,1);
+      o.toks.forEach((r,k)=>{ r.setAttribute("opacity", clamp((stream*6)-k,0,1)*0.9); });
+      let b;
+      if(!o.tk.meta){
+        // OFF: drift to red
+        b = easeIO(clamp(t/0.6,0,1)) * o.tk.endB;
+        o.dot.setAttribute("fill", b<-0.15?RED:GRAY);
+      } else {
+        // ON: drift toward red until meta, then leap to green
+        const tm=0.55; // meta moment
+        if(t<tm){
+          b = easeIO(clamp(t/0.6,0,1)) * (-0.6);
+          o.dot.setAttribute("fill", b<-0.15?RED:GRAY);
+          if(o.metaRect){o.metaRect.setAttribute("opacity",0); o.metaTxt.setAttribute("opacity",0);}
+        } else {
+          // reveal meta block, leap to green
+          const tl=clamp((t-tm)/0.22,0,1);
+          if(o.metaRect){o.metaRect.setAttribute("opacity",clamp(tl*2,0,1)); o.metaTxt.setAttribute("opacity",clamp(tl*2,0,1));}
+          b = -0.6 + easeIO(tl)*(o.tk.endB - (-0.6));
+          o.dot.setAttribute("fill", b>0.15?GREEN:GRAY);
+        }
+      }
+      o.dot.setAttribute("cx", o.ax.toX(b));
+      // result marks near end
+      if(t>0.86){
+        const op=clamp((t-0.86)/0.1,0,1);
+        o.mark.setAttribute("opacity",op);
+        if(o.tk.meta){ o.mark.textContent="✓"; o.mark.setAttribute("fill",GREEN); }
+        else { o.mark.textContent="✗"; o.mark.setAttribute("fill",RED); }
+      } else { o.mark.setAttribute("opacity",0); }
+    });
+    // bracket + reward at the very end
+    if(t>0.9){
+      const op=clamp((t-0.9)/0.09,0,1);
+      brk.setAttribute("opacity",op);
+      brk.setAttribute("d","M600,84 H630 V292 H600 M630,188 H648");
+      rew.setAttribute("opacity",op);
+      rew.textContent="reward = ✓ − ✗";
+      rew2.setAttribute("opacity",op);
+    } else { brk.setAttribute("opacity",0); rew.setAttribute("opacity",0); rew2.setAttribute("opacity",0); }
+  });
+}
+
+/* ===================== FIGURE C (stepper) ===================== */
+const figC = {
+  step:0, auto:null,
+  caps:[
+    "<b>Step 1 — PMI (correlation).</b> Ask: does the meta correlate with the gold answer being likely? A single bar rises — but it rises <i>everywhere</i>, which is the always-on weakness.",
+    "<b>Step 2 — CF (outcome).</b> Ask: does the meta change the OUTCOME? A ✗ flips to ✓. Selective, but binary and coarse — it only sees the final flip.",
+    "<b>Step 3 — gm (answer-preference).</b> A 2×2 of gold/decoy × meta/placebo lights up to show <i>which answer</i> the meta favors. Finer than a flip — it reads direction.",
+    "<b>Step 4 — PMI-shift (causal belief-shift).</b> Did the meta MOVE belief, before → after? The dot animates from its pre-meta position across the meta block to its post position. The sharpest lens: causal, content-level."
+  ]
+};
+function buildC(){
+  const host=document.getElementById("figC");
+  figC.host=host;
+  // build dots
+  const dotwrap=document.getElementById("figC-dots");
+  dotwrap.innerHTML="";
+  for(let i=0;i<4;i++){
+    const d=document.createElement("span"); d.className="d"+(i===0?" on":"");
+    d.addEventListener("click",()=>{ stopAutoC(); setStepC(i); });
+    dotwrap.appendChild(d);
+  }
+  setStepC(0);
+}
+function renderC(step){
+  const host=figC.host;
+  const svg=makeSVG(host,760,210);
+  const title=el("text",{x:380,y:26,"text-anchor":"middle","font-size":14,fill:BLUE,"font-weight":700});
+  const names=["PMI · correlation","CF · outcome","gm · answer-preference","PMI-shift · causal belief-shift"];
+  title.textContent=names[step]; svg.appendChild(title);
+
+  if(step===0){
+    // a bar rising, with a faint "rises everywhere" ghost
+    const base=170;
+    svg.appendChild(el("line",{x1:120,y1:base,x2:640,y2:base,stroke:"#cbd5e1","stroke-width":1.5}));
+    const labels=["solved","slip","hard"]; const xs=[220,380,540];
+    xs.forEach((x,i)=>{
+      const bar=el("rect",{x:x-30,y:base,width:60,height:0,rx:4,fill:i===1?BLUE:"#b9b9ec"});
+      svg.appendChild(bar);
+      const lab=el("text",{x:x,y:base+22,"text-anchor":"middle","font-size":12,fill:"#666"});
+      lab.textContent=labels[i]; svg.appendChild(lab);
+      loop("figC-bar"+i, 900, (t)=>{ const h=easeIO(t)*[70,84,66][i]; bar.setAttribute("y",base-h); bar.setAttribute("height",h); });
+    });
+    const note=el("text",{x:380,y:60,"text-anchor":"middle","font-size":12,fill:RED});
+    note.textContent="PMI rises everywhere — even on already-solved";
+    svg.appendChild(note);
+  }
+  else if(step===1){
+    // X flips to check
+    const m=el("text",{x:380,y:130,"text-anchor":"middle","font-size":64,"font-weight":700});
+    svg.appendChild(m);
+    const sub=el("text",{x:380,y:172,"text-anchor":"middle","font-size":13,fill:"#666"});
+    sub.textContent="meta OFF → meta ON : outcome flips";
+    svg.appendChild(sub);
+    loop("figC-flip", 1600, (t)=>{
+      if(t<0.5){ m.textContent="✗"; m.setAttribute("fill",RED); m.setAttribute("opacity", 1-Math.abs(t/0.5-1)*0.3); }
+      else { m.textContent="✓"; m.setAttribute("fill",GREEN); m.setAttribute("opacity",1); }
+    });
+  }
+  else if(step===2){
+    // 2x2 grid
+    const ox=270, oy=70, cw=110, ch=52;
+    const cells=[["gold·meta",GREEN,0.95],["gold·plac",GREEN,0.4],["decoy·meta",RED,0.2],["decoy·plac",RED,0.55]];
+    // headers
+    const h1=el("text",{x:ox+cw/2,y:oy-22,"text-anchor":"middle","font-size":12,fill:"#555","font-weight":650}); h1.textContent="meta"; svg.appendChild(h1);
+    const h2=el("text",{x:ox+cw+cw/2,y:oy-22,"text-anchor":"middle","font-size":12,fill:"#555","font-weight":650}); h2.textContent="placebo"; svg.appendChild(h2);
+    const r1=el("text",{x:ox-12,y:oy+ch/2+4,"text-anchor":"end","font-size":12,fill:GREEN_TXT,"font-weight":650}); r1.textContent="gold"; svg.appendChild(r1);
+    const r2=el("text",{x:ox-12,y:oy+ch+ch/2+4,"text-anchor":"end","font-size":12,fill:RED,"font-weight":650}); r2.textContent="decoy"; svg.appendChild(r2);
+    const pos=[[0,0],[1,0],[0,1],[1,1]];
+    cells.forEach((c,i)=>{
+      const [cx,cy]=pos[i];
+      const rect=el("rect",{x:ox+cx*cw, y:oy+cy*ch, width:cw-6, height:ch-6, rx:6, fill:c[1], opacity:0});
+      svg.appendChild(rect);
+      const t=el("text",{x:ox+cx*cw+(cw-6)/2, y:oy+cy*ch+(ch-6)/2+4, "text-anchor":"middle","font-size":11, fill:"#fff", opacity:0});
+      t.textContent=c[0]; svg.appendChild(t);
+      loop("figC-cell"+i, 1100, (tt)=>{ const o=easeIO(clamp((tt - i*0.12)/0.5,0,1))*c[2]; rect.setAttribute("opacity",o); t.setAttribute("opacity",clamp(o*1.6,0,1)); });
+    });
+    const note=el("text",{x:380,y:188,"text-anchor":"middle","font-size":12,fill:"#666"});
+    note.textContent="brightest cell = the answer the meta favors (gold·meta)";
+    svg.appendChild(note);
+  }
+  else if(step===3){
+    // belief axis, dot animates before->after across a meta block
+    const ax=beliefAxis(svg,150,610,120);
+    const metaRect=el("rect",{x:355,y:62,width:80,height:20,rx:5,fill:BLUE});
+    svg.appendChild(metaRect);
+    const metaTxt=el("text",{x:395,y:76,"text-anchor":"middle","font-size":11,fill:"#fff","font-weight":650});
+    metaTxt.textContent="<|meta|>"; svg.appendChild(metaTxt);
+    const dot=el("circle",{cx:ax.toX(-0.6),cy:ax.y,r:11,fill:RED,stroke:"#fff","stroke-width":3});
+    svg.appendChild(dot);
+    const lbl=el("text",{x:380,y:175,"text-anchor":"middle","font-size":13,fill:"#666"});
+    svg.appendChild(lbl);
+    loop("figC-shift", 2600, (t)=>{
+      // hold at before, then shift across meta to after
+      let b;
+      if(t<0.3){ b=-0.6; lbl.textContent="before meta: leaning decoy"; lbl.setAttribute("fill",RED); }
+      else if(t<0.7){ const u=easeIO((t-0.3)/0.4); b=-0.6+u*1.35; lbl.textContent="meta moves belief…"; lbl.setAttribute("fill",BLUE); }
+      else { b=0.75; lbl.textContent="after meta: leaning gold  (decoy→gold reversal = reward +)"; lbl.setAttribute("fill",GREEN_TXT); }
+      dot.setAttribute("cx",ax.toX(b));
+      dot.setAttribute("fill", b>0.15?GREEN : b<-0.15?RED : GRAY);
+    }, {repeat:true});
+  }
+}
+function setStepC(i){
+  figC.step=((i%4)+4)%4;
+  renderC(figC.step);
+  document.getElementById("figC-cap").innerHTML=figC.caps[figC.step];
+  const dots=document.querySelectorAll("#figC-dots .d");
+  dots.forEach((d,k)=> d.classList.toggle("on", k===figC.step));
+}
+function stopAutoC(){ if(figC.auto){ clearInterval(figC.auto); figC.auto=null;
+  const b=document.querySelector('[data-autostep="figC"]'); if(b) b.textContent="⟳ Auto"; } }
+function startAutoC(){
+  stopAutoC();
+  const btn=document.querySelector('[data-autostep="figC"]'); if(btn) btn.textContent="⏸ Stop";
+  figC.auto=setInterval(()=> setStepC(figC.step+1), 3400);
+}
+
+/* ===================== mini belief bars (worked example) ===================== */
+function miniBar(hostId, moves){
+  const host=document.getElementById(hostId);
+  const svg=makeSVG(host,400,56);
+  const ax=beliefAxis(svg,30,370,26,{labels:false});
+  const startB = moves? -0.6 : 0.0;
+  const dot=el("circle",{cx:ax.toX(startB),cy:ax.y,r:9,fill: moves?RED:GRAY, stroke:"#fff","stroke-width":2.5});
+  svg.appendChild(dot);
+  if(moves){
+    loop(hostId, 2600, (t)=>{
+      let b;
+      if(t<0.35){ b=-0.6; }
+      else if(t<0.75){ b=-0.6+easeIO((t-0.35)/0.4)*1.3; }
+      else { b=0.7; }
+      dot.setAttribute("cx",ax.toX(b));
+      dot.setAttribute("fill", b>0.15?GREEN : b<-0.15?RED : GRAY);
+    }, {repeat:true});
+  } else {
+    // stays put, gentle pulse only
+    loop(hostId, 2200, (t)=>{
+      const r=9+Math.sin(t*2*Math.PI)*1.2;
+      dot.setAttribute("r",r);
+    }, {repeat:true});
+  }
+}
+
+/* ===================== wiring ===================== */
+function initAll(){
+  buildB(); buildC();
+  miniBar("figEbad", false);
+  miniBar("figEgood", true);
+
+  document.querySelectorAll("[data-replay]").forEach(btn=>{
+    btn.addEventListener("click",()=>{
+      if(btn.getAttribute("data-replay")==="figB") buildB();
+    });
+  });
+  document.querySelectorAll("[data-step]").forEach(btn=>{
+    btn.addEventListener("click",()=>{
+      const dir=btn.getAttribute("data-dir")==="next"?1:-1;
+      stopAutoC(); setStepC(figC.step + dir);
+    });
+  });
+  const autoBtn=document.querySelector('[data-autostep="figC"]');
+  if(autoBtn) autoBtn.addEventListener("click",()=>{ figC.auto? stopAutoC() : startAutoC(); });
+}
+if(document.readyState==="loading") document.addEventListener("DOMContentLoaded", initAll);
+else initAll();
+</script>
+</body>
+</html>

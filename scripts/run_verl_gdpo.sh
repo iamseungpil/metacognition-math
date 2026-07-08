@@ -30,7 +30,7 @@ cd "$PROJECT_ROOT"
 export PYTHONPATH="$PROJECT_ROOT:${PYTHONPATH:-}"
 
 # WandB key (from file or fallback)
-export WANDB_API_KEY="${WANDB_API_KEY:-$(cat ~/.wandb_key 2>/dev/null || echo '2f4e627868f1f9dad10bcb1a14fbf96817e6baa9')}"
+export WANDB_API_KEY="${WANDB_API_KEY:-$(cat ~/.wandb_key 2>/dev/null || echo '${WANDB_API_KEY}')}"
 
 # ── Arguments ──
 MODE="${1:-${MODE:-E13}}"

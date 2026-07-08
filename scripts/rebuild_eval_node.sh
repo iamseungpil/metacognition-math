@@ -30,7 +30,7 @@ python -c "
 from huggingface_hub import HfApi, snapshot_download
 import os
 
-api = HfApi(token='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')
+api = HfApi(token='${HF_TOKEN}')
 
 # Download latest E21R-v2 checkpoint
 ckpt_dir = '/scratch/metacognition/checkpoints/metacot-math/verl_e21r_v2_0413/global_step_250'

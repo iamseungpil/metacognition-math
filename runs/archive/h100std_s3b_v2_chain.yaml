@@ -1,0 +1,121 @@
+description: "S3B-v2 CHAIN (forming-SUSTAIN rebalance). IDENTICAL to h100std_s3b_chain.yaml (same signal-fix release 448947726, same v8_s3b_format_primed SFT priming + meta-token transplant, same data/composition/PMI) EXCEPT three RL reward-balance CLI overrides that fix the step-80 forming cliff diagnosed live (s3b v1 wf eroded 0.65 -> ~0.15 right at the w_meta warmup end, because len_cost AND PMI both reach full weight at step 80 and over-prune meta below the measurable bar): algorithm.dcpo_len_cost 0.08->0.03 (stop over-punishing meta length), algorithm.dcpo_meta_floor 0.05->0.15 (hold forming at a measurable floor), algorithm.dcpo_w_meta_warmup_steps 80->150 (turn the cliff into a ramp). Fully isolated from v1: experiment_name / default_local_dir / push+resume config_name all carry the _v2 suffix so wandb, local ckpts, and HF paths never collide with the still-running v1. No new code release needed (config keys overridden on the verl CLI). Runs in PARALLEL with v1 (needs its own basicvc H100 node). Specs: docs/superpowers/specs/2026-06-15-s3b-meta-format-priming-design.md."
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  registry: mcr.microsoft.com
+  image: aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x:latest
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: s3b_v2_chain
+    sku: 80G4-H100
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 604800
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        CODE_TAR_REVISION: "448947726"
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        WANDB_API_KEY: ${WANDB_API_KEY}
+        WANDB_KEY: ${WANDB_API_KEY}
+        WANDB_PROJECT: metacot-dcpo-v4
+        WANDB_RUN_GROUP: dcpo_v4_useful_meta
+        WANDB_NAME: dcpo_v4_s3b_v2
+        WANDB_TAGS: TRIOBJ,DCPO,v4,stage3b,v2,forming-sustain,format-priming,chain,from-primed-sft,pmi,anchor,emit-route,len-cap,composition,meta-mix,clip-higher,recover-pair,meta-close
+        DCPO_WANDB_ROLLOUTS: "1"
+        DCPO_WANDB_ROLLOUTS_EVERY: "1"
+        DCPO_META_CLOSE_FORCE: "1"
+        DCPO_META_CLOSE_N: "96"
+        # s3b SFT priming knob: re-seed <|meta|>/<|/meta|> from <think>/</think>.
+        S3B_META_EMB_TRANSPLANT: "1"
+        # force classic LFS for ALL HF uploads (Xet backend silently 404s large shards).
+        HF_HUB_DISABLE_XET: "1"
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        DCPO_DEBUG: "1"
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints /scratch/models
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+        echo "$${CODE_TAR_REVISION}" > /scratch/metacognition/.bootstrap_version
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper_early.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        # Remove hf_xet so every subsequent HF upload uses classic LFS (reliable);
+        # the Xet backend returns "OK" but silently fails to commit large shards (404).
+        pip uninstall -y hf_xet 2>&1 | tail -1 || true
+        python /scratch/metacognition/scripts/pull_parquets.py 2>&1 | tail -3
+
+        # ── stage the v8_strict Meta SFT as the format-SFT init (download; works) ──
+        python -c "
+        from huggingface_hub import snapshot_download
+        import os, shutil
+        snapshot_download(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/v8_meta_inside_strict_sft/checkpoint-254/*\"], local_dir=\"/scratch/models_dl\")
+        src=\"/scratch/models_dl/models/v8_meta_inside_strict_sft/checkpoint-254\"; dst=\"/scratch/models/v8_meta_inside_strict_sft\"
+        shutil.rmtree(dst, ignore_errors=True); shutil.copytree(src, dst); print(\"format-SFT init staged\")
+        "
+        python -c "
+        import json; p=\"/scratch/models/v8_meta_inside_strict_sft/tokenizer_config.json\"
+        cfg=json.load(open(p)); cfg.pop(\"extra_special_tokens\", None); json.dump(cfg, open(p,\"w\"), indent=2); print(\"tokenizer patched\")
+        "
+
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+
+        # ════════ STAGE 1: format-SFT priming (simplerl env, ZeRO-3, 4 GPU) ════════
+        python -m accelerate.commands.launch --config_file configs/accelerate_sft.yaml \
+            src/training/sft.py --config configs/sft_v8_s3b_format_primed.yaml
+        SFT_RC=$$?
+        echo "[YAML] s3b format-sft rc=$${SFT_RC}"
+
+        # patch the SFT output tokenizer (verl load bug) and stage it as the RL init
+        python -c "
+        import json, os; p=\"/scratch/checkpoints/v8_s3b_format_primed/tokenizer_config.json\"
+        cfg=json.load(open(p)); cfg.pop(\"extra_special_tokens\", None); json.dump(cfg, open(p,\"w\"), indent=2); print(\"primed tokenizer patched\")
+        "
+        rm -rf /scratch/models/v8_s3b_format_primed
+        cp -r /scratch/checkpoints/v8_s3b_format_primed /scratch/models/v8_s3b_format_primed
+        echo "[YAML] primed ckpt staged locally for RL at /scratch/models/v8_s3b_format_primed"
+
+        # ════════ STAGE 2: triobj_dcpo_v4 stage-3b-v2 RL (forming-sustain) ════════
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/triobj_dcpo_v4_stage3b_v2_h100_4x4k --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --token $${HF_TOKEN} --interval 90 --config_name triobj_dcpo_v4_stage3b_v2_h100_4x4k > /scratch/logs/push_dcpo_v2.log 2>&1 &
+
+        python /scratch/metacognition/scripts/pull_resume_ckpt.py --repo iamseungpil/metacot-h200-triobj-dcpo-v3 --config_name triobj_dcpo_v4_stage3b_v2_h100_4x4k --local_dir /scratch/checkpoints/triobj_dcpo_v4_stage3b_v2_h100_4x4k --token $${HF_TOKEN} 2>&1 | tail -5
+        WANDB_NAME=dcpo_v4_s3b_v2 /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
+            --config-name=triobj_dcpo_v4_stage3b_h100_4x4k \
+            trainer.experiment_name=triobj_dcpo_v4_stage3b_v2_h100_4x4k \
+            trainer.default_local_dir=/scratch/checkpoints/triobj_dcpo_v4_stage3b_v2_h100_4x4k \
+            actor_rollout_ref.model.path=/scratch/models/v8_s3b_format_primed \
+            algorithm.dcpo_len_cost=0.03 \
+            algorithm.dcpo_meta_floor=0.15 \
+            algorithm.dcpo_w_meta_warmup_steps=150 \
+            trainer.resume_mode=auto \
+            ++hydra.searchpath=[pkg://verl/trainer/config]
+        VERL_RC=$$?
+        echo "[YAML] verl_sdc stage3b-v2 rc=$${VERL_RC}"
+        sleep 86400
+        '

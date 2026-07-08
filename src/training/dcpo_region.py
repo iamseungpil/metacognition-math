@@ -1351,6 +1351,7 @@ def compose_dcpo_region_advantage(
     R_ans_meta=None,
     w_ans_meta: float = 0.0,
     ans_meta_member_mask=None,
+    ans_meta_whole_group_center: bool = False,
     R_trans=None,
     w_score_alpha: float = 0.0,
     trans_member_mask=None,
@@ -1496,9 +1497,50 @@ def compose_dcpo_region_advantage(
     # (default config 1.5) makes right->wrong the most-penalized transition
     # (SCoRe). R_ans_meta/R_trans=None or weight 0.0 -> term skipped ->
     # byte-identical to every pre-existing config (cf_group never set).
+    if R_ans_meta is not None and not w_ans_meta:
+        # gs190 trap surfacing: the head was POPULATED but routes with weight 0,
+        # so it is silently inert. Warn (review) instead of failing silently.
+        print(
+            "[DCPO-COMPOSE] R_ans_meta populated but w_ans_meta=0 "
+            "(gate/ans_meta head NOT routed — check dcpo_w_ans_meta/dcpo_w_meta)",
+            flush=True,
+        )
     if R_ans_meta is not None and w_ans_meta:
-        A_am = group_mean_subtract(
-            R_ans_meta, index, member=ans_meta_member_mask).to(device)  # [B,1]
+        if ans_meta_whole_group_center:
+            # asym_cf GATE (2026-06-25 live fix). The gate scalar is GROUP-CONSTANT
+            # (every with-arm member of a group shares the same c0/c1-derived
+            # R_gate). Centering a constant over the WITH-ARM MEMBER mask (where it
+            # is the only value) yields ZERO — SAVE/DERAIL/WASTE all annihilated, so
+            # rmeta_neg_rate=0 and the gate cannot suppress (the observed bug). The
+            # FIX centers over the WHOLE group (member=None): the without-arm rows
+            # carry R_gate 0 (member 0 -> R_gate 0 by construction), so the with-arm
+            # rows' shared value survives as (R_gate - group_mean) != 0. We then
+            # MUST mask credit onto the with-arm member rows only (without-arm rows
+            # would otherwise get a spurious -group_mean on their ANSWER tokens).
+            # This mirrors cf_group's over_penalty, which rode R_corr's whole-group
+            # centering for exactly this reason.
+            # GUARD (review 2026-06-26): whole-group centering is ONLY sound if we
+            # then mask credit onto the with-arm member rows. Without the member
+            # mask the without-arm rows (R_gate 0) would receive a spurious
+            # -group_mean on their ANSWER tokens, corrupting the without-arm side of
+            # the counterfactual (the docstring above: "we MUST mask credit onto the
+            # with-arm member rows only"). In production asym_cf ALWAYS supplies the
+            # mask (verl_sdc writes dcpo_ans_member alongside the whole-group marker);
+            # this assert fails loudly if any future code path sets the flag without
+            # it, instead of silently skipping the mask and corrupting credit.
+            assert ans_meta_member_mask is not None, (
+                "ans_meta_whole_group_center=True requires ans_meta_member_mask "
+                "(whole-group centering MUST mask credit onto with-arm rows only; "
+                "without it the without-arm rows get a spurious -group_mean — "
+                "asym_cf always provides it via dcpo_ans_member)"
+            )
+            A_am = group_mean_subtract(R_ans_meta, index, member=None).to(device)  # [B,1]
+            _am_mem = torch.as_tensor(
+                ans_meta_member_mask, dtype=torch.float32).to(device).view(-1, 1)
+            A_am = A_am * _am_mem
+        else:
+            A_am = group_mean_subtract(
+                R_ans_meta, index, member=ans_meta_member_mask).to(device)  # [B,1]
         advantages = advantages + float(w_ans_meta) * A_am * ans * rm
     if R_trans is not None and w_score_alpha:
         A_trans = group_mean_subtract(

@@ -31,6 +31,7 @@ from src.training.verl_sdc import (
     _DCPO_V3_FMT_MODES,
     _build_pmi_score_batches,
     _compute_dcpo_v4_pmi_rmeta,
+    _compute_dcpo_v4_pmi_shift_rmeta,
     _dcpo_v4_ref_logprobs,
     _populate_dcpo_region_keys,
     _v4_rmeta_source_strict,
@@ -674,3 +675,243 @@ def test_anchor_knobs_forwarded(monkeypatch):
     assert captured.get("emit_route") == "first_token"
     assert captured.get("meta_len_cap") == 3
     assert captured.get("anchor_ema_state") is not None   # module-level dict passed
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PMI-SHIFT-ACROSS-META (design 2026-06-25): source registration + two-position
+# teacher-forcing end-to-end + production-parity (non-inert advantage routing).
+# ═══════════════════════════════════════════════════════════════════════════
+def test_pmi_shift_registered_as_v4_source():
+    from src.training.verl_sdc import _V4_RMETA_SOURCES
+    assert "pmi_shift" in _V4_RMETA_SOURCES
+    assert _v4_rmeta_source_strict(lambda n, d: "pmi_shift") == "pmi_shift"
+
+
+def _shift_fake_ref(per_arm_const):
+    """Build a fake _dcpo_v4_ref_logprobs that returns a CONSTANT logp per arm.
+
+    per_arm_const: list of 4 constants in arm order [gold@open, decoy@open,
+    gold@close, decoy@close]; tiled over the n rows the batch builder padded to.
+    Each arm gets a flat per-token logp, so the summed divergent-token PMI is
+    const * n_divergent_tokens; gold-minus-decoy isolates the open/close shift.
+    """
+    def _ref(trainer, tensors):
+        n, r_max = tensors["responses"].shape
+        out = torch.zeros((n, r_max))
+        for j in range(n):
+            out[j, :] = per_arm_const[j % 4]
+        return out
+    return _ref
+
+
+def test_pmi_shift_save_reversal_positive(monkeypatch):
+    # decoy->gold SAVE: gold worse than decoy at OPEN (pmi_open<0), gold better at
+    # CLOSE (pmi_close>0). gold@open=-2, decoy@open=-1 -> open diff = -1*Ntok < 0;
+    # gold@close=-1, decoy@close=-2 -> close diff = +1*Ntok > 0 -> reversal +save.
+    tok = FakeMergeTokenizer(merges=())
+    monkeypatch.setattr(V, "_dcpo_v4_ref_logprobs",
+                        _shift_fake_ref([-2.0, -1.0, -1.0, -2.0]))
+    r_meta, member, shift_raw = _compute_dcpo_v4_pmi_shift_rmeta(
+        tokenizer=tok, trainer=object(),
+        prompt_texts=["P "],
+        response_texts=["w<|meta|>recheck<|/meta|>so it is 42."],
+        ground_truths=["42"],
+        fmt_classes=["wellformed"],
+        heads={"c_with": [1.0]},
+        read_knob=lambda name, default: default,
+        step=1,
+    )
+    assert member[0] == 1.0
+    assert r_meta[0] > 0.0           # SAVE bonus present
+    assert shift_raw[0] > 0.0        # pmi_close - pmi_open > 0
+
+
+def test_pmi_shift_derail_reversal_strongly_negative(monkeypatch):
+    # gold->decoy DERAIL: gold better at OPEN (pmi_open>0), worse at CLOSE
+    # (pmi_close<0). The asymmetric derail penalty (default 2.0 > save 1.0) makes
+    # |R_derail| > the SAVE magnitude of the mirror case.
+    tok = FakeMergeTokenizer(merges=())
+    monkeypatch.setattr(V, "_dcpo_v4_ref_logprobs",
+                        _shift_fake_ref([-1.0, -2.0, -2.0, -1.0]))
+    r_meta, member, shift_raw = _compute_dcpo_v4_pmi_shift_rmeta(
+        tokenizer=tok, trainer=object(),
+        prompt_texts=["P "],
+        response_texts=["w<|meta|>recheck<|/meta|>so it is 42."],
+        ground_truths=["42"],
+        fmt_classes=["wellformed"],
+        heads={"c_with": [1.0]},
+        read_knob=lambda name, default: default,
+        step=1,
+    )
+    assert member[0] == 1.0
+    assert r_meta[0] < 0.0
+    assert shift_raw[0] < 0.0
+
+    # mirror SAVE case for asymmetry comparison
+    monkeypatch.setattr(V, "_dcpo_v4_ref_logprobs",
+                        _shift_fake_ref([-2.0, -1.0, -1.0, -2.0]))
+    r_save, _, _ = _compute_dcpo_v4_pmi_shift_rmeta(
+        tokenizer=tok, trainer=object(),
+        prompt_texts=["P "],
+        response_texts=["w<|meta|>recheck<|/meta|>so it is 42."],
+        ground_truths=["42"],
+        fmt_classes=["wellformed"],
+        heads={"c_with": [1.0]},
+        read_knob=lambda name, default: default,
+        step=1,
+    )
+    assert abs(r_meta[0]) >= abs(r_save[0])   # derail >= save (asymmetric)
+
+
+def test_pmi_shift_no_meta_not_attempted(monkeypatch):
+    tok = FakeMergeTokenizer(merges=())
+    monkeypatch.setattr(V, "_dcpo_v4_ref_logprobs",
+                        _shift_fake_ref([-2.0, -1.0, -1.0, -2.0]))
+    r_meta, member, _ = _compute_dcpo_v4_pmi_shift_rmeta(
+        tokenizer=tok, trainer=object(),
+        prompt_texts=["P "],
+        response_texts=["plain answer 9 no meta"],
+        ground_truths=["9"],
+        fmt_classes=["no_meta"],
+        heads={"c_with": [1.0]},
+        read_knob=lambda name, default: default,
+        step=1,
+    )
+    assert r_meta[0] == 0.0 and member[0] == 0.0
+
+
+def test_pmi_shift_ref_failure_crash_safe(monkeypatch):
+    tok = FakeMergeTokenizer(merges=())
+
+    def _boom(trainer, tensors):
+        raise RuntimeError("ref worker exploded")
+
+    monkeypatch.setattr(V, "_dcpo_v4_ref_logprobs", _boom)
+    r_meta, member, shift_raw = _compute_dcpo_v4_pmi_shift_rmeta(
+        tokenizer=tok, trainer=object(),
+        prompt_texts=["P "],
+        response_texts=["w<|meta|>recheck<|/meta|>so it is 42."],
+        ground_truths=["42"],
+        fmt_classes=["wellformed"],
+        heads={"c_with": [1.0]},
+        read_knob=lambda name, default: default,
+        step=1,
+    )
+    assert float(r_meta[0]) == 0.0 and float(member[0]) == 0.0
+    assert np.isnan(shift_raw[0])
+
+
+def test_pmi_shift_entry_guard_rejects_readable_legacy_config(monkeypatch):
+    # A READABLE-but-WRONG use_legacy_worker_impl must crash at the pmi_shift entry
+    # (before any work), with the T=1.0/PMI-compression message.
+    tok = FakeMergeTokenizer(merges=())
+    monkeypatch.setattr(V, "_dcpo_v4_ref_logprobs",
+                        _shift_fake_ref([-2.0, -1.0, -1.0, -2.0]))
+    with pytest.raises(AssertionError, match="use_legacy_worker_impl=disable"):
+        _compute_dcpo_v4_pmi_shift_rmeta(
+            tokenizer=tok, trainer=_guard_trainer("enable"),
+            prompt_texts=["P "],
+            response_texts=["w<|meta|>recheck<|/meta|>so it is 42."],
+            ground_truths=["42"],
+            fmt_classes=["wellformed"],
+            heads={"c_with": [1.0]},
+            read_knob=lambda name, default: default,
+            step=1,
+        )
+
+
+def test_pmi_shift_entry_guard_unreadable_config_defers(monkeypatch):
+    # trainer=object() (unreadable config) must NOT crash at the entry — the deep
+    # ref-scorer assert handles the real path; with the ref monkeypatched it scores.
+    tok = FakeMergeTokenizer(merges=())
+    monkeypatch.setattr(V, "_dcpo_v4_ref_logprobs",
+                        _shift_fake_ref([-2.0, -1.0, -1.0, -2.0]))
+    r_meta, member, _ = _compute_dcpo_v4_pmi_shift_rmeta(
+        tokenizer=tok, trainer=object(),
+        prompt_texts=["P "],
+        response_texts=["w<|meta|>recheck<|/meta|>so it is 42."],
+        ground_truths=["42"],
+        fmt_classes=["wellformed"],
+        heads={"c_with": [1.0]},
+        read_knob=lambda name, default: default,
+        step=1,
+    )
+    assert member[0] == 1.0
+
+
+def test_pmi_shift_empty_meta_content_skipped(monkeypatch):
+    # A meta block with NO content between the tags makes CLOSE==OPEN by
+    # construction (spurious null) and lets PRESENCE earn credit -> must be skipped.
+    tok = FakeMergeTokenizer(merges=())
+    monkeypatch.setattr(V, "_dcpo_v4_ref_logprobs",
+                        _shift_fake_ref([-2.0, -1.0, -1.0, -2.0]))
+    r_meta, member, shift_raw = _compute_dcpo_v4_pmi_shift_rmeta(
+        tokenizer=tok, trainer=object(),
+        prompt_texts=["P "],
+        response_texts=["w<|meta|>   <|/meta|>so it is 42."],  # whitespace-only meta
+        ground_truths=["42"],
+        fmt_classes=["wellformed"],
+        heads={"c_with": [1.0]},
+        read_knob=lambda name, default: default,
+        step=1,
+    )
+    assert r_meta[0] == 0.0 and member[0] == 0.0
+    assert np.isnan(shift_raw[0])
+
+
+def test_pmi_shift_dup_meta_skipped_when_thresh_enabled(monkeypatch):
+    # When the meta-inner text is a near-duplicate of the body prefix and the
+    # dup-threshold knob is enabled (<1.0), the row is skipped (presence-confound
+    # guard). With the default thresh (1.0, disabled) the same row scores.
+    tok = FakeMergeTokenizer(merges=())
+    monkeypatch.setattr(V, "_dcpo_v4_ref_logprobs",
+                        _shift_fake_ref([-2.0, -1.0, -1.0, -2.0]))
+    body_and_meta = "check the sum<|meta|>check the sum<|/meta|>so it is 42."
+
+    def _knob_dup(name, default):
+        return 0.5 if name == "dcpo_pmishift_meta_body_dup_thresh" else default
+
+    r_meta, member, _ = _compute_dcpo_v4_pmi_shift_rmeta(
+        tokenizer=tok, trainer=object(),
+        prompt_texts=["P "], response_texts=[body_and_meta],
+        ground_truths=["42"], fmt_classes=["wellformed"],
+        heads={"c_with": [1.0]}, read_knob=_knob_dup, step=1,
+    )
+    assert r_meta[0] == 0.0 and member[0] == 0.0   # duplicate meta skipped
+
+    # default thresh disabled -> the SAME duplicate-meta row scores (non-inert).
+    r_meta2, member2, _ = _compute_dcpo_v4_pmi_shift_rmeta(
+        tokenizer=tok, trainer=object(),
+        prompt_texts=["P "], response_texts=[body_and_meta],
+        ground_truths=["42"], fmt_classes=["wellformed"],
+        heads={"c_with": [1.0]},
+        read_knob=lambda name, default: default, step=1,
+    )
+    assert member2[0] == 1.0
+
+
+def test_pmi_shift_production_parity_non_inert():
+    # PRODUCTION-PARITY (gs190 anti-inert): R_shift routed to meta_region_utility
+    # + dcpo_rmeta_member must actually CHANGE the composed advantage on the META
+    # token vs an all-zero R_shift. (Same compose path the populator writes into.)
+    base = _compose_kwargs()
+    A_zero, _ = compose_dcpo_region_advantage(
+        **{**base, "R_meta": [0.0, 0.0, 0.0, 0.0]},
+        rmeta_member_mask=[1.0, 1.0, 0.0, 0.0],
+    )
+    A_shift, _ = compose_dcpo_region_advantage(
+        **{**base, "R_meta": [3.0, -4.0, 0.0, 0.0]},
+        rmeta_member_mask=[1.0, 1.0, 0.0, 0.0],
+    )
+    # the meta-token advantage column (index 1) must differ -> head is NON-INERT.
+    assert not torch.equal(A_zero[:, 1], A_shift[:, 1])
+    # the correctness column is untouched by the R_meta head.
+    assert torch.equal(A_zero[:, 0], A_shift[:, 0])
+
+
+def test_pmi_shift_existing_arms_byte_identical():
+    # Adding pmi_shift to the source set must not alter the other sources'
+    # validation (cf/pmi/none still pass; gm/asym_cf unchanged).
+    for src in ("cf", "pmi", "none", "cf_group", "decoy_did_gm",
+                "decoy_did_rlsd", "asym_cf"):
+        assert _v4_rmeta_source_strict(lambda n, d, s=src: s) == src

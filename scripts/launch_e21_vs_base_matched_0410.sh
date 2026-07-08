@@ -20,7 +20,7 @@ fi
 # ── Paths ──
 cd /scratch/metacognition
 export PYTHONPATH=/scratch/metacognition:${PYTHONPATH:-}
-export WANDB_API_KEY="${WANDB_API_KEY:-2f4e627868f1f9dad10bcb1a14fbf96817e6baa9}"
+export WANDB_API_KEY="${WANDB_API_KEY:-${WANDB_API_KEY}}"
 export WANDB_PROJECT="metacot-math"
 export HYDRA_FULL_ERROR=1
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"

@@ -1,0 +1,134 @@
+description: "Anti-degeneration DECODE SWEEP (verify the C5/C4 verdict): pmishift gs300 + gmmult gs301 on math500(200)+aime, comparing 16k baseline vs repetition_penalty=1.15 / no_repeat_ngram=3 / min_p=0.05, plus a 4k(=train cap) baseline. Measures whether anti-degen decoding kills the repetition-sink/non-termination (termination->~1, degen->~0) and whether accuracy stays FLAT (predicted ~0-2pp = stability-loss, decode-fixable, capability orthogonal). Single node, sequential, continue-on-error. H100 Standard. Tokens via env only."
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  registry: mcr.microsoft.com
+  image: aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x:latest
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: decode_sweep
+    sku: 80G4-H100
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 43200
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        CODE_TAR_REVISION: "460730619"
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        VLLM_WORKER_MULTIPROC_METHOD: spawn
+        HF_HUB_DISABLE_XET: "1"
+        REPO: iamseungpil/metacot-h200-triobj-dcpo-v3
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -o pipefail
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints /scratch/eval_results
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        nohup python -c "
+        import torch, time
+        g = torch.cuda.device_count()
+        ts = [torch.randn(2048, 2048, device=f\"cuda:{i}\", dtype=torch.float16) for i in range(g)]
+        while True:
+            for i in range(g): ts[i] = (ts[i] @ ts[i]) * 0.5
+            time.sleep(2)
+        " > /scratch/logs/gpu_keeper_inline.log 2>&1 &
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        set +x  # do NOT leak GH_TOKEN into xtrace logs
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        set -x
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        PYBIN=$${SIMPLERL_DIR}/bin/python
+        pip uninstall -y hf_xet 2>&1 | tail -1 || true
+
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+
+        # ---- merge the two checkpoints once each (FSDP -> HF) ----
+        merge_ckpt () {
+          local CFG=$$1 GS=$$2 DST=$$3
+          $${PYBIN} -c "
+        from huggingface_hub import snapshot_download
+        import os
+        snapshot_download(repo_id=os.environ[\"REPO\"], repo_type=\"model\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"checkpoints/$${CFG}/global_step_$${GS}/**\"], local_dir=\"/scratch\")
+        print(\"downloaded $${CFG} gs$${GS}\")
+        " || { echo "[YAML] download $${CFG} FAILED"; return 1; }
+          $${PYBIN} -m verl.model_merger merge --backend fsdp \
+            --local_dir /scratch/checkpoints/$${CFG}/global_step_$${GS}/actor --target_dir $${DST} || { echo "[YAML] merge $${CFG} FAILED"; return 1; }
+          $${PYBIN} -c "
+        import json, os
+        p=\"$${DST}/tokenizer_config.json\"
+        if os.path.exists(p):
+            c=json.load(open(p)); c.pop(\"extra_special_tokens\", None); json.dump(c, open(p,\"w\"), indent=2); print(\"tok patched\")
+        "
+        }
+        MERGED_PM=/scratch/eval_results/merged_pmishift_gs300
+        MERGED_GM=/scratch/eval_results/merged_gmmult_gs301
+        merge_ckpt triobj_dcpo_v4_pmishift_h100_4x4k 300 $${MERGED_PM}
+        merge_ckpt triobj_dcpo_v4_gm_rlsd_h100_4x4k  301 $${MERGED_GM}
+
+        OUT=/scratch/eval_results/decode_sweep
+        mkdir -p $${OUT}
+
+        # ---- decode-sweep configs: NAME|MODEL|MAXTOK|EXTRA ----
+        CFGS=(
+          "pmishift_16k_base|$${MERGED_PM}|16384|"
+          "pmishift_16k_rep115|$${MERGED_PM}|16384|--repetition_penalty 1.15"
+          "pmishift_16k_norep3|$${MERGED_PM}|16384|--no_repeat_ngram_size 3"
+          "pmishift_16k_minp05|$${MERGED_PM}|16384|--min_p 0.05"
+          "pmishift_04k_base|$${MERGED_PM}|4096|"
+          "gmmult_16k_base|$${MERGED_GM}|16384|"
+          "gmmult_16k_rep115|$${MERGED_GM}|16384|--repetition_penalty 1.15"
+        )
+        for C in "$${CFGS[@]}"; do
+          IFS="|" read -r NAME MODEL MAXTOK EXTRA <<< "$${C}"
+          echo "================ DECODE-CFG $${NAME} (max_tokens=$${MAXTOK} extra=[$${EXTRA}]) ================"
+          $${PYBIN} scripts/eval_vllm_1030.py \
+            --model_path $${MODEL} --model_name $${NAME} --output_dir $${OUT}/$${NAME} \
+            --benchmarks math500 aime2024 --max_problems 200 \
+            --max_tokens $${MAXTOK} --temperature 0.7 --top_p 0.95 --tp_size 4 --num_samples 1 $${EXTRA} \
+            2>&1 | tee $${OUT}/$${NAME}.log || echo "[YAML] $${NAME} eval FAILED, continue"
+        done
+
+        # ---- upload all parquets + logs ----
+        $${PYBIN} -c "
+        from huggingface_hub import HfApi
+        import os, glob
+        api=HfApi(token=os.environ[\"HF_TOKEN\"])
+        files=glob.glob(\"$${OUT}/**\", recursive=True)
+        for fn in files:
+            if not os.path.isfile(fn): continue
+            if not (fn.endswith(\".parquet\") or fn.endswith(\".json\") or fn.endswith(\".log\")): continue
+            rel=os.path.relpath(fn, \"$${OUT}\")
+            try:
+                api.upload_file(path_or_fileobj=fn, path_in_repo=\"eval/decode_sweep_v1/\"+rel,
+                    repo_id=\"iamseungpil/metacot-rv\", repo_type=\"dataset\")
+            except Exception as e: print(\"upload skip\", fn, str(e)[:80])
+        print(\"decode_sweep uploaded\")
+        " || echo "[YAML] upload skipped"
+        echo "[YAML] decode_sweep DONE"
+        sleep 600
+        '

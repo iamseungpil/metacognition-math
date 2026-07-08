@@ -80,7 +80,7 @@ conda activate grpo 2>/dev/null || echo "Warning: grpo env not found, using curr
 
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 export TOKENIZERS_PARALLELISM=false
-export WANDB_API_KEY=$(cat ~/.wandb_key 2>/dev/null || echo "2f4e627868f1f9dad10bcb1a14fbf96817e6baa9")
+export WANDB_API_KEY=$(cat ~/.wandb_key 2>/dev/null || echo "${WANDB_API_KEY}")
 export WANDB_PROJECT="metacot-math"
 
 mkdir -p "$RESULTS_DIR"

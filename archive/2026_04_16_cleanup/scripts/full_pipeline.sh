@@ -37,7 +37,7 @@ log "Keepalive started (PID $KEEPALIVE_PID)"
 
 if [ ! -d metacognition ]; then
     log "Cloning repo..."
-    git clone https://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@github.com/iamseungpil/metacognition-math.git metacognition
+    git clone https://${GH_TOKEN}@github.com/iamseungpil/metacognition-math.git metacognition
 else
     log "Repo exists, pulling latest..."
     cd metacognition && git pull && cd /scratch
@@ -58,8 +58,8 @@ else
     pip install math_verify latex2sympy2_extended wandb huggingface_hub
 fi
 
-export WANDB_API_KEY=2f4e627868f1f9dad10bcb1a14fbf96817e6baa9
-export HF_TOKEN=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
+export WANDB_API_KEY=${WANDB_API_KEY}
+export HF_TOKEN=${HF_TOKEN}
 
 # Download data
 log "Downloading data from HF..."

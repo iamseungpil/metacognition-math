@@ -5,7 +5,7 @@ source /opt/conda/etc/profile.d/conda.sh
 conda activate ptca
 cd /scratch/metacognition
 export PYTHONPATH=/scratch/metacognition
-export WANDB_API_KEY="2f4e627868f1f9dad10bcb1a14fbf96817e6baa9"
+export WANDB_API_KEY="${WANDB_API_KEY}"
 
 echo "$(date) Starting Slot C: E9 + 164 seed × 5 epochs"
 accelerate launch --config_file configs/accelerate_grpo_z2.yaml \

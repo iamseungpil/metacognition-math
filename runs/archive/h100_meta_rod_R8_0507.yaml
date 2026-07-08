@@ -1,0 +1,197 @@
+description: M5.6.5 ROD-RLSD on H100 — on-demand emit (BCE) + content KL, no decoy. Cold = R5 step 300.
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  registry: mcr.microsoft.com
+  image: aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x:latest
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: meta_rod_r8
+    sku: 80G4-H100
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 604800
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        WANDB_API_KEY: ${WANDB_API_KEY}
+        WANDB_KEY: ${WANDB_API_KEY}
+        WANDB_PROJECT: skilldiscovery2
+        WANDB_NAME: meta_rod_R8_h100_0507
+        WANDB_RUN_GROUP: meta-rod-rlsd-R8-2026-05-07
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -x
+        echo "[YAML] step start"
+        mkdir -p /scratch/logs /scratch/checkpoints
+        cd /scratch
+
+        # 1. Pull code tarball
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        python -c "
+        from huggingface_hub import hf_hub_download
+        import os, tarfile
+        p = hf_hub_download(repo_id=\"iamseungpil/metacot\", filename=\"code_snapshots/metacognition.tar.gz\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"])
+        t = tarfile.open(p); t.extractall(\"/scratch\"); t.close()
+        print(\"code extracted\")
+        "
+
+        # 2. Bootstrap simplerl env
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        which python && python --version
+
+        # 3. Stage parquet
+        python /scratch/metacognition/scripts/pull_parquets.py 2>&1 | tail -3
+
+        # 4. Stage meta SFT teacher (v8_meta_inside_strict_sft)
+        echo "[YAML] staging meta SFT teacher"
+        mkdir -p /scratch/models
+        python -c "
+        from huggingface_hub import snapshot_download
+        import os, shutil
+        p = snapshot_download(
+            repo_id=\"iamseungpil/metacot\",
+            repo_type=\"dataset\",
+            token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/v8_meta_inside_strict_sft/checkpoint-254/*\"],
+            local_dir=\"/scratch/models_dl\",
+        )
+        src = \"/scratch/models_dl/models/v8_meta_inside_strict_sft/checkpoint-254\"
+        dst = \"/scratch/models/v8_meta_inside_strict_sft\"
+        if os.path.exists(dst): shutil.rmtree(dst)
+        shutil.copytree(src, dst)
+        print(\"meta SFT staged at\", dst)
+        "
+        python -c "
+        import json
+        p = \"/scratch/models/v8_meta_inside_strict_sft/tokenizer_config.json\"
+        cfg = json.load(open(p))
+        cfg.pop(\"extra_special_tokens\", None)
+        json.dump(cfg, open(p, \"w\"), indent=2)
+        print(\"tokenizer patched\")
+        "
+
+        # 5. Stage R5 step 300 cold start ckpt + merge to HF format
+        which python
+        python -c "
+        from huggingface_hub import HfApi, snapshot_download
+        import os, json, subprocess, sys
+        repo = \"iamseungpil/metacot-h100-rlsd-forced-meta-R5-0504\"
+        api = HfApi()
+        files = api.list_repo_files(repo, repo_type=\"model\", token=os.environ[\"HF_TOKEN\"])
+        steps = sorted({int(f.split(\"global_step_\")[1].split(\"/\")[0]) for f in files if \"global_step_\" in f})
+        if not steps:
+            raise SystemExit(\"no R5 ckpt found\")
+        latest = max(steps)
+        print(f\"[ROD cold start] using R5 step {latest} (available: {steps})\", flush=True)
+        snapshot_download(
+            repo_id=repo, repo_type=\"model\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[f\"checkpoints/verl_rlsd_forced_meta_R5_h100_4x4k/global_step_{latest}/**\"],
+            local_dir=\"/scratch\",
+        )
+        merged = \"/scratch/eval_results/merged_R5_step\" + str(latest)
+        ckpt = f\"/scratch/checkpoints/verl_rlsd_forced_meta_R5_h100_4x4k/global_step_{latest}/actor\"
+        if not os.path.exists(merged + \"/model.safetensors.index.json\"):
+            print(f\"[ROD cold start] merging FSDP shards: {ckpt} -> {merged}\", flush=True)
+            os.makedirs(merged, exist_ok=True)
+            py = \"/scratch/conda_envs/simplerl/bin/python\"
+            r = subprocess.run([py, \"-m\", \"verl.model_merger\", \"merge\",
+                                \"--backend\", \"fsdp\",
+                                \"--local_dir\", ckpt,
+                                \"--target_dir\", merged],
+                               capture_output=False)
+            if r.returncode != 0:
+                print(f\"[ROD cold start] merger FAILED rc={r.returncode}\", flush=True)
+                sys.exit(1)
+            tok_path = f\"{merged}/tokenizer_config.json\"
+            if os.path.exists(tok_path):
+                cfg = json.load(open(tok_path))
+                cfg.pop(\"extra_special_tokens\", None)
+                json.dump(cfg, open(tok_path, \"w\"), indent=2)
+        print(f\"[ROD cold start] merged ckpt at {merged}\", flush=True)
+        with open(\"/tmp/rod_cold_start.txt\", \"w\") as f:
+            f.write(merged)
+        print(\"[ROD cold start] wrote /tmp/rod_cold_start.txt\", flush=True)
+        "
+
+        # 6. Background daemons
+        mkdir -p /scratch/checkpoints/meta_rod_R8
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/meta_rod_R8 --repo_id iamseungpil/metacot-h100-meta-rod-R8-0507 --token $HF_TOKEN --interval 90 --config_name meta_rod_R8 > /scratch/logs/push_ROD.log 2>&1 &
+
+        # 7. Foreground TRL ROD training
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+        if [ ! -f /tmp/rod_cold_start.txt ]; then
+            echo "[YAML] ERROR: /tmp/rod_cold_start.txt missing"
+            exit 1
+        fi
+        COLD_START_PATH=$$(cat /tmp/rod_cold_start.txt)
+        echo "[YAML] ROD cold start: $$COLD_START_PATH"
+
+        python -c "
+        import yaml
+        cfg = yaml.safe_load(open(\"configs/meta_rod_R8_h100_4x4k.yaml\"))
+        cfg[\"student_init\"] = \"$$COLD_START_PATH\"
+        cfg[\"teacher_init\"] = \"/scratch/models/v8_meta_inside_strict_sft\"
+        cfg[\"output_dir\"] = \"/scratch/checkpoints/meta_rod_R8\"
+        yaml.safe_dump(cfg, open(\"/tmp/meta_rod_runtime.yaml\", \"w\"))
+        print(\"[YAML] runtime config: student_init=\" + cfg[\"student_init\"] + \" teacher_init=\" + cfg[\"teacher_init\"])
+        "
+
+        accelerate launch --num_processes=4 \
+            scripts/train_meta_rod.py --config /tmp/meta_rod_runtime.yaml --skip_preflight
+        TRAIN_RC=$$?
+        echo "[YAML] train_meta_rod rc=$$TRAIN_RC"
+
+        # 8. On-node 16k eval
+        if [ "$$TRAIN_RC" = "0" ]; then
+            echo "[YAML] training succeeded — running 16k eval"
+            EVAL_DIR=/scratch/eval_results/eval_meta_rod_R8_step_final
+            mkdir -p $$EVAL_DIR
+            export VLLM_WORKER_MULTIPROC_METHOD=spawn
+            python /scratch/metacognition/scripts/eval_vllm_1030.py \
+                --model_path /scratch/checkpoints/meta_rod_R8/final \
+                --model_name meta_rod_R8_step_final \
+                --output_dir $$EVAL_DIR \
+                --max_tokens 16384 \
+                --tp_size 4
+            python -c "
+            from huggingface_hub import HfApi
+            import os
+            HfApi().upload_folder(
+                folder_path=\"$$EVAL_DIR\",
+                path_in_repo=\"eval/meta_rod_R8_2026_05_07\",
+                repo_id=\"iamseungpil/metacot\",
+                repo_type=\"dataset\",
+                token=os.environ[\"HF_TOKEN\"],
+                allow_patterns=[\"*.json\", \"*.parquet\"],
+            )
+            print(\"[ROD eval] results pushed to HF\")
+            "
+            echo "[YAML] 16k eval + HF push DONE"
+        else
+            echo "[YAML] training failed — skipping eval"
+        fi
+
+        sleep 86400
+        '

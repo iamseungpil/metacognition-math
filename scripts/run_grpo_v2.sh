@@ -6,7 +6,7 @@ REMOTE_CONDA_ENV="${REMOTE_CONDA_ENV:-ptca}"
 conda activate "$REMOTE_CONDA_ENV"
 cd /scratch/metacognition
 export PYTHONPATH=/scratch/metacognition
-export WANDB_API_KEY=$(cat ~/.wandb_key 2>/dev/null || echo "2f4e627868f1f9dad10bcb1a14fbf96817e6baa9")
+export WANDB_API_KEY=$(cat ~/.wandb_key 2>/dev/null || echo "${WANDB_API_KEY}")
 export WANDB_PROJECT="${WANDB_PROJECT:-metacot-math}"
 export WANDB_NAME="${WANDB_NAME:-}"
 export WANDB_RUN_GROUP="${WANDB_RUN_GROUP:-}"

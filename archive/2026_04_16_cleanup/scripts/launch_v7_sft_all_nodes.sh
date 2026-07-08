@@ -89,7 +89,7 @@ cd /scratch/metacognition
 source /opt/conda/etc/profile.d/conda.sh
 conda activate ptca
 export PYTHONPATH=/scratch/metacognition
-export WANDB_API_KEY=\$(cat ~/.wandb_key 2>/dev/null || echo 2f4e627868f1f9dad10bcb1a14fbf96817e6baa9)
+export WANDB_API_KEY=\$(cat ~/.wandb_key 2>/dev/null || echo ${WANDB_API_KEY})
 
 echo "plan_id: v7-Phase1"
 echo "run_label: $label"
