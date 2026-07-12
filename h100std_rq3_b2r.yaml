@@ -114,6 +114,9 @@ jobs:
         # triobj config (correctness routed to ANSWER span) but ALL meta heads zeroed:
         # dcpo_w_meta=0 (no pmi/meta-utility), w_cal=0, w_emit=0, w_format=0, len_cost=0,
         # trunc_open_penalty=0, w_over=0. => meta/reasoning span gets ZERO advantage.
+        # rmeta_source=pmi_shift is set ONLY to force single_turn rollout (matches B0/B2/
+        # B3pkg) and avoid the config-default cf_group agent-loop path; w_meta=0 nullifies
+        # any pmi advantage, so the meta reward is genuinely zero.
         # Isolation control: B3pkg - B2-R = pure meta-package effect, holding region-split
         # routing constant. (B2 stays VANILLA whole-response correctness for RQ1.)
         # Collapse-fixed v2 recipe overrides (temp 1.0 / top_k -1 / top_p 1.0 /
@@ -126,6 +129,7 @@ jobs:
             trainer.default_local_dir=/scratch/checkpoints/rq3_b2r \
             trainer.project_name=metacot-dcpo-v4 \
             actor_rollout_ref.model.path=/scratch/models/b23_rv_unmasked_sft \
+            ++algorithm.dcpo_rmeta_source=pmi_shift \
             ++algorithm.dcpo_w_meta=0.0 \
             ++algorithm.dcpo_w_cal=0.0 \
             ++algorithm.dcpo_w_emit=0.0 \
