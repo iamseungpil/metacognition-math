@@ -119,3 +119,22 @@ resume하지 않고 **gs0부터 새로** 시작(WANDB_RUN_ID=rq3-b3pkg, ckpt con
 rq3_b3pkg). 기존 rq3-b3(pmi-only 실패, gs1~75)는 이 기록의 근거로 보존.
 B0/B2는 정상이므로 불변. 검증 질문: "형식 비계를 살리면 pmi_shift가 base에서도
 유지·발화하는가"(gs30까지 잘 됐다는 데이터가 성공 가능성을 뒷받침).
+
+## 10. 격리 arm 설계 정정 (2026-07-12): B2-R(전부-off) → B3-noPMI(pmi만 제거)
+
+RQ2 = B3pkg − B2 는 두 요인(메타 패키지 + region-split 라우팅)이 섞여 있어
+순수 격리 arm이 필요. 처음엔 **B2-R**(region-split + 메타 head 전부 0)로 라우팅을
+격리하려 했으나 — 메타 스팬에 advantage가 0이라 실패한 pmi-only처럼 **메타가
+붕괴**(퇴화 컨트롤). 사용자 지적으로 교체.
+
+**B3-noPMI**로 대체: B3pkg 풀 패키지에서 **w_meta(pmi)=0 하나만** 제거, form
+비계(w_format 0.35·w_emit 0.1·w_cal 0.3·len 0.08·trunc 0.3)는 유지. 그래서
+메타가 살아있고(붕괴 없음), **B3pkg − B3-noPMI = pmi_shift belief-shift 보상의
+순수 한계 기여**(논문 핵심 메커니즘)를 깨끗이 측정. rmeta_source=pmi_shift는
+single_turn 롤아웃 매치용(w_meta=0이 pmi advantage를 0으로).
+
+구현 함정 2개 기록: ①B2-R이 rmeta_source 미오버라이드→기본 cf_group→반사실
+agent-loop 유발(취소·수정). ②격리는 "변수 하나만 바꾸기"가 철칙 — 원래 B3
+실패도 한 번에 5개 head를 끈 데서 왔음. **최종 4-arm**: B0(gold+vanilla)·
+B2(meta+vanilla)·B3pkg(meta+풀패키지)·B3-noPMI(meta+패키지−pmi). 잡:
+absolute-mallard·fair-vulture·sunny-camel·sterling-firefly.

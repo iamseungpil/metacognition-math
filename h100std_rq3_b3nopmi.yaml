@@ -1,4 +1,4 @@
-description: "RQ3 B2-R (META-SFT + REGION-SPLIT, META ADVANTAGE = 0) — the clean-isolation control for RQ2. Init = models/b23_rv_unmasked_sft (SAME meta-SFT init as B2/B3pkg). config triobj_dcpo_v4_stage3b (region-split routing: correctness -> ANSWER span only) but ALL meta heads zeroed (dcpo_w_meta=0, w_cal=0, w_emit=0, w_format=0, len_cost=0, trunc_open_penalty=0, w_over=0) so the meta/reasoning span receives ZERO advantage. Purpose: B2-R holds the region-split correctness ROUTING constant while removing the meta reward package, so B3pkg - B2-R isolates the PURE meta-package effect (vs B3pkg - B2 which also changes routing whole-response->answer-span). B2 (VANILLA_GRPO, whole-response correctness) stays the RQ1 control; B2-R is a NEW 4th arm, not a change to B2. Base substrate + v2 collapse-fixed recipe, matched hyperparams. Fresh start from gs0. v2 collapse-fixed recipe (temp 1.0, top_k -1, top_p 1.0, max_response 8192, Dr.GRPO norm_adv_by_std=false) + matched hyperparams (batch 64, ppo_mini 8, n 8, lr 1e-6, 300 steps, clip 0.2/0.28, kl 0.0). H100x4 Standard."
+description: "RQ3 B3-noPMI (META-SFT + FULL PACKAGE MINUS pmi_shift) — the pmi-isolation control. Init = models/b23_rv_unmasked_sft (SAME as B2/B3pkg). IDENTICAL to B3pkg (h100std_rq3_b3.yaml, the T1-winning full package on Base) EXCEPT dcpo_w_meta=0.0 — i.e. the pmi_shift / meta_region_utility head is zeroed while the form scaffold stays ON: w_format 0.35 (wellformed), w_emit 0.1 (emission floor), w_cal 0.3, len_cost 0.08, trunc_open_penalty 0.3. rmeta_source=pmi_shift kept ONLY to force single_turn rollout (matches B0/B2/B3pkg); w_meta=0 makes the pmi advantage genuinely zero (pmi metrics still logged for observation). PURPOSE: B3pkg - B3-noPMI = the PURE marginal contribution of the pmi_shift belief-shift (SAVE/DERAIL) reward — the paper's core mechanism. Because the form scaffold is retained, the meta stays alive (no collapse, unlike the pmi-only rq3-b3 or the all-off rq3-b2r). Base substrate + v2 collapse-fixed recipe, matched hyperparams. Fresh gs0."
 
 target:
   service: sing
@@ -13,7 +13,7 @@ code:
   local_dir: $CONFIG_DIR/
 
 jobs:
-  - name: rq3_b2r
+  - name: rq3_b3nopmi
     sku: 80G4-H100
     sla_tier: Standard
     priority: high
@@ -34,10 +34,10 @@ jobs:
         WANDB_KEY: ${WANDB_API_KEY}
         WANDB_PROJECT: metacot-dcpo-v4
         WANDB_RUN_GROUP: rq3_matched_ladder
-        WANDB_NAME: rq3_b2r
-        WANDB_RUN_ID: rq3-b2r
+        WANDB_NAME: rq3_b3nopmi
+        WANDB_RUN_ID: rq3-b3nopmi
         WANDB_RESUME: allow
-        WANDB_TAGS: RQ3,matched_ladder,B2R,meta_sft,region_split,meta_adv_zero,isolation_control,v2_recipe,from-b23-rv-sft,fresh-gs0
+        WANDB_TAGS: RQ3,matched_ladder,B3noPMI,meta_sft,package_minus_pmi,w_meta0,form_scaffold_on,pmi_isolation,v2_recipe,from-b23-rv-sft,fresh-gs0
         DCPO_WANDB_ROLLOUTS: "1"
         DCPO_WANDB_ROLLOUTS_EVERY: "1"
         DCPO_META_CLOSE_FORCE: "1"
@@ -101,42 +101,35 @@ jobs:
 
         nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
         # durable per-file checkpoint pusher for this RL run.
-        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rq3_b2r --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --token $${HF_TOKEN} --interval 90 --config_name rq3_b2r > /scratch/logs/push_rq3_b2r.log 2>&1 &
+        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rq3_b3nopmi --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --token $${HF_TOKEN} --interval 90 --config_name rq3_b3nopmi > /scratch/logs/push_rq3_b3nopmi.log 2>&1 &
 
         export PYTHONPATH=/scratch/metacognition
         cd /scratch/metacognition
         # RESUME-FROM-HF durability for this RL run.
-        python /scratch/metacognition/scripts/pull_resume_ckpt.py --repo iamseungpil/metacot-h200-triobj-dcpo-v3 --config_name rq3_b2r --local_dir /scratch/checkpoints/rq3_b2r --token $${HF_TOKEN} 2>&1 | tail -5
+        python /scratch/metacognition/scripts/pull_resume_ckpt.py --repo iamseungpil/metacot-h200-triobj-dcpo-v3 --config_name rq3_b3nopmi --local_dir /scratch/checkpoints/rq3_b3nopmi --token $${HF_TOKEN} 2>&1 | tail -5
         # `amlt run -i` sets LOCAL_RANK='' (empty); export a valid "0" so Ray
         # worker actors inherit a valid value when spawned (memory amlt-i pitfall).
         export LOCAL_RANK=0
-        # ── B2-R = META-SFT init + REGION-SPLIT routing, META ADVANTAGE = 0 ──
-        # triobj config (correctness routed to ANSWER span) but ALL meta heads zeroed:
-        # dcpo_w_meta=0 (no pmi/meta-utility), w_cal=0, w_emit=0, w_format=0, len_cost=0,
-        # trunc_open_penalty=0, w_over=0. => meta/reasoning span gets ZERO advantage.
-        # rmeta_source=pmi_shift is set ONLY to force single_turn rollout (matches B0/B2/
-        # B3pkg) and avoid the config-default cf_group agent-loop path; w_meta=0 nullifies
-        # any pmi advantage, so the meta reward is genuinely zero.
-        # Isolation control: B3pkg - B2-R = pure meta-package effect, holding region-split
-        # routing constant. (B2 stays VANILLA whole-response correctness for RQ1.)
+        # ── B3-noPMI = B3pkg FULL PACKAGE but w_meta(pmi)=0 — isolates pmi_shift ──
+        # dcpo_rmeta_source=pmi_shift (ONLY to force single_turn rollout, matched to
+        # B0/B2/B3pkg) + dcpo_w_meta=0.0 (zeroes the pmi/meta_region_utility advantage;
+        # pmi metrics still logged). ALL form-scaffold heads stay at config defaults —
+        # w_format 0.35 (wellformed), w_emit 0.1 (emission floor), w_cal 0.3, len_cost
+        # 0.08, trunc_open_penalty 0.3 — so the meta stays ALIVE (no collapse). w_over=0.
+        # B3pkg - B3-noPMI = pure marginal effect of the pmi_shift belief-shift reward.
         # Collapse-fixed v2 recipe overrides (temp 1.0 / top_k -1 / top_p 1.0 /
         # max_response 8192 / max_model_len+max_num_batched_tokens 10240 / Dr.GRPO
         # norm_adv_by_std=false / log_prob micro-batch 2 OOM guard) applied identically
         # to all three arms.
-        WANDB_NAME=rq3_b2r /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
+        WANDB_NAME=rq3_b3nopmi /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
             --config-name=triobj_dcpo_v4_stage3b_h100_4x4k \
-            trainer.experiment_name=rq3_b2r \
-            trainer.default_local_dir=/scratch/checkpoints/rq3_b2r \
+            trainer.experiment_name=rq3_b3nopmi \
+            trainer.default_local_dir=/scratch/checkpoints/rq3_b3nopmi \
             trainer.project_name=metacot-dcpo-v4 \
             actor_rollout_ref.model.path=/scratch/models/b23_rv_unmasked_sft \
             ++algorithm.dcpo_rmeta_source=pmi_shift \
             ++algorithm.dcpo_w_meta=0.0 \
-            ++algorithm.dcpo_w_cal=0.0 \
-            ++algorithm.dcpo_w_emit=0.0 \
-            ++algorithm.dcpo_len_cost=0.0 \
             ++algorithm.dcpo_w_over=0.0 \
-            ++algorithm.dcpo_w_format=0.0 \
-            ++algorithm.dcpo_trunc_open_penalty=0.0 \
             actor_rollout_ref.rollout.temperature=1.0 \
             actor_rollout_ref.rollout.top_k=-1 \
             actor_rollout_ref.rollout.top_p=1.0 \
@@ -152,7 +145,7 @@ jobs:
             ++hydra.searchpath=[pkg://verl/trainer/config] \
             2>&1 | tee /scratch/logs/verl_main.log
         VERL_RC=$${PIPESTATUS[0]}
-        echo "[YAML] verl_sdc rq3_b2r rc=$${VERL_RC}; tail of verl_main.log:"
+        echo "[YAML] verl_sdc rq3_b3nopmi rc=$${VERL_RC}; tail of verl_main.log:"
         tail -40 /scratch/logs/verl_main.log 2>/dev/null
         sleep 86400
         '
