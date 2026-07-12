@@ -1,3 +1,5 @@
+> ⚠️ **DEPRECATED** (2026-05-29 CTSD v5 계획): 현행 실험은 **rq3 매치드 래더** — `docs/redesign/` 및 `docs/CONSTITUTION.md` 참조.
+
 # PLAN — Contrastive Triggered Self-Distill (CTSD) for Meta-CoT (v5, 2026-05-29)
 
 > **v5 STATUS — what we actually know now, and the one gate that decides training**

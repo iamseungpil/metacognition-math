@@ -223,6 +223,96 @@
     .barrow .lab{font-size:.8rem}
     svg text{font-size:12px}
   }
+
+  /* ===== lineage(내부 계보) — archive.html에서 이식한 보상설계 카드 스타일 ===== */
+  :root{ --c-sel:#2563eb; --c-on:#dc2626; --c-form:#c2410c; --c-couple:#7c3aed; --c-ceil:#0f766e; --c-inert:#6b7280; }
+  .chip{display:inline-block; font-size:.74rem; font-weight:650; letter-spacing:.02em; color:#fff; padding:2px 9px; border-radius:6px}
+  .chip.sel{background:var(--c-sel)} .chip.on{background:#c81e1e} .chip.form{background:var(--c-form)}
+  .chip.couple{background:var(--c-couple)} .chip.ceil{background:var(--c-ceil)} .chip.inert{background:var(--c-inert)}
+  .lcard{border:1px solid var(--line); border-radius:14px; padding:17px 19px; margin:15px 0; background:#fff}
+  .lcard .hd{display:flex; align-items:center; gap:9px; flex-wrap:wrap; margin-bottom:7px}
+  .lcard .hd h3{margin:0; font-size:1.06rem}
+  .selfdistill{font-size:.74rem; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:#11633a; background:var(--green-soft); padding:2px 9px; border-radius:6px}
+  .badge{display:inline-block; font-size:.8rem; padding:2px 8px; border-radius:5px; background:#eef1f5; color:#334155; margin-left:6px}
+  .intent{display:inline-flex; gap:8px; align-items:baseline; font-size:.92rem; margin:4px 0}
+  .intent b{font-size:.7rem; text-transform:uppercase; letter-spacing:.08em; color:var(--blue)}
+  .formulabox{font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace; font-size:.88rem; line-height:1.65; background:var(--soft); border:1px solid var(--line); border-radius:9px; padding:10px 14px; margin:8px 0; overflow-x:auto}
+  .intuition{font-size:.97rem; color:#333; margin:6px 0}
+  .why{border-left:4px solid var(--c-ceil); background:#fbfbfc; border-radius:0 9px 9px 0; padding:9px 13px; font-size:.92rem; line-height:1.55}
+  .why b{display:block; margin-bottom:2px}
+  .why.sel{border-color:var(--c-sel)} .why.sel b{color:var(--c-sel)}
+  .why.on{border-color:var(--c-on)} .why.on b{color:var(--c-on)}
+  .why.form{border-color:var(--c-form)} .why.form b{color:var(--c-form)}
+  .why.couple{border-color:var(--c-couple)} .why.couple b{color:var(--c-couple)}
+  .why.ceil{border-color:var(--c-ceil)} .why.ceil b{color:var(--c-ceil)}
+  .why.inert{border-color:var(--c-inert)} .why.inert b{color:var(--c-inert)}
+  .twoaxes{display:grid; grid-template-columns:96px repeat(3,1fr); gap:7px; margin-top:4px}
+  .twoaxes .ta-col{font-size:.78rem; font-weight:680; color:#475569; text-align:center; padding:6px 4px; background:var(--soft); border-radius:7px; display:flex; flex-direction:column; align-items:center; justify-content:center}
+  .twoaxes .ta-sub{font-weight:500; color:var(--muted); font-size:.92em}
+  .twoaxes .ta-row{font-size:.78rem; font-weight:680; color:#475569; text-align:center; padding:6px 4px; background:var(--soft); border-radius:7px; display:flex; align-items:center; justify-content:center}
+  .twoaxes .ta-cell{border:1px solid var(--line); border-radius:9px; padding:9px 10px; background:#fff; display:flex; flex-direction:column; gap:5px; align-items:flex-start; min-height:62px; justify-content:center}
+  .twoaxes .ta-cell.ta-empty{background:repeating-linear-gradient(135deg,#fbfbfc,#fbfbfc 7px,#f1f3f6 7px,#f1f3f6 14px); color:#b6bcc4; align-items:center; font-size:1.1rem; font-weight:700}
+  .twoaxes .ta-note{font-size:.76rem; color:#555; line-height:1.35}
+  .ta-axislabels{display:flex; flex-wrap:wrap; gap:6px 22px; margin-top:9px; font-size:.78rem; color:var(--muted)}
+
+
+  /* lineage 애니메이션 (arc-codenative 스타일: inline SVG + 8s loop keyframes) */
+  .lg-animfig{margin:10px 0 4px; border:1px solid var(--line); border-radius:10px; background:#fff; padding:6px 8px}
+  .lg-animfig svg{width:100%; height:auto; display:block}
+  .lg-cap{font-size:.88rem; color:#444; margin:6px 2px 0; line-height:1.5}
+  .lgbar{transform-box:fill-box; transform-origin:bottom}
+  /* PMI: meta 켜지면 전부 상승 */
+  .lgp-meta{opacity:0; animation:lgpMeta 8s linear infinite}
+  @keyframes lgpMeta{0%,22%{opacity:0} 30%,88%{opacity:1} 96%,100%{opacity:0}}
+  .lgp-b{animation:lgpB 8s ease-in-out infinite}
+  @keyframes lgpB{0%,28%{transform:scaleY(.45)} 42%,84%{transform:scaleY(.88)} 96%,100%{transform:scaleY(.45)}}
+  .lgp-warn{opacity:0; animation:lgpWarn 8s linear infinite}
+  @keyframes lgpWarn{0%,55%{opacity:0} 65%,88%{opacity:1} 96%,100%{opacity:0}}
+  /* CF: 뒤집을 때만 보상 */
+  .lgc-x1{opacity:1; animation:lgcX1 9s linear infinite}
+  @keyframes lgcX1{0%,38%{opacity:1} 42%,100%{opacity:0}} 48%,100%{opacity:0}}
+  .lgc-v1{opacity:0; animation:lgcV1 9s linear infinite}
+  @keyframes lgcV1{0%,38%{opacity:0} 42%,95%{opacity:1} 99%,100%{opacity:0}} 48%,100%{opacity:1}}
+  .lgc-r1{opacity:0; animation:lgcR1 9s linear infinite}
+  @keyframes lgcR1{0%,44%{opacity:0} 48%,66%{opacity:1} 72%,100%{opacity:0}} 20%,42%{opacity:1} 50%,100%{opacity:0}}
+  .lgc-r0{opacity:0; animation:lgcR0 9s linear infinite}
+  @keyframes lgcR0{0%,72%{opacity:0} 78%,92%{opacity:1} 98%,100%{opacity:0}}
+  .lgc-x2{opacity:1; animation:lgcX2 9s linear infinite}
+  @keyframes lgcX2{0%,70%{opacity:1} 74%,95%{opacity:0} 99%,100%{opacity:1}}
+  .lgc-v2{opacity:0; animation:lgcV2 9s linear infinite}
+  @keyframes lgcV2{0%,70%{opacity:0} 74%,95%{opacity:1} 99%,100%{opacity:0}} 66%,88%{opacity:1} 96%,100%{opacity:0}}
+  /* gm: 진짜 catch는 gold만 올린다 */
+  .lgg-gm{animation:lggGm 10s ease-in-out infinite}
+  @keyframes lggGm{0%,18%{transform:scaleY(.4)} 26%,44%{transform:scaleY(.9)} 52%,68%{transform:scaleY(.4)} 74%,92%{transform:scaleY(.85)} 100%{transform:scaleY(.4)}}
+  .lgg-rest{animation:lggRest 10s ease-in-out infinite}
+  @keyframes lggRest{0%,52%{transform:scaleY(.4)} 74%,92%{transform:scaleY(.8)} 100%{transform:scaleY(.4)}}
+  .lgg-pos{opacity:0; animation:lggPos 10s linear infinite}
+  @keyframes lggPos{0%,26%{opacity:0} 32%,46%{opacity:1} 52%,100%{opacity:0}}
+  .lgg-zero{opacity:0; animation:lggZero 10s linear infinite}
+  @keyframes lggZero{0%,74%{opacity:0} 80%,94%{opacity:1} 100%{opacity:0}}
+  /* asym_cf: 비대칭 게이트 */
+  .lga-up{opacity:0; animation:lgaUp 8s linear infinite}
+  @keyframes lgaUp{0%,10%{opacity:0} 18%,38%{opacity:1} 46%,100%{opacity:0}}
+  .lga-dn{opacity:0; animation:lgaDn 8s linear infinite}
+  @keyframes lgaDn{0%,52%{opacity:0} 60%,88%{opacity:1} 96%,100%{opacity:0}}
+  /* PMI-shift: 바늘이 decoy에서 gold로 */
+  .lgs-needle{transform-box:fill-box; transform-origin:50% 100%; animation:lgsNeedle 9s ease-in-out infinite}
+  @keyframes lgsNeedle{0%,30%{transform:rotate(-38deg)} 52%,86%{transform:rotate(32deg)} 97%,100%{transform:rotate(-38deg)}}
+  .lgs-probe{animation:lgsProbe 9s ease-in-out infinite}
+  @keyframes lgsProbe{0%,30%{transform:translateX(0)} 52%,100%{transform:translateX(118px)}}
+  .lgs-save{opacity:0; animation:lgsSave 9s linear infinite}
+  @keyframes lgsSave{0%,56%{opacity:0} 64%,86%{opacity:1} 94%,100%{opacity:0}}
+
+
+  /* lineage 사분면 그리드 + 토글 */
+  .lgrid{display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:12px 0}
+  @media (max-width:720px){.lgrid{grid-template-columns:1fr}}
+  .lgrid .lcard{margin:0; padding:13px 15px}
+  .lcard details{margin-top:7px}
+  .lcard summary{cursor:pointer; font-size:.84rem; color:var(--blue); font-weight:650; user-select:none}
+  .lcard summary:hover{text-decoration:underline}
+  .lcard details .formulabox{margin-top:8px}
+
 </style>
 </head>
 <body>
@@ -237,6 +327,7 @@
   <a href="#rq3" class="rq">RQ3</a>
   <a href="#rq4" class="rq">RQ4</a>
   <a href="#limits">한계</a>
+  <a href="#lineage">내부 계보</a>
 </div></nav>
 
 <div class="wrap" id="top">
@@ -867,6 +958,163 @@
       base가 유발한 16k degeneration을 메타가 <b>완화</b>한다는 방향성, 이 세 가지는 단일 시드 안에서 일관된다.</p>
     </div>
   </div>
+</section>
+
+<!-- ===== 내부 방법 계보 (비교군) ===== -->
+<section id="lineage">
+  <span class="rqtag">내부 계보 · 다섯 자기증류 신호</span>
+  <h2>PMI-shift에 도달하기까지 — 수식 하나, 그림 하나</h2>
+  <p class="sectlead">각 방법은 모델 자신의 롤아웃에서 대조를 캐내는 한 가지 방식이다. 그림이 메커니즘이고, 수식·설명은 펼쳐 본다.</p>
+
+  <div class="lgrid">
+
+  <div class="lcard">
+    <div class="hd"><h3>PMI</h3><span class="chip on">always-on</span><span class="badge">Δ +0.010</span></div>
+    <figure class="lg-animfig">
+    <svg viewBox="0 0 340 150" role="img" aria-label="애니메이션: meta가 켜지면 이어지는 답의 모든 토큰 logp가 함께 올라간다">
+      <text x="10" y="16" font-size="10" fill="#5f6671">자기 continuation의 토큰별 log p</text>
+      <g class="lgp-meta">
+        <rect x="238" y="6" width="92" height="20" rx="5" fill="#edeffc" stroke="#3f5bd6"/>
+        <text x="284" y="20" font-size="10.5" font-weight="700" fill="#3f5bd6" text-anchor="middle">&lt;|meta|&gt; ON</text>
+      </g>
+      <line x1="14" y1="120" x2="326" y2="120" stroke="#e6e7ea" stroke-width="1.5"/>
+      <rect class="lgbar lgp-b" x="30"  y="40" width="30" height="80" fill="#9aa0a8"/>
+      <rect class="lgbar lgp-b" x="85"  y="40" width="30" height="80" fill="#9aa0a8" style="animation-delay:.12s"/>
+      <rect class="lgbar lgp-b" x="140" y="40" width="30" height="80" fill="#9aa0a8" style="animation-delay:.24s"/>
+      <rect class="lgbar lgp-b" x="195" y="40" width="30" height="80" fill="#9aa0a8" style="animation-delay:.36s"/>
+      <rect class="lgbar lgp-b" x="250" y="40" width="30" height="80" fill="#9aa0a8" style="animation-delay:.48s"/>
+      <g class="lgp-warn">
+        <text x="170" y="142" font-size="10.5" font-weight="700" fill="#b3271e" text-anchor="middle">전부 올라간다 — 필요성 검사 없음 → emit 0.96 표류</text>
+      </g>
+    </svg>
+    </figure>
+    <details><summary>수식 · 왜 넘어갔나</summary>
+      <div class="formulabox">R = mean_min<sub>t∈C</sub>[ log p(c<sub>t</sub> | prefix+<b>meta</b>) − log p(c<sub>t</sub> | prefix) ]</div>
+      <p class="lg-cap">자신만만한 meta는 <b>모든</b> 토큰을 들어올린다 — 이미 풀린 문제까지 발화해서 망가뜨린다.</p>
+    </details>
+  </div>
+
+  <div class="lcard">
+    <div class="hd"><h3>CF ★</h3><span class="chip sel">selectivity</span><span class="badge">Δ +0.040 최고</span></div>
+    <figure class="lg-animfig">
+    <svg viewBox="0 0 340 150" role="img" aria-label="애니메이션: meta가 결과를 뒤집으면 +R, 둘 다 맞으면 보상 없음">
+      <text x="88" y="16" font-size="10" fill="#5f6671" text-anchor="middle">without meta</text>
+      <text x="252" y="16" font-size="10" fill="#5f6671" text-anchor="middle">with meta</text>
+      <rect x="28" y="24" width="120" height="72" rx="6" fill="#fafbfc" stroke="#e6e7ea"/>
+      <rect x="192" y="24" width="120" height="72" rx="6" fill="#fafbfc" stroke="#3f5bd6"/>
+      <rect x="200" y="32" width="46" height="14" rx="4" fill="#edeffc" stroke="#3f5bd6" stroke-width=".8"/>
+      <text x="223" y="42" font-size="8.5" fill="#3f5bd6" text-anchor="middle">meta</text>
+      <g>
+        <text class="lgc-x2" x="88" y="72" font-size="26" font-weight="800" fill="#b3271e" text-anchor="middle">✗</text>
+        <text class="lgc-v2" x="88" y="72" font-size="26" font-weight="800" fill="#147a41" text-anchor="middle">✓</text>
+      </g>
+      <g>
+        <text class="lgc-x1" x="252" y="72" font-size="26" font-weight="800" fill="#b3271e" text-anchor="middle">✗</text>
+        <text class="lgc-v1" x="252" y="72" font-size="26" font-weight="800" fill="#147a41" text-anchor="middle">✓</text>
+      </g>
+      <g class="lgc-r1">
+        <rect x="120" y="112" width="100" height="24" rx="7" fill="#e8f5ec" stroke="#147a41"/>
+        <text x="170" y="128" font-size="12" font-weight="800" fill="#147a41" text-anchor="middle">flip! → +R</text>
+      </g>
+      <g class="lgc-r0">
+        <text x="170" y="128" font-size="11" font-weight="700" fill="#9aa0a8" text-anchor="middle">둘 다 맞으면 R=0 (+over-penalty)</text>
+      </g>
+    </svg>
+    </figure>
+    <details><summary>수식 · 왜 넘어갔나</summary>
+      <div class="formulabox">R<sub>meta</sub> ∝ acc(with meta) − acc(without meta)&nbsp;&nbsp;<span class="muted">+ 이미 풀린 문제 over-penalty</span></div>
+      <p class="lg-cap">결과를 실제로 뒤집는 meta만 보상 → 발화율 0.20의 선택성. 한계 = 자기검증 천장.</p>
+    </details>
+  </div>
+
+  <div class="lcard">
+    <div class="hd"><h3>gm</h3><span class="chip on">always-on</span><span class="chip couple">coupling</span></div>
+    <figure class="lg-animfig">
+    <svg viewBox="0 0 340 150" role="img" aria-label="애니메이션: 진짜 catch는 gold만 올리고, 장식용 meta는 넷 다 올린다">
+      <line x1="14" y1="112" x2="326" y2="112" stroke="#e6e7ea" stroke-width="1.5"/>
+      <rect class="lgbar lgg-gm"   x="38"  y="32" width="34" height="80" fill="#1a9850"/>
+      <rect class="lgbar lgg-rest" x="106" y="32" width="34" height="80" fill="#a7d3b8"/>
+      <rect class="lgbar lgg-rest" x="174" y="32" width="34" height="80" fill="#d24040" style="animation-delay:.1s"/>
+      <rect class="lgbar lgg-rest" x="242" y="32" width="34" height="80" fill="#eda6a6" style="animation-delay:.2s"/>
+      <text x="55"  y="127" font-size="9" fill="#5f6671" text-anchor="middle">gold|meta</text>
+      <text x="123" y="127" font-size="9" fill="#5f6671" text-anchor="middle">gold|plac</text>
+      <text x="191" y="127" font-size="9" fill="#5f6671" text-anchor="middle">decoy|meta</text>
+      <text x="259" y="127" font-size="9" fill="#5f6671" text-anchor="middle">decoy|plac</text>
+      <text class="lgg-pos"  x="170" y="20" font-size="11" font-weight="800" fill="#147a41" text-anchor="middle">진짜 catch: gold|meta만 ↑ → gm &gt; 0</text>
+      <text class="lgg-zero" x="170" y="20" font-size="11" font-weight="800" fill="#9aa0a8" text-anchor="middle">장식용 meta: 넷 다 ↑ → gm ≈ 0</text>
+      <text x="170" y="145" font-size="9.5" fill="#5f6671" text-anchor="middle">placebo(내용 없는 meta) 기준선의 gold−decoy 이중차분</text>
+    </svg>
+    </figure>
+    <details><summary>수식 · 왜 넘어갔나</summary>
+      <div class="formulabox">gm = [log p(gold|meta) − log p(gold|plac)] − [log p(decoy|meta) − log p(decoy|plac)]</div>
+      <p class="lg-cap">가산형(독립 head) Δ −0.003 중립 · 곱셈형(correctness 결박)은 인식적 헤징 붕괴로 Δ −0.029 net-harm.</p>
+    </details>
+  </div>
+
+  <div class="lcard">
+    <div class="hd"><h3>asym_cf</h3><span class="chip inert">inert-centering(수정)</span></div>
+    <figure class="lg-animfig">
+    <svg viewBox="0 0 340 150" role="img" aria-label="애니메이션: 이로운 meta의 보상은 작게, 해로운 meta의 벌은 크게">
+      <line x1="170" y1="30" x2="170" y2="120" stroke="#e6e7ea" stroke-width="1.5"/>
+      <text x="88" y="24" font-size="10" fill="#5f6671" text-anchor="middle">meta가 살림 (wrong→right)</text>
+      <text x="252" y="24" font-size="10" fill="#5f6671" text-anchor="middle">meta가 망침 (right→wrong)</text>
+      <g class="lga-up">
+        <path d="M88,100 L88,58" stroke="#1a9850" stroke-width="7" stroke-linecap="round"/>
+        <path d="M78,68 L88,52 L98,68" fill="none" stroke="#1a9850" stroke-width="7" stroke-linejoin="round"/>
+        <text x="88" y="122" font-size="12" font-weight="800" fill="#147a41" text-anchor="middle">+α (작다)</text>
+      </g>
+      <g class="lga-dn">
+        <path d="M252,52 L252,102" stroke="#d24040" stroke-width="13" stroke-linecap="round"/>
+        <path d="M236,88 L252,112 L268,88" fill="none" stroke="#d24040" stroke-width="13" stroke-linejoin="round"/>
+        <text x="252" y="136" font-size="13" font-weight="800" fill="#b3271e" text-anchor="middle">−β (훨씬 크다)</text>
+      </g>
+    </svg>
+    </figure>
+    <details><summary>수식 · 왜 넘어갔나</summary>
+      <div class="formulabox">R = α·max(0, c₁−c₀) − β·max(0, c₀−c₁) − γ·1[둘 다 정답],&nbsp;&nbsp;β &gt; α</div>
+      <p class="lg-cap">"meta everywhere" 표류에 세금. centering 버그(신호가 0으로 증발)는 수정 — 억제는 여전히 약함(γ↑ 보류).</p>
+    </details>
+  </div>
+
+  </div><!-- /.lgrid -->
+
+  <div class="lcard">
+    <div class="hd"><h3>PMI-shift</h3><span class="badge">현역 · B3</span><span class="chip form">form ≠ behavior</span><span class="chip ceil">ceiling</span></div>
+    <figure class="lg-animfig">
+    <svg viewBox="0 0 340 195" role="img" aria-label="애니메이션: 믿음 바늘이 meta 블록을 지나며 decoy에서 gold로 넘어가면 save 보상">
+      <rect x="20"  y="10" width="96" height="22" rx="5" fill="#f4f5f8" stroke="#e6e7ea"/>
+      <text x="68" y="25" font-size="10" fill="#5f6671" text-anchor="middle">body</text>
+      <rect x="122" y="10" width="96" height="22" rx="5" fill="#edeffc" stroke="#3f5bd6"/>
+      <text x="170" y="25" font-size="10" font-weight="700" fill="#3f5bd6" text-anchor="middle">&lt;|meta|&gt; … &lt;|/meta|&gt;</text>
+      <rect x="224" y="10" width="96" height="22" rx="5" fill="#f4f5f8" stroke="#e6e7ea"/>
+      <text x="272" y="25" font-size="10" fill="#5f6671" text-anchor="middle">continuation</text>
+      <g class="lgs-probe">
+        <path d="M110,38 L110,52" stroke="#17181b" stroke-width="2"/>
+        <circle cx="110" cy="38" r="3.5" fill="#17181b"/>
+      </g>
+      <text x="110" y="66" font-size="9" fill="#5f6671" text-anchor="middle">OPEN</text>
+      <text x="228" y="66" font-size="9" fill="#5f6671" text-anchor="middle">CLOSE</text>
+      <path d="M100 165 A 70 70 0 0 1 240 165" fill="none" stroke="#e6e7ea" stroke-width="8" stroke-linecap="round"/>
+      <text x="80"  y="178" font-size="10.5" font-weight="700" fill="#b3271e" text-anchor="middle">decoy</text>
+      <text x="260" y="178" font-size="10.5" font-weight="700" fill="#147a41" text-anchor="middle">gold</text>
+      <g class="lgs-needle">
+        <path d="M170,165 L170,102" stroke="#17181b" stroke-width="3.5" stroke-linecap="round"/>
+        <circle cx="170" cy="165" r="5" fill="#17181b"/>
+      </g>
+      <g class="lgs-save">
+        <rect x="248" y="98" width="72" height="24" rx="7" fill="#e8f5ec" stroke="#147a41"/>
+        <text x="284" y="114" font-size="12" font-weight="800" fill="#147a41" text-anchor="middle">+save</text>
+      </g>
+      <text x="170" y="191" font-size="9.5" fill="#5f6671" text-anchor="middle">같은 롤아웃 두 지점에서 gold−decoy log-odds를 재고, 반전만 보상한다</text>
+    </svg>
+    </figure>
+    <details open><summary>수식 · 한 줄 설명</summary>
+      <div class="formulabox">shift = PMI<sub>close</sub> − PMI<sub>open</sub>,&nbsp;&nbsp;PMI@t = Σ<sub>divergent</sub>[log p(gold) − log p(decoy)]&nbsp;&nbsp;·&nbsp;&nbsp;decoy→gold 반전 +save, 역방향 −derail(≥save)</div>
+      <p class="lg-cap">meta 앞뒤 <b>인과적 믿음 이동</b>을 직접 잰다 — 장식은 shift를 못 만든다. 잔여 한계: 자기검증 천장(같은 모델의 맹점 공유) → placebo 검정 + own≠gold 층화 필수.</p>
+    </details>
+  </div>
+
+  <p class="small" style="color:var(--muted)">보조 arm(cf 재생성 · cf_group 원형 · RLSD 변형 · gandhi/shiftonly 분해)도 전부 보존돼 있다.</p>
 </section>
 
 <footer>

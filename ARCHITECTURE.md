@@ -8,18 +8,29 @@
 ## The one path that matters
 
 The live method is **PMI-shift metacognitive self-distillation**: a teacher-free
-self-distillation reward applied to the meta tokens. It is one command with one
-config and one reward branch. Everything else in the tree is history — superseded
-variants and probes, kept for reproducibility under `runs/archive/` and
-`configs/archive/`.
+self-distillation reward applied to the meta tokens. The current live experiment
+is the **RQ3 MATCHED LADDER** (2026-07-11): a 3-arm matched RL comparison on the
+real `Qwen/Qwen3-8B-Base` substrate — B0 (no-meta gold SFT init + VANILLA_GRPO),
+B2 (meta SFT init + VANILLA_GRPO), B3 (same meta SFT init + region-split with
+pmi_shift as the only active meta head). RQ1 = B2−B0 (meta-SFT effect), RQ2 =
+B3−B2 (replacing correctness-on-meta with pmi_shift; a pure isolation needs the
+planned B2-R arm: region-split with meta advantage = 0). Everything else in the
+tree is history — superseded variants and probes, kept for reproducibility under
+`runs/archive/` and `configs/archive/`.
 
 ```
-LAUNCH   h100std_pmishift.yaml          (meta arm)
-         h100std_base_matched_rl.yaml   (control arm — "base" = no-meta CONTROL)
+SFT      h100std_sft_b0_gold.yaml        → configs/sft_b0_gold.yaml        → models/b0_gold_sft        (B0 init, no-meta gold)
+         h100std_sft_b23_unmasked.yaml   → configs/sft_b23_unmasked.yaml   → models/b23_rv_unmasked_sft (B2/B3 init, meta RV unmasked)
+   │  src/training/sft.py  (wrong_prefix segment-mask)
+   ▼
+LAUNCH   h100std_rq3_b0.yaml   (B0: no-meta init + VANILLA_GRPO)
+         h100std_rq3_b2.yaml   (B2: meta init  + VANILLA_GRPO)
+         h100std_rq3_b3.yaml   (B3: meta init  + region-split, pmi_shift only — all other meta heads 0)
    │  amlt → python -m src.training.verl_sdc
    ▼
-CONFIG   configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml  (+ ++dcpo_rmeta_source=pmi_shift)
-         configs/base_matched_grpo_h100_4x4k.yaml       (control; correctness-only)
+CONFIG   configs/base_matched_grpo_h100_4x4k.yaml       (B0/B2)
+         configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml  (B3)
+         parent: configs/verl_e4_selfdistill_h200_4x4k.yaml
    ▼
 TRAINER  src/training/verl_sdc.py           entry + GDPO trainer (monolith)
          src/training/verl_sdc_utils.py     region masks / advantage / length cost
@@ -30,7 +41,8 @@ REWARD   src/training/dcpo_pmi_shift.py     ★ the paper's reward
 ```
 
 The RQ2 decomposition arms `h100std_shiftonly.yaml` and `h100std_gandhi.yaml`
-launch the same spine with the PMI-shift head decomposed into its parts.
+launch the same spine with the PMI-shift head decomposed into its parts
+(pre-rq3 generation; the current live experiment is the rq3 ladder above).
 
 `dcpo_rmeta_source=pmi_shift` selects the `dcpo_pmi_shift.py` branch inside
 `verl_sdc.py`. The sibling reward modules (`dcpo_pmi.py`, `dcpo_directional.py`,
@@ -51,19 +63,21 @@ into the meta region — **no external teacher**. Reward is routed by
 combined with a correctness head (`rewards.py`) and a length cost
 (`verl_sdc_utils.py`) under a GDPO advantage.
 
-## The "base" arm is a CONTROL, not a weaker model (naming note)
+## "base" naming — pre-rq3 vs current rq3 ladder (naming note)
 
-"base" / "base_matched" / "qwen3_base_sft" / "basearm" everywhere in this repo
-means the **no-meta CONTROL arm**. It SFTs from `Qwen/Qwen3-8B` (the **INSTRUCT**
-release) — the *same* starting model as the meta arm — and runs the *same* RL
-pipeline minus the `<|meta|>` tokens and the PMI-shift head. It is **NOT** the
-pretrained-only `Qwen/Qwen3-8B-Base`. The two arms are byte-identical except the
-meta mechanism.
+**2026-07-11 — the Qwen3-8B-Base redesign has LANDED.** The current rq3 ladder
+uses the real pretrained-only `Qwen/Qwen3-8B-Base` as the substrate for all
+three arms (see `configs/sft_b0_gold.yaml` / `configs/sft_b23_unmasked.yaml`).
+The earlier instruct-substrate generation (pre-rq3) is now an archived
+generation.
 
-This is the single most misleading naming in the repo. Do not read "base" as a
-weaker pretrained-only model. (A separate, genuinely-new **Qwen3-8B-Base
-redesign** is a distinct effort; when that lands it will use `Qwen3-8B-Base` for
-real — do not conflate it with the historical "base" control here.)
+Historical caveat for old docs/runs: in the **pre-rq3** generation, "base" /
+"base_matched" / "qwen3_base_sft" / "basearm" meant the **no-meta CONTROL arm**
+SFT'd from `Qwen/Qwen3-8B` (the **INSTRUCT** release) — the same starting model
+as the meta arm, minus the `<|meta|>` tokens and the PMI-shift head. When
+reading pre-rq3 material, do not read that "base" as the pretrained-only model.
+In the current rq3 ladder, by contrast, every arm really does start from
+`Qwen3-8B-Base`, and the no-meta control is the **B0** arm.
 
 ## Module map
 
@@ -78,8 +92,10 @@ real — do not conflate it with the historical "base" control here.)
 
 ## Where to look for canonical descriptions
 
+For the current rq3 ladder, `docs/redesign/base_rl_recipe.md` (v2 recipe) and
+`docs/redesign/EXPERIMENT_LOG.md` are canonical. For the pre-rq3 generation,
 `experiments/configs/science/rl_pmishift.yaml` and `experiments/README.md`
-describe this same run in clean, already-de-cluttered form. When the root yamls
+describe that run in clean, already-de-cluttered form. When the root yamls
 and the science configs disagree, the science configs are the intended spec; the
 root yamls are the actual historical launch scripts.
 

@@ -14,7 +14,6 @@ For deeper detail see:
 ## Data
 
 HuggingFace: `iamseungpil/metacot` (source of truth)
-- `metacot_v2_trapi.parquet` — 4,996 Meta-CoT chains (gpt-5.4-mini)
 - `base_sft.parquet` — 4,996 base chains (meta stripped)
 
 Local (strict paired SFT anchor):

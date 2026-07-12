@@ -35,6 +35,14 @@ description 필드에 이 매칭 조건이 명문화되어 있다.
 
 ## 2. 연구 질문 → 테이블 → 실험 매핑
 
+**(주의) 아래 RQ1–4는 pre-rq3 세대(instruct 기반) 넘버링이다.** 현행 실험은
+**rq3 매치드 래더**(진짜 Qwen3-8B-Base, 런처 `h100std_rq3_b0/b2/b3.yaml`)이고,
+그 안의 과학 질문은 **RQ1 = B2−B0(메타 SFT 효과), RQ2 = B3−B2(pmi_shift 메타
+보상 효과)** 다 — `docs/redesign/base_rl_recipe.md`·`docs/CONSTITUTION.md` 참조.
+"RQ3"라는 표기가 (a) 아래 표의 난이도 층화 질문, (b) 현행 실험명(래더),
+(c) 구세대 docs의 "RQ3 mainline" 세 가지로 충돌해 왔으니 문서를 읽을 때 세대를
+먼저 확인할 것.
+
 연구 질문은 4개로 압축되어 있다 (구 6-RQ 구조에서: 구 RQ2 SFT 능력비용과
 REF-0은 별도 실험이 아니라 T1의 참조행으로 흡수, 구 RQ3+RQ4는 새 RQ2로 통합,
 구 RQ5 시드·토큰통제는 T1의 프로토콜에 내장, 구 RQ6은 순수 calibration만 남겨
@@ -42,7 +50,7 @@ REF-0은 별도 실험이 아니라 T1의 참조행으로 흡수, 구 RQ3+RQ4는
 
 | RQ | 질문 | 테이블 | 실험 (진입점) | 상태 |
 |---|---|---|---|---|
-| RQ1 | PMI-shift가 실제로 정확도를 올리는가? | T1 (메인): matched-base gs300 vs pmishift gs300, held-out 1030 + 9도메인, 16k tokens, avg@8(AIME avg@16). 시드 ×3(mean±std)과 응답 토큰 통제열은 별도 RQ가 아니라 **T1 프로토콜에 내장**. 참조행: raw Qwen3-8B, SFT-only — SFT 능력비용이 표 안에서 읽힌다 | RL: `h100std_pmishift.yaml`, `h100std_base_matched_rl.yaml` / eval: `h100std_pmishift_1030_eval.yaml`, `h100std_base_matched_1030_eval.yaml`, `h100std_pmishift_heldout_eval.yaml` / 참조행: `experiments/configs/science/rl_ref0_nosft.yaml` 계열 | **진행 중** — base arm gs300 확보 단계 (Stage 0) |
+| RQ1 | PMI-shift가 실제로 정확도를 올리는가? | T1 (메인): matched-base gs300 vs pmishift gs300, held-out 1030 + 9도메인, 16k tokens, avg@8(AIME avg@16). 시드 ×3(mean±std)과 응답 토큰 통제열은 별도 RQ가 아니라 **T1 프로토콜에 내장**. 참조행: raw Qwen3-8B, SFT-only — SFT 능력비용이 표 안에서 읽힌다 | RL(pre-rq3): `h100std_pmishift.yaml`, `h100std_base_matched_rl.yaml` / RL(현행 rq3 래더): `h100std_rq3_b0.yaml`, `h100std_rq3_b2.yaml`, `h100std_rq3_b3.yaml` / eval: `h100std_pmishift_1030_eval.yaml`, `h100std_base_matched_1030_eval.yaml`, `h100std_pmishift_heldout_eval.yaml` / 참조행: `experiments/configs/science/rl_ref0_nosft.yaml` 계열 | **진행 중** — base arm gs300 확보 단계 (Stage 0) |
 | RQ2 | 효과는 무엇이며 어디서 오는가? | T2 (분해·메커니즘): Gandhi-arm(meta-SFT + VANILLA_GRPO)으로 SFT-프라이밍 vs RL-보상 기여 분해 + flip 분석(SAVE/DERAIL) + placebo(셔플 메타) | Gandhi: `experiments/configs/science/rl_gandhi_arm.yaml` (Stage 2 발사) / 분석: `experiments/analysis/flip.py`, `experiments/analysis/placebo.py`, rollout dump: `h100std_rollout_dump.yaml` | 분석 트랙 (GPU 불필요 부분 있음) / Gandhi arm 대기 |
 | RQ3 | 난이도·문제 유형·OOD에 따라 메타 효과가 어떻게 달라지는가? | T3 (층화): 난이도 사분위 층화 정확도+방출률(Simpson 함정: Q1 easy 방출 10%, Q3 mid-hard 메타 0.83 vs base 0.67 — PRELIMINARY), 도메인별, AIME 등 어려운 도메인의 OOD 강건성 | `experiments/analysis/stratify.py` (T1 eval 산출물 입력) | T1 산출물 대기 |
 | RQ4 | Calibration은 어떻게 되는가? | T4: arm별 ECE(15-bin)/Brier/과신율 — 순수 calibration만, OOD 강건성은 RQ3 소관. 주-지표는 정확도, calibration은 보조라는 위계 유지 | `experiments/analysis/calibration.py` (T1 eval 산출물 입력) | T1 산출물 대기 |
