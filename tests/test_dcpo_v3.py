@@ -215,7 +215,7 @@ def test_v3_yaml_reward_lists_match_reward_configs():
     import yaml as _yaml
     import tests.test_dcpo_v3_cf  # auto-stub
     from src.training.verl_sdc import REWARD_CONFIGS
-    cfg_path = os.path.join(os.path.dirname(__file__), "..", "configs",
+    cfg_path = os.path.join(os.path.dirname(__file__), "..", "configs", "archive",
                             "triobj_dcpo_v3_h100_4x4k.yaml")
     with open(cfg_path) as f:
         ycfg = _yaml.safe_load(f)
@@ -1308,7 +1308,7 @@ def test_format_penalty_reward_stash_first_v3k_values():
 def test_v3_yaml_has_format_replace_knob_default_true():
     import os
     import yaml as _yaml
-    cfg_path = os.path.join(os.path.dirname(__file__), "..", "configs",
+    cfg_path = os.path.join(os.path.dirname(__file__), "..", "configs", "archive",
                             "triobj_dcpo_v3_h100_4x4k.yaml")
     with open(cfg_path) as f:
         ycfg = _yaml.safe_load(f)

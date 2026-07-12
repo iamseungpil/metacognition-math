@@ -1,0 +1,233 @@
+Timeout is disabled as parsing_timeout is None or <= 0, you must provide                         the logic for timeout interuption yourself to prevent code getting stuck.
+Timeout is disabled as timeout_seconds is None or <= 0, you must provide                         the logic for timeout interuption yourself to prevent code getting stuck.
+[build] 20/4171 problems done, kept_rows=3
+[build] 40/4171 problems done, kept_rows=13
+[build] 60/4171 problems done, kept_rows=25
+[build] 80/4171 problems done, kept_rows=36
+[build] 100/4171 problems done, kept_rows=41
+[build] 120/4171 problems done, kept_rows=58
+[build] 140/4171 problems done, kept_rows=65
+[build] 160/4171 problems done, kept_rows=76
+[build] 180/4171 problems done, kept_rows=85
+[build] 200/4171 problems done, kept_rows=97
+[build] 220/4171 problems done, kept_rows=109
+[build] 240/4171 problems done, kept_rows=119
+[build] 260/4171 problems done, kept_rows=133
+[build] 280/4171 problems done, kept_rows=142
+[build] 300/4171 problems done, kept_rows=153
+[build] 320/4171 problems done, kept_rows=161
+[build] 340/4171 problems done, kept_rows=172
+[build] 360/4171 problems done, kept_rows=180
+[build] 380/4171 problems done, kept_rows=188
+[build] 400/4171 problems done, kept_rows=195
+[build] 420/4171 problems done, kept_rows=204
+[build] 440/4171 problems done, kept_rows=218
+[build] 460/4171 problems done, kept_rows=223
+[build] 480/4171 problems done, kept_rows=227
+[build] 500/4171 problems done, kept_rows=234
+[build] 520/4171 problems done, kept_rows=246
+[build] 540/4171 problems done, kept_rows=253
+[build] 560/4171 problems done, kept_rows=262
+[build] 580/4171 problems done, kept_rows=266
+[build] 600/4171 problems done, kept_rows=275
+[build] 620/4171 problems done, kept_rows=283
+[build] 640/4171 problems done, kept_rows=290
+[build] 660/4171 problems done, kept_rows=301
+[build] 680/4171 problems done, kept_rows=312
+[build] 700/4171 problems done, kept_rows=317
+[build] 720/4171 problems done, kept_rows=323
+[build] 740/4171 problems done, kept_rows=331
+[build] 760/4171 problems done, kept_rows=338
+[build] 780/4171 problems done, kept_rows=343
+[build] 800/4171 problems done, kept_rows=349
+[build] 820/4171 problems done, kept_rows=360
+[build] 840/4171 problems done, kept_rows=368
+[build] 860/4171 problems done, kept_rows=378
+[build] 880/4171 problems done, kept_rows=389
+[build] 900/4171 problems done, kept_rows=394
+[build] 920/4171 problems done, kept_rows=403
+[build] 940/4171 problems done, kept_rows=409
+[build] 960/4171 problems done, kept_rows=416
+[build] 980/4171 problems done, kept_rows=423
+[build] 1000/4171 problems done, kept_rows=433
+[build] 1020/4171 problems done, kept_rows=442
+[build] 1040/4171 problems done, kept_rows=455
+[build] 1060/4171 problems done, kept_rows=463
+[build] 1080/4171 problems done, kept_rows=471
+[build] 1100/4171 problems done, kept_rows=480
+[build] 1120/4171 problems done, kept_rows=488
+[build] 1140/4171 problems done, kept_rows=494
+[build] 1160/4171 problems done, kept_rows=501
+[build] 1180/4171 problems done, kept_rows=506
+[build] 1200/4171 problems done, kept_rows=515
+[build] 1220/4171 problems done, kept_rows=521
+[build] 1240/4171 problems done, kept_rows=532
+[build] 1260/4171 problems done, kept_rows=543
+[build] 1280/4171 problems done, kept_rows=553
+[build] 1300/4171 problems done, kept_rows=563
+[build] 1320/4171 problems done, kept_rows=575
+[build] 1340/4171 problems done, kept_rows=587
+[build] 1360/4171 problems done, kept_rows=594
+[build] 1380/4171 problems done, kept_rows=600
+[build] 1400/4171 problems done, kept_rows=605
+[build] 1420/4171 problems done, kept_rows=613
+[build] 1440/4171 problems done, kept_rows=624
+[build] 1460/4171 problems done, kept_rows=631
+[build] 1480/4171 problems done, kept_rows=647
+[build] 1500/4171 problems done, kept_rows=656
+[build] 1520/4171 problems done, kept_rows=663
+[build] 1540/4171 problems done, kept_rows=669
+[build] 1560/4171 problems done, kept_rows=673
+[build] 1580/4171 problems done, kept_rows=680
+[build] 1600/4171 problems done, kept_rows=688
+[build] 1620/4171 problems done, kept_rows=701
+[build] 1640/4171 problems done, kept_rows=711
+[build] 1660/4171 problems done, kept_rows=717
+[build] 1680/4171 problems done, kept_rows=727
+[build] 1700/4171 problems done, kept_rows=737
+[build] 1720/4171 problems done, kept_rows=751
+[build] 1740/4171 problems done, kept_rows=756
+[build] 1760/4171 problems done, kept_rows=769
+[build] 1780/4171 problems done, kept_rows=776
+[build] 1800/4171 problems done, kept_rows=781
+[build] 1820/4171 problems done, kept_rows=788
+[build] 1840/4171 problems done, kept_rows=795
+[build] 1860/4171 problems done, kept_rows=803
+[build] 1880/4171 problems done, kept_rows=805
+[build] 1900/4171 problems done, kept_rows=810
+[build] 1920/4171 problems done, kept_rows=818
+[build] 1940/4171 problems done, kept_rows=829
+[build] 1960/4171 problems done, kept_rows=838
+[build] 1980/4171 problems done, kept_rows=846
+[build] 2000/4171 problems done, kept_rows=853
+[build] 2020/4171 problems done, kept_rows=858
+[build] 2040/4171 problems done, kept_rows=864
+[build] 2060/4171 problems done, kept_rows=873
+[build] 2080/4171 problems done, kept_rows=881
+[build] 2100/4171 problems done, kept_rows=885
+[build] 2120/4171 problems done, kept_rows=891
+[build] 2140/4171 problems done, kept_rows=899
+[build] 2160/4171 problems done, kept_rows=904
+[build] 2180/4171 problems done, kept_rows=910
+[build] 2200/4171 problems done, kept_rows=923
+[build] 2220/4171 problems done, kept_rows=932
+[build] 2240/4171 problems done, kept_rows=943
+[build] 2260/4171 problems done, kept_rows=949
+[build] 2280/4171 problems done, kept_rows=962
+[build] 2300/4171 problems done, kept_rows=966
+[build] 2320/4171 problems done, kept_rows=972
+[build] 2340/4171 problems done, kept_rows=978
+[build] 2360/4171 problems done, kept_rows=983
+[build] 2380/4171 problems done, kept_rows=988
+[build] 2400/4171 problems done, kept_rows=995
+[build] 2420/4171 problems done, kept_rows=1003
+[build] 2440/4171 problems done, kept_rows=1010
+[build] 2460/4171 problems done, kept_rows=1019
+[build] 2480/4171 problems done, kept_rows=1026
+[build] 2500/4171 problems done, kept_rows=1038
+[build] 2520/4171 problems done, kept_rows=1042
+[build] 2540/4171 problems done, kept_rows=1051
+[build] 2560/4171 problems done, kept_rows=1068
+[build] 2580/4171 problems done, kept_rows=1073
+[build] 2600/4171 problems done, kept_rows=1080
+[build] 2620/4171 problems done, kept_rows=1088
+[build] 2640/4171 problems done, kept_rows=1097
+[build] 2660/4171 problems done, kept_rows=1102
+[build] 2680/4171 problems done, kept_rows=1109
+[build] 2700/4171 problems done, kept_rows=1116
+[build] 2720/4171 problems done, kept_rows=1124
+[build] 2740/4171 problems done, kept_rows=1135
+[build] 2760/4171 problems done, kept_rows=1143
+[build] 2780/4171 problems done, kept_rows=1151
+[build] 2800/4171 problems done, kept_rows=1159
+[build] 2820/4171 problems done, kept_rows=1162
+[build] 2840/4171 problems done, kept_rows=1176
+[build] 2860/4171 problems done, kept_rows=1187
+[build] 2880/4171 problems done, kept_rows=1199
+[build] 2900/4171 problems done, kept_rows=1205
+[build] 2920/4171 problems done, kept_rows=1217
+[build] 2940/4171 problems done, kept_rows=1220
+[build] 2960/4171 problems done, kept_rows=1232
+[build] 2980/4171 problems done, kept_rows=1238
+[build] 3000/4171 problems done, kept_rows=1244
+[build] 3020/4171 problems done, kept_rows=1252
+[build] 3040/4171 problems done, kept_rows=1260
+[build] 3060/4171 problems done, kept_rows=1266
+[build] 3080/4171 problems done, kept_rows=1276
+[build] 3100/4171 problems done, kept_rows=1280
+[build] 3120/4171 problems done, kept_rows=1287
+[build] 3140/4171 problems done, kept_rows=1300
+[build] 3160/4171 problems done, kept_rows=1305
+[build] 3180/4171 problems done, kept_rows=1314
+[build] 3200/4171 problems done, kept_rows=1323
+[build] 3220/4171 problems done, kept_rows=1333
+[build] 3240/4171 problems done, kept_rows=1341
+[build] 3260/4171 problems done, kept_rows=1347
+[build] 3280/4171 problems done, kept_rows=1356
+[build] 3300/4171 problems done, kept_rows=1369
+[build] 3320/4171 problems done, kept_rows=1377
+[build] 3340/4171 problems done, kept_rows=1389
+[build] 3360/4171 problems done, kept_rows=1397
+[build] 3380/4171 problems done, kept_rows=1408
+[build] 3400/4171 problems done, kept_rows=1420
+[build] 3420/4171 problems done, kept_rows=1428
+[build] 3440/4171 problems done, kept_rows=1442
+[build] 3460/4171 problems done, kept_rows=1454
+[build] 3480/4171 problems done, kept_rows=1461
+[build] 3500/4171 problems done, kept_rows=1474
+[build] 3520/4171 problems done, kept_rows=1483
+[build] 3540/4171 problems done, kept_rows=1489
+[build] 3560/4171 problems done, kept_rows=1503
+[build] 3580/4171 problems done, kept_rows=1512
+[build] 3600/4171 problems done, kept_rows=1520
+[build] 3620/4171 problems done, kept_rows=1533
+[build] 3640/4171 problems done, kept_rows=1542
+[build] 3660/4171 problems done, kept_rows=1546
+[build] 3680/4171 problems done, kept_rows=1555
+[build] 3700/4171 problems done, kept_rows=1562
+[build] 3720/4171 problems done, kept_rows=1570
+[build] 3740/4171 problems done, kept_rows=1580
+[build] 3760/4171 problems done, kept_rows=1588
+[build] 3780/4171 problems done, kept_rows=1600
+[build] 3800/4171 problems done, kept_rows=1608
+[build] 3820/4171 problems done, kept_rows=1624
+[build] 3840/4171 problems done, kept_rows=1631
+[build] 3860/4171 problems done, kept_rows=1638
+[build] 3880/4171 problems done, kept_rows=1646
+[build] 3900/4171 problems done, kept_rows=1653
+[build] 3920/4171 problems done, kept_rows=1659
+[build] 3940/4171 problems done, kept_rows=1669
+[build] 3960/4171 problems done, kept_rows=1678
+[build] 3980/4171 problems done, kept_rows=1685
+[build] 4000/4171 problems done, kept_rows=1693
+[build] 4020/4171 problems done, kept_rows=1703
+[build] 4040/4171 problems done, kept_rows=1714
+[build] 4060/4171 problems done, kept_rows=1722
+[build] 4080/4171 problems done, kept_rows=1730
+[build] 4100/4171 problems done, kept_rows=1738
+[build] 4120/4171 problems done, kept_rows=1744
+[build] 4140/4171 problems done, kept_rows=1752
+[build] 4160/4171 problems done, kept_rows=1756
+[build] 4171/4171 problems done, kept_rows=1763
+{
+  "n_problems": 4171,
+  "kept_redirect": 554,
+  "kept_verify": 1209,
+  "verify_catch": 1209,
+  "verify_confirm": 0,
+  "dropped_hard": 0,
+  "dropped_bucket_none": 1727,
+  "dropped_solving_in_meta": 0,
+  "dropped_decorative_decision": 0,
+  "dropped_decorative_norecover": 863,
+  "dropped_decorative_verify": 278,
+  "dropped_no_wrong_prefix": 0,
+  "dropped_no_verify_attempt": 0,
+  "dropped_control_recovers": 2410,
+  "dropped_conf_mismatch": 0,
+  "dropped_malformed": 1,
+  "dropped_teacher_error": 0,
+  "repaired": 110,
+  "kept_rows": 1763,
+  "out_path": "data/redirect_verify_build/rv_redirect_verify_FULL.parquet"
+}

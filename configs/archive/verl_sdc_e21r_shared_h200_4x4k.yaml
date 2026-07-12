@@ -1,0 +1,48 @@
+# veRL-native shared-preserve SDC — H200 x4 overlay matching the previous 4k H200 regime
+defaults:
+  - verl_sdc_e21r_shared
+  - _self_
+
+data:
+  max_response_length: 4096
+  train_batch_size: 8
+  val_batch_size: 16
+
+actor_rollout_ref:
+  actor:
+    ppo_mini_batch_size: 4
+    ppo_micro_batch_size_per_gpu: 1
+    ppo_max_token_len_per_gpu: 24576
+  ref:
+    log_prob_micro_batch_size_per_gpu: 8
+    log_prob_max_token_len_per_gpu: 24576
+  rollout:
+    tensor_model_parallel_size: 4
+    temperature: 0.6
+    top_k: 20
+    top_p: 0.95
+    response_length: ${data.max_response_length}
+    gpu_memory_utilization: 0.30
+    max_model_len: 4608
+    max_num_batched_tokens: 8192
+    max_num_seqs: 32
+    log_prob_micro_batch_size_per_gpu: 8
+    n: 2
+
+critic:
+  ppo_micro_batch_size_per_gpu: 1
+  forward_micro_batch_size_per_gpu: 1
+  ppo_max_token_len_per_gpu: 24576
+  forward_max_token_len_per_gpu: 24576
+
+reward_model:
+  micro_batch_size: 4
+
+trainer:
+  nnodes: 1
+  n_gpus_per_node: 4
+  device: cuda
+  experiment_name: verl_sdc_e21r_shared_h200_4x4k
+  default_local_dir: /scratch/checkpoints/verl_sdc_e21r_shared_h200_4x4k
+  save_freq: 20
+  test_freq: 20

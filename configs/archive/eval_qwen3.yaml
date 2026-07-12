@@ -1,0 +1,55 @@
+# Evaluation: Qwen3-8B Meta-CoT models
+# In-distribution: GSM8K, MATH test
+# OOD: AIME 2024/2025, OlymMATH, AMC
+
+models:
+  - name: qwen3-base
+    path: Qwen/Qwen3-8B
+  - name: base-sft-qwen25
+    path: /scratch/metacognition/checkpoints/base_sft
+  - name: qwen3-meta-sft
+    path: /scratch/metacognition/checkpoints/qwen3_meta_sft
+  - name: qwen3-grpo-clean
+    path: /scratch/metacognition/checkpoints/grpo_clean_meta_filtered/checkpoint-200
+
+benchmarks:
+  # In-distribution (seen during training)
+  - name: gsm8k
+    dataset: openai/gsm8k
+    split: test
+  - name: math_test
+    dataset: hendrycks/competition_math
+    split: test
+
+  # OOD Tier 1 — zero/near-zero contamination
+  - name: aime2025
+    dataset: math-ai/aime25
+    split: test
+  - name: aime2024
+    dataset: HuggingFaceH4/aime_2024
+    split: train
+  - name: olympmath_easy
+    dataset: RUC-AIBOX/OlymMATH
+    config: en-easy
+    split: test
+  - name: olympmath_hard
+    dataset: RUC-AIBOX/OlymMATH
+    config: en-hard
+    split: test
+
+  # OOD Tier 2 — applied STEM, tests generalization
+  - name: minerva
+    dataset: math-ai/minervamath
+    split: test
+
+# Generation settings
+max_tokens: 2048
+temperature: 0.7
+top_p: 0.95
+num_samples: 4  # pass@4
+
+# Metrics to compute:
+# 1. Accuracy (pass@1, pass@4)
+# 2. Calibration: |stated_confidence - actual_correctness|
+# 3. Meta block quality: num_blocks, confidence parsing
+# 4. Probe accuracy: p̂ vs is_correct (AUROC on eval)

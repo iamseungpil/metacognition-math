@@ -1,0 +1,54 @@
+Timeout is disabled as parsing_timeout is None or <= 0, you must provide                         the logic for timeout interuption yourself to prevent code getting stuck.
+Timeout is disabled as timeout_seconds is None or <= 0, you must provide                         the logic for timeout interuption yourself to prevent code getting stuck.
+[build] 20/600 problems done, kept_rows=5
+[build] 40/600 problems done, kept_rows=13
+[build] 60/600 problems done, kept_rows=26
+[build] 80/600 problems done, kept_rows=35
+[build] 100/600 problems done, kept_rows=41
+[build] 120/600 problems done, kept_rows=53
+[build] 140/600 problems done, kept_rows=60
+[build] 160/600 problems done, kept_rows=71
+[build] 180/600 problems done, kept_rows=80
+[build] 200/600 problems done, kept_rows=93
+[build] 220/600 problems done, kept_rows=103
+[build] 240/600 problems done, kept_rows=114
+[build] 260/600 problems done, kept_rows=127
+[build] 280/600 problems done, kept_rows=135
+[build] 300/600 problems done, kept_rows=146
+[build] 320/600 problems done, kept_rows=155
+[build] 340/600 problems done, kept_rows=166
+[build] 360/600 problems done, kept_rows=173
+[build] 380/600 problems done, kept_rows=183
+[build] 400/600 problems done, kept_rows=192
+[build] 420/600 problems done, kept_rows=199
+[build] 440/600 problems done, kept_rows=213
+[build] 460/600 problems done, kept_rows=219
+[build] 480/600 problems done, kept_rows=225
+[build] 500/600 problems done, kept_rows=232
+[build] 520/600 problems done, kept_rows=240
+[build] 540/600 problems done, kept_rows=247
+[build] 560/600 problems done, kept_rows=255
+[build] 580/600 problems done, kept_rows=260
+[build] 600/600 problems done, kept_rows=268
+{
+  "n_problems": 600,
+  "kept_redirect": 88,
+  "kept_verify": 180,
+  "verify_catch": 180,
+  "verify_confirm": 0,
+  "dropped_hard": 0,
+  "dropped_bucket_none": 240,
+  "dropped_solving_in_meta": 0,
+  "dropped_decorative_decision": 0,
+  "dropped_decorative_norecover": 113,
+  "dropped_decorative_verify": 40,
+  "dropped_no_wrong_prefix": 0,
+  "dropped_no_verify_attempt": 0,
+  "dropped_control_recovers": 359,
+  "dropped_conf_mismatch": 0,
+  "dropped_malformed": 0,
+  "dropped_teacher_error": 0,
+  "repaired": 10,
+  "kept_rows": 268,
+  "out_path": "data/redirect_verify_build/rv_redirect_verify_b600.parquet"
+}

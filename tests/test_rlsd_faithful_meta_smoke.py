@@ -224,7 +224,7 @@ def test_config_yaml_exists_and_correctness_only():
     """
     cfg_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "configs", "verl_rlsd_faithful_meta_R20_h200_4x4k.yaml",
+        "configs", "archive", "verl_rlsd_faithful_meta_R20_h200_4x4k.yaml",
     )
     assert os.path.exists(cfg_path)
     txt = open(cfg_path, encoding="utf-8").read()

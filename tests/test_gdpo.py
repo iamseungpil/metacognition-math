@@ -155,7 +155,7 @@ verl_lengths = extract_uppercase_reward_configs(verl_code, "REWARD_CONFIGS")
 check("TC12a: veRL E21R reward/weight lengths match", verl_lengths["E21R"][0] == verl_lengths["E21R"][1])
 check("TC12b: veRL E21 reward/weight lengths match", verl_lengths["E21"][0] == verl_lengths["E21"][1])
 
-with open("configs/verl_gdpo_e21.yaml") as f:
+with open("configs/archive/verl_gdpo_e21.yaml") as f:
     e21_yaml = f.read()
 check("TC12b2: historical E21 config keeps adv_estimator=gdpo", "adv_estimator: gdpo" in e21_yaml)
 check("TC12b3: historical E21 actor uses per_gpu micro batch only", "ppo_micro_batch_size: null" in e21_yaml and "ppo_micro_batch_size_per_gpu: 1" in e21_yaml)

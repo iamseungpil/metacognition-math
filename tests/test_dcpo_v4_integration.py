@@ -73,7 +73,7 @@ def test_v4_reward_configs_same_head_shape_as_v3():
 
 
 def test_v4_stage1_yaml_five_way_sync():
-    ycfg = _load_yaml("triobj_dcpo_v4_stage1_h100_4x4k.yaml")
+    ycfg = _load_yaml(os.path.join("archive", "triobj_dcpo_v4_stage1_h100_4x4k.yaml"))
     alg = ycfg["algorithm"]
     rc = REWARD_CONFIGS["TRIOBJ_DCPO_V4"]
     assert ycfg["mode"] == "TRIOBJ_DCPO_V4" and alg["sdc_mode"] == "TRIOBJ_DCPO_V4"
@@ -95,7 +95,7 @@ def test_v4_stage1_yaml_five_way_sync():
 
 
 def test_v4_stage2_yaml_five_way_sync():
-    ycfg = _load_yaml("triobj_dcpo_v4_stage2_h100_4x4k.yaml")
+    ycfg = _load_yaml(os.path.join("archive", "triobj_dcpo_v4_stage2_h100_4x4k.yaml"))
     alg = ycfg["algorithm"]
     rc = REWARD_CONFIGS["TRIOBJ_DCPO_V4"]
     assert ycfg["mode"] == "TRIOBJ_DCPO_V4" and alg["sdc_mode"] == "TRIOBJ_DCPO_V4"

@@ -1,0 +1,13 @@
+# V8: Meta inside <think> — aligned with Qwen3 pretrain behavior
+model_name_or_path: checkpoints/qwen3_base_sft
+dataset_path: data/v8_meta_inside_think.parquet
+output_dir: checkpoints/v8_meta_inside_E20a
+run_name: v8-meta-inside-E20a
+wandb_project: metacot-math
+
+num_train_epochs: 3
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 4
+learning_rate: 2.0e-6
+max_length: 4096
+save_strategy: epoch
