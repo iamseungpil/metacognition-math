@@ -136,6 +136,7 @@ jobs:
             data.max_response_length=8192 \
             actor_rollout_ref.rollout.max_model_len=10240 \
             actor_rollout_ref.rollout.max_num_batched_tokens=10240 \
+            actor_rollout_ref.rollout.gpu_memory_utilization=0.30 \
             ++algorithm.norm_adv_by_std_in_grpo=false \
             actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 \
             actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2 \
@@ -143,7 +144,7 @@ jobs:
             trainer.save_freq=5 \
             ++trainer.val_before_train=False \
             ++hydra.searchpath=[pkg://verl/trainer/config] \
-            2>&1 | tee /scratch/logs/verl_main.log
+            2>&1 | stdbuf -oL -eL tee /scratch/logs/verl_main.log
         VERL_RC=$${PIPESTATUS[0]}
         echo "[YAML] verl_sdc rq3_b3pkg rc=$${VERL_RC}; tail of verl_main.log:"
         tail -40 /scratch/logs/verl_main.log 2>/dev/null
