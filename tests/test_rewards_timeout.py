@@ -91,3 +91,37 @@ def test_verify_called_with_disabled_timeout(monkeypatch):
     R._check_correctness("\\boxed{42}", "42")
     assert calls["verify_t"] is None
     assert calls["parse_t"] is None
+
+
+def test_verify_sympy_timed_bounds_leak_when_threads_hang(monkeypatch):
+    """0709 postmortem regression: RewardLoopWorker hit 287-290GB from threads
+    that hung forever in math_verify and were abandoned without ever releasing
+    memory. _verify_sympy_timed must cap concurrent-abandoned threads via
+    _VERIFY_SEM: once the cap is hit, further calls must skip spawning a new
+    thread (acquire fails) and return False immediately instead of leaking
+    unboundedly."""
+    import src.training.rewards as R
+
+    release_event = threading.Event()
+
+    def hanging_verify(g, p, timeout_seconds=None):
+        release_event.wait()  # simulates a truly-hung sympy comparison
+        return True
+
+    def passthrough_parse(s, extraction_mode=None, parsing_timeout=None):
+        return s
+
+    monkeypatch.setattr(R, "verify", hanging_verify)
+    monkeypatch.setattr(R, "parse", passthrough_parse)
+    monkeypatch.setattr(R, "_VERIFY_SEM", threading.Semaphore(2))
+
+    try:
+        # First 2 calls acquire the 2 permits and hang past the timeout ->
+        # threads are abandoned, permits never released.
+        assert R._verify_sympy_timed("1", "1", timeout=0.1) is False
+        assert R._verify_sympy_timed("2", "2", timeout=0.1) is False
+        # Pool is now saturated by hung threads -> must short-circuit to False
+        # WITHOUT spawning a 3rd unbounded thread.
+        assert R._verify_sympy_timed("3", "3", timeout=0.1) is False
+    finally:
+        release_event.set()  # let the hung threads finish so they don't linger past the test

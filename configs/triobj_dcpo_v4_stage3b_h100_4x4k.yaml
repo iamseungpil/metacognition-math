@@ -81,12 +81,11 @@ actor_rollout_ref:
     # n 4->8: larger rollout group makes mixed-correctness groups frequent, so
     # GDPO/Dr.GRPO advantage is non-zero on more rows (spec 2026-06-15 §3.5).
     n: 8
-    agent:
-      # cf_group needs the cf_groupban_agent loop resolvable in the Ray rollout
-      # workers (without-meta sub-arm = meta-tag logit_bias on the normal chat-
-      # template path). The combined registry also keeps cf_prefix_agent for path
-      # parity (only activates under sdc_counterfactual=true, which v4 keeps false).
-      agent_loop_config_path: /scratch/metacognition/configs/cf_agents_combined.yaml
+    # NOTE 0711: the whole `agent:` override block was REMOVED (torch28x verl expects
+    # rollout.agent to be the parent default dict; leaving it as an empty/None mapping
+    # crashed on rollout.agent.get('agent_loop_manager_class')). cf_group is only used
+    # under dcpo_rmeta_source=='cf_group'; rq3 B3 uses pmi_shift, so the default
+    # single_turn_agent (inherited from verl_e4_selfdistill) is exactly right — matches B0/B2.
 
 algorithm:
   sdc_mode: TRIOBJ_DCPO_V4

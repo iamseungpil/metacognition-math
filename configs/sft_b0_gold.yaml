@@ -1,0 +1,22 @@
+# B0 GOLD-SFT — matched-arm base-model experiment (no-meta baseline arm).
+# Starts from the TRUE pretrained-only Qwen/Qwen3-8B-Base (NOT the instruct
+# Qwen/Qwen3-8B). sft.py enforces the EOS invariant (eos=<|im_end|>=151645,
+# pad=<|endoftext|>=151643) and resizes embeddings for the <|meta|> tokens.
+#
+# B0 = no-meta baseline. Public gold solutions, whole-response training, NO
+# wrong_prefix column, so sft.py trains on the ENTIRE response (no segment
+# masking). Matched against the b23 RV-meta treatment arm (same recipe:
+# 3 epochs, max_length 4096, lr 1e-5, bs1 x ga4, save_strategy epoch).
+model_name_or_path: Qwen/Qwen3-8B-Base
+dataset_path: data/b0_gold_sft.parquet   # no wrong_prefix -> sft.py trains on whole response (no segment mask)
+output_dir: /scratch/checkpoints/b0_gold_sft   # ABSOLUTE: sft.py runs under cwd=/scratch/metacognition; a relative path would strand the ckpt (0708 bug). The amlt yaml's EOS-gate + pushers all look at /scratch/checkpoints/...
+run_name: b0-gold-sft
+wandb_project: metacot-math
+
+num_train_epochs: 3
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 4
+learning_rate: 1.0e-5
+max_length: 4096
+save_strategy: epoch
+eval_strategy: "no"

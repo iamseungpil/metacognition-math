@@ -1,0 +1,22 @@
+# B23 RV-META meta-SFT — matched-arm base-model experiment (treatment arm).
+# Starts from the TRUE pretrained-only Qwen/Qwen3-8B-Base (NOT the instruct
+# Qwen/Qwen3-8B). sft.py enforces the EOS invariant (eos=<|im_end|>=151645,
+# pad=<|endoftext|>=151643) and resizes embeddings for the <|meta|> tokens.
+#
+# B23 = RV (recovery/revision) arm. The b23_rv_meta corpus HAS a nonempty
+# 'wrong_prefix' column, so sft.py AUTO segment-masks: it trains ONLY on the
+# meta+recovery continuation (the wrong prefix is masked out of the loss).
+# Matched against the b0 standard whole-response arm.
+model_name_or_path: Qwen/Qwen3-8B-Base
+dataset_path: data/b23_rv_unmasked_sft.parquet   # has wrong_prefix -> sft.py segment-masks (trains only meta+recovery)
+output_dir: /scratch/checkpoints/b23_rv_unmasked_sft   # ABSOLUTE: sft.py runs under cwd=/scratch/metacognition; a relative path would strand the ckpt (0708 bug). The amlt yaml's EOS-gate + pushers all look at /scratch/checkpoints/...
+run_name: b23-rv-unmasked-sft
+wandb_project: metacot-math
+
+num_train_epochs: 3
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 4
+learning_rate: 1.0e-5
+max_length: 4096
+save_strategy: epoch
+eval_strategy: "no"

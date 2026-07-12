@@ -1,0 +1,155 @@
+description: "RQ3 B3 (META-SFT + PMI-SHIFT) matched-ladder RL. Init = models/b23_rv_unmasked_sft (SAME meta-SFT init as B2). config triobj_dcpo_v4_stage3b, but the ONLY meta head active is PMI-SHIFT (dcpo_rmeta_source=pmi_shift); cf_group is OFF (agent_loop_config_path=null -> rollout structure matches B0/B2), and every other meta head is zeroed (w_cal=0, w_emit=0 [NO emission floor], len_cost=0, w_over=0, w_format=0). dcpo_w_meta stays at the config default 0.8 (pmi_shift magnitude) with its 80-step linear warmup. B3 vs B2 differ ONLY by the added pmi_shift meta head. Collapse-fixed v2 recipe applied identically across all three arms: temp 1.0, top_k -1, top_p 1.0, max_response 8192, max_model_len/max_num_batched_tokens 10240, Dr.GRPO norm_adv_by_std=false, log_prob micro-batch 2 (8192 OOM guard). Matched hyperparams from config: train_batch 64, ppo_mini 8, n 8, lr 1e-6, 300 steps, clip 0.2/0.28, kl 0.0. H100x4 Standard."
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  registry: mcr.microsoft.com
+  image: aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x:latest
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: rq3_b3
+    sku: 80G4-H100
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 604800
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        # PLACEHOLDER_REPACKAGE — human: the collapse-fixed v2 recipe + this launcher live in the
+        # repo; the code tarball MUST be RE-PACKAGED and released, then fill this with the GitHub
+        # release asset id of the freshly packaged metacognition.tar.gz. DO NOT submit with the
+        # placeholder below.
+        CODE_TAR_REVISION: "473691945"
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        WANDB_API_KEY: ${WANDB_API_KEY}
+        WANDB_KEY: ${WANDB_API_KEY}
+        WANDB_PROJECT: metacot-dcpo-v4
+        WANDB_RUN_GROUP: rq3_matched_ladder
+        WANDB_NAME: rq3_b3
+        WANDB_RUN_ID: rq3-b3
+        WANDB_RESUME: allow
+        WANDB_TAGS: RQ3,matched_ladder,B3,meta_sft,pmi_shift,no_cf_group,no_emit_floor,v2_recipe,from-b23-rv-sft
+        DCPO_WANDB_ROLLOUTS: "1"
+        DCPO_WANDB_ROLLOUTS_EVERY: "1"
+        DCPO_META_CLOSE_FORCE: "1"
+        DCPO_META_CLOSE_N: "96"
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        DCPO_DEBUG: "1"
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints /scratch/models
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        # inline GPU spinner from t~0 (close the Singularity suspend-on-idle window).
+        nohup python -c "
+        import torch, time
+        g = torch.cuda.device_count()
+        ts = [torch.randn(2048, 2048, device=f\"cuda:{i}\", dtype=torch.float16) for i in range(g)]
+        while True:
+            for i in range(g): ts[i] = (ts[i] @ ts[i]) * 0.5
+            time.sleep(2)
+        " > /scratch/logs/gpu_keeper_inline.log 2>&1 &
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        set +x  # do NOT leak GH_TOKEN into xtrace logs
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        set -x
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+        echo "$${CODE_TAR_REVISION}" > /scratch/metacognition/.bootstrap_version
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper_early.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        # hard-remove hf_xet (env flag + pip uninstall insufficient — memory hf-xet-pitfall).
+        pip uninstall -y hf_xet 2>&1 | tail -1 || true
+        find $${SIMPLERL_DIR}/lib -maxdepth 3 -name "hf_xet*" -exec rm -rf {} + 2>/dev/null || true
+        python /scratch/metacognition/scripts/pull_parquets.py 2>&1 | tail -3
+
+        # ── stage the B23 meta-SFT init (RL init + frozen ref worker) from iamseungpil/metacot ──
+        # SAME init as B2 (models/b23_rv_unmasked_sft). B3 vs B2 differ ONLY by the added
+        # pmi_shift meta head. Must exist under iamseungpil/metacot models/b23_rv_unmasked_sft/
+        # (produced by the B23 meta-SFT run) before this launch.
+        python -c "
+        from huggingface_hub import snapshot_download
+        import os, shutil
+        snapshot_download(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/b23_rv_unmasked_sft/**\"], local_dir=\"/scratch/models_dl\")
+        src=\"/scratch/models_dl/models/b23_rv_unmasked_sft\"; dst=\"/scratch/models/b23_rv_unmasked_sft\"
+        shutil.rmtree(dst, ignore_errors=True); shutil.copytree(src, dst); print(\"b23 meta-SFT staged\")
+        "
+        python -c "
+        import json, os; p=\"/scratch/models/b23_rv_unmasked_sft/tokenizer_config.json\"
+        if os.path.exists(p):
+            cfg=json.load(open(p)); cfg.pop(\"extra_special_tokens\", None); json.dump(cfg, open(p,\"w\"), indent=2); print(\"tokenizer patched\")
+        "
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        # durable per-file checkpoint pusher for this RL run.
+        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rq3_b3 --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --token $${HF_TOKEN} --interval 90 --config_name rq3_b3 > /scratch/logs/push_rq3_b3.log 2>&1 &
+
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+        # RESUME-FROM-HF durability for this RL run.
+        python /scratch/metacognition/scripts/pull_resume_ckpt.py --repo iamseungpil/metacot-h200-triobj-dcpo-v3 --config_name rq3_b3 --local_dir /scratch/checkpoints/rq3_b3 --token $${HF_TOKEN} 2>&1 | tail -5
+        # `amlt run -i` sets LOCAL_RANK='' (empty); export a valid "0" so Ray
+        # worker actors inherit a valid value when spawned (memory amlt-i pitfall).
+        export LOCAL_RANK=0
+        # ── B3 = META-SFT init + PMI-SHIFT reward ONLY (isolate pmi_shift vs B2) ──
+        # dcpo_rmeta_source=pmi_shift makes PMI-shift the sole meta head; cf_group is
+        # OFF (agent_loop_config_path=null -> single_turn rollout matches B0/B2); all
+        # other meta heads are zeroed: w_cal=0, w_emit=0 (NO emission floor — SFT already
+        # gives ~92% emission; w_emit is the form-not-behavior trap), len_cost=0,
+        # w_over=0, w_format=0. dcpo_w_meta stays at the config default 0.8 (the
+        # pmi_shift magnitude) with its 80-step linear warmup (dcpo_w_meta_warmup_steps).
+        # Collapse-fixed v2 recipe overrides (temp 1.0 / top_k -1 / top_p 1.0 /
+        # max_response 8192 / max_model_len+max_num_batched_tokens 10240 / Dr.GRPO
+        # norm_adv_by_std=false / log_prob micro-batch 2 OOM guard) applied identically
+        # to all three arms.
+        WANDB_NAME=rq3_b3 /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
+            --config-name=triobj_dcpo_v4_stage3b_h100_4x4k \
+            trainer.experiment_name=rq3_b3 \
+            trainer.default_local_dir=/scratch/checkpoints/rq3_b3 \
+            trainer.project_name=metacot-dcpo-v4 \
+            actor_rollout_ref.model.path=/scratch/models/b23_rv_unmasked_sft \
+            ++algorithm.dcpo_rmeta_source=pmi_shift \
+            ++algorithm.dcpo_w_cal=0.0 \
+            ++algorithm.dcpo_w_emit=0.0 \
+            ++algorithm.dcpo_len_cost=0.0 \
+            ++algorithm.dcpo_w_over=0.0 \
+            ++algorithm.dcpo_w_format=0.0 \
+            ++algorithm.dcpo_trunc_open_penalty=0.0 \
+            actor_rollout_ref.rollout.temperature=1.0 \
+            actor_rollout_ref.rollout.top_k=-1 \
+            actor_rollout_ref.rollout.top_p=1.0 \
+            data.max_response_length=8192 \
+            actor_rollout_ref.rollout.max_model_len=10240 \
+            actor_rollout_ref.rollout.max_num_batched_tokens=10240 \
+            ++algorithm.norm_adv_by_std_in_grpo=false \
+            actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 \
+            actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2 \
+            trainer.resume_mode=auto \
+            trainer.save_freq=5 \
+            ++trainer.val_before_train=False \
+            ++hydra.searchpath=[pkg://verl/trainer/config] \
+            2>&1 | tee /scratch/logs/verl_main.log
+        VERL_RC=$${PIPESTATUS[0]}
+        echo "[YAML] verl_sdc rq3_b3 rc=$${VERL_RC}; tail of verl_main.log:"
+        tail -40 /scratch/logs/verl_main.log 2>/dev/null
+        sleep 86400
+        '

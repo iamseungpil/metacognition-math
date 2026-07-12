@@ -1,0 +1,139 @@
+description: "RQ3 B2 (META-SFT + VANILLA_GRPO): correctness-only GRPO (mode=VANILLA_GRPO, config base_matched_grpo_h100_4x4k) whose ONLY difference from B0 is the INIT — meta SFT (models/b23_rv_unmasked_sft, 92% emission) instead of the base-stripped SFT. Isolates the SFT-init-meta factor (B2 vs B0) on the SAME correctness-only reward path (no pmi_shift, no R_meta head). Applies the collapse-fixed MATCHED v2 recipe (temp 1.0, top_k -1, top_p 1.0, max_response 8192, max_model_len/batched 10240, Dr.GRPO norm_adv_by_std=false, log_prob micro_batch 2 OOM guard). Matched hyperparams from config: train_batch 64, ppo_mini 8, rollout.n 8, lr 1e-6, 300 steps, clip 0.2/0.28, use_kl_loss=true, kl_loss_coef=0.0. H100x4 Standard."
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  registry: mcr.microsoft.com
+  image: aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x:latest
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: rq3_b2
+    sku: 80G4-H100
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 604800
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        # PLACEHOLDER_REPACKAGE — human: the MATCHED v2 recipe assumes the CURRENT repo code
+        # (verl_sdc + configs/base_matched_grpo_h100_4x4k). RE-PACKAGE the code tarball and fill
+        # this with the GitHub release asset id of the fresh metacognition.tar.gz. DO NOT submit
+        # with the placeholder below.
+        CODE_TAR_REVISION: "473616745"
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        WANDB_API_KEY: ${WANDB_API_KEY}
+        WANDB_KEY: ${WANDB_API_KEY}
+        WANDB_PROJECT: metacot-dcpo-v4
+        WANDB_RUN_GROUP: rq3_matched_ladder
+        WANDB_NAME: rq3_b2
+        WANDB_RUN_ID: rq3-b2
+        WANDB_RESUME: allow
+        WANDB_TAGS: RQ3,B2,MATCHED,VANILLA_GRPO,correctness_only,meta_mix,from-b23-rv-meta-sft,recipe-v2,collapse-fixed
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        DCPO_DEBUG: "1"
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints /scratch/models
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        # inline GPU spinner from t~0 (close the Singularity suspend-on-idle window).
+        nohup python -c "
+        import torch, time
+        g = torch.cuda.device_count()
+        ts = [torch.randn(2048, 2048, device=f\"cuda:{i}\", dtype=torch.float16) for i in range(g)]
+        while True:
+            for i in range(g): ts[i] = (ts[i] @ ts[i]) * 0.5
+            time.sleep(2)
+        " > /scratch/logs/gpu_keeper_inline.log 2>&1 &
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        set +x  # do NOT leak GH_TOKEN into xtrace logs
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        set -x
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+        echo "$${CODE_TAR_REVISION}" > /scratch/metacognition/.bootstrap_version
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper_early.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        # hard-remove hf_xet (env flag + pip uninstall insufficient — memory hf-xet-pitfall).
+        pip uninstall -y hf_xet 2>&1 | tail -1 || true
+        find $${SIMPLERL_DIR}/lib -maxdepth 3 -name "hf_xet*" -exec rm -rf {} + 2>/dev/null || true
+        python /scratch/metacognition/scripts/pull_parquets.py 2>&1 | tail -3
+
+        # ── stage the B2 INIT: the META SFT (b23_rv_unmasked_sft, 92% emission) as the RL init.
+        # This is the ONLY difference from B0 (which inits from the base-stripped SFT). Reward
+        # path is byte-identical correctness-only VANILLA_GRPO. From dataset iamseungpil/metacot
+        # under models/b23_rv_unmasked_sft/ (pushed by the b23-rv-unmasked SFT arm).
+        python -c "
+        from huggingface_hub import snapshot_download
+        import os, shutil
+        snapshot_download(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/b23_rv_unmasked_sft/**\"], local_dir=\"/scratch/models_dl\")
+        src=\"/scratch/models_dl/models/b23_rv_unmasked_sft\"; dst=\"/scratch/models/b23_rv_unmasked_sft\"
+        shutil.rmtree(dst, ignore_errors=True); shutil.copytree(src, dst); print(\"b23 rv meta SFT staged\")
+        "
+        python -c "
+        import json, os; p=\"/scratch/models/b23_rv_unmasked_sft/tokenizer_config.json\"
+        if os.path.exists(p):
+            cfg=json.load(open(p)); cfg.pop(\"extra_special_tokens\", None); json.dump(cfg, open(p,\"w\"), indent=2); print(\"tokenizer patched\")
+        "
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        # durable per-file pusher for the live RL checkpoint dir.
+        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rq3_b2 --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --token $${HF_TOKEN} --interval 90 --config_name rq3_b2 > /scratch/logs/push_rq3_b2.log 2>&1 &
+
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+        # RESUME-FROM-HF durability for this RL run.
+        python /scratch/metacognition/scripts/pull_resume_ckpt.py --repo iamseungpil/metacot-h200-triobj-dcpo-v3 --config_name rq3_b2 --local_dir /scratch/checkpoints/rq3_b2 --token $${HF_TOKEN} 2>&1 | tail -5
+        # `amlt run -i` sets LOCAL_RANK='' (empty); export a valid "0" so Ray
+        # worker actors inherit a valid value when spawned (memory amlt-i pitfall).
+        export LOCAL_RANK=0
+        # RQ3 B2: correctness-only VANILLA_GRPO (config base_matched_grpo_h100_4x4k =
+        # SAME reward path as B0). model.path = the META SFT (b23_rv_unmasked_sft) —
+        # the ONLY B2-vs-B0 difference. NO pmi_shift, NO meta CLI overrides.
+        # ── MATCHED v2 recipe (collapse-fixed): temp 1.0 / top_k -1 / top_p 1.0,
+        #    max_response 8192, max_model_len + max_num_batched_tokens 10240,
+        #    Dr.GRPO norm_adv_by_std=false, log_prob micro_batch 2 (OOM guard at 8192).
+        WANDB_NAME=rq3_b2 /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
+            --config-name=base_matched_grpo_h100_4x4k \
+            trainer.experiment_name=rq3_b2 \
+            trainer.default_local_dir=/scratch/checkpoints/rq3_b2 \
+            trainer.project_name=metacot-dcpo-v4 \
+            actor_rollout_ref.model.path=/scratch/models/b23_rv_unmasked_sft \
+            actor_rollout_ref.rollout.temperature=1.0 \
+            actor_rollout_ref.rollout.top_k=-1 \
+            actor_rollout_ref.rollout.top_p=1.0 \
+            data.max_response_length=8192 \
+            actor_rollout_ref.rollout.max_model_len=10240 \
+            actor_rollout_ref.rollout.max_num_batched_tokens=10240 \
+            ++algorithm.norm_adv_by_std_in_grpo=false \
+            actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 \
+            actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2 \
+            trainer.resume_mode=auto \
+            trainer.save_freq=5 \
+            ++trainer.val_before_train=False \
+            ++hydra.searchpath=[pkg://verl/trainer/config] \
+            2>&1 | tee /scratch/logs/verl_main.log
+        VERL_RC=$${PIPESTATUS[0]}
+        echo "[YAML] verl_sdc rq3_b2 rc=$${VERL_RC}; tail of verl_main.log:"
+        tail -40 /scratch/logs/verl_main.log 2>/dev/null
+        sleep 86400
+        '

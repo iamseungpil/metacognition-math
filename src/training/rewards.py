@@ -54,6 +54,15 @@ if not getattr(_signal, "_metacot_threadsafe_patch", False):
     _signal._metacot_threadsafe_patch = True
 
 
+# 0709 host-mem OOM postmortem (base-b2v5/v7, RewardLoopWorker at 287-290GB each):
+# abandoned daemon threads that truly hang (pathological sympy input, matches the
+# RL-entropy-collapse non-termination failure mode) never return their memory —
+# each one is a permanent leak. Cap concurrent-abandoned threads per worker
+# process so the leak is bounded instead of unbounded; once saturated, new calls
+# skip the symbolic path and fall straight to the string-match fallback below.
+_VERIFY_SEM = _threading.Semaphore(32)
+
+
 def _verify_sympy_timed(gold, pred_text, timeout=6.0):
     """Run math_verify parse+verify under a WALL-CLOCK timeout that works in
     worker threads.
@@ -64,11 +73,15 @@ def _verify_sympy_timed(gold, pred_text, timeout=6.0):
     reward_loop_score -> correctness_reward -> _check_correctness, GPU 0%, whole
     run frozen at a step). SIGALRM can't help in threads and Python can't kill a
     thread, so run the comparison in a throwaway DAEMON thread and ABANDON it on
-    timeout (it leaks only if truly hung — rare, degenerate output — and being a
-    per-call daemon thread there is no fixed pool to exhaust). On timeout the
-    caller falls through to the bounded string-match fallback and the run
-    proceeds. Returns False on timeout / any error.
+    timeout. A truly-hung thread never releases _VERIFY_SEM, so at most 32 such
+    threads can be leaked per worker process; beyond that, calls skip the
+    symbolic path (acquire fails) rather than spawning more unbounded leakers.
+    On timeout the caller falls through to the bounded string-match fallback and
+    the run proceeds. Returns False on timeout / any error / pool-saturated.
     """
+    if not _VERIFY_SEM.acquire(blocking=False):
+        return False  # pool saturated by hung threads -> skip symbolic, string-match only
+
     result = {"ok": False}
 
     def _run():
@@ -78,11 +91,13 @@ def _verify_sympy_timed(gold, pred_text, timeout=6.0):
             result["ok"] = bool(verify(gp, pp, timeout_seconds=None))
         except Exception:
             result["ok"] = False
+        finally:
+            _VERIFY_SEM.release()
 
     th = _threading.Thread(target=_run, daemon=True)
     th.start()
     th.join(timeout)
-    return result["ok"]  # timed out -> still False; daemon thread abandoned
+    return result["ok"]  # timed out -> still False; daemon thread abandoned (semaphore not released)
 
 # Math verification via sympy (same as Open-R1)
 try:
