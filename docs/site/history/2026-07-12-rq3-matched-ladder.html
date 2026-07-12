@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="ko"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>2026-07-12 · RQ3 매치드 래더 — pmi-shift 격리 실패와 정정</title>
+<link rel="stylesheet" href="hist.css">
+</head><body>
+<nav class="sticky"><div class="inner">
+  <a href="../index.html" class="brand">PMI-shift 메타인지</a>
+  <a href="index.html">히스토리</a>
+  <span class="sp"></span>
+  <a href="../index.html#rq1">본문</a>
+</div></nav>
+
+<div class="wrap">
+<header class="hero">
+  <div class="eyebrow">실험 히스토리 · RQ3 matched ladder</div>
+  <div class="date">2026-07-12</div>
+  <h1>4-arm 인과 설계, pmi-shift 격리의 실패와 정정</h1>
+  <div>
+    <span class="pill prelim">PRELIMINARY · single seed</span>
+    <span class="pill run">Qwen3-8B-Base</span>
+    <span class="pill run">in-training val · 594</span>
+  </div>
+  <div class="lede">
+    <b>한 줄 요약.</b> 메타-SFT 효과(RQ1)는 4개 매칭점에서 견고하게 <b>+0.15→+0.19</b>로 커졌다.
+    그러나 pmi-shift 격리를 위해 보상 head를 스트립한 B3가 held-out을 <b>−0.120</b>까지 악화시켰고,
+    원인은 SFT가 아니라 <b>RL 중 메타 형식 붕괴</b>(wellformed 0.43→0.02)로 밝혀졌다. 예전 T1-승리
+    레시피(풀 패키지)로 정정하고, pmi 순수 기여를 격리하는 4-arm 설계로 재구성했다.
+  </div>
+</header>
+
+<section>
+  <span class="rqtag">RQ1 · 메타-SFT 효과</span>
+  <h2>메타-SFT가 no-meta 베이스라인을 전 과목에서 이긴다</h2>
+  <p>B0(gold no-meta SFT + vanilla GRPO)와 B2(meta SFT + vanilla GRPO)는 <b>보상 경로가 동일</b>하고
+  오직 SFT 초기화만 다르다. 매칭 held-out(무가중 9개 데이터셋 평균)에서 B2가 B0을 네 점 모두 앞서고,
+  격차는 학습이 진행되며 커진다.</p>
+  <figure class="chart">
+    <img src="../assets/rq1_progress.svg" alt="RQ1 held-out accuracy B0 vs B2">
+    <figcaption>held-out acc — B2(meta) 0.582→0.673, B0(baseline) 0.431→0.468.
+      RQ1 = B2−B0 = <b>+0.151 / +0.164 / +0.189 / +0.194</b> (gs25/50/75/100), 9개 데이터셋 전부 양성.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <span class="rqtag">RQ2 · 실패</span>
+  <h2>“깔끔한 격리”가 held-out을 뒤집었다</h2>
+  <p>RQ2(pmi-shift 효과)를 순수 격리한다며 B3의 보상에서 <code>w_format</code>·<code>w_emit</code>·
+  <code>w_cal</code>·<code>len_cost</code>·<code>trunc_open_penalty</code> 다섯 head를 0으로 껐다.
+  결과, held-out RQ2가 <b>+0.042(gs25)에서 −0.120(gs75)</b>으로 뒤집혔다 — B3가 9개 데이터셋 전부에서 저하.</p>
+  <figure class="chart">
+    <img src="../assets/rq2_flip.svg" alt="RQ2 flip from +0.042 to -0.120">
+    <figcaption>RQ2 = B3−B2 held-out Δ. gs25 <span class="pos">+0.042</span> → gs75 <span class="neg">−0.120</span>.</figcaption>
+  </figure>
+  <div class="callout fail"><b>왜?</b>
+    처음엔 pmi-shift가 “나쁜” 줄 알았으나, 실제 응답과 지표를 보니 <b>pmi-shift가 base에서 불발</b>이었다.
+    base 메타가 malformed(gs75 wellformed ~2%)라 pmi가 계산할 belief-shift가 없어 n_save→0, rmeta→0.
+  </div>
+</section>
+
+<section>
+  <span class="rqtag">진단 · 수치로 확정</span>
+  <h2>SFT는 정상, RL이 메타 형식을 파괴했다</h2>
+  <p>“SFT가 못 한 것 아닌가”를 추이로 검증했다. <code>dcpo/wellformed_rate</code>는 <b>gs1~30까지 ~0.40으로 안정</b>
+  (정점 0.426@gs30)이었고, <b>gs40부터 붕괴</b>해 gs75에 0.016까지 떨어졌다. 즉 SFT는 제 역할을 했고
+  RL이 파괴했다. 원인은 region-split이 메타 스팬을 pmi(불발)에만 맡겨 <b>과소지도</b>했기 때문.</p>
+  <figure class="chart">
+    <img src="../assets/wellformed_erosion.svg" alt="wellformed_rate erosion 0.43 to 0.02">
+    <figcaption>메타 형식(wellformed_rate): SFT 직후~gs30 안정(~0.40) → RL 중 붕괴(gs75 0.016).
+      held-out 메타 품질도 +0.089(gs25)→−0.092(gs75)로 동반 하락.</figcaption>
+  </figure>
+  <table>
+    <thead><tr><th>지표</th><th>예전 성공(instruct)</th><th>지금 B3(base, pmi-only)</th></tr></thead>
+    <tbody>
+      <tr><td>pmishift_attempted</td><td class="num">0.52–0.66</td><td class="num neg">0.33→0.08</td></tr>
+      <tr><td>pmishift n_save</td><td class="num">8–11</td><td class="num neg">4→0</td></tr>
+      <tr><td>rmeta_mean_scored</td><td class="num">+1.0~1.2</td><td class="num neg">~0</td></tr>
+      <tr><td>wellformed_rate</td><td class="num">유지</td><td class="num neg">0.43→0.02</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <span class="rqtag">정정 · 4-arm</span>
+  <h2>풀 패키지 복원 + pmi 순수 격리</h2>
+  <div class="callout fix"><b>정정.</b>
+    B3를 예전 T1-승리 <code>pmishift</code>와 <b>동일한 풀 패키지</b>로 되돌렸다(w_over만 0, 나머지 head는 config 기본값).
+    스트립한 form 비계(w_format 0.35·trunc 0.3·w_emit 0.1)가 RL 중 메타를 붙잡는 핵심이었다.
+  </div>
+  <table>
+    <thead><tr><th>arm</th><th>init</th><th>correctness 라우팅</th><th>메타 보상</th><th>역할</th></tr></thead>
+    <tbody>
+      <tr><td><b>B0</b></td><td>gold (no-meta)</td><td>전체 응답</td><td>없음</td><td>RQ1 기준</td></tr>
+      <tr><td><b>B2</b></td><td>meta</td><td>전체 응답</td><td>없음</td><td>RQ1 처치 / RQ2 기준</td></tr>
+      <tr><td><b>B3pkg</b></td><td>meta</td><td>answer 스팬</td><td class="pos">풀 패키지</td><td>RQ2 처치(=T1 재현)</td></tr>
+      <tr><td><b>B3-noPMI</b></td><td>meta</td><td>answer 스팬</td><td>패키지 <b>−pmi</b></td><td>pmi 순수 격리</td></tr>
+    </tbody>
+  </table>
+  <p><b>분해:</b> RQ1 = B2−B0(메타-SFT) · RQ2(T1 재현) = B3pkg−B2 · <b>RQ2-pmi(순수 격리) = B3pkg−B3-noPMI</b>
+  = pmi-shift belief-shift 보상의 순수 한계 기여(논문 핵심 메커니즘). B3-noPMI는 form 비계를 유지해 붕괴하지 않는다.</p>
+</section>
+
+<section>
+  <span class="rqtag">교훈</span>
+  <h2>방법론 노트</h2>
+  <ul>
+    <li><b>성공 레시피는 한 변수만 바꿔라.</b> “깔끔한 격리”를 위해 한 번에 5개 head를 끈 것이 붕괴의 원인.</li>
+    <li><b>실데이터로 근인 검증.</b> 단일 시점 스냅샷("wellformed 3%")이 아니라 전체 추이로 “SFT 정상·RL 붕괴”를 확정.</li>
+    <li><b>운영:</b> Standard 티어 선점·긴 validation(~1h)·wandb 단조step 거부는 “행(hang)”이 아니다 — stdout 재다운로드 줄수로 판별.</li>
+  </ul>
+  <div class="lede"><b>⚠️ 미확정.</b> 위 수치는 단일 시드·in-training val(594문제)·진행 중이며 gs300 held-out(1030) 최종 판정 전이다.
+    모든 값 PRELIMINARY.</div>
+</section>
+
+<footer class="wrap">
+  실험 로그 원본: <code>docs/redesign/EXPERIMENT_LOG.md</code> §9·§10 · wandb <code>gistdslab/metacot-dcpo-v4</code> ·
+  <a href="index.html">← 히스토리 목록</a>
+</footer>
+</div>
+</body></html>
