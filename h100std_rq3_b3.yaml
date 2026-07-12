@@ -1,4 +1,4 @@
-description: "RQ3 B3 (META-SFT + PMI-SHIFT) matched-ladder RL. Init = models/b23_rv_unmasked_sft (SAME meta-SFT init as B2). config triobj_dcpo_v4_stage3b, but the ONLY meta head active is PMI-SHIFT (dcpo_rmeta_source=pmi_shift); cf_group is OFF (agent_loop_config_path=null -> rollout structure matches B0/B2), and every other meta head is zeroed (w_cal=0, w_emit=0 [NO emission floor], len_cost=0, w_over=0, w_format=0). dcpo_w_meta stays at the config default 0.8 (pmi_shift magnitude) with its 80-step linear warmup. B3 vs B2 differ ONLY by the added pmi_shift meta head. Collapse-fixed v2 recipe applied identically across all three arms: temp 1.0, top_k -1, top_p 1.0, max_response 8192, max_model_len/max_num_batched_tokens 10240, Dr.GRPO norm_adv_by_std=false, log_prob micro-batch 2 (8192 OOM guard). Matched hyperparams from config: train_batch 64, ppo_mini 8, n 8, lr 1e-6, 300 steps, clip 0.2/0.28, kl 0.0. H100x4 Standard."
+description: "RQ3 B3 (META-SFT + PMI-SHIFT) matched-ladder RL. Init = models/b23_rv_unmasked_sft (SAME meta-SFT init as B2). config triobj_dcpo_v4_stage3b with the FULL triobj reward package (dcpo_rmeta_source=pmi_shift + config-default heads: w_meta 0.8, w_format 0.35, trunc_open_penalty 0.3, w_emit 0.1, w_cal 0.3, len_cost 0.08), ONLY w_over=0.0 overridden — i.e. IDENTICAL reward setup to the archived T1-winning h100std_pmishift.yaml, just on the Base substrate + b23 SFT init. CORRECTION 0712: the previous rq3-b3 arm zeroed w_format/w_emit/len_cost/w_cal/trunc_open_penalty for 'clean pmi_shift isolation' — that stripped the meta-form scaffolding, wellformed_rate eroded 0.43(gs30)->0.02(gs75), held-out RQ2 went +0.042->-0.120. This arm restores the package that actually won. cf_group is OFF (single_turn rollout matches B0/B2). Fresh start from gs0 (NOT resumed from the eroded gs60). Collapse-fixed v2 recipe applied identically across all three arms: temp 1.0, top_k -1, top_p 1.0, max_response 8192, max_model_len/max_num_batched_tokens 10240, Dr.GRPO norm_adv_by_std=false, log_prob micro-batch 2 (8192 OOM guard). Matched hyperparams from config: train_batch 64, ppo_mini 8, n 8, lr 1e-6, 300 steps, clip 0.2/0.28, kl 0.0. H100x4 Standard."
 
 target:
   service: sing
@@ -13,7 +13,7 @@ code:
   local_dir: $CONFIG_DIR/
 
 jobs:
-  - name: rq3_b3
+  - name: rq3_b3pkg
     sku: 80G4-H100
     sla_tier: Standard
     priority: high
@@ -34,10 +34,10 @@ jobs:
         WANDB_KEY: ${WANDB_API_KEY}
         WANDB_PROJECT: metacot-dcpo-v4
         WANDB_RUN_GROUP: rq3_matched_ladder
-        WANDB_NAME: rq3_b3
-        WANDB_RUN_ID: rq3-b3
+        WANDB_NAME: rq3_b3pkg
+        WANDB_RUN_ID: rq3-b3pkg
         WANDB_RESUME: allow
-        WANDB_TAGS: RQ3,matched_ladder,B3,meta_sft,pmi_shift,no_cf_group,no_emit_floor,v2_recipe,from-b23-rv-sft
+        WANDB_TAGS: RQ3,matched_ladder,B3pkg,meta_sft,pmi_shift,full_triobj_package,matches_T1_pmishift,v2_recipe,from-b23-rv-sft,fresh-gs0
         DCPO_WANDB_ROLLOUTS: "1"
         DCPO_WANDB_ROLLOUTS_EVERY: "1"
         DCPO_META_CLOSE_FORCE: "1"
@@ -101,39 +101,35 @@ jobs:
 
         nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
         # durable per-file checkpoint pusher for this RL run.
-        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rq3_b3 --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --token $${HF_TOKEN} --interval 90 --config_name rq3_b3 > /scratch/logs/push_rq3_b3.log 2>&1 &
+        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rq3_b3pkg --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --token $${HF_TOKEN} --interval 90 --config_name rq3_b3pkg > /scratch/logs/push_rq3_b3pkg.log 2>&1 &
 
         export PYTHONPATH=/scratch/metacognition
         cd /scratch/metacognition
         # RESUME-FROM-HF durability for this RL run.
-        python /scratch/metacognition/scripts/pull_resume_ckpt.py --repo iamseungpil/metacot-h200-triobj-dcpo-v3 --config_name rq3_b3 --local_dir /scratch/checkpoints/rq3_b3 --token $${HF_TOKEN} 2>&1 | tail -5
+        python /scratch/metacognition/scripts/pull_resume_ckpt.py --repo iamseungpil/metacot-h200-triobj-dcpo-v3 --config_name rq3_b3pkg --local_dir /scratch/checkpoints/rq3_b3pkg --token $${HF_TOKEN} 2>&1 | tail -5
         # `amlt run -i` sets LOCAL_RANK='' (empty); export a valid "0" so Ray
         # worker actors inherit a valid value when spawned (memory amlt-i pitfall).
         export LOCAL_RANK=0
-        # ── B3 = META-SFT init + PMI-SHIFT reward ONLY (isolate pmi_shift vs B2) ──
-        # dcpo_rmeta_source=pmi_shift makes PMI-shift the sole meta head; cf_group is
-        # OFF (agent_loop_config_path=null -> single_turn rollout matches B0/B2); all
-        # other meta heads are zeroed: w_cal=0, w_emit=0 (NO emission floor — SFT already
-        # gives ~92% emission; w_emit is the form-not-behavior trap), len_cost=0,
-        # w_over=0, w_format=0. dcpo_w_meta stays at the config default 0.8 (the
-        # pmi_shift magnitude) with its 80-step linear warmup (dcpo_w_meta_warmup_steps).
+        # ── B3pkg = META-SFT init + FULL TRIOBJ PACKAGE (matches T1-winning pmishift) ──
+        # dcpo_rmeta_source=pmi_shift; ONLY w_over=0.0 overridden. ALL other meta heads
+        # stay at triobj config defaults — w_meta 0.8 (pmi magnitude, 80-step warmup),
+        # w_format 0.35 (maintains wellformed meta under RL — the scaffold), trunc_open_penalty
+        # 0.3 (penalizes cut meta blocks), w_emit 0.1 (emission floor), w_cal 0.3, len_cost 0.08.
+        # This is IDENTICAL reward config to archive/launchers_pre_rq3/h100std_pmishift.yaml.
+        # CORRECTION 0712: prior rq3-b3 zeroed those 5 heads for 'clean isolation' -> stripped the
+        # form scaffold -> wellformed 0.43->0.02, RQ2 +0.042->-0.120. Restoring the package.
         # Collapse-fixed v2 recipe overrides (temp 1.0 / top_k -1 / top_p 1.0 /
         # max_response 8192 / max_model_len+max_num_batched_tokens 10240 / Dr.GRPO
         # norm_adv_by_std=false / log_prob micro-batch 2 OOM guard) applied identically
         # to all three arms.
-        WANDB_NAME=rq3_b3 /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
+        WANDB_NAME=rq3_b3pkg /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
             --config-name=triobj_dcpo_v4_stage3b_h100_4x4k \
-            trainer.experiment_name=rq3_b3 \
-            trainer.default_local_dir=/scratch/checkpoints/rq3_b3 \
+            trainer.experiment_name=rq3_b3pkg \
+            trainer.default_local_dir=/scratch/checkpoints/rq3_b3pkg \
             trainer.project_name=metacot-dcpo-v4 \
             actor_rollout_ref.model.path=/scratch/models/b23_rv_unmasked_sft \
             ++algorithm.dcpo_rmeta_source=pmi_shift \
-            ++algorithm.dcpo_w_cal=0.0 \
-            ++algorithm.dcpo_w_emit=0.0 \
-            ++algorithm.dcpo_len_cost=0.0 \
             ++algorithm.dcpo_w_over=0.0 \
-            ++algorithm.dcpo_w_format=0.0 \
-            ++algorithm.dcpo_trunc_open_penalty=0.0 \
             actor_rollout_ref.rollout.temperature=1.0 \
             actor_rollout_ref.rollout.top_k=-1 \
             actor_rollout_ref.rollout.top_p=1.0 \
@@ -149,7 +145,7 @@ jobs:
             ++hydra.searchpath=[pkg://verl/trainer/config] \
             2>&1 | tee /scratch/logs/verl_main.log
         VERL_RC=$${PIPESTATUS[0]}
-        echo "[YAML] verl_sdc rq3_b3 rc=$${VERL_RC}; tail of verl_main.log:"
+        echo "[YAML] verl_sdc rq3_b3pkg rc=$${VERL_RC}; tail of verl_main.log:"
         tail -40 /scratch/logs/verl_main.log 2>/dev/null
         sleep 86400
         '

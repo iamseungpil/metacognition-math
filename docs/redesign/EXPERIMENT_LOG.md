@@ -80,3 +80,42 @@ n_save **7** (>0) · acc_with **0.70** ≫ acc_without **0.28**.
 - [ ] **B2-R arm** 추가 (region-split, meta advantage=0) — RQ2의 순수 격리
       (현행 RQ2=B3−B2는 "region-split 구조 + pmi_shift" 패키지 차이).
 - [ ] gs300 완주 → held-out 1030 최종 판정.
+
+## 9. ★실패와 정정 (2026-07-12): B3를 pmi_shift 단독으로 스트립한 게 잘못 — RQ2 음성
+
+**증상**: RQ2(B3−B2)가 gs25 **+0.042** → gs75 **−0.120**으로 뒤집힘.
+B3 held-out이 9개 데이터셋 전부 저하(gs25 0.624 → gs75 0.526), 반면 B2는
+상승(0.582 → 0.646). held-out meta_structure도 +0.089 → −0.092.
+
+**근인 (수치로 확정)**: SFT 실패가 아니라 **RL 중 메타 형식 붕괴**.
+`dcpo/wellformed_rate` 추이 — gs1~30 **~0.40 안정**(정점 0.426@gs30) →
+gs40 0.295 → gs50 0.102 → gs60 0.055 → gs75 **0.016**. emit도 0.88(gs1-30)
+→ 0.57(gs75). pmi_shift n_save 4~8(gs1-30) → 0~3(gs50+), rmeta_mean ~0.
+즉 **SFT는 잘 됐고(gs30까지 안정) RL이 gs40부터 메타를 파괴**.
+
+**진짜 원인 = 설계 이탈**. 예전 T1-승리 pmishift 런(`archive/launchers_pre_rq3/
+h100std_pmishift.yaml`)은 triobj **풀 패키지**(w_meta 0.8 + w_format 0.35 +
+trunc_open_penalty 0.3 + w_emit 0.1 + w_cal 0.3 + len_cost 0.08), **w_over만 0**.
+그런데 rq3-b3(civil-eagle 등)은 "순수 pmi_shift 격리"를 위해 **w_format·
+trunc_open_penalty·w_emit·w_cal·len_cost 5개를 전부 0으로 스트립**하고
+pmi_shift만 남김. w_format(0.35)·trunc_open_penalty(0.3)·w_emit(0.1)이 바로
+RL 중 wellformed 메타를 붙잡아주던 비계인데 그걸 제거 → pmi_shift 단독으로는
+형식 유지 실패 → wellformed 붕괴 → pmi_shift가 계산할 belief-shift가 없어
+불발(n_save→0) → 자기강화 붕괴(gs40 티핑포인트) → held-out 저하.
+
+instruct 성공 대비: 예전 att 0.52~0.66·n_save 8~11·rmeta +1.0~1.2로 신호가
+2배 강하고 지속됨(패키지가 형식 유지) vs base rq3-b3 att 0.33→0.08·n_save
+4→0. **substrate 차이 + 형식 비계 제거의 복합.**
+
+**방법론 교훈**: "깔끔한 단일변수 격리"를 위해 한 번에 5개 head를 끈 것이
+오류. 성공 레시피 재현이 목표였다면 패키지를 유지하고 한 변수만 바꿔야 했음.
+w_emit을 "form-not-behavior 함정"이라며 능동적으로 제거한 런처 주석이 특히
+잘못된 판단.
+
+**정정 (rq3-b3pkg)**: B3를 예전 pmishift와 **동일한 풀 패키지**로 재구성
+(dcpo_rmeta_source=pmi_shift + config 기본 head 전부, w_over만 0). base
+substrate + b23 SFT init + v2 붕괴수정 레시피는 유지. 손상된 gs60 ckpt에서
+resume하지 않고 **gs0부터 새로** 시작(WANDB_RUN_ID=rq3-b3pkg, ckpt config_name
+rq3_b3pkg). 기존 rq3-b3(pmi-only 실패, gs1~75)는 이 기록의 근거로 보존.
+B0/B2는 정상이므로 불변. 검증 질문: "형식 비계를 살리면 pmi_shift가 base에서도
+유지·발화하는가"(gs30까지 잘 됐다는 데이터가 성공 가능성을 뒷받침).
