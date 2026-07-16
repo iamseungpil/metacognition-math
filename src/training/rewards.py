@@ -122,6 +122,9 @@ def _check_correctness(pred_text, gold):
 
     Handles: fractions, decimals, LaTeX expressions, boxed answers, etc.
     """
+    _is_main_thread = (
+        _threading.current_thread() is _threading.main_thread()
+    )
     if HAS_MATH_VERIFY:
         try:
             # math_verify's SIGALRM timeout is disabled off the main thread (the
@@ -132,15 +135,29 @@ def _check_correctness(pred_text, gold):
             # this returns False and we fall through to the bounded string-match.
             if _verify_sympy_timed(gold, pred_text, timeout=6.0):
                 return True
-            # fall through to string-match (math_verify may have silent-failed)
+            # math_verify RAN and returned False.
+            # (bugfix 2026-07-14) On the MAIN thread the SIGALRM path works and
+            # verify() is authoritative — trust the False and return it. Running
+            # the lenient string fallback here is what let a boxless WRONG answer
+            # whose trailing number coincides with gold flip to 'correct'. The
+            # fallback is ONLY a rescue for the WORKER-thread silent-fail case
+            # (SIGALRM unavailable / daemon-thread abandoned on timeout / verify
+            # semaphore saturated), so restrict it to non-main threads.
+            if _is_main_thread:
+                return False
+            # worker thread: fall through to the bounded string-match rescue.
         except Exception:
             pass  # fallback to string matching
 
-    # Always run string-match fallback (covers worker-thread silent fail).
+    # String-match fallback: covers worker-thread silent fail AND the
+    # math_verify-absent case (HAS_MATH_VERIFY False skips the block above).
     # Bound the input to the tail: the answer is near the end, and the nested
     # \boxed regex can catastrophic-backtrack on a degenerate multi-kB output
     # (the same class of input that hangs sympy) — cap it so the fallback is O(1).
-    p = _extract_answer_fallback(str(pred_text)[-3000:])
+    # (bugfix 2026-07-14) The PREDICTION must carry an EXPLICIT \boxed{...} or ####
+    # answer — the last-number heuristic is dropped so a stray trailing number can
+    # no longer be graded correct. Gold stays lenient (it is a bare reference).
+    p = _extract_boxed_or_hash(str(pred_text)[-3000:])
     g = _extract_answer_fallback(str(gold))
     if not p or not g:
         return False
@@ -168,6 +185,26 @@ def _extract_answer_fallback(text):
         return m.group(1).strip()
     nums = re.findall(r'(-?\d+(?:\.\d+)?)', text_norm)
     return nums[-1] if nums else ""
+
+
+def _extract_boxed_or_hash(text):
+    """STRICT answer extraction for the correctness-grader fallback (bugfix
+    2026-07-14). Accept ONLY an explicit ``\\boxed{...}`` or a ``#### <answer>``
+    line. Unlike _extract_answer_fallback this deliberately does NOT fall back to
+    the last number in the text: a boxless rollout whose trailing number merely
+    coincides with gold must not be graded correct (the last-number heuristic
+    over-fired and flipped genuinely-wrong answers). Returns "" when no explicit
+    answer marker is present."""
+    text_norm = re.sub(r'\\?\$\s*(?=\d)', '', text)  # currency $ before digits
+    text_norm = re.sub(r'(?<=\d),(?=\d{3})', '', text_norm)  # 70,000 -> 70000
+    pattern = r'\\boxed\{((?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\}'
+    matches = re.findall(pattern, text_norm)
+    if matches:
+        return matches[-1].strip()
+    m = re.search(r'####\s*(.+?)(?:\n|$)', text_norm)
+    if m:
+        return m.group(1).strip()
+    return ""
 
 
 def _last_confidence(text):

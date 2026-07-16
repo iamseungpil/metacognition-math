@@ -28,15 +28,16 @@ jobs:
         # (verl_sdc + configs/base_matched_grpo_h100_4x4k). RE-PACKAGE the code tarball and fill
         # this with the GitHub release asset id of the fresh metacognition.tar.gz. DO NOT submit
         # with the placeholder below.
-        CODE_TAR_REVISION: "473616745"
+        CODE_TAR_REVISION: "476703893"
         HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
         WANDB_API_KEY: ${WANDB_API_KEY}
         WANDB_KEY: ${WANDB_API_KEY}
         WANDB_PROJECT: metacot-dcpo-v4
         WANDB_RUN_GROUP: rq3_matched_ladder
         WANDB_NAME: rq3_b2
-        WANDB_RUN_ID: rq3-b2
+        WANDB_RUN_ID: rq3-b2-2
         WANDB_RESUME: allow
+        WANDB_INIT_TIMEOUT: "300"
         WANDB_TAGS: RQ3,B2,MATCHED,VANILLA_GRPO,correctness_only,meta_mix,from-b23-rv-meta-sft,recipe-v2,collapse-fixed
         SIMPLERL_DIR: /scratch/conda_envs/simplerl
         DCPO_DEBUG: "1"
@@ -97,12 +98,50 @@ jobs:
 
         nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
         # durable per-file pusher for the live RL checkpoint dir.
-        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rq3_b2 --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --token $${HF_TOKEN} --interval 90 --config_name rq3_b2 > /scratch/logs/push_rq3_b2.log 2>&1 &
+        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rq3_b2 --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --token $${HF_TOKEN} --interval 90 --keep 2 --config_name rq3_b2 > /scratch/logs/push_rq3_b2.log 2>&1 &
 
         export PYTHONPATH=/scratch/metacognition
         cd /scratch/metacognition
-        # RESUME-FROM-HF durability for this RL run.
-        python /scratch/metacognition/scripts/pull_resume_ckpt.py --repo iamseungpil/metacot-h200-triobj-dcpo-v3 --config_name rq3_b2 --local_dir /scratch/checkpoints/rq3_b2 --token $${HF_TOKEN} 2>&1 | tail -5
+        # ── RGS COMPLETENESS RULE (copied from B0): a global_step is RESUMABLE only when
+        # >=4 model shards AND >=4 extra_state shards are on HF. Used to (a) FAIL CLOSED if HF
+        # is unreachable and (b) harden resume against gs0 cold-start. ──
+        RGS=$$(python -c "
+        import os, re, time
+        from collections import Counter
+        from huggingface_hub import HfApi
+        for i in range(3):
+            try:
+                fs=HfApi(token=os.environ[\"HF_TOKEN\"]).list_repo_files(\"iamseungpil/metacot-h200-triobj-dcpo-v3\", repo_type=\"model\")
+                break
+            except Exception as e:
+                if i==2: print(-1); raise SystemExit
+                time.sleep(30)
+        cm=Counter(); ce=Counter()
+        for f in fs:
+            m=re.search(r\"rq3_b2/global_step_(\d+)/actor/(model|extra_state)_world_size_\d+_rank_\d+\.pt$$\",f)
+            if m: (cm if m.group(2)==\"model\" else ce)[int(m.group(1))]+=1
+        steps=sorted(s for s,n in cm.items() if n>=4 and ce[s]>=4)
+        print(steps[-1] if steps else 0)
+        ")
+        echo "[YAML] existing GRPO resume gs = $${RGS}"
+        # FAIL CLOSED: RGS=-1 means HF was unreachable 3x — cold-starting now could let the
+        # pusher/prune overwrite real progress with a new gs0 lineage. Abort; next window retries.
+        if [ "$${RGS}" = "-1" ]; then echo "[YAML] HF unreachable for RGS; ABORT window"; sleep 300; exit 1; fi
+        # RESUME HARDENING (copied from B0): if HF already has a checkpoint (RGS>0), a short
+        # window may preempt pull_resume mid-download -> verl would silently COLD-START from gs0.
+        # Retry the pull up to 3x; if RGS>0 but NO local global_step_* landed, ABORT rather than restart.
+        for rp in 1 2 3; do
+          python /scratch/metacognition/scripts/pull_resume_ckpt.py --repo iamseungpil/metacot-h200-triobj-dcpo-v3 --config_name rq3_b2 --local_dir /scratch/checkpoints/rq3_b2 --token $${HF_TOKEN} 2>&1 | tail -5
+          ls -d /scratch/checkpoints/rq3_b2/global_step_* >/dev/null 2>&1 && break
+          echo "[YAML] pull_resume attempt $${rp} landed no local checkpoint; retry"; sleep 30
+        done
+        LOCAL_GS=$$(ls -d /scratch/checkpoints/rq3_b2/global_step_* 2>/dev/null | grep -oE "global_step_[0-9]+" | grep -oE "[0-9]+" | sort -n | tail -1)
+        echo "[YAML] RGS(HF)=$${RGS} LOCAL_GS(pulled)=$${LOCAL_GS:-NONE}"
+        if [ "$${RGS}" -gt 0 ] 2>/dev/null && [ -z "$${LOCAL_GS}" ]; then
+          echo "[YAML] ABORT: HF has gs$${RGS} but resume pull produced no local checkpoint; refusing gs0 cold-start. Next window retries."
+          sleep 300
+          exit 1
+        fi
         # `amlt run -i` sets LOCAL_RANK='' (empty); export a valid "0" so Ray
         # worker actors inherit a valid value when spawned (memory amlt-i pitfall).
         export LOCAL_RANK=0
@@ -128,12 +167,39 @@ jobs:
             actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 \
             actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2 \
             trainer.resume_mode=auto \
-            trainer.save_freq=5 \
+            trainer.save_freq=10 \
+            trainer.test_freq=50 \
             ++trainer.val_before_train=False \
             ++hydra.searchpath=[pkg://verl/trainer/config] \
             2>&1 | tee /scratch/logs/verl_main.log
         VERL_RC=$${PIPESTATUS[0]}
         echo "[YAML] verl_sdc rq3_b2 rc=$${VERL_RC}; tail of verl_main.log:"
         tail -40 /scratch/logs/verl_main.log 2>/dev/null
+        # ── FINAL SYNC PUSH (copied from B0): the background pusher can freeze mid-run; do a
+        # SYNCHRONOUS, VERIFIED, RETRIED push of the highest local global_step so the FINAL
+        # checkpoint reliably reaches HF for the held-out eval. Stop the background pusher first
+        # (its per-file commits + super_squash_history racing this upload_folder can drop the
+        # final commit). ──
+        pkill -f push_ckpts_to_hf 2>/dev/null || true
+        sleep 5
+        FINAL=$$(ls -d /scratch/checkpoints/rq3_b2/global_step_* 2>/dev/null | sort -V | tail -1)
+        FN=$$(basename "$${FINAL}")
+        echo "[YAML] final sync push target: $${FINAL}"
+        if [ -n "$${FINAL}" ]; then
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            OUT=$$(python -c "
+        from huggingface_hub import HfApi
+        import os
+        api=HfApi(token=os.environ[\"HF_TOKEN\"])
+        api.upload_folder(folder_path=\"$${FINAL}\", path_in_repo=\"checkpoints/rq3_b2/$${FN}\", repo_id=\"iamseungpil/metacot-h200-triobj-dcpo-v3\", repo_type=\"model\", ignore_patterns=[\"*.tmp\",\"*.lock\"])
+        fs=api.list_repo_files(\"iamseungpil/metacot-h200-triobj-dcpo-v3\", repo_type=\"model\")
+        nm=sum(1 for f in fs if (\"$${FN}/actor/model_world_size\" in f) and f.endswith(\".pt\"))
+        ne=sum(1 for f in fs if (\"$${FN}/actor/extra_state_world_size\" in f) and f.endswith(\".pt\"))
+        print(\"SHARDS=%d\" % min(nm, ne))
+        " 2>&1)
+            echo "$${OUT}" | tail -2
+            echo "$${OUT}" | grep -qE "SHARDS=[4-9]|SHARDS=[1-9][0-9]" && { echo "[YAML] FINAL PUSH DURABLE $${FN}"; break; } || { echo "[YAML] final push retry $$i"; sleep 60; }
+          done
+        fi
         sleep 86400
         '

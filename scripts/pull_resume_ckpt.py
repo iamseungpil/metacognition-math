@@ -28,10 +28,13 @@ from pathlib import Path
 def _max_step(repo: str, config_name: str, token: str):
     """Return (max COMPLETE step:int, files:list[str]) for checkpoints/<config>/global_step_*.
 
-    Complete = at least 4 ``actor/model_world_size_*_rank_*.pt`` shards on the
-    repo. The pusher uploads per-file (durability under preemption), so a
-    partially-uploaded step CAN be visible on HF; resuming from one would crash
-    or corrupt training. Only complete steps are resume candidates.
+    Complete = at least 4 ``actor/model_world_size_*_rank_*.pt`` AND 4
+    ``actor/optim_world_size_*_rank_*.pt`` shards on the repo. The pusher uploads
+    per-file (durability under preemption), so a partially-uploaded step CAN be
+    visible on HF; resuming from one would crash or corrupt training. Since
+    load_contents includes the optimizer, a step with model 4/4 but optim <4
+    (upload cut mid-flight) still crashes actor_rollout_load_checkpoint — so both
+    the model AND optim shard sets must be complete to be a resume candidate.
     """
     from collections import Counter
 
@@ -43,16 +46,25 @@ def _max_step(repo: str, config_name: str, token: str):
     except Exception as exc:
         print(f"[resume] repo list failed ({exc}); cold start")
         return None, []
-    pat = re.compile(
+    model_pat = re.compile(
         rf"checkpoints/{re.escape(config_name)}/global_step_(\d+)/actor/model_world_size_\d+_rank_\d+\.pt$"
     )
-    shard_counts: Counter = Counter()
+    optim_pat = re.compile(
+        rf"checkpoints/{re.escape(config_name)}/global_step_(\d+)/actor/optim_world_size_\d+_rank_\d+\.pt$"
+    )
+    model_counts: Counter = Counter()
+    optim_counts: Counter = Counter()
     for f in files:
-        m = pat.match(f)
+        m = model_pat.match(f)
         if m:
-            shard_counts[int(m.group(1))] += 1
-    complete = {s for s, n in shard_counts.items() if n >= 4}
-    partial = set(shard_counts) - complete
+            model_counts[int(m.group(1))] += 1
+            continue
+        o = optim_pat.match(f)
+        if o:
+            optim_counts[int(o.group(1))] += 1
+    all_steps = set(model_counts) | set(optim_counts)
+    complete = {s for s in all_steps if model_counts[s] >= 4 and optim_counts[s] >= 4}
+    partial = all_steps - complete
     if partial:
         print(f"[resume] ignoring PARTIAL steps on HF: {sorted(partial)}")
     if not complete:
@@ -87,7 +99,8 @@ def main() -> None:
             continue
         models = len(list(d.glob("actor/model_world_size_*_rank_*.pt")))
         extras = len(list(d.glob("actor/extra_state_world_size_*_rank_*.pt")))
-        if models >= 4 and extras >= 4 and (local_best is None or n > local_best):
+        optims = len(list(d.glob("actor/optim_world_size_*_rank_*.pt")))
+        if models >= 4 and extras >= 4 and optims >= 4 and (local_best is None or n > local_best):
             local_best = n
     if local_best is not None and (step is None or step <= local_best):
         pointer = local_dir / "latest_checkpointed_iteration.txt"
@@ -105,6 +118,7 @@ def main() -> None:
     if (
         len(list(target.glob("actor/model_world_size_*_rank_*.pt"))) >= 4
         and len(list(target.glob("actor/extra_state_world_size_*_rank_*.pt"))) >= 4
+        and len(list(target.glob("actor/optim_world_size_*_rank_*.pt"))) >= 4
     ):
         print(f"[resume] local global_step_{step} already present; skip download")
     else:

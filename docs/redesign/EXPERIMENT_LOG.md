@@ -3,7 +3,7 @@
 > rq3 재설계의 시행착오를 시간순으로 남긴다. 각 항목은 "무엇이 깨졌고, 어떻게
 > 원인을 확정했고, 무엇으로 고쳤는가"를 기록한다. 진단 원칙과 게이트는
 > `docs/CONSTITUTION.md`, 현행 레시피는 `docs/redesign/base_rl_recipe.md` 참조.
-> 마지막 갱신: 2026-07-12.
+> 마지막 갱신: 2026-07-16.
 
 ## 1. v1 전멸 — base 엔트로피 붕괴 (2026-07-08)
 
@@ -138,3 +138,84 @@ agent-loop 유발(취소·수정). ②격리는 "변수 하나만 바꾸기"가 
 실패도 한 번에 5개 head를 끈 데서 왔음. **최종 4-arm**: B0(gold+vanilla)·
 B2(meta+vanilla)·B3pkg(meta+풀패키지)·B3-noPMI(meta+패키지−pmi). 잡:
 absolute-mallard·fair-vulture·sunny-camel·sterling-firefly.
+
+## §11 0713–0716: 관측성 수정·fresh 재시작·유지보수 정지 (상태원장)
+
+### 4-arm 상태 (2026-07-16 기준)
+
+| arm | init | mode | amlt exp | wandb run | gs | 상태 |
+|---|---|---|---|---|---|---|
+| B0 | models/b0_gold_sft | VANILLA_GRPO | elegant-walleye 계열 | rq3-b0-2 | **gs300** | **완료** — 재제출 금지 |
+| B2 | models/b23_rv_unmasked_sft | VANILLA_GRPO | first-hawk (retry_001~007) | rq3-b2-2 | gs150 (HF 안전) | 2026-07-16 12:52 UTC **영구 failed** — 재제출 시 resume_mode=auto로 gs150부터 |
+| B3pkg | models/b23_rv_unmasked_sft | TRIOBJ_DCPO_V4 풀 패키지 | (미발사) | rq3-b3pkg-2 | gs0 | **미발사** — h100std_rq3_b3.yaml 준비완료, CODE_TAR_REVISION=476703893 |
+| B3-noPMI | models/b23_rv_unmasked_sft | 풀 패키지 − pmi | (보류) | rq3-b3nopmi-2 | gs0 | **보류** — b3pkg 우선 (사용자 결정 2026-07-15) |
+
+B3pkg head 구성: w_meta 0.8 / w_format 0.35 / w_emit 0.1 / w_cal 0.3 /
+len_cost 0.08 / trunc_open 0.3 / w_over 0 / rmeta_source=pmi_shift.
+B0 최종 held-in val(594, reward +1/−1 스케일): gsm8k 0.768 · algebra 0.658 ·
+counting 0.886 · geometry −0.152 · precalc −0.081 · omni −0.587.
+
+### 0713 무출력 사망 → 0714 감사 → 전면 fresh 재시작
+
+2026-07-13 b3pkg의 "무출력 pass 사망" 연쇄는 코드 버그가 아니라 Standard 티어
+콜드스타트 선점으로 확정(interactive 노드 SSH 손실행으로 gs1 도달·에러 0 확증);
+9회의 헛다리(gpu_mem·tee 등) 끝에 관측성 수정(라인버퍼 출력·save_freq 단축)으로
+발판 구간을 줄였다. 2026-07-14 4-arm 전면 감사에서 8개 수정(optimizer state
+저장, anchor-EMA resume 불변성, gs0 콜드스타트 가드/RGS, 최종-push 이식,
+save_freq, grader/절단 가드, bootstrap Xet)을 적용했고, 이전 단일-시드 런은
+certifiable하지 않다고 판정 → **HF `checkpoints/rq3_*` 전부 삭제 + 전 arm
+fresh 재시작(gs0)**. 따라서 RGS가 `rq3_b3pkg`에서 아무것도 못 찾는 것은
+정상이며 fresh gs0가 올바른 동작이다.
+
+### 유지보수 정지 (2026-07-16)
+
+MSR GCR 전체 클러스터가 B200(Bonete) 재할당 + NVLINK 펌웨어로 정지: 2026-07-16
+16:00 UTC(목 9am PT) 전 잡 강제취소 + 클러스터 오프라인, 복구 ETA **2026-07-17
+00:00 UTC**(목 5pm PT) + 신규 할당(랩 GPU delegate 확인 필요 — 아직 연락 없음).
+2026-07-15 22:41 UTC부터 모든 `amlt run`이 "(UserError) The virtual cluster
+does not exist ... in the same cloud"로 실패하는데 이는 **유지보수/재할당
+컨트롤플레인 문제이지 로컬 설정 문제가 아니다** (읽기 계열 `amlt target info`는
+정상: H100 쿼터 272/560, 8/1120). 별도 메일(A100 Palisades/MSRRESRCHVC 유지보수
+7/20–24 + 월간 OS 이미지 업그레이드)은 다른 VC·다른 GPU·다음 주 건으로 무관.
+**GPU/VC를 갈아타지 말 것** — b0/b2가 이미 msrresrchbasicvc H100 Standard에서
+돌았으므로 b3만 옮기면 매치드 래더가 깨진다.
+
+### 0716 구현 감사 — 알려진 caveat (보상 코드는 불변 유지, 사용자 결정)
+
+- **C-1 (가장 중요)**: `norm_adv_by_std_in_grpo=false`가 VANILLA 경로에서
+  조용히 무시됨 — verl 0.7.1의 GDPO 분기가 이 플래그를 core
+  `compute_advantage`로 전달하지 않아(우리 쪽 전달점
+  `src/training/verl_sdc.py:4454~4492`은 region 경로만 유효) **B0/B2는 실제로
+  group-std 정규화로 학습됐고** B3(region 경로)만 진짜 mean-only다. RQ1은
+  내부적으로 일관되지만 RQ2에는 정규화-방식 비대칭이 실려 limitation으로
+  명시해야 하며, "std-norm이 v1 붕괴 원인"이라던 §1의 믿음도 수정된다(B0가
+  std-norm 하에서 300스텝 완주). 복구 후 노드 conda-pack verl 검증 한 줄:
+  `python -c "import inspect, verl.trainer.ppo.ray_trainer as m; print(inspect.getsource(m.compute_advantage))"`.
+- **H-2**: confidence 파서(`src/training/rewards.py` `_parse_confidence` 계열,
+  소비처 `src/training/dcpo_region.py:950`)가 meta 블록만이 아니라 롤아웃
+  전체를 스캔해 수학 본문의 확률-단어 숫자가 w_cal 타깃을 오염시킬 수 있다
+  (해석 caveat only).
+- **M-1**: pmi_shift 세이프가드(dup-thresh, `reversal_min_magnitude` —
+  `src/training/dcpo_pmi_shift.py:68`)가 기본 OFF이고 어떤 config도 켜지 않는다
+  (해석 caveat only).
+- **RQ1-corpus**: RQ1은 순수 "meta-init" 효과가 아니라 코퍼스-수준 SFT 비교다
+  (B0 gold-explanation 1,290행 vs B2 RV 1,763행).
+- **RQ2-package**: RQ2는 6-head 패키지 효과(gold→confidence calibration인
+  w_cal=0.3 포함)이며 절대 pmi_shift 단독에 귀속하지 말 것.
+- **save_freq 비대칭**: b3=5 vs b0/b2=10 (콜드스타트 발판 단축 목적).
+
+### 운영 규칙 (신규 인력 필독)
+
+제출은 배치만(`amlt run <yaml> -y`) — interactive `-i`는 Standard opportunistic
+풀에서 노드를 못 잡는다. amlt 바이너리는
+`/home/v-seungplee/miniconda3/envs/amlt/bin`(PATH export 필수), 제출 직전 반드시
+`set -a; source .env; set +a`. 선점 진단: `amlt log list <exp>`에서 retry_NNN이
+있고 running이면 선점 중 — **그대로 둘 것, 취소 금지**(취소하면 노드가 글로벌
+풀로 새어나감). 진짜 hang 시그니처 = 재다운로드해도 stdout 라인 수 불변 +
+retry 증가 없음 + 다음 HF ckpt 부재. wandb run id는 -2 접미사(rq3-b0-2 등,
+프로젝트 gistdslab/metacot-dcpo-v4). HF ckpt 배치: 모델 repo
+`iamseungpil/metacot-h200-triobj-dcpo-v3`, 경로
+`checkpoints/rq3_<arm>/global_step_N`. **완료된 arm은 재제출 금지**(resume→즉시
+종료→sleep 86400이 노드를 점거). arm 비교는 val-aux correctness만(val-core는
+보상-혼합 shaped라 arm마다 다름). 최종 RQ 판정은 매치드 gs(또는 gs300)의
+held-out 1030에서만 — in-training val 594가 아님.

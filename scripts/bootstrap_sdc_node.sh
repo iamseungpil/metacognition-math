@@ -3,12 +3,12 @@
 # Works for SDC and baseline GRPO launchers on H100/H200/A100-class nodes.
 #
 # Stages:
-#   1. Create conda env 'simplerl' (skip if /scratch/simplerl_v3.done exists)
+#   1. Create conda env 'simplerl' (skip if /scratch/simplerl_v4.done exists)
 #   2. Install torch + veRL 0.7.1 + compatible vLLM/Ray stack
 #      Wheels pulled from HF CDN when present (faster than PyPI on BSC).
 #   3. Sync code to /scratch/metacognition from HF code_snapshot tarball
 #      (see memory: feedback_hf_bootstrap — no SSH base64 for big uploads)
-#   4. Write /scratch/simplerl_v3.done sentinel + export HF/WANDB tokens
+#   4. Write /scratch/simplerl_v4.done sentinel + export HF/WANDB tokens
 #   5. nvidia-smi verification
 #
 # Env vars (override if needed):
@@ -26,7 +26,7 @@ CODE_TAR_PATH="${CODE_TAR_PATH:-code_snapshots/metacognition.tar.gz}"
 CODE_TAR_REVISION="${CODE_TAR_REVISION:-}"  # pin to a specific HF revision if set
 FORCE_SYNC="${FORCE_SYNC:-0}"                 # set to 1 to force code re-download
 SCRATCH="${SCRATCH:-/scratch}"
-DONE_MARKER="${SCRATCH}/simplerl_v3.done"
+DONE_MARKER="${SCRATCH}/simplerl_v4.done"
 CODE_DIR="${SCRATCH}/metacognition"
 CODE_VERSION_FILE="${CODE_DIR}/.bootstrap_version"
 HF_CACHE_DIR="${HF_CACHE_DIR:-${SCRATCH}/hf_cache}"
@@ -65,8 +65,8 @@ if [ "${ENV_OK}" -eq 0 ]; then
     # Built locally with all verl source patches baked in. Pulls from HF in ~30s
     # vs the pip-install path which takes 10-15 min and breaks on package
     # availability changes.
-    PACK_URL="https://huggingface.co/datasets/${CODE_REPO}/resolve/main/env_snapshots/simplerl_v3.tar.gz"
-    PACK_PATH="${SCRATCH}/simplerl_v3.tar.gz"
+    PACK_URL="https://huggingface.co/datasets/${CODE_REPO}/resolve/main/env_snapshots/simplerl_v4.tar.gz"
+    PACK_PATH="${SCRATCH}/simplerl_v4.tar.gz"
     # E.4 fix: /opt/conda is READ-ONLY on Basic-tier nodes (mkdir Permission
     # denied), and the amlt YAML runs ${SIMPLERL_DIR}/bin/python where the YAML
     # sets SIMPLERL_DIR=/scratch/conda_envs/simplerl. Respect that env var and
@@ -76,20 +76,37 @@ if [ "${ENV_OK}" -eq 0 ]; then
 
     if [ ! -d "${SIMPLERL_DIR}/bin" ] && [ -n "${HF_TOKEN}" ]; then
         echo "[bootstrap] fast-path: pulling conda-pack env from HF -> ${SIMPLERL_DIR}"
-        if curl -sfL --retry 6 --retry-delay 15 --retry-all-errors \
-                --connect-timeout 30 --max-time 2400 \
-                -H "Authorization: Bearer ${HF_TOKEN}" -o "${PACK_PATH}" "${PACK_URL}" \
-           && [ -s "${PACK_PATH}" ]; then
+        # Xet fix: the env tarball is Xet-backed, so plain curl 403s (AccessDenied).
+        # Use the HF python client (hf_hub_download), which speaks the Xet protocol.
+        # HF_TOKEN is read via os.environ only — never embedded in the script/log.
+        # Install into a WRITABLE /scratch target (not /opt/conda, which is READ-ONLY on
+        # some node types → pip no-ops → "No module named huggingface_hub" → the fast-path
+        # download fails and the node drops to the ~30min slow-path, extending the cold-start
+        # preemption window (0714 root cause of b2/b3pkg repeated cold-start preemptions).
+        /opt/conda/bin/python -m pip install -q --target "${SCRATCH}/_hfhub" "huggingface_hub<1.0" 2>&1 | tail -1 || true
+        if PYTHONPATH="${SCRATCH}/_hfhub:${PYTHONPATH:-}" /opt/conda/bin/python - <<PYEOF
+import os, sys
+try:
+    from huggingface_hub import hf_hub_download
+    p = hf_hub_download(repo_id="${CODE_REPO}", repo_type="dataset",
+        filename="env_snapshots/simplerl_v4.tar.gz",
+        token=os.environ.get("HF_TOKEN"), local_dir="${SCRATCH}/pack_dl")
+    os.replace(p, "${PACK_PATH}")
+    sys.exit(0)
+except Exception as e:
+    print("[bootstrap] hf_hub_download failed:", e); sys.exit(1)
+PYEOF
+        then
             echo "[bootstrap] extracting env (~5GB → ${SIMPLERL_DIR})"
             mkdir -p "${SIMPLERL_DIR}"
             tar -xzf "${PACK_PATH}" -C "${SIMPLERL_DIR}"
             "${SIMPLERL_DIR}/bin/conda-unpack" 2>/dev/null || true
-            rm -f "${PACK_PATH}"
+            rm -f "${PACK_PATH}"; rm -rf "${SCRATCH}/pack_dl"
             conda activate "${SIMPLERL_DIR}" 2>/dev/null || true
-            echo "[bootstrap] fast-path complete"
+            echo "[bootstrap] fast-path complete (hf client)"
         else
             echo "[bootstrap] HF env tarball miss — falling back to pip install"
-            rm -f "${PACK_PATH}"
+            rm -f "${PACK_PATH}"; rm -rf "${SCRATCH}/pack_dl"
         fi
     fi
 
@@ -152,7 +169,12 @@ if [ "${ENV_OK}" -eq 0 ]; then
     fi  # end of slow-path pip-install fallback
 
     # ── Activate env (works for both fast-path and slow-path) ──
-    conda activate simplerl
+    # PREFIX env at ${SIMPLERL_DIR}, NOT a named env — `conda activate simplerl`
+    # raises EnvironmentNameNotFound, which under `set -e` ABORTS bootstrap before
+    # the verl source patches below run (root cause of the vLLM prometheus.enable
+    # AttributeError on batch nodes, 0714). Activate by prefix and never abort; the
+    # verify/patch steps below use the explicit ${SIMPLERL_DIR}/bin/python anyway.
+    conda activate "${SIMPLERL_DIR}" 2>/dev/null || conda activate simplerl 2>/dev/null || true
 
     # vLLM 0.10.2 transitively pulls opencv-python-headless. cv2 import
     # SEGFAULTs on the AMLT acpt-torch2.7.1 image (libGL/glibc mismatch),
@@ -166,10 +188,13 @@ if [ "${ENV_OK}" -eq 0 ]; then
     # snapshot pre-dates this discovery, so install on-demand into the
     # simplerl site-packages via --target (plain pip install lands in the
     # wrong env on these AMLT images). Idempotent: skips if already present.
-    if ! /opt/conda/envs/simplerl/bin/python -c "import flash_attn" 2>/dev/null; then
-        echo "[bootstrap] installing flash-attn into simplerl"
-        /opt/conda/envs/simplerl/bin/python -m pip install --no-build-isolation --no-deps \
-            --target /opt/conda/envs/simplerl/lib/python3.10/site-packages \
+    if ! "${SIMPLERL_DIR}/bin/python" -c "import flash_attn" 2>/dev/null; then
+        echo "[bootstrap] installing flash-attn into ${SIMPLERL_DIR}"
+        # PREFIX env — earlier code used /opt/conda/envs/simplerl (named env), which
+        # does not exist here, so the install silently no-op'd and verl crashed at
+        # the unpad path with ModuleNotFoundError (0714). Use ${SIMPLERL_DIR}.
+        "${SIMPLERL_DIR}/bin/python" -m pip install --no-build-isolation --no-deps \
+            --target "${SIMPLERL_DIR}/lib/python3.10/site-packages" \
             --upgrade flash-attn==2.8.3 2>&1 | tail -3 || \
             echo "[bootstrap] flash-attn install failed — verl unpad path will crash"
     else
@@ -200,7 +225,7 @@ EOF
     # recent setuptools releases, which we've seen break only the verify step
     # even though the underlying packages work. `|| true` keeps bootstrap.done
     # from being a lie when only the diagnostic import crashes.)
-    python - <<'PY' || true
+    "${SIMPLERL_DIR}/bin/python" - <<'PY' || true
 import torch, ray, hydra, omegaconf
 import vllm, verl
 import trl
@@ -218,7 +243,7 @@ PY
     # module crashes on load in vllm 0.8.3 because `run_headless` is a 0.9+
     # symbol. Resolve the file path via `import verl` (package __init__ is
     # side-effect free) and patch the file textually before anything imports it.
-    python - <<'PY'
+    "${SIMPLERL_DIR}/bin/python" - <<'PY'
 from pathlib import Path
 import verl
 import os.path

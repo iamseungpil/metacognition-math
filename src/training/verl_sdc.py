@@ -344,6 +344,14 @@ def _populate_dcpo_region_keys(data) -> None:
     _step = int(getattr(trainer, "global_steps", 0) or 0)
     _config = getattr(trainer, "config", None)
 
+    # ACTIVATE resume-invariant anchor-EMA warmup (audit fix A): hand the restored
+    # global step to compose_dcpo_region_advantage's warmup gate, which reads
+    # _ANCHOR_EMA_STATE["global_step"]. Without this the gate falls back to the
+    # process-local _n that resets on every preemption-resume, reopening the
+    # anchor_warmup_steps un-normalized window (a spurious meta-arm / RQ2 bias).
+    from src.training.verl_sdc_utils import _ANCHOR_EMA_STATE as _AES
+    _AES["global_step"] = _step
+
     # TRIOBJ_DCPO_V3 (ADDITIVE): consume the counterfactual TEXTS the PRODUCER
     # (_dcpo_cf_generate_sequences, §3) stashed onto the batch BEFORE sleep_replicas().
     # We do NOT trigger the CF generation here — the engine is asleep at this consume

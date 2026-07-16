@@ -61,8 +61,8 @@ Values resolve through the `verl_e4_selfdistill_h200_4x4k` base → per-arm conf
 | total steps | `trainer.total_training_steps` | 300 |
 | PPO clip low / high | `actor_rollout_ref.actor.clip_ratio_low/high` | 0.2 / 0.28 (Clip-Higher/DAPO) |
 | KL loss coef | `actor_rollout_ref.actor.kl_loss_coef` | 0.0 (`use_kl_loss=true` kept for the frozen ref worker — see note) |
-| save frequency | `trainer.save_freq` | **B0 = 5, B2/B3 = 10** |
-| test frequency | `trainer.test_freq` | 25 |
+| save frequency | `trainer.save_freq` | **B0/B2 = 10, B3 = 5** (b3 콜드스타트 발판 단축) |
+| test frequency | `trainer.test_freq` | 50 (all arms) |
 | RL mode | `mode` / `algorithm.sdc_mode` | B0/B2 `VANILLA_GRPO` / B3 `TRIOBJ_DCPO_V4` (region-split) |
 
 ### Notes on the matched knobs
@@ -109,6 +109,16 @@ answer span; acc_with ≫ acc_without still holds, behavior intact. Under
 observation.)
 
 ## B3 PMI-shift routing (the ONLY arm with a meta reward)
+
+> **⚠️ 0712 정정 (2026-07-12).** 아래의 "다른 head 전부 0" 스트립 설계는
+> **실패로 판정돼 폐기됐다** — 형식 비계(w_format·w_emit·trunc_open 등)를
+> 제거하자 RL 중 wellformed가 붕괴하고 pmi_shift가 불발(n_save→0), RQ2가
+> +0.042→−0.120으로 반전했다(`EXPERIMENT_LOG.md` §9). 현행 B3 =
+> **b3pkg 풀 패키지**: w_meta 0.8(rmeta_source=pmi_shift) + w_format 0.35 +
+> w_emit 0.1 + w_cal 0.3 + len_cost 0.08 + trunc_open 0.3, **w_over만 0** —
+> 검증된 선행(pre-rq3 pmishift 승리 런)과 동일 구성. 순수 pmi 격리는
+> B3-noPMI arm(패키지에서 w_meta=0 하나만 제거, §10)이 담당하며 보류 중.
+> 아래 원문은 실패 기록의 근거로 보존한다.
 
 `h100std_rq3_b3.yaml` routes the PMI-shift signal onto `<|meta|>` spans and
 turns every other auxiliary head OFF via `++` overrides on

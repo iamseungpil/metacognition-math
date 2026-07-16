@@ -1,3 +1,5 @@
+> ⚠️ **DEPRECATED** (pre-rq3 V8/H200 세대 기록): 현행 실험은 **rq3 매치드 래더** — `README.md` 및 `docs/redesign/` 참조.
+
 # Analysis Map — Meta-CoT V8
 
 Newcomer-friendly navigation. Last updated 2026-04-16 after cleanup.

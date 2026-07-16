@@ -913,7 +913,18 @@ def dcpo_region_rewards(
     R_cal = [0.0] * B
     for i in range(B):
         # R_corr — lenient final-answer correctness (same extractor as correctness head).
-        R_corr[i] = 1.0 if c2[i] else -1.0
+        # TRUNCATION GUARD (bugfix 2026-07-14): a 'truncation' row never emitted a
+        # closing \boxed — its "final answer" is whatever _extract_answer_fallback
+        # scraped from the MID-CoT text (worst case a stray trailing number that
+        # happens to equal gold), so c2[i] can be a FALSE correct. R_meta is already
+        # forced to 0 for truncation (see the _gated branch below); R_corr must
+        # likewise NOT credit an unterminated rollout. Force it to the wrong/abstain
+        # value (-1.0) — matching the wrong-row convention used one line down — so a
+        # truncated rollout can never be graded correct off a last-number scrape.
+        if fmt_class is not None and fmt_class[i] == "truncation":
+            R_corr[i] = -1.0
+        else:
+            R_corr[i] = 1.0 if c2[i] else -1.0
 
         # R_meta — CAUSAL meta-utility = c_with - c_without ∈ {-1,0,+1}.
         #   with-right / without-wrong -> +1  (meta turned wrong right)
@@ -1363,6 +1374,7 @@ def compose_dcpo_region_advantage(
     anchor_ema_state: dict | None = None,
     anchor_ema_decay: float = 0.9,
     anchor_warmup_steps: int = 0,
+    global_step: int | None = None,
     rlsd_meta_factor_per_row=None,
 ):
     """Independent per-head group-mean-subtract + per-region token routing (§2.3).
@@ -1453,7 +1465,25 @@ def compose_dcpo_region_advantage(
         corr_s = _ema_mean_abs(A_corr, st, "corr", anchor_ema_decay)
         meta_s = _ema_mean_abs(A_meta, st, "meta", anchor_ema_decay)
         cal_s = _ema_mean_abs(A_cal, st, "cal", anchor_ema_decay)
-        if n > anchor_warmup_steps and corr_s > 0:
+        # RESUME-INVARIANT warmup gate (bugfix 2026-07-14). The warmup window must
+        # close on the RESTORED trainer step, NOT the process-local call counter
+        # `_n`. `_n` lives in the never-checkpointed module-global _ANCHOR_EMA_STATE,
+        # so every preemption-resume resets it to 0 and RE-OPENS a fresh
+        # anchor_warmup_steps un-normalized window — perturbing ONLY the meta/aux
+        # heads (a spurious meta-arm bias that confounds RQ2). When the caller
+        # supplies the restored step — either via the `global_step` kwarg or a
+        # `global_step` entry stashed in the EMA-state dict — gate on it so the
+        # window opens exactly ONCE, at true training start, and can never reopen
+        # after a resume. Fall back to `_n` only when no step is available
+        # (byte-identical to the pre-fix path for callers that pass neither). The
+        # decision is stored so the format/emit gates below share it verbatim.
+        _gstep = global_step if global_step is not None else st.get("global_step")
+        _warm_done = (
+            int(_gstep) > anchor_warmup_steps if _gstep is not None
+            else n > anchor_warmup_steps
+        )
+        st["_warm_done"] = _warm_done
+        if _warm_done and corr_s > 0:
             _floor = 1e-6
             A_meta = A_meta * (corr_s / max(meta_s, _floor))
             A_cal = A_cal * (corr_s / max(cal_s, _floor))
@@ -1556,7 +1586,7 @@ def compose_dcpo_region_advantage(
             # row's own positions only.
             fv = fv + torch.as_tensor(format_ok_mask, dtype=torch.float32).to(device)
         if anchor_norm and anchor_ema_state is not None and \
-           anchor_ema_state.get("_n", 0) > anchor_warmup_steps:
+           anchor_ema_state.get("_warm_done", False):
             cs = anchor_ema_state.get("corr", 0.0)
             fs = _ema_mean_abs(A_format, anchor_ema_state, "format", anchor_ema_decay)
             if cs > 0:
@@ -1576,7 +1606,7 @@ def compose_dcpo_region_advantage(
     if R_emit is not None and w_emit:
         A_emit = group_mean_subtract(R_emit, index).to(device)  # [B,1]
         if anchor_norm and anchor_ema_state is not None and \
-           anchor_ema_state.get("_n", 0) > anchor_warmup_steps:
+           anchor_ema_state.get("_warm_done", False):
             cs = anchor_ema_state.get("corr", 0.0)
             es = _ema_mean_abs(A_emit, anchor_ema_state, "emit", anchor_ema_decay)
             if cs > 0:

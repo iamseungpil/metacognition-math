@@ -27,7 +27,7 @@ jobs:
         # PLACEHOLDER_REPACKAGE — human: the RQ3 launcher lives in the repo, so the code tarball
         # MUST be RE-PACKAGED and a fresh GitHub release asset id filled in here before submit.
         # DO NOT submit with the placeholder below.
-        CODE_TAR_REVISION: "473616745"
+        CODE_TAR_REVISION: "476703893"
         HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
         WANDB_API_KEY: ${WANDB_API_KEY}
         WANDB_KEY: ${WANDB_API_KEY}
@@ -36,8 +36,9 @@ jobs:
         WANDB_NAME: rq3_b0
         # Fixed run id + RESUME=allow: every preemption window rejoins the SAME wandb run
         # instead of fragmenting into a new one (memory: WANDB_RUN_ID fixed + RESUME=allow).
-        WANDB_RUN_ID: rq3-b0
+        WANDB_RUN_ID: rq3-b0-2
         WANDB_RESUME: allow
+        WANDB_INIT_TIMEOUT: "300"
         WANDB_TAGS: RQ3,MATCHED,LADDER,B0,BASELINE,VANILLA_GRPO,no_meta,b0_gold_sft_init,correctness_only,recipe_v2
         SIMPLERL_DIR: /scratch/conda_envs/simplerl
         DCPO_DEBUG: "1"
@@ -167,7 +168,8 @@ jobs:
             actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 \
             actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2 \
             trainer.resume_mode=auto \
-            trainer.save_freq=5 \
+            trainer.save_freq=10 \
+            trainer.test_freq=50 \
             ++trainer.val_before_train=False \
             ++hydra.searchpath=[pkg://verl/trainer/config] \
             2>&1 | tee /scratch/logs/verl_main.log

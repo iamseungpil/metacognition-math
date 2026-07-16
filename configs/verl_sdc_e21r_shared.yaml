@@ -40,8 +40,8 @@ actor_rollout_ref:
     loss_scale_factor: null  # only used by 'seq-mean-token-sum-norm'; ray_trainer reads this attribute
     data_loader_seed: 1      # ray_trainer._update_actor reads this; omegaconf strict mode requires explicit key
     checkpoint:
-      save_contents: [model, extra]
-      load_contents: [model, extra]
+      save_contents: [model, optimizer, extra]
+      load_contents: [model, optimizer, extra]
       async_save: false
     ppo_mini_batch_size: 16
     ppo_micro_batch_size: null

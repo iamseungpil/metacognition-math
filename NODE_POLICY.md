@@ -1,3 +1,5 @@
+> ⚠️ **DEPRECATED** (pre-rq3 V8/H200 세대 노드 정책): 현행 실험은 **rq3 매치드 래더** — `README.md` 및 `docs/redesign/` 참조.
+
 # Node Allocation Policy (2026-04-15)
 
 This file defines the current fixed node ownership for all active projects.
