@@ -41,6 +41,9 @@ jobs:
         WANDB_TAGS: RQ3,B2,MATCHED,VANILLA_GRPO,correctness_only,meta_mix,from-b23-rv-meta-sft,recipe-v2,collapse-fixed
         SIMPLERL_DIR: /scratch/conda_envs/simplerl
         DCPO_DEBUG: "1"
+        # OBSERVABILITY 0716 (ported from B3): faulthandler dumps a C-level traceback on
+        # segfault/abort/SIGTERM. Pure observability — NO behavior change.
+        PYTHONFAULTHANDLER: "1"
     command:
       - nvidia-smi
       - |
@@ -98,7 +101,9 @@ jobs:
 
         nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
         # durable per-file pusher for the live RL checkpoint dir.
-        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rq3_b2 --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --token $${HF_TOKEN} --interval 90 --keep 2 --config_name rq3_b2 > /scratch/logs/push_rq3_b2.log 2>&1 &
+        # SECURITY 0716: no --token arg — under set -x the expanded token lands in std_log
+        # plaintext. The script falls back to the HF_TOKEN env var.
+        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rq3_b2 --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --interval 90 --keep 2 --config_name rq3_b2 > /scratch/logs/push_rq3_b2.log 2>&1 &
 
         export PYTHONPATH=/scratch/metacognition
         cd /scratch/metacognition
@@ -116,29 +121,41 @@ jobs:
             except Exception as e:
                 if i==2: print(-1); raise SystemExit
                 time.sleep(30)
-        cm=Counter(); ce=Counter()
+        cm=Counter(); ce=Counter(); co=Counter()
         for f in fs:
-            m=re.search(r\"rq3_b2/global_step_(\d+)/actor/(model|extra_state)_world_size_\d+_rank_\d+\.pt$$\",f)
-            if m: (cm if m.group(2)==\"model\" else ce)[int(m.group(1))]+=1
-        steps=sorted(s for s,n in cm.items() if n>=4 and ce[s]>=4)
-        print(steps[-1] if steps else 0)
+            m=re.search(r\"rq3_b2/global_step_(\d+)/actor/(model|extra_state|optim)_world_size_\d+_rank_\d+\.pt$$\",f)
+            if m: {\"model\":cm,\"extra_state\":ce,\"optim\":co}[m.group(2)][int(m.group(1))]+=1
+        steps=sorted(s for s,n in cm.items() if n>=4 and ce[s]>=4 and co[s]>=4)
+        print((steps[-1] if steps else 0), (1 if (cm or ce or co) else 0))
         ")
-        echo "[YAML] existing GRPO resume gs = $${RGS}"
+        # COMPLETENESS UNIFICATION 0716: a step is complete only with model+extra+OPTIM >=4
+        # — matches pull_resume_ckpt.py, so RGS can never claim a step pull refuses (that
+        # mismatch = permanent-abort livelock). REAL CASE 0716: rq3_b2 gs150 landed on HF
+        # with optim 3/4 (preemption cut the push mid-optim), gs160 1/4/0 — the last
+        # COMPLETE step is gs140 and that is the correct resume point.
+        # RGS now prints "STEP ANY" (ANY=1 if any lineage files exist at all).
+        echo "[YAML] existing GRPO resume gs (model+extra+optim>=4) = $${RGS}"
+        # SANITY 0716: empty/garbled RGS (python died before printing) must NOT vacuously
+        # pass the guards below into an unguarded gs0 cold-start. Abort instead.
+        RGS_STEP=$${RGS%% *}; RGS_ANY=$${RGS##* }
+        case "$${RGS_STEP}" in ""|*[!0-9-]*) echo "[YAML] RGS empty/garbled ($${RGS}); ABORT window"; sleep 300; exit 1;; esac
         # FAIL CLOSED: RGS=-1 means HF was unreachable 3x — cold-starting now could let the
         # pusher/prune overwrite real progress with a new gs0 lineage. Abort; next window retries.
-        if [ "$${RGS}" = "-1" ]; then echo "[YAML] HF unreachable for RGS; ABORT window"; sleep 300; exit 1; fi
+        if [ "$${RGS_STEP}" = "-1" ]; then echo "[YAML] HF unreachable for RGS; ABORT window"; sleep 300; exit 1; fi
         # RESUME HARDENING (copied from B0): if HF already has a checkpoint (RGS>0), a short
         # window may preempt pull_resume mid-download -> verl would silently COLD-START from gs0.
         # Retry the pull up to 3x; if RGS>0 but NO local global_step_* landed, ABORT rather than restart.
         for rp in 1 2 3; do
-          python /scratch/metacognition/scripts/pull_resume_ckpt.py --repo iamseungpil/metacot-h200-triobj-dcpo-v3 --config_name rq3_b2 --local_dir /scratch/checkpoints/rq3_b2 --token $${HF_TOKEN} 2>&1 | tail -5
+          python /scratch/metacognition/scripts/pull_resume_ckpt.py --repo iamseungpil/metacot-h200-triobj-dcpo-v3 --config_name rq3_b2 --local_dir /scratch/checkpoints/rq3_b2 2>&1 | tail -5
           ls -d /scratch/checkpoints/rq3_b2/global_step_* >/dev/null 2>&1 && break
           echo "[YAML] pull_resume attempt $${rp} landed no local checkpoint; retry"; sleep 30
         done
         LOCAL_GS=$$(ls -d /scratch/checkpoints/rq3_b2/global_step_* 2>/dev/null | grep -oE "global_step_[0-9]+" | grep -oE "[0-9]+" | sort -n | tail -1)
-        echo "[YAML] RGS(HF)=$${RGS} LOCAL_GS(pulled)=$${LOCAL_GS:-NONE}"
-        if [ "$${RGS}" -gt 0 ] 2>/dev/null && [ -z "$${LOCAL_GS}" ]; then
-          echo "[YAML] ABORT: HF has gs$${RGS} but resume pull produced no local checkpoint; refusing gs0 cold-start. Next window retries."
+        echo "[YAML] RGS(HF)=$${RGS_STEP} ANY=$${RGS_ANY} LOCAL_GS(pulled)=$${LOCAL_GS:-NONE}"
+        # 0716: abort on ANY existing lineage (not just a complete step) — a partial-only
+        # lineage with a failed pull must also refuse the gs0 cold-start.
+        if [ "$${RGS_ANY}" = "1" ] && [ -z "$${LOCAL_GS}" ]; then
+          echo "[YAML] ABORT: HF has rq3_b2 lineage (complete gs=$${RGS_STEP}) but resume pull produced no local checkpoint; refusing gs0 cold-start. Next window retries."
           sleep 300
           exit 1
         fi
@@ -171,8 +188,21 @@ jobs:
             trainer.test_freq=50 \
             ++trainer.val_before_train=False \
             ++hydra.searchpath=[pkg://verl/trainer/config] \
-            2>&1 | tee /scratch/logs/verl_main.log
-        VERL_RC=$${PIPESTATUS[0]}
+            > /scratch/logs/verl_main.log 2>&1 &
+        VERL_PID=$$!
+        # OBSERVABILITY 0716 (ported from B3): the `| tee` pipe block-buffers and loses its
+        # buffer on the process-group SIGKILL (9+ silent deaths on B3). ROOT FIX = NO PIPE:
+        # verl writes unbuffered (-u) straight to a file; `tail -n +1 -F` streams it live
+        # into the amlt-captured std_log so already-written lines survive a kill. 10s
+        # heartbeat (host MemAvailable + gpu0 used) disambiguates preemption (abrupt stop,
+        # mem fine) vs OOM (mem to cap) vs real crash (faulthandler traceback in the file).
+        tail -n +1 -F /scratch/logs/verl_main.log &
+        TAIL_PID=$$!
+        ( while kill -0 $${VERL_PID} 2>/dev/null; do echo "[HB $$(date)] $$(grep MemAvailable /proc/meminfo) gpu0used=$$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -i 0 2>/dev/null)MB"; sleep 10; done ) &
+        HB_PID=$$!
+        wait $${VERL_PID}
+        VERL_RC=$$?
+        kill $${TAIL_PID} $${HB_PID} 2>/dev/null || true
         echo "[YAML] verl_sdc rq3_b2 rc=$${VERL_RC}; tail of verl_main.log:"
         tail -40 /scratch/logs/verl_main.log 2>/dev/null
         # ── FINAL SYNC PUSH (copied from B0): the background pusher can freeze mid-run; do a
@@ -195,7 +225,8 @@ jobs:
         fs=api.list_repo_files(\"iamseungpil/metacot-h200-triobj-dcpo-v3\", repo_type=\"model\")
         nm=sum(1 for f in fs if (\"$${FN}/actor/model_world_size\" in f) and f.endswith(\".pt\"))
         ne=sum(1 for f in fs if (\"$${FN}/actor/extra_state_world_size\" in f) and f.endswith(\".pt\"))
-        print(\"SHARDS=%d\" % min(nm, ne))
+        no=sum(1 for f in fs if (\"$${FN}/actor/optim_world_size\" in f) and f.endswith(\".pt\"))
+        print(\"SHARDS=%d\" % min(nm, ne, no))
         " 2>&1)
             echo "$${OUT}" | tail -2
             echo "$${OUT}" | grep -qE "SHARDS=[4-9]|SHARDS=[1-9][0-9]" && { echo "[YAML] FINAL PUSH DURABLE $${FN}"; break; } || { echo "[YAML] final push retry $$i"; sleep 60; }
