@@ -15,7 +15,12 @@ code:
 jobs:
   - name: rq3_b3nopmi
     sku: 80G4-H100
-    sla_tier: Standard
+    # TIER RENAME 0717: the 1120-slot opportunistic H100 pool we always ran on was
+    # relabeled Standard->Basic in the July-16 reallocation (portal: NDH100v5 Basic
+    # 1120 / Standard 560). Submitting as "Standard" now targets the 560 pool where
+    # we hold no allocation. Same physical pool + preemption semantics as before —
+    # name change only, substrate matched.
+    sla_tier: Basic
     priority: high
     identity: managed
     submit_args:
