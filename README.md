@@ -68,11 +68,12 @@ python scripts/eval_vllm_1030.py \
     --output_dir results/eval_1030_my_eval/ \
     --max_tokens 16384 --temperature 0.7 --num_samples 8 --seed 42
 
-# RL 학습 (MSR 클러스터, amlt) — rq3 매치드 래더 3-arm
+# RL 학습 (MSR 클러스터, amlt) — rq3 매치드 래더 4-arm
 set -a; source .env; set +a
 amlt run h100std_rq3_b0.yaml rq3-b0-<날짜> -d "B0 no-meta baseline RL"
 amlt run h100std_rq3_b2.yaml rq3-b2-<날짜> -d "B2 meta-SFT + vanilla GRPO"
 amlt run h100std_rq3_b3.yaml rq3-b3-<날짜> -d "B3 region-split pmi_shift"
+amlt run h100std_rq3_b3nopmi.yaml rq3-b3nopmi-<날짜> -d "B3-noPMI pmi 격리 대조"  # 4번째 arm — b3pkg 완주 확인 후 발사
 # (SFT init 재생성이 필요하면: h100std_sft_b0_gold.yaml / h100std_sft_b23_unmasked.yaml)
 ```
 

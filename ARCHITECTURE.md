@@ -9,12 +9,14 @@
 
 The live method is **PMI-shift metacognitive self-distillation**: a teacher-free
 self-distillation reward applied to the meta tokens. The current live experiment
-is the **RQ3 MATCHED LADDER** (2026-07-11): a 3-arm matched RL comparison on the
+is the **RQ3 MATCHED LADDER** (2026-07-11): a 4-arm matched RL comparison on the
 real `Qwen/Qwen3-8B-Base` substrate — B0 (no-meta gold SFT init + VANILLA_GRPO),
 B2 (meta SFT init + VANILLA_GRPO), B3pkg (same meta SFT init + TRIOBJ_DCPO_V4
 full package, region-split, rmeta=pmi_shift — corrected 2026-07-12 from the
-failed pmi-only strip). RQ1 = B2−B0 (meta-SFT effect), RQ2 = B3pkg−B2 (meta
-reward package effect; the pure pmi isolation is the deferred B3-noPMI arm). Everything else in the
+failed pmi-only strip), and B3-noPMI (identical to B3pkg except
+`dcpo_w_meta=0.0` — the minus-one pmi-isolation control). RQ1 = B2−B0 (meta-SFT
+effect), RQ2 = B3pkg−B2 (meta reward package effect; the pure pmi isolation is
+B3pkg−B3-noPMI). Everything else in the
 tree is history — superseded variants and probes, kept for reproducibility under
 `runs/archive/` and `configs/archive/`.
 
@@ -26,10 +28,11 @@ SFT      h100std_sft_b0_gold.yaml        → configs/sft_b0_gold.yaml        →
 LAUNCH   h100std_rq3_b0.yaml   (B0: no-meta init + VANILLA_GRPO)
          h100std_rq3_b2.yaml   (B2: meta init  + VANILLA_GRPO)
          h100std_rq3_b3.yaml   (B3pkg: meta init + TRIOBJ_DCPO_V4 FULL package — w_meta 0.8/w_format 0.35/w_emit 0.1/w_cal 0.3/len 0.08, w_over=0, rmeta=pmi_shift; ⚠️ 2026-07-12 corrected — the pmi-only strip failed)
+         h100std_rq3_b3nopmi.yaml (B3-noPMI: same as B3pkg with only ++algorithm.dcpo_w_meta=0.0 — pmi-isolation control)
    │  amlt → python -m src.training.verl_sdc
    ▼
 CONFIG   configs/base_matched_grpo_h100_4x4k.yaml       (B0/B2)
-         configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml  (B3)
+         configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml  (B3pkg/B3-noPMI)
          parent: configs/verl_e4_selfdistill_h200_4x4k.yaml
    ▼
 TRAINER  src/training/verl_sdc.py           entry + GDPO trainer (monolith)

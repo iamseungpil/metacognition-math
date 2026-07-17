@@ -224,3 +224,25 @@ held-out 1030에서만 — in-training val 594가 아님.
 보강실험 E1–E6, 리뷰어렌즈 약점대응표)로 분리했다 — 본 로그는 이력 원장으로
 유지하며, 함께 `docs/CODE_MAP.md`(코드 인벤토리)와 `docs/LOCAL_RUN.md`(로컬
 재현 가이드)도 신설했다.
+
+### 0717 계약위반 2건·tarball 드리프트 확정 → 재패키징·4-arm 운영경로 통일
+
+계약위반 2건이 확정됐다. 첫째, ckpt pusher는 `--token`을 required 인자로
+선언하는데 런처가 이 인자를 제거한 채 호출하고 있었다 — 외부 Codex 리뷰가
+발견했고, pusher에 env 폴백을 넣고 런처 yaml을 sed로 맞춰 수정했다. 둘째,
+pusher와 puller의 체크포인트 완결성 판정 기준이 2원/3원으로 어긋나 있어 이를
+3원으로 통일했다 — 이 불일치가 gs150에서 optimizer shard가 4개 중 3개만
+영구화된 사건의 기전이다.
+
+코드 tarball 476703893에는 구버전 triobj config(`agent:` 블록)가 섞여 들어간
+드리프트가 확정됐다. 새 태그 `rq3-code-20260717`(asset 480254660)로
+재패키징했다 — `git archive HEAD`에 구 tarball의 `data/`를 주입하는 방식이며,
+b2/b3/b3nopmi 런처의 `CODE_TAR_REVISION`을 새 asset으로 교체하고 fail-closed
+가드를 추가했다(태그 불일치 시 부트스트랩이 즉시 중단).
+
+B0 비대칭은 기록만 남긴다: B0는 2원 RGS로 돌았고 `set -x` 아래에서 `--token`이
+평문으로 로그에 노출된 이력이 있다. B0는 gs300 완주로 불변이며, B0가 위의
+내구성 계약과 동일한 조건에서 돌았던 것은 아니라는 점을 명시해 둔다.
+
+b3nopmi에는 관측성 수정을 이식했고(3cd4ff3), 이 패키지로 4-arm 런처의
+운영경로가 통일됐다.

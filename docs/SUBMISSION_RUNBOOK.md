@@ -57,7 +57,9 @@ done
 | h100std_rq3_b3nopmi.yaml | B3-noPMI | triobj_dcpo_v4_stage3b_h100_4x4k | b23_rv_unmasked_sft | full pkg, w_meta=0.0 |
 
 Shared v2 collapse-fixed recipe (all arms): `temperature=1.0 top_k=-1 top_p=1.0
-max_response_length=8192 norm_adv_by_std_in_grpo=false save_freq=10`.
+max_response_length=8192 norm_adv_by_std_in_grpo=false`. `save_freq` is
+per-arm, NOT shared: **b0/b2 = 10, b3pkg/b3nopmi = 5** (the b3 pair keeps a
+shorter cold-start foothold on the preemptible Standard tier).
 
 Each `amlt run` prints a random experiment name (e.g. `enough-wombat`); note the
 four names — you monitor by experiment name.
@@ -110,7 +112,8 @@ amlt cancel <exp> -y
 ```
 
 **Cold-start note.** A FRESH (gs0) job must survive bootstrap + reach its first
-checkpoint (`save_freq=10` → gs10, ~70 min) without preemption to become
+checkpoint (b0/b2: `save_freq=10` → gs10, ~70 min; b3pkg/b3nopmi:
+`save_freq=5` → gs5, ~35 min) without preemption to become
 durable. On Standard tier this can take several resubmits. Once the first HF
 checkpoint lands, `resume_mode=auto` + `pull_resume_ckpt.py` make every later
 resume clean (optimizer state is now saved too). If one arm can't get a clean
