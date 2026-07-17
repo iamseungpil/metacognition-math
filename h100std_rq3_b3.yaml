@@ -24,11 +24,8 @@ jobs:
         _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
         HF_TOKEN: ${HF_TOKEN}
         GH_TOKEN: ${GH_TOKEN}
-        # PLACEHOLDER_REPACKAGE — human: the collapse-fixed v2 recipe + this launcher live in the
-        # repo; the code tarball MUST be RE-PACKAGED and released, then fill this with the GitHub
-        # release asset id of the freshly packaged metacognition.tar.gz. DO NOT submit with the
-        # placeholder below.
-        CODE_TAR_REVISION: "476703893"
+        # 0717 재패키징 완료(tag rq3-code-20260717)
+        CODE_TAR_REVISION: "480254660"
         HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
         WANDB_API_KEY: ${WANDB_API_KEY}
         WANDB_KEY: ${WANDB_API_KEY}
@@ -76,9 +73,9 @@ jobs:
         pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
 
         set +x  # do NOT leak GH_TOKEN into xtrace logs
-        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION} || { echo "[YAML] code tar download FAILED; ABORT window"; sleep 300; exit 1; }
         set -x
-        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch || { echo "[YAML] code tar extract FAILED; ABORT window"; sleep 300; exit 1; }
         echo "$${CODE_TAR_REVISION}" > /scratch/metacognition/.bootstrap_version
 
         nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper_early.log 2>&1 &
@@ -114,12 +111,16 @@ jobs:
         # SECURITY 0716: no --token arg — under set -x the expanded token lands in std_log
         # plaintext.
         # CONTRACT FIX 0717: the env fallback exists only in pull_resume_ckpt.py — the
-        # tarball 476703893 copy of push_ckpts_to_hf.py still has --token required=True,
+        # old tarball copy of push_ckpts_to_hf.py had --token required=True,
         # so without the arg argparse kills the pusher at boot and NO checkpoints reach
         # HF (silent until preemption loses the window). Patch the staged copy to the
         # env-fallback default; ABORT the window if the patch does not land (fail closed).
         sed -i "s/ap.add_argument(\"--token\", required=True)/ap.add_argument(\"--token\", default=os.environ.get(\"HF_TOKEN\"))/" /scratch/metacognition/scripts/push_ckpts_to_hf.py
         grep -q "add_argument(\"--token\", default=os.environ.get(\"HF_TOKEN\"))" /scratch/metacognition/scripts/push_ckpts_to_hf.py || { echo "[YAML] pusher --token contract patch FAILED; ABORT window"; sleep 300; exit 1; }
+        # ── REGRESSION GUARDS 0717 (fresh tarball 480254660 must carry the fixed code) ──
+        if grep -q "agent_loop_config_path" /scratch/metacognition/configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml; then echo "[YAML] STALE triobj config (agent block); ABORT window"; sleep 300; exit 1; fi
+        grep -q "optim_world_size" /scratch/metacognition/scripts/push_ckpts_to_hf.py || { echo "[YAML] pusher 3-way completeness missing; ABORT window"; sleep 300; exit 1; }
+        grep -q "extra_state_world_size" /scratch/metacognition/scripts/pull_resume_ckpt.py || { echo "[YAML] puller 3-way completeness missing; ABORT window"; sleep 300; exit 1; }
         nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rq3_b3pkg --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --interval 90 --keep 2 --config_name rq3_b3pkg > /scratch/logs/push_rq3_b3pkg.log 2>&1 &
 
         export PYTHONPATH=/scratch/metacognition
