@@ -111,15 +111,20 @@ def _list_repo_files_retry(api, repo_id: str, attempts: int = 3):
 def _remote_complete_steps(api, repo_id: str, config_name: str, files=None) -> set[str]:
     """Return names of ``global_step_*`` dirs already COMPLETE on the HF repo.
 
-    Complete = >=4 ``actor/model_world_size_*_rank_*.pt`` AND >=4
-    ``actor/extra_state_world_size_*_rank_*.pt`` shards present. verl's
-    load_contents mirrors save_contents=[model, extra], so a step missing
-    extra_state crashes resume — counting only model shards would let the 5s
-    quiescence gate freeze an unresumable step as the authoritative resume
-    point (reviewer-confirmed failure mode). Used (a) to seed the done-set at
-    startup so a resumed node never re-uploads the checkpoint it just pulled,
-    and (b) to verify an upload before marking it done — done now means
-    "verified on HF", never "skipped".
+    Complete = >=4 shards of EACH of ``actor/model_world_size_*_rank_*.pt``,
+    ``actor/extra_state_world_size_*_rank_*.pt`` AND
+    ``actor/optim_world_size_*_rank_*.pt``. verl's load_contents mirrors
+    save_contents=[model, optimizer, extra]
+    (configs/verl_sdc_e21r_shared.yaml:42-44), so a step missing ANY of the
+    three shard sets crashes resume — counting only model shards would let the
+    5s quiescence gate freeze an unresumable step as the authoritative resume
+    point (reviewer-confirmed failure mode). Real incident from the earlier
+    optim-blind version: rq3_b2 gs150 was marked done with optim 3/4 shards on
+    HF, permanently freezing an unresumable step and putting prune at risk of
+    deleting the last actually-complete checkpoint. Used (a) to seed the
+    done-set at startup so a resumed node never re-uploads the checkpoint it
+    just pulled, and (b) to verify an upload before marking it done — done now
+    means "verified on HF", never "skipped".
     """
     import re
     from collections import Counter
@@ -130,15 +135,22 @@ def _remote_complete_steps(api, repo_id: str, config_name: str, files=None) -> s
         return set()
     pat = re.compile(
         rf"checkpoints/{re.escape(config_name)}/(global_step_\d+)/actor/"
-        rf"(model|extra_state)_world_size_\d+_rank_\d+\.pt$"
+        rf"(model|extra_state|optim)_world_size_\d+_rank_\d+\.pt$"
     )
     model_counts: Counter = Counter()
     extra_counts: Counter = Counter()
+    optim_counts: Counter = Counter()
     for f in files:
         m = pat.match(f)
         if m:
-            (model_counts if m.group(2) == "model" else extra_counts)[m.group(1)] += 1
-    return {name for name, n in model_counts.items() if n >= 4 and extra_counts[name] >= 4}
+            {"model": model_counts, "extra_state": extra_counts, "optim": optim_counts}[
+                m.group(2)
+            ][m.group(1)] += 1
+    return {
+        name
+        for name, n in model_counts.items()
+        if n >= 4 and extra_counts[name] >= 4 and optim_counts[name] >= 4
+    }
 
 
 def _local_ckpt_files(step_dir: Path) -> list:

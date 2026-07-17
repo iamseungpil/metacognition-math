@@ -29,12 +29,15 @@ def _max_step(repo: str, config_name: str, token: str):
     """Return (max COMPLETE step:int, files:list[str]) for checkpoints/<config>/global_step_*.
 
     Complete = at least 4 ``actor/model_world_size_*_rank_*.pt`` AND 4
-    ``actor/optim_world_size_*_rank_*.pt`` shards on the repo. The pusher uploads
-    per-file (durability under preemption), so a partially-uploaded step CAN be
-    visible on HF; resuming from one would crash or corrupt training. Since
-    load_contents includes the optimizer, a step with model 4/4 but optim <4
-    (upload cut mid-flight) still crashes actor_rollout_load_checkpoint — so both
-    the model AND optim shard sets must be complete to be a resume candidate.
+    ``actor/optim_world_size_*_rank_*.pt`` AND 4
+    ``actor/extra_state_world_size_*_rank_*.pt`` shards on the repo. The pusher
+    uploads per-file (durability under preemption), so a partially-uploaded
+    step CAN be visible on HF; resuming from one would crash or corrupt
+    training. Since load_contents includes the optimizer, a step with model 4/4
+    but optim <4 (upload cut mid-flight) still crashes
+    actor_rollout_load_checkpoint. Likewise load_contents includes extra
+    (lr scheduler/RNG state), so a step missing extra_state shards also crashes
+    resume — all three shard sets must be complete to be a resume candidate.
     """
     from collections import Counter
 
@@ -52,8 +55,12 @@ def _max_step(repo: str, config_name: str, token: str):
     optim_pat = re.compile(
         rf"checkpoints/{re.escape(config_name)}/global_step_(\d+)/actor/optim_world_size_\d+_rank_\d+\.pt$"
     )
+    extra_pat = re.compile(
+        rf"checkpoints/{re.escape(config_name)}/global_step_(\d+)/actor/extra_state_world_size_\d+_rank_\d+\.pt$"
+    )
     model_counts: Counter = Counter()
     optim_counts: Counter = Counter()
+    extra_counts: Counter = Counter()
     for f in files:
         m = model_pat.match(f)
         if m:
@@ -62,8 +69,16 @@ def _max_step(repo: str, config_name: str, token: str):
         o = optim_pat.match(f)
         if o:
             optim_counts[int(o.group(1))] += 1
-    all_steps = set(model_counts) | set(optim_counts)
-    complete = {s for s in all_steps if model_counts[s] >= 4 and optim_counts[s] >= 4}
+            continue
+        e = extra_pat.match(f)
+        if e:
+            extra_counts[int(e.group(1))] += 1
+    all_steps = set(model_counts) | set(optim_counts) | set(extra_counts)
+    complete = {
+        s
+        for s in all_steps
+        if model_counts[s] >= 4 and optim_counts[s] >= 4 and extra_counts[s] >= 4
+    }
     partial = all_steps - complete
     if partial:
         print(f"[resume] ignoring PARTIAL steps on HF: {sorted(partial)}")
