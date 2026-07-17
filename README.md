@@ -5,6 +5,8 @@
 - **전방 실험계획표**(claim×증거·보강실험 E1–E6·약점대응): [docs/EXPERIMENT_PLAN.md](docs/EXPERIMENT_PLAN.md)
 - **코드맵**(live vs legacy, 호출사슬, rmeta config-flip 함정): [docs/CODE_MAP.md](docs/CODE_MAP.md)
 - **로컬 서버 재현 가이드**(env·스테이징·학습/평가 커맨드·갭 목록): [docs/LOCAL_RUN.md](docs/LOCAL_RUN.md)
+- **클러스터 지원요청 문안**(0717 제출차단 사건·증거 로그): [docs/CLUSTER_SUPPORT_REQUEST.md](docs/CLUSTER_SUPPORT_REQUEST.md)
+- **HF 자산(전부 PUBLIC — 토큰 없이 연결)**: 데이터·init모델·env = [datasets/iamseungpil/metacot](https://huggingface.co/datasets/iamseungpil/metacot) · 체크포인트 = [iamseungpil/metacot-h200-triobj-dcpo-v3](https://huggingface.co/iamseungpil/metacot-h200-triobj-dcpo-v3)
 
 **한 줄 요약**: Qwen3-8B-Base가 풀이 도중 `<|meta|>` 블록으로 메타인지를 외재화하도록
 학습하고, 그 메타 구간에 모델 자신의 gold/decoy 로그확률 신호를 증류하는
