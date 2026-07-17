@@ -354,7 +354,7 @@ index 190948f..9390e4e 100644
  # ---------------------------------------------------------------------------
  HF_REPO_ID = "iamseungpil/metacot"
 +HF_REPO_TYPE = "dataset"
- HF_TOKEN = os.environ.get("HF_TOKEN", "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")
+ HF_TOKEN = os.environ.get("HF_TOKEN", "hf_REDACTED")
  
  # Files to skip when uploading (training artifacts, not needed for inference)
  IGNORE_PATTERNS = [
@@ -7525,7 +7525,7 @@ from typing import List
 # ---------------------------------------------------------------------------
 HF_REPO_ID = "iamseungpil/metacot"
 HF_REPO_TYPE = "dataset"
-HF_TOKEN = os.environ.get("HF_TOKEN", "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")
+HF_TOKEN = os.environ.get("HF_TOKEN", "hf_REDACTED")
 
 # Files to skip when uploading (training artifacts, not needed for inference)
 IGNORE_PATTERNS = [
