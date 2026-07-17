@@ -78,7 +78,7 @@ rollout은 single_turn, 전 arm 매치드. **yaml만 읽으면 보상 소스를 
 | verl_sdc_utils.py | region advantage 계산, 마스크 빌더, anchor-EMA 상태 | **LIVE** (TRIOBJ; import는 항상) |
 | sft.py | TRL SFT 트레이너(B0-gold·B23 meta-SFT init 생성) | **LIVE** (SFT 런처 2개) |
 | _decoy_utils.py | rule-based decoy 생성(pmi_shift용 gold-vs-decoy) | **LIVE** (전이적) |
-| meta_close_processor.py | vLLM logits proc — `<\|/meta\|>` 강제 닫기 (b3 런처 env `DCPO_META_CLOSE_FORCE=1`) | **LIVE** (b3) |
+| meta_close_processor.py | vLLM logits proc — `<\|/meta\|>` 강제 닫기 (b3 런처 env `DCPO_META_CLOSE_FORCE=1`) | 휴면 (env는 b3 런처가 설정하나 유일 소비처 cf_prefix_agent가 rq3 single_turn/pmi_shift 경로에서 미호출 — sdc_counterfactual=false·cf_group 아님) |
 | meta_quality.py | meta 품질 점수 헬퍼 (rewards.py가 import) | LIVE-전이적 |
 | tokenizer_utils.py / meta_token_init.py / meta_template.py | tokenizer 호환 / think→meta embedding 이식 / SFT용 meta 템플릿 | SFT 계보 LIVE |
 | dcpo_pmi.py / dcpo_directional.py / dcpo_asymcf.py | 구세대 R_meta(pmi dense / gm-contrast / asym_cf) | LEGACY (import되나 미선택) |
