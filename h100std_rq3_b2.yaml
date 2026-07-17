@@ -102,7 +102,14 @@ jobs:
         nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
         # durable per-file pusher for the live RL checkpoint dir.
         # SECURITY 0716: no --token arg — under set -x the expanded token lands in std_log
-        # plaintext. The script falls back to the HF_TOKEN env var.
+        # plaintext.
+        # CONTRACT FIX 0717: the env fallback exists only in pull_resume_ckpt.py — the
+        # tarball 476703893 copy of push_ckpts_to_hf.py still has --token required=True,
+        # so without the arg argparse kills the pusher at boot and NO checkpoints reach
+        # HF (silent until preemption loses the window). Patch the staged copy to the
+        # env-fallback default; ABORT the window if the patch does not land (fail closed).
+        sed -i "s/ap.add_argument(\"--token\", required=True)/ap.add_argument(\"--token\", default=os.environ.get(\"HF_TOKEN\"))/" /scratch/metacognition/scripts/push_ckpts_to_hf.py
+        grep -q "add_argument(\"--token\", default=os.environ.get(\"HF_TOKEN\"))" /scratch/metacognition/scripts/push_ckpts_to_hf.py || { echo "[YAML] pusher --token contract patch FAILED; ABORT window"; sleep 300; exit 1; }
         nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rq3_b2 --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --interval 90 --keep 2 --config_name rq3_b2 > /scratch/logs/push_rq3_b2.log 2>&1 &
 
         export PYTHONPATH=/scratch/metacognition

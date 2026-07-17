@@ -252,7 +252,10 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt_dir", required=True)
     ap.add_argument("--repo_id", required=True)
-    ap.add_argument("--token", required=True)
+    # CONTRACT 0717: launchers no longer pass --token (SECURITY 0716 — set -x would
+    # leak the expanded value into std_log). Fall back to the HF_TOKEN env var;
+    # token=None additionally lets huggingface_hub auto-detect HUGGING_FACE_HUB_TOKEN.
+    ap.add_argument("--token", default=os.environ.get("HF_TOKEN"))
     ap.add_argument("--interval", type=int, default=600)
     ap.add_argument("--config_name", default="sdc")
     ap.add_argument("--include_wandb", action="store_true", default=True)
