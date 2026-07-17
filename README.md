@@ -2,6 +2,10 @@
 
 > 로컬 master가 origin보다 앞서 있음 — 이 체크아웃이 진실원천(2026-07-16 기준).
 
+- **전방 실험계획표**(claim×증거·보강실험 E1–E6·약점대응): [docs/EXPERIMENT_PLAN.md](docs/EXPERIMENT_PLAN.md)
+- **코드맵**(live vs legacy, 호출사슬, rmeta config-flip 함정): [docs/CODE_MAP.md](docs/CODE_MAP.md)
+- **로컬 서버 재현 가이드**(env·스테이징·학습/평가 커맨드·갭 목록): [docs/LOCAL_RUN.md](docs/LOCAL_RUN.md)
+
 **한 줄 요약**: Qwen3-8B-Base가 풀이 도중 `<|meta|>` 블록으로 메타인지를 외재화하도록
 학습하고, 그 메타 구간에 모델 자신의 gold/decoy 로그확률 신호를 증류하는
 **메타인지적 자기증류(metacognitive self-distillation)** 로 OOD(어려운 도메인,

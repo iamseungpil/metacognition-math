@@ -219,3 +219,8 @@ retry 증가 없음 + 다음 HF ckpt 부재. wandb run id는 -2 접미사(rq3-b0
 종료→sleep 86400이 노드를 점거). arm 비교는 val-aux correctness만(val-core는
 보상-혼합 shaped라 arm마다 다름). 최종 RQ 판정은 매치드 gs(또는 gs300)의
 held-out 1030에서만 — in-training val 594가 아님.
+
+2026-07-17: 전방 계획은 신설 문서 `docs/EXPERIMENT_PLAN.md`(claim×증거 표,
+보강실험 E1–E6, 리뷰어렌즈 약점대응표)로 분리했다 — 본 로그는 이력 원장으로
+유지하며, 함께 `docs/CODE_MAP.md`(코드 인벤토리)와 `docs/LOCAL_RUN.md`(로컬
+재현 가이드)도 신설했다.
