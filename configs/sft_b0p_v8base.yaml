@@ -1,0 +1,22 @@
+# B0' v8-BASE SFT — think-on matched ladder (CONTROL arm), E-071 Option C.
+# Init = TRUE pretrained Qwen/Qwen3-8B-Base. Trains on data/b0on_v8base_strict_sft.parquet
+# (v8_base_matched_strict re-render: SAME 4,245 problems/chains as the B2' meta corpus with
+# meta REMOVED — clean same-chain RQ1 pair; 100% think-closed, <=4096 tokens, EOS <|im_end|>,
+# verified L0 GREEN in E-070). No wrong_prefix column -> sft.py trains the WHOLE assistant
+# response (prompt-only masking). sft.py enforces the EOS invariant (eos=<|im_end|>=151645,
+# pad=<|endoftext|>=151643) and adds <|meta|> tokens for vocab parity across arms.
+# Hyper = base-substrate adaptation (T1 SFT1 used 2e-6 on instruct; 2e-6 proven too shallow
+# on base per 0710; 3ep/1e-5 instilled 92% emission on base per b23) — ledger-flagged.
+model_name_or_path: Qwen/Qwen3-8B-Base
+dataset_path: data/b0on_v8base_strict_sft.parquet
+output_dir: /scratch/checkpoints/b0p_v8base_strict_sft   # ABSOLUTE: relative paths strand the ckpt (0708 bug)
+run_name: b0p-v8base-strict-sft
+wandb_project: metacot-math
+
+num_train_epochs: 3
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 4
+learning_rate: 1.0e-5
+max_length: 4096
+save_strategy: epoch
+eval_strategy: "no"

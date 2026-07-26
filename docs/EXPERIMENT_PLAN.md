@@ -49,6 +49,48 @@ E6 → VC 복원 즉시 = E1 SFT(단시간·선점위험 최소) → RL 큐 = **
 핵심) → B2 재개 → E2 → E1-RL → E3**. 각 gs300 도달 시마다 E5 즉시 수행.
 P0 신규 합계 ≈ 550 GPU-h (기존 확정 잡 ~340 제외).
 
+### 2.3 사전결정 결과별 해석
+
+아래 해석은 결과를 본 뒤에 주장을 바꾸는 것을 막기 위한 **사전 결정 규칙**이다.
+모든 비교는 같은 gs, 같은 held-out 1030, `math_verify`, 문제 단위 paired
+bootstrap을 사용한다. `유의`는 95% CI가 0을 포함하지 않는 경우로 정의한다.
+
+| 관측 결과 | 허용되는 결론 | 금지되는 결론 / 다음 조치 |
+|---|---|---|
+| **B3pkg > B2** 이고 **B3pkg > B3-noPMI** (유의) | meta reward package가 vanilla RL보다 개선되며, 그 안에서 PMI-shift의 추가 한계 기여가 관측됨 | 이를 곧바로 일반적 “메타인지”나 다중 시드 재현으로 확대하지 않음. E3와 placebo/독립 judge가 필요 |
+| **B3pkg > B2** 이지만 **B3pkg ≈ B3-noPMI** | 개선은 form/calibration/emission/length shaping 또는 priming과 호환되며, PMI-shift 순기여는 검출되지 않음 | PMI-shift를 주된 원인으로 귀속하지 않음. 논문 주장을 package-level로 강등 |
+| **B3pkg ≈ B2** 이고 **B3pkg ≈ B3-noPMI** | 정확도 향상은 재현되지 않지만, signal·format·행동 분석이 mechanism/negative-result 증거가 될 수 있음 | “실패”를 숨기고 과거 arm 중 좋은 숫자만 선택하지 않음. self-verification ceiling과 null 결과를 보고 |
+| **B3pkg < B2** 또는 **B3-noPMI > B3pkg** | PMI-shift가 현 recipe/substrate에서 무효 또는 해로운 방향일 가능성 | 기존 instruct 결과를 근거로 성공이라고 주장하지 않음. 별도 후속 실험으로만 CF/SDC 등을 재검증 |
+
+`B3pkg−B2`는 region routing 및 advantage-normalization 차이를 포함하므로
+package 비교이고, `B3pkg−B3-noPMI`만이 현재 설계에서 PMI head를 한 변수로 제거한
+내부 대조다. 따라서 첫 번째 비교가 양수여도 두 번째 비교가 양수가 아니면
+“PMI-shift가 이겼다”가 아니라 “package가 이겼다”고 기록한다.
+
+### 2.4 과거 instruct 세대 결과의 정확한 위치
+
+과거 결과는 서로 다른 비교를 섞어 순위를 만들면 안 된다.
+
+1. **Package vs matched-base (pre-rq3 T1)**: `pmishift−base`는 GSM8K
+   +4.0pp, MATH500 +18.8pp, AIME +14.2pp였지만, 이것은 PMI-shift 단독이
+   아니라 전체 reward package의 효과다. 해당 checkpoint는 현재 감사에서
+   decertified되어 현행 Base 래더의 증거로 사용할 수 없다.
+2. **Pure reward twin (instruct RQ2)**: 같은 meta-SFT 초기화의
+   `shiftonly−gandhi`는 MATH500에서 +5.6~+5.9pp로 유의한 양수였고, GSM8K는
+   거의 0, AIME는 −5.8~−7.1pp였다. 따라서 shift는 “모든 도메인에서 최고”가
+   아니라, solvable-hard MATH에서 가장 강한 양의 효과를 보인 방법으로 기술해야
+   한다. 출처: `docs/reports/2026-07-08-RQ2-isolated-pmishift-net-shiftonly-vs-gandhi.md`.
+3. **Historical 594-set held-out Δ ranking**: CF +0.040, PMI-shift +0.019,
+   PMI +0.010, gm-additive −0.003, gm-multiplicative −0.029였다. 이 표의
+   “최고”는 CF이며, PMI-shift는 2위다. 단, step·substrate·평가군이 완전히
+   동일한 clean ranking이 아니므로 후속 논문에서는 confirmatory evidence로만
+   사용한다. 출처: `docs/site/archive.html`의 historical archive.
+
+따라서 현재의 정확한 프레이밍은 **“instruct 세대에서 PMI-shift가 유망한
+solvable-hard 효과를 보였고, Base substrate에서 그 효과와 순기여를 재현하는
+중”**이다. “과거 방법 중 전반적으로 가장 좋았다” 또는 “이미 검증된 노벨티다”는
+표현은 사용하지 않는다.
+
 ## 3. 약점 대응표 (리뷰어 렌즈)
 
 ### 3.1 구조적 reject-근거 (이대로 제출 시 즉사)

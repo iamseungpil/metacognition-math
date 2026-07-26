@@ -32,6 +32,14 @@ jobs:
         # 0717 재패키징 완료(tag rq3-code-20260717)
         CODE_TAR_REVISION: "480254660"
         HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        # DURABILITY FIX 0719 (E-062): repo is Xet-enabled but hf_xet was NOT installed,
+        # so large model/optim shards (~3.5GB) never upload (only small extra_state does)
+        # => durable frontier stuck. Fix = pip install hf_xet in bootstrap + let the PUSHER
+        # use Xet (fast CAS upload). This global DISABLE_XET=1 keeps BOOTSTRAP downloads on
+        # the proven HTTP path (safe if *.xethub.hf.co is blocked); the pusher UNSETS it
+        # (env -u) so only uploads use Xet. Worst case (xethub blocked) = uploads fail same
+        # as now, bootstrap still runs. Codex-approved.
+        HF_HUB_DISABLE_XET: "1"
         WANDB_API_KEY: ${WANDB_API_KEY}
         WANDB_KEY: ${WANDB_API_KEY}
         WANDB_PROJECT: metacot-dcpo-v4
@@ -46,6 +54,30 @@ jobs:
         # OBSERVABILITY 0716 (ported from B3): faulthandler dumps a C-level traceback on
         # segfault/abort/SIGTERM. Pure observability — NO behavior change.
         PYTHONFAULTHANDLER: "1"
+        # OOM MITIGATION 0718 (E-047): expandable_segments REVERTED — vLLM hard-asserts
+        # against it ("Expandable segments are not compatible with memory pool",
+        # pytorch#147851) so it always breaks the vLLM engine-core boot. OOM instead
+        # mitigated via log_prob micro_batch 2->1 in the command block (memory-only,
+        # forward-split = mathematically equivalent, Codex-approved fallback).
+        # OOM MITIGATION 0718 (E-051): log_prob micro_batch=1 was INSUFFICIENT — OOM
+        # recurred at gs162 (progressive length inflation gs159 1762 -> gs161 2653 tok,
+        # 16% hitting the 8192 cap; peak already ceiling-bounded since ppo_micro_batch=1
+        # and GC is verl-default-ON). Codex GO (opt-C): add two MEMORY-ONLY levers in the
+        # command block — rollout.gpu_memory_utilization 0.45->0.35 (shrinks the co-resident
+        # vLLM KV reservation ~8GB; generation distribution unchanged) AND
+        # actor.fsdp_config.optimizer_offload=true (Adam state -> CPU, gradient-identical in
+        # algorithm; not bitwise but no systematic bias => matched B2-B0 comparison holds).
+        # Resume from gs158 (last HF-complete). B0/B3pkg NOT touched.
+        # OOM MITIGATION 0718 (E-052): opt-C ABOVE was INEFFECTIVE — gs162 re-OOM at the
+        # SAME footprint (70.26->70.46GB). Codex root-caused: (a) optimizer_offload moves
+        # Adam BACK to GPU at update_actor start => resident during backward, no peak help;
+        # (b) gpu_mem_util is moot because free_cache_engine is verl-default-ON so vLLM KV
+        # is already freed during the actor backward. The true peak is the 8192-token
+        # BACKWARD ACTIVATION. Real fix = actor_rollout_ref.model.enable_activation_offload=true
+        # (offloads activations to CPU, pairs with GC; verl perf-tuning recommended lever for
+        # FSDP backward-activation peak) + rollout.enforce_eager=true (drops vLLM CUDA-graph
+        # memory for extra headroom). Both memory-only, gradient-identical => matched holds.
+        # (opt-C flags kept — harmless; the activation-offload line is the load-bearing one.)
     command:
       - nvidia-smi
       - |
@@ -116,7 +148,14 @@ jobs:
         if grep -q "agent_loop_config_path" /scratch/metacognition/configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml; then echo "[YAML] STALE triobj config (agent block); ABORT window"; sleep 300; exit 1; fi
         grep -q "optim_world_size" /scratch/metacognition/scripts/push_ckpts_to_hf.py || { echo "[YAML] pusher 3-way completeness missing; ABORT window"; sleep 300; exit 1; }
         grep -q "extra_state_world_size" /scratch/metacognition/scripts/pull_resume_ckpt.py || { echo "[YAML] puller 3-way completeness missing; ABORT window"; sleep 300; exit 1; }
-        nohup python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rq3_b2 --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --interval 90 --keep 2 --config_name rq3_b2 > /scratch/logs/push_rq3_b2.log 2>&1 &
+        # DURABILITY FIX 0719 (E-062): install hf_xet so the pusher large-shard uploads use
+        # the Xet CAS path (repo is Xet-enabled; without hf_xet the ~3.5GB shards never commit).
+        # Bootstrap downloads stay on HTTP via global HF_HUB_DISABLE_XET=1; the pusher UNSETS
+        # it (env -u) so only the push process uses Xet. (No apostrophes/single-quotes in this
+        # bash -c block per amlt wordsplit rule.)
+        python -m pip install --quiet --upgrade hf_xet 2>&1 | tail -2 || echo "[YAML] hf_xet install failed (non-fatal)"
+        python -c "import hf_xet" && echo "[YAML] hf_xet ready" || echo "[YAML] hf_xet import FAILED"
+        nohup env -u HF_HUB_DISABLE_XET python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rq3_b2 --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --interval 90 --keep 2 --config_name rq3_b2 > /scratch/logs/push_rq3_b2.log 2>&1 &
 
         export PYTHONPATH=/scratch/metacognition
         cd /scratch/metacognition
@@ -194,10 +233,14 @@ jobs:
             actor_rollout_ref.rollout.max_model_len=10240 \
             actor_rollout_ref.rollout.max_num_batched_tokens=10240 \
             ++algorithm.norm_adv_by_std_in_grpo=false \
-            actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 \
-            actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2 \
+            actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
+            actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
+            actor_rollout_ref.rollout.gpu_memory_utilization=0.35 \
+            actor_rollout_ref.actor.fsdp_config.optimizer_offload=true \
+            ++actor_rollout_ref.model.enable_activation_offload=true \
+            actor_rollout_ref.rollout.enforce_eager=true \
             trainer.resume_mode=auto \
-            trainer.save_freq=10 \
+            trainer.save_freq=20 \
             trainer.test_freq=50 \
             ++trainer.val_before_train=False \
             ++hydra.searchpath=[pkg://verl/trainer/config] \

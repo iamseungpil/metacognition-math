@@ -1,0 +1,23 @@
+# B2p2 SFT2 (RV-functional filtered top-up) — Option C ABSENT branch, E-076.
+# Init = the durable SFT1 product /scratch/models/b2p_v8meta_strict_sft (staged from HF
+# in the launcher; L2 GREEN: wellformed 1.0, emission 100%, acc 58.0/55.5 vs b0p).
+# Trains on data/b2p2_rvseg_sft2.parquet: rv_redirect_verify_functional FILTERED to
+# 382 fully-clean rows (think-closed AND meta proper-nested AND <=4096 tokens AND EOS
+# im_end at render — the E-071 fallback spec; raw corpus was 0% clean and is BANNED).
+# wrong_prefix nonempty in 100% rows -> sft.py AUTO segment-masks (trains ONLY
+# meta+recovery, mirroring T1's SFT2). LIGHT top-up: 2 epochs, lr 2e-6 (T1-SFT1-style
+# gentle lr — the RV semantics are grafted onto the intact SFT1 structure habits,
+# NOT re-instilled at high lr which could re-import structure damage).
+model_name_or_path: /scratch/models/b2p_v8meta_strict_sft
+dataset_path: data/b2p2_rvseg_sft2.parquet
+output_dir: /scratch/checkpoints/b2p2_rvseg_sft   # ABSOLUTE (0708 stranded-ckpt guard)
+run_name: b2p2-rvseg-sft2
+wandb_project: metacot-math
+
+num_train_epochs: 2
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 4
+learning_rate: 2.0e-6
+max_length: 4096
+save_strategy: epoch
+eval_strategy: "no"

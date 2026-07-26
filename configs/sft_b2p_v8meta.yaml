@@ -1,0 +1,22 @@
+# B2' v8-META SFT1 — think-on matched ladder (TREATMENT init for B2'/B3'), E-071 Option C.
+# Init = TRUE pretrained Qwen/Qwen3-8B-Base. Trains on data/b2on_v8meta_strict_sft.parquet
+# (v8_meta_inside_strict re-render: 4,245 rows, 100% think-closed / meta proper-nested /
+# meta-INSIDE-think, <=4096 tokens, EOS <|im_end|>, verified L0 GREEN in E-070). This is the
+# T1 winner's SFT1 foundation (v8_meta_inside_strict) applied to base — the layer the failed
+# b23 generation SKIPPED (E-071 double-deviation finding). No wrong_prefix column -> sft.py
+# trains the WHOLE assistant response (prompt-only masking; matches T1 SFT1 which was also
+# whole-response). sft.py enforces the EOS invariant and adds <|meta|> tokens.
+# Hyper = base-substrate adaptation (3ep/1e-5, NOT T1's 2e-6 — see sft_b0p_v8base.yaml note).
+model_name_or_path: Qwen/Qwen3-8B-Base
+dataset_path: data/b2on_v8meta_strict_sft.parquet
+output_dir: /scratch/checkpoints/b2p_v8meta_strict_sft   # ABSOLUTE: relative paths strand the ckpt (0708 bug)
+run_name: b2p-v8meta-strict-sft
+wandb_project: metacot-math
+
+num_train_epochs: 3
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 4
+learning_rate: 1.0e-5
+max_length: 4096
+save_strategy: epoch
+eval_strategy: "no"

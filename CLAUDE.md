@@ -41,12 +41,22 @@ enabling self-assessment, error correction, and calibrated confidence.
   env grpo — 아카이브 세대 기록용)
 
 ## Data (HuggingFace: datasets/iamseungpil/metacot)
-SFT inputs (current = rq3 matched ladder):
-- data/b0_gold_sft.parquet → models/b0_gold_sft (B0 init) — 공개 HF gold,
+SFT inputs (current = **RQ3v2 think-on** matched ladder — 2단 SFT 스택):
+- b0p arm: data/b0on_v8base_strict_sft.parquet → models/b0p_v8base_strict_sft
+  (init Qwen3-8B-Base, 3ep lr 1e-5) — meta 제거된 matched base
+- b2p/b3p arm: **SFT1** data/b2on_v8meta_strict_sft.parquet → b2p_v8meta_strict_sft
+  (init Qwen3-8B-Base, 3ep lr 1e-5) → **SFT2** data/b2p2_rvseg_sft2.parquet →
+  **models/b2p2_rvseg_sft** = RL init for BOTH b2p and b3p (2ep lr 2e-6 light top-up)
+  - ⚠️ SFT2 데이터는 rv_redirect_verify_functional(1,763행)의 378행 부분집합.
+    E-093에서 배제 근인 확정: `think-closed` 조건이 위장된 시나리오 필터라
+    redirect가 554→67(1/8.3)로 기아. 유효 학습량 ≈T1의 1/35. **재구축 대기**.
+
+SFT inputs (retired = RQ3 think-off 세대, 부록으로만):
+- data/b0_gold_sft.parquet → models/b0_gold_sft (구 B0 init) — 공개 HF gold,
   gsm8k 637 + MATH 653 = 1,290행 (RV 문제 부분집합, 정답 math_verify 검증)
-- data/b23_rv_unmasked_sft.parquet → models/b23_rv_unmasked_sft (B2/B3 init) —
-  RV redirect-verify 1,763행, wrong_prefix 필드 비움(whole-response 학습;
-  이 unmask fix로 base meta emission 38% → 92%)
+- data/b23_rv_unmasked_sft.parquet → 구 B2/B3 init — RV redirect-verify 1,763행,
+  wrong_prefix 비움(whole-response 학습; base meta emission 38% → 92%).
+  ⚠️ 이 경로는 **HF에 존재하지 않는다**(로컬 data/ 전용). 현행 init은 위 b2p2_rvseg_sft.
 
 SFT inputs (pre-rq3 = v8 series, instruct 세대):
 - data/v8_meta_inside_think.parquet → checkpoints/v8_meta_inside_E20a (Meta SFT)

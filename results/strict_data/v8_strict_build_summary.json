@@ -10,6 +10,6 @@
     "redirect:ValueError": 1062,
     "verify:ValueError": 1003
   },
-  "meta_output": "/home/v-seungplee/metacognition/data/v8_meta_inside_strict.parquet",
-  "base_output": "/home/v-seungplee/metacognition/data/v8_base_matched_strict.parquet"
+  "meta_output": "/home/v-seungplee/metacognition-math/data/v8_meta_inside_strict.parquet",
+  "base_output": "/home/v-seungplee/metacognition-math/data/v8_base_matched_strict.parquet"
 }

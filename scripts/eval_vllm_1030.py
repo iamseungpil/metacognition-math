@@ -62,6 +62,13 @@ def summarize(results: list[dict]) -> dict:
             "avg_completion_length_tokens": float(
                 bdf["completion_length_tokens"].mean()
             ),
+            # length-confound probe (E-041): at a 4k deployment budget, this
+            # fraction of completions would be truncated. Compare across arms to
+            # separate capability from 4k-termination-fit in B2-B0 / B3-B2.
+            # Only meaningful when eval max_tokens > 4096 (else trivially 0).
+            "frac_len_gt_4096": float(
+                (bdf["completion_length_tokens"] > 4096).mean()
+            ),
             "num_truncated": (
                 int((bdf["finish_reason"] == "length").sum())
                 if "finish_reason" in bdf.columns

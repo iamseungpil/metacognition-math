@@ -1,4 +1,4 @@
-description: "RQ3 B3 (META-SFT + PMI-SHIFT) matched-ladder RL. Init = models/b23_rv_unmasked_sft (SAME meta-SFT init as B2). config triobj_dcpo_v4_stage3b with the FULL triobj reward package (dcpo_rmeta_source=pmi_shift + config-default heads: w_meta 0.8, w_format 0.35, trunc_open_penalty 0.3, w_emit 0.1, w_cal 0.3, len_cost 0.08), ONLY w_over=0.0 overridden — i.e. IDENTICAL reward setup to the archived T1-winning h100std_pmishift.yaml, just on the Base substrate + b23 SFT init. CORRECTION 0712: the previous rq3-b3 arm zeroed w_format/w_emit/len_cost/w_cal/trunc_open_penalty for 'clean pmi_shift isolation' — that stripped the meta-form scaffolding, wellformed_rate eroded 0.43(gs30)->0.02(gs75), held-out RQ2 went +0.042->-0.120. This arm restores the package that actually won. cf_group is OFF (single_turn rollout matches B0/B2). Fresh start from gs0 (NOT resumed from the eroded gs60). Collapse-fixed v2 recipe applied identically across all three arms: temp 1.0, top_k -1, top_p 1.0, max_response 8192, max_model_len/max_num_batched_tokens 10240, Dr.GRPO norm_adv_by_std=false, log_prob micro-batch 2 (8192 OOM guard). Matched hyperparams from config: train_batch 64, ppo_mini 8, n 8, lr 1e-6, 300 steps, clip 0.2/0.28, kl 0.0. H100x4 Standard."
+description: "RQ3 B3 (META-SFT + PMI-SHIFT) matched-ladder RL. Init = models/b2p2_rvseg_sft (SAME meta-SFT init as B2). config triobj_dcpo_v4_stage3b with the FULL triobj reward package (dcpo_rmeta_source=pmi_shift + config-default heads: w_meta 0.8, w_format 0.35, trunc_open_penalty 0.3, w_emit 0.1, w_cal 0.3, len_cost 0.08), ONLY w_over=0.0 overridden — i.e. IDENTICAL reward setup to the archived T1-winning h100std_pmishift.yaml, just on the Base substrate + b23 SFT init. CORRECTION 0712: the previous rq3-b3 arm zeroed w_format/w_emit/len_cost/w_cal/trunc_open_penalty for 'clean pmi_shift isolation' — that stripped the meta-form scaffolding, wellformed_rate eroded 0.43(gs30)->0.02(gs75), held-out RQ2 went +0.042->-0.120. This arm restores the package that actually won. cf_group is OFF (single_turn rollout matches B0/B2). Fresh start from gs0 (NOT resumed from the eroded gs60). Collapse-fixed v2 recipe applied identically across all three arms: temp 1.0, top_k -1, top_p 1.0, max_response 8192, max_model_len/max_num_batched_tokens 10240, Dr.GRPO norm_adv_by_std=false, log_prob micro-batch 2 (8192 OOM guard). Matched hyperparams from config: train_batch 64, ppo_mini 8, n 8, lr 1e-6, 300 steps, clip 0.2/0.28, kl 0.0. H100x4 Standard."
 
 target:
   service: sing
@@ -13,7 +13,7 @@ code:
   local_dir: $CONFIG_DIR/
 
 jobs:
-  - name: rq3_b3pkg
+  - name: rq3v2_b3p
     sku: 80G4-H100
     # TIER RENAME 0717: the 1120-slot opportunistic H100 pool we always ran on was
     # relabeled Standard->Basic in the July-16 reallocation (portal: NDH100v5 Basic
@@ -30,7 +30,7 @@ jobs:
         HF_TOKEN: ${HF_TOKEN}
         GH_TOKEN: ${GH_TOKEN}
         # 0717 재패키징 완료(tag rq3-code-20260717)
-        CODE_TAR_REVISION: "480254660"
+        CODE_TAR_REVISION: "488239754"
         HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
         # DURABILITY FIX 0719 (E-062): Xet-enabled repo needs hf_xet for large-shard upload.
         # Global disable keeps bootstrap downloads on HTTP; pusher unsets it (env -u) for Xet.
@@ -39,8 +39,8 @@ jobs:
         WANDB_KEY: ${WANDB_API_KEY}
         WANDB_PROJECT: metacot-dcpo-v4
         WANDB_RUN_GROUP: rq3_matched_ladder
-        WANDB_NAME: rq3_b3pkg
-        WANDB_RUN_ID: rq3-b3pkg-2
+        WANDB_NAME: rq3v2_b3p
+        WANDB_RUN_ID: rq3v2-b3p-3
         WANDB_RESUME: allow
         WANDB_INIT_TIMEOUT: "300"
         WANDB_TAGS: RQ3,matched_ladder,B3pkg,meta_sft,pmi_shift,full_triobj_package,matches_T1_pmishift,v2_recipe,from-b23-rv-sft,fresh-gs0
@@ -97,19 +97,19 @@ jobs:
         python /scratch/metacognition/scripts/pull_parquets.py 2>&1 | tail -3
 
         # ── stage the B23 meta-SFT init (RL init + frozen ref worker) from iamseungpil/metacot ──
-        # SAME init as B2 (models/b23_rv_unmasked_sft). B3 vs B2 differ ONLY by the added
-        # pmi_shift meta head. Must exist under iamseungpil/metacot models/b23_rv_unmasked_sft/
+        # SAME init as B2 (models/b2p2_rvseg_sft). B3 vs B2 differ ONLY by the added
+        # pmi_shift meta head. Must exist under iamseungpil/metacot models/b2p2_rvseg_sft/
         # (produced by the B23 meta-SFT run) before this launch.
         python -c "
         from huggingface_hub import snapshot_download
         import os, shutil
         snapshot_download(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
-            allow_patterns=[\"models/b23_rv_unmasked_sft/**\"], local_dir=\"/scratch/models_dl\")
-        src=\"/scratch/models_dl/models/b23_rv_unmasked_sft\"; dst=\"/scratch/models/b23_rv_unmasked_sft\"
+            allow_patterns=[\"models/b2p2_rvseg_sft/**\"], local_dir=\"/scratch/models_dl\")
+        src=\"/scratch/models_dl/models/b2p2_rvseg_sft\"; dst=\"/scratch/models/b2p2_rvseg_sft\"
         shutil.rmtree(dst, ignore_errors=True); shutil.copytree(src, dst); print(\"b23 meta-SFT staged\")
         "
         python -c "
-        import json, os; p=\"/scratch/models/b23_rv_unmasked_sft/tokenizer_config.json\"
+        import json, os; p=\"/scratch/models/b2p2_rvseg_sft/tokenizer_config.json\"
         if os.path.exists(p):
             cfg=json.load(open(p)); cfg.pop(\"extra_special_tokens\", None); json.dump(cfg, open(p,\"w\"), indent=2); print(\"tokenizer patched\")
         "
@@ -131,7 +131,7 @@ jobs:
         grep -q "extra_state_world_size" /scratch/metacognition/scripts/pull_resume_ckpt.py || { echo "[YAML] puller 3-way completeness missing; ABORT window"; sleep 300; exit 1; }
         python -m pip install --quiet --upgrade hf_xet 2>&1 | tail -2 || echo "[YAML] hf_xet install failed (non-fatal)"
         python -c "import hf_xet" && echo "[YAML] hf_xet ready" || echo "[YAML] hf_xet import FAILED"
-        nohup env -u HF_HUB_DISABLE_XET python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rq3_b3pkg --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --interval 90 --keep 2 --config_name rq3_b3pkg > /scratch/logs/push_rq3_b3pkg.log 2>&1 &
+        nohup env -u HF_HUB_DISABLE_XET python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rq3v2_b3p --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --interval 90 --keep 1 --config_name rq3v2_b3p > /scratch/logs/push_rq3v2_b3p.log 2>&1 &
 
         export PYTHONPATH=/scratch/metacognition
         cd /scratch/metacognition
@@ -151,7 +151,7 @@ jobs:
                 time.sleep(30)
         cm=Counter(); ce=Counter(); co=Counter()
         for f in fs:
-            m=re.search(r\"rq3_b3pkg/global_step_(\d+)/actor/(model|extra_state|optim)_world_size_\d+_rank_\d+\.pt$$\",f)
+            m=re.search(r\"rq3v2_b3p/global_step_(\d+)/actor/(model|extra_state|optim)_world_size_\d+_rank_\d+\.pt$$\",f)
             if m: {\"model\":cm,\"extra_state\":ce,\"optim\":co}[m.group(2)][int(m.group(1))]+=1
         steps=sorted(s for s,n in cm.items() if n>=4 and ce[s]>=4 and co[s]>=4)
         print((steps[-1] if steps else 0), (1 if (cm or ce or co) else 0))
@@ -172,16 +172,16 @@ jobs:
         # window may preempt pull_resume mid-download -> verl would silently COLD-START from gs0.
         # Retry the pull up to 3x; if RGS>0 but NO local global_step_* landed, ABORT rather than restart.
         for rp in 1 2 3; do
-          python /scratch/metacognition/scripts/pull_resume_ckpt.py --repo iamseungpil/metacot-h200-triobj-dcpo-v3 --config_name rq3_b3pkg --local_dir /scratch/checkpoints/rq3_b3pkg 2>&1 | tail -5
-          ls -d /scratch/checkpoints/rq3_b3pkg/global_step_* >/dev/null 2>&1 && break
+          python /scratch/metacognition/scripts/pull_resume_ckpt.py --repo iamseungpil/metacot-h200-triobj-dcpo-v3 --config_name rq3v2_b3p --local_dir /scratch/checkpoints/rq3v2_b3p 2>&1 | tail -5
+          ls -d /scratch/checkpoints/rq3v2_b3p/global_step_* >/dev/null 2>&1 && break
           echo "[YAML] pull_resume attempt $${rp} landed no local checkpoint; retry"; sleep 30
         done
-        LOCAL_GS=$$(ls -d /scratch/checkpoints/rq3_b3pkg/global_step_* 2>/dev/null | grep -oE "global_step_[0-9]+" | grep -oE "[0-9]+" | sort -n | tail -1)
+        LOCAL_GS=$$(ls -d /scratch/checkpoints/rq3v2_b3p/global_step_* 2>/dev/null | grep -oE "global_step_[0-9]+" | grep -oE "[0-9]+" | sort -n | tail -1)
         echo "[YAML] RGS(HF)=$${RGS_STEP} ANY=$${RGS_ANY} LOCAL_GS(pulled)=$${LOCAL_GS:-NONE}"
         # 0716: abort on ANY existing lineage (not just a complete step) — a partial-only
         # lineage with a failed pull must also refuse the gs0 cold-start.
         if [ "$${RGS_ANY}" = "1" ] && [ -z "$${LOCAL_GS}" ]; then
-          echo "[YAML] ABORT: HF has rq3_b3pkg lineage (complete gs=$${RGS_STEP}) but resume pull produced no local checkpoint; refusing gs0 cold-start. Next window retries."
+          echo "[YAML] ABORT: HF has rq3v2_b3p lineage (complete gs=$${RGS_STEP}) but resume pull produced no local checkpoint; refusing gs0 cold-start. Next window retries."
           sleep 300
           exit 1
         fi
@@ -200,12 +200,12 @@ jobs:
         # max_response 8192 / max_model_len+max_num_batched_tokens 10240 / Dr.GRPO
         # norm_adv_by_std=false / log_prob micro-batch 2 OOM guard) applied identically
         # to all three arms.
-        WANDB_NAME=rq3_b3pkg /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
+        WANDB_NAME=rq3v2_b3p /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
             --config-name=triobj_dcpo_v4_stage3b_h100_4x4k \
-            trainer.experiment_name=rq3_b3pkg \
-            trainer.default_local_dir=/scratch/checkpoints/rq3_b3pkg \
+            trainer.experiment_name=rq3v2_b3p \
+            trainer.default_local_dir=/scratch/checkpoints/rq3v2_b3p \
             trainer.project_name=metacot-dcpo-v4 \
-            actor_rollout_ref.model.path=/scratch/models/b23_rv_unmasked_sft \
+            actor_rollout_ref.model.path=/scratch/models/b2p2_rvseg_sft \
             ++algorithm.dcpo_rmeta_source=pmi_shift \
             ++algorithm.dcpo_w_over=0.0 \
             actor_rollout_ref.rollout.temperature=1.0 \
@@ -218,7 +218,7 @@ jobs:
             actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 \
             actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2 \
             trainer.resume_mode=auto \
-            trainer.save_freq=20 \
+            trainer.save_freq=10 \
             trainer.test_freq=50 \
             ++trainer.val_before_train=False \
             ++hydra.searchpath=[pkg://verl/trainer/config] \
@@ -241,7 +241,7 @@ jobs:
         wait $${VERL_PID}
         VERL_RC=$$?
         kill $${TAIL_PID} $${HB_PID} 2>/dev/null || true
-        echo "[YAML] verl_sdc rq3_b3pkg rc=$${VERL_RC}; tail of verl_main.log:"
+        echo "[YAML] verl_sdc rq3v2_b3p rc=$${VERL_RC}; tail of verl_main.log:"
         tail -60 /scratch/logs/verl_main.log 2>/dev/null
         # ── FINAL SYNC PUSH (copied from B0): the background pusher can freeze mid-run; do a
         # SYNCHRONOUS, VERIFIED, RETRIED push of the highest local global_step so the FINAL
@@ -250,7 +250,7 @@ jobs:
         # final commit). ──
         pkill -f push_ckpts_to_hf 2>/dev/null || true
         sleep 5
-        FINAL=$$(ls -d /scratch/checkpoints/rq3_b3pkg/global_step_* 2>/dev/null | sort -V | tail -1)
+        FINAL=$$(ls -d /scratch/checkpoints/rq3v2_b3p/global_step_* 2>/dev/null | sort -V | tail -1)
         FN=$$(basename "$${FINAL}")
         echo "[YAML] final sync push target: $${FINAL}"
         if [ -n "$${FINAL}" ]; then
@@ -259,7 +259,7 @@ jobs:
         from huggingface_hub import HfApi
         import os
         api=HfApi(token=os.environ[\"HF_TOKEN\"])
-        api.upload_folder(folder_path=\"$${FINAL}\", path_in_repo=\"checkpoints/rq3_b3pkg/$${FN}\", repo_id=\"iamseungpil/metacot-h200-triobj-dcpo-v3\", repo_type=\"model\", ignore_patterns=[\"*.tmp\",\"*.lock\"])
+        api.upload_folder(folder_path=\"$${FINAL}\", path_in_repo=\"checkpoints/rq3v2_b3p/$${FN}\", repo_id=\"iamseungpil/metacot-h200-triobj-dcpo-v3\", repo_type=\"model\", ignore_patterns=[\"*.tmp\",\"*.lock\"])
         fs=api.list_repo_files(\"iamseungpil/metacot-h200-triobj-dcpo-v3\", repo_type=\"model\")
         nm=sum(1 for f in fs if (\"$${FN}/actor/model_world_size\" in f) and f.endswith(\".pt\"))
         ne=sum(1 for f in fs if (\"$${FN}/actor/extra_state_world_size\" in f) and f.endswith(\".pt\"))
