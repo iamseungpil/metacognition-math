@@ -1,5 +1,56 @@
 # EXPERIMENT_PLAN — RQ3 매치드 래더 전방 계획표 (2026-07-17 신설)
 
+> ## ⛔ 읽기 전 — 아래 본문은 **RQ3(think-off) 세대**의 계획표다 (2026-07-26 갱신)
+>
+> 본선은 **RQ3v2(think-on / v8-parity)** 로 옮겨갔고, 아래 §1–§5의 arm 이름·
+> init 경로·상태 컬럼은 **그 이전 세대**를 가리킨다. 입구 문서가 은퇴한 설계를
+> 현행처럼 기술하는 것이 E-071 인수인계 감사의 지적이었으므로, 여기서 현행
+> 상태를 먼저 못박는다. **최신 상태는 언제나
+> `docs/reports/2026-07-17-rq3-run-and-iteration-log.md` 가 원장이다.**
+>
+> ### 현행 사다리 (RQ3v2, 2단 SFT 스택)
+>
+> | arm | SFT1 | SFT2 | RL |
+> |---|---|---|---|
+> | b0p (control) | `b0on_v8base_strict_sft` → `models/b0p_v8base_strict_sft` | `v8_base_rv_sft`(meta-removed twin) → `models/b0p2_rvfull_sft` | VANILLA_GRPO |
+> | b2p | `b2on_v8meta_strict_sft` → `models/b2p_v8meta_strict_sft` | `rv_redirect_verify_functional`(raw 1763) → `models/b2p2_rvfull_sft` | VANILLA_GRPO |
+> | b3p | 〃 | 〃 | TRIOBJ_DCPO_V4 풀패키지 (`rmeta=pmi_shift`, `w_over=0`) |
+>
+> 축: **RQ1=b2p−b0p** · **RQ2=b3p−b2p** · **재현축=b3p−b0p**(T1 헤드라인과 같은 축).
+> 판정은 불변 — **gs300 held-out 1030(16k, avg@8, math_verify)** 에서만.
+>
+> ### 2026-07-26 감사로 확정된 것 (E-091~E-100)
+>
+> - **E-093** 구 SFT2 필터의 `think-closed` 조건은 품질필터가 아니라 **위장된
+>   시나리오 필터**였다. `</think>`는 강제주입 prefix에서만 오고 생성 recovery엔
+>   1763행 중 0건이며, redirect는 정의상 think 내부에서 잘린다 ⇒ redirect 554→67.
+> - **E-094** 그 필터는 **SFT1과 반대 방향으로** 학습시켰다. SFT1은 meta-inside
+>   100%인데 필터 산출물 378행은 **0%**. redirect의 69%가 든 계열(F011 726행)을
+>   통째로 버렸다.
+> - **E-095** **T1 자신의 SFT2에도** 메타 블록이 마스크된 prefix 안에 들어간 행이
+>   **524행(29.7%)** 있다 — 그 행들은 메타 방출을 전혀 가르치지 않는다. T1은
+>   그대로 학습해서 이겼다.
+> - **E-097** 사다리가 **비대칭**이었다: 메타 arm 2단 vs **컨트롤 arm 1단**
+>   (`b0p2_*` 부재) ⇒ 재현축이 메타 메커니즘과 "SFT 한 단계 추가"를 섞고 있었다.
+>   수리에 새 데이터는 불필요했다(meta-removed twin이 HF에 미사용 방치돼 있었다).
+> - **E-098** durable 판정은 **파일 수가 아니라 종류별**(model/optim/extra 각 ≥4)로
+>   세야 한다. `rq3v2_b3p` gs10은 optim 0/4라 resume 불가였다.
+> - **E-099** 벽시계의 **64%가 정지 구간**(같은 노드 suspend/resume이라 작업 손실은
+>   없고 시간만 손실) ⇒ b2p 14.9분/step, 신규 arm A100 ~6일/arm, 3 arm 순차 ~18일.
+> - **E-091** `msrresrchbasicvc`가 **VC 단위로 모든 신규 제출을 거부**(1-CPU echo도).
+>   계정·토큰·클라이언트·리전·SKU·티어·코드 전부 반증됨 ⇒ **사람이 GCR/Singularity에
+>   문의**해야 풀린다.
+>
+> ### 발사 순서 (사전등록)
+> 1. **(C) raw 1763** SFT2 — T1과 문자 그대로 동일. 편차를 발명하지 않는다.
+> 2. (C′) **G5 게이트 1239행**(`scripts/build_g5_gated_rv_sft.py`, redirect 36.5%) —
+>    (C) 완주 후의 **해석 가능한 개선**이지 대체가 아니다.
+> 3. 두 SFT2 게이트 통과 → 새 init으로 **b0p·b2p·b3p RL 3종** 재실행.
+>
+> ### 재현 판정조건 (사전등록·미충족)
+> 두 SFT2 게이트 통과 + 3 arm 완주 후 held-out 1030의 **b3p−b0p 유의 양수 =
+> 재현 성공 / 음수 = substrate-dependence(음성결과로 발표)**.
+
 이 문서는 **앞으로 할 일의 단일 계획표**다. 과거 이력은
 `docs/redesign/EXPERIMENT_LOG.md`(상태원장, §11이 최신)에 있고, 여기는
 "논문이 서려면 무엇이 더 필요한가"를 리뷰어 관점(soundness/AC 렌즈)으로
