@@ -2315,3 +2315,35 @@ E-095가 확정한 **시나리오 중립 대체조건**을 코드로 만들었�
 
 ### 왜 이 작업을 지금 했나
 용량 대기 중 GPU 불요 작업 중에서, **인수인계 리스크가 가장 큰 항목**이었다. 실험 산출물은 원장에 다 있지만 **입구 문서가 틀린 세대를 가리키면 다음 사람(또는 다음 세션의 나)이 잘못된 arm 이름·init 경로로 출발**한다. E-071이 같은 문제를 이미 한 번 지적했다는 사실이 재발 비용을 보여준다.
+
+---
+
+## E-101 새 init용 **RL 런처 3종 작성 완료**(발사 대기) — b0p arm은 이 프로젝트에서 **처음 만들어진다** (2026-07-26 17:28-17:50 UTC, GPU 0)
+
+### 상태 (무변화)
+카나리아 **RED 13회 연속** · SFT2-meta **queued 3h** · SFT2-control **queued 3h** · b2p running **23h**
+
+### 산출물 3종 (전부 신규 파일 · 기존 런처 무수정)
+| 파일 | arm | init | config | ckpt 계보 |
+|---|---|---|---|---|
+| `a100_rq3v2f_b0p.yaml` | **B0 컨트롤(신설)** | `models/b0p2_rvfull_sft`(meta-removed twin) | `base_matched_grpo_h100_4x4k` | `rq3v2f_b0p` |
+| `a100_rq3v2f_b2p.yaml` | B2 | `models/b2p2_rvfull_sft` | `base_matched_grpo_h100_4x4k` | `rq3v2f_b2p` |
+| `a100_rq3v2f_b3p.yaml` | B3 | `models/b2p2_rvfull_sft` **(b2p와 동일)** | `triobj_dcpo_v4_stage3b_h100_4x4k` + `rmeta=pmi_shift`·`w_over=0` | `rq3v2f_b3p` |
+
+⇒ **b0p vs b2p는 init만, b2p vs b3p는 보상 config만** 다르다. RQ1·RQ2·재현축이 각각 한 변수만 움직인다. 기계 대조로 확인(위 표의 init/config/ckpt는 yaml에서 직접 추출한 값).
+
+### ⭐계보 이름을 `rq3v2f_*`로 분리한 이유
+기존 `rq3v2_b2p`·`rq3v2_b3p` 계보를 재사용하면 새 런이 **구 init의 durable을 resume 후보로 집어간다**. 특히 `rq3v2_b3p` gs10은 optim 0/4라 resume 불가지만(E-098) `rq3v2_b2p` gs40은 **RESUMABLE**이라 실제로 물릴 수 있었다 — 구 init에서 40스텝 진행한 상태를 새 init 런이 이어받으면 **두 init이 섞인 궤적**이 된다. 이름 분리로 원천 차단. 구 계보는 HF에 남아 **RQ2 부록**으로 쓰인다.
+
+### ⚠️ 클론 검증이 **3틱 연속** 실제 결함을 잡았다
+b0p는 b2p 런처의 클론인데, 치환 후에도 **주석이 자신을 "B2 INIT / the META SFT / 92% emission / the ONLY B2-vs-B0 difference"라고 설명**하고 있었다(118행·217-219행). 컨트롤 arm은 정반대로 **meta-removed 트윈**을 쓴다. yaml 파싱·`bash -n`·shlex 전부 통과하므로 기계검사로는 안 걸린다.
+수정 내용은 사실 기술로 교체했다 — 두 지도학습 단계 모두 메타 없음, SFT2는 `v8_base_rv_sft.parquet`(1763행 1:1·동일 시나리오 분포·동일 think-closed율·메타 구분자 0), 이 단을 추가하는 것이 b3p−b0p를 "메타 메커니즘"으로 만드는 이유(E-097).
+**누적 3건**: E-096 description 낡음 → E-097 이스케이프 따옴표 안 shard 검증이 다른 arm 경로 → E-101 클론 주석이 자기 정체를 반대로 기술. **패턴이 확립됐다: 기계검사는 문법만 보고, 의미는 전수 diff 통독만이 잡는다.**
+
+### 기계 검증 (3종 전부 통과)
+yaml 파싱 · target `msrresrchvc`/`80G4-A100`/`Basic` · `CODE_TAR_REVISION 490407111`(상위집합 tarball) · WANDB_RUN_ID 신규(`rq3v2f-{b0p,b2p,b3p}-1`) · **shlex 3토큰** · **`$$`→`$` 치환 후 inner `bash -n` OK** · 구 토큰 잔존 0(`b2p2_rvseg_sft`·`rq3v2_b2p`·`rq3v2_b3p`·`488239754`·`msrresrchbasicvc`·`80G4-H100`).
+
+### 발사 조건 (아직 미충족)
+1. `rq3v2-sft2-rvfull` 게이트 통과 → HF `models/b2p2_rvfull_sft` 4샤드 durable
+2. `rq3v2-sft2-b0p2` 게이트 통과 → HF `models/b0p2_rvfull_sft` 4샤드 durable
+3. 그 후 3종 발사. ⚠️E-099 기준 A100에서 **arm당 ~6일**, 3 arm 순차면 ~18일 — 용량이 풀리지 않으면 이 계획은 실행 불가하다는 점은 변하지 않는다.
