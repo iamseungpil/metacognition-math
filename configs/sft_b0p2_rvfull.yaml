@@ -1,0 +1,45 @@
+# B0p2 SFT2 — the MISSING second stage of the control arm.
+#
+# WHY THIS EXISTS (found 0726, E-097). The think-on matched ladder was two-stage
+# on the meta side and ONE-stage on the control side:
+#
+#   b2p/b3p : SFT1 b2p_v8meta_strict_sft  ->  SFT2 (RV corpus, meta)  ->  RL
+#   b0p     : SFT1 b0p_v8base_strict_sft  ->  (nothing)               ->  RL
+#
+# HF `iamseungpil/metacot` models/ confirms it: there is no b0p2_* checkpoint.
+# So the replication axis b3p - b0p currently conflates the thing we want to
+# measure (the meta mechanism) with a thing we do not (one extra SFT pass over
+# the RV corpus). That is exactly the confound the matched ladder exists to
+# remove, and it is the same trap already flagged for RQ1 ("RQ1은 meta-init
+# 효과가 아니라 corpus까지 다른 SFT 비교").
+#
+# The fix needs no new data: `scripts/build_base_rv_sft_data.py` was written for
+# precisely this ("the META-REMOVED TWIN of the rv_functional SFT corpus (base
+# SFT-2 data)") and its output has been sitting on HF unused. Verified 0726:
+#   - 1763 rows, EXACT 1:1 with the meta corpus (no rows dropped)
+#   - 0 `<|meta|>` / `<|/meta|>` substrings (the build script's hard invariant)
+#   - identical scenario split (verify 1209 / redirect 554)
+#   - identical think-closed rate 41.2% (stripping meta cannot touch </think>)
+#   - wrong_prefix nonempty 100% -> sft.py segment-masks IDENTICALLY to the meta
+#     arm, so the two arms train on the same spans minus the meta block
+#   - render-layer audit (scripts/audit_sft2_render_mask.py): 0% truncation at
+#     4096 (max 3124 tokens), 100% keep the final \boxed answer in the trained
+#     region, 100% terminate with EOS. G3/G5 report N/A by construction — they
+#     are meta-specific gates and this corpus has no meta block.
+#
+# Dose is matched to the meta arm's (C) run (configs/sft_b2p2_rvfull.yaml):
+# 3 epochs, lr 1e-5, max_length 4096, bs1 x ga4 — so the only difference between
+# the arms at this stage is the presence of the meta block.
+model_name_or_path: /scratch/models/b0p_v8base_strict_sft
+dataset_path: data/v8_base_rv_sft.parquet
+output_dir: /scratch/checkpoints/b0p2_rvfull_sft   # ABSOLUTE (0708 stranded-ckpt guard)
+run_name: b0p2-rvfull-sft2
+wandb_project: metacot-math
+
+num_train_epochs: 3
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 4
+learning_rate: 1.0e-5
+max_length: 4096
+save_strategy: epoch
+eval_strategy: "no"

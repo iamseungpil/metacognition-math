@@ -2077,3 +2077,92 @@ E-095에서 확정한 1차안(raw 1763 + T1 용량)을 노드 확보 즉시 발�
 
 ### 틱 상태 (13:03 UTC)
 basicvc 카나리아 **RED**(5회 연속) · b3p `rq3v2-b3p-a100` **queued 2h**(노드 미확보) · b2p running **19h** · durable 불변
+
+---
+
+## tick 13:35 UTC (2026-07-26) — **SFT2 (C) 발사** (발사 순서 재고: b3p보다 SFT2 우선)
+
+### 상태 (전 항목 무변화)
+카나리아 **RED 6회 연속** · b3p `rq3v2-b3p-a100` **queued 2h**(노드 미확보) · b2p `superb-terrier` running **19h** · durable `rq3v2_b2p{20}`·`rq3v2_b3p{10}`
+
+### ⭐발사 순서를 바꿨다 — 근거
+직전 틱 계획은 "b3p가 노드를 잡거나 판정난 뒤 SFT2 발사"(A100 경합 회피)였다. 재검토 결과 **우선순위가 뒤집혔다**:
+- **b3p A100은 결함 있는 init에서 학습한다** — 378행 기아 SFT2(redirect 1/8.3·meta-inside 0%·유효 학습량 ~1/35). b2p와 init이 매치되므로 **RQ2 축(b3p−b2p, "이 init에서 보상 패키지가 돕는가")은 내부적으로 유효**하지만, **재현 질문(b3p−b0p)에는 답할 수 없다**.
+- **SFT2가 재현 판정의 전제**다. 사전등록 조건("b0p 존재 + SFT2 T1수준 복원")의 절반이 이것이고, 사용자의 중심 관심사다.
+- ⇒ 큐에서 SFT2가 먼저 슬롯을 잡는 것이 이득. b3p의 큐 위치를 빼앗지 않으며 둘 다 대기할 뿐이다.
+
+### ⚠️ 이중발사 금지 규칙에 저촉되지 않음 — 경로 대조로 확인
+E-092의 금지는 **동일 durable 경로**를 두 잡이 쓰는 경우다. 이번 두 잡은 다르다:
+- SFT2 → HF **dataset** `iamseungpil/metacot` : `models/b2p2_rvfull_sft`
+- b3p  → HF **model** `metacot-h200-triobj-dcpo-v3` : `checkpoints/rq3v2_b3p`
+repo도 경로도 겹치지 않으므로 프루닝 경합·궤적 혼합 위험 **0**. (SFT2의 출력 이름을 `rvfull`로 분리해 둔 E-096의 조치가 여기서 그대로 효력을 낸다.)
+
+### 발사
+- **`rq3v2-sft2-rvfull`** / job `sft_b2p2_rvfull` / msrresrchvc / 80G4-A100 / **13:36:02 UTC** / status `preparing` / portal `aka.ms/amlt?q=kssl6`
+- red커밋 가드 준수: `pytest 747 passed, 8 skipped` && 제출을 한 체인으로 묶음
+- CODE_TAR_REVISION `490360017`(round-trip md5 검증본), config `configs/sft_b2p2_rvfull.yaml`
+- 판정 게이트는 런처 원형 유지: EOS 게이트(rc0 필수) → `measure_sft_gate`(math500 300문항·`base_accuracy_greedy 0.5967` SFT1 앵커) → **회귀시 ckpt 폐기**(E-071 kill-switch)
+
+### 다음 틱
+카나리아 → **SFT2 preparing→running·L2 게이트 로그** → b3p 노드 → b2p gs40(~15:30) → (SFT2 게이트 통과시)`b2p2_rvfull_sft` init을 쓰는 RL 런처 신규본 작성
+
+---
+
+## E-097 ⭐⭐⭐ **매치드 사다리에 단(stage)이 빠져 있었다** — 컨트롤 arm이 1단, 메타 arm이 2단 ⇒ 재현 축이 "메타 메커니즘"과 "SFT 한 단계 추가"를 섞고 있었다. 누락된 단을 발사 (2026-07-26 14:03-14:12 UTC, GPU 0)
+
+b0p arm 발사 준비를 하던 중 발견. HF `iamseungpil/metacot` `models/` 전수 열거 결과:
+```
+b0p_v8base_strict_sft   14 files   ← 컨트롤 SFT1
+b2p_v8meta_strict_sft   14 files   ← 메타 SFT1
+b2p2_rvseg_sft          14 files   ← 메타 SFT2
+(b0p2_* 는 존재하지 않음)          ← 컨트롤 SFT2가 없다
+```
+즉 사다리가 **비대칭**이었다:
+```
+b2p/b3p : SFT1(meta)  →  SFT2(RV 코퍼스, meta)  →  RL
+b0p     : SFT1(base)  →  (없음)                 →  RL
+```
+
+### 🔴 이것이 만드는 교란
+재현 축 **b3p − b0p**는 우리가 재려는 것(메타 메커니즘)과 재려는 것이 아닌 것(**RV 코퍼스에 대한 SFT 한 단계 추가**)을 함께 담는다. 매치드 사다리가 존재하는 이유가 바로 이 교란을 없애는 것이었다. 그리고 이것은 이미 기록된 함정과 같은 계열이다 — RQ3 3중감사의 "RQ1은 meta-init 효과가 아니라 **corpus까지 다른** SFT 비교"(0716).
+
+### 수리는 새 데이터가 필요 없었다 — 이미 만들어 놓고 안 쓴 트윈이 있다
+`scripts/build_base_rv_sft_data.py`의 docstring 첫 줄이 정확히 이 용도다: *"Build the META-REMOVED TWIN of the rv_functional SFT corpus (base SFT-2 data)"*. 산출물 `data/v8_base_rv_sft.parquet`이 HF `metacot`에 **미사용 상태로 있었다**. 0726 실측 검증:
+
+| 항목 | 값 |
+|---|---|
+| 행수 | **1763 — 메타 코퍼스와 정확히 1:1**(탈락 0행) |
+| `<|meta|>`/`<|/meta|>` 잔존 | **0** (빌드 스크립트의 hard invariant 성립) |
+| 시나리오 분포 | verify 1209 / redirect 554 — **메타 코퍼스와 동일** |
+| think-closed | **41.2% — 메타 코퍼스와 동일**(meta 제거는 `</think>`를 건드릴 수 없다) |
+| wrong_prefix 비어있지 않음 | **100%** ⇒ sft.py가 **동일하게** segment-mask |
+| 렌더층 감사(G1) | 절단 **0%**(max 3124 tok < 4096) |
+| 렌더층 감사(G2) | 최종 `\boxed` 답이 학습영역 안 **100%** |
+| 렌더층 감사(G4) | EOS **100%** |
+| G3/G5 | **N/A(구조상 당연)** — 메타 전용 게이트이고 이 코퍼스엔 메타 블록이 없다 |
+
+⇒ 두 arm은 이 단계에서 **메타 블록의 유무만** 다르게 된다. 정확히 매치드.
+
+### 산출물 + 발사
+1. **`configs/sft_b0p2_rvfull.yaml`** — init `b0p_v8base_strict_sft`, data `v8_base_rv_sft.parquet`, **3ep · lr 1e-5 · max_length 4096 · bs1×ga4** = 메타 arm (C) 런과 **용량 동일**.
+2. **`a100_sft_b0p2_rvfull.yaml`** — `a100_sft_b2p2_rvfull.yaml` 클론. ⭐**게이트를 컨트롤 arm에 맞게 교체**: `measure_sft_gate`(pmi auc)는 **쓰지 않는다** — 메타 블록이 없는 arm에 pmi auc는 무의미하다. 대신 b0p SFT1 선례(`h100std_sft_b0p.yaml`)의 `eval_vllm_1030` term-eval(math500+aime2024·8k·temp1.0·n2). 앵커(b0p SFT1 실측): **MATH500-100 55.5% · AIME 8.3% · meta_rate 0.5%≈0**. meta_rate가 오르면 트윈이 메타를 흘렸다는 신호.
+3. **tarball 재패키징 #2** — asset **`490407111`**(`metacognition_rq3v2_0726_b0p2.tar.gz`, 35,682,037 B, md5 `881fb4a609a6978c0e1c825b25c3d122`, round-trip 일치). 490360017의 **상위집합**: `configs/sft_b0p2_rvfull.yaml` + **`data/v8_base_rv_sft.parquet`** 추가(트윈은 490360017에 **없었다** — HF에만 있었다). 메타 arm 런처는 이미 490360017로 제출됐으므로 **건드리지 않았다**(실행 중인 것과 yaml을 일치시켜 둠).
+4. **발사**: **`rq3v2-sft2-b0p2`** / job `sft_b0p2_rvfull` / msrresrchvc / 80G4-A100 / **14:10:33 UTC** / `preparing` / portal `aka.ms/amlt?q=kssnu`. red커밋 가드 준수(pytest 747 passed && 제출).
+
+### durable 경로 충돌 매트릭스 (전부 상이 — 동시 대기 안전)
+| 잡 | durable 경로 |
+|---|---|
+| SFT2-meta `rq3v2-sft2-rvfull` | HF **dataset** metacot : `models/b2p2_rvfull_sft` |
+| **SFT2-control `rq3v2-sft2-b0p2`** | HF **dataset** metacot : `models/b0p2_rvfull_sft` |
+| b3p `rq3v2-b3p-a100` | HF **model** v3 : `checkpoints/rq3v2_b3p` |
+| b2p `superb-terrier`(running) | HF **model** v3 : `checkpoints/rq3v2_b2p` |
+
+### ⚠️ 클론 검증에서 잡은 실제 버그 1건 (+ 낡은 문구 1건)
+`a100_sft_b0p2_rvfull.yaml`의 shard 검증 줄이 **여전히 메타 arm 경로를 세고 있었다** — `\"b2p2_rvfull_sft/model-\"`. 치환 문자열이 **이스케이프된 따옴표** 안에 있어 일반 치환이 빗나갔다. 그대로 발사했다면 push 루프가 **다른 arm의 샤드 수**를 보고 조기 break하거나 영원히 4/4를 못 봤을 것이다. E-096에서 기록한 "클론 검증은 전수 diff 통독"이 두 틱 연속으로 실제 버그를 잡았다. 부수로 코퍼스 부재 에러 문구도 낡아 있어 수정.
+기계검증 통과: yaml 파싱 · shlex 3토큰 · `$$`→`$` 치환 후 inner `bash -n` OK · 메타 arm 런처 대비 diff가 의도한 항목만.
+
+### b3p를 취소하지 않은 이유
+b3p는 결함 init(378행 기아 SFT2)에서 돌지만 b2p와 init이 매치되므로 **RQ2 축(b3p−b2p)은 내부적으로 유효**하고, 논문의 RQ2 표는 전부 `\todo{}`다. b2p가 이미 20h 투입됐으므로 취소는 그 측정을 버리는 것. ⇒ 유지. 새 SFT2가 게이트를 통과하면 **새 init으로 b2p/b3p를 다시 돌리는 것이 재현 축**이고, 현행 두 arm은 RQ2 부록으로 남는다.
+
+### 상태 (14:10 UTC)
+카나리아 **RED 7회** · SFT2-meta **queued 34m** · **SFT2-control preparing(신규)** · b3p **queued 3h** · b2p running **20h** · durable `rq3v2_b2p{20}`·`rq3v2_b3p{10}`
