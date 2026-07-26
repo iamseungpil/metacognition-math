@@ -2371,3 +2371,19 @@ yaml 파싱 · target `msrresrchvc`/`80G4-A100`/`Basic` · `CODE_TAR_REVISION 49
 
 ### 판단
 이 리포트는 **사실만** 담았고 추측은 "message is not consistent with the measured region"처럼 **측정과 대조하는 형태로만** 적었다. 지원 티켓에서 추측을 단정으로 적으면 진단이 그 방향으로 끌려가므로, 반증표를 주고 결론은 상대가 내리게 두는 편이 낫다.
+
+---
+
+## tick 18:37 UTC (2026-07-26) — 대기 (신규 산출물 없음, 의도적)
+
+| 항목 | 값 |
+|---|---|
+| basicvc 카나리아 | **RED 15회 연속** |
+| `rq3v2-sft2-rvfull` | queued **5h** |
+| `rq3v2-sft2-b0p2` | queued **4h** |
+| `superb-terrier`(b2p) | running **1d** · **step 64** · 13.5분/step 벽시계 · 정지 **61%** · 잔여 **2.2일** |
+| 새 SFT2 산출물 | `models/b2p2_rvfull_sft` 0파일 · `models/b0p2_rvfull_sft` 0파일 |
+
+b2p는 step 50→64로 전진(정지율 61%로 3회 측정 모두 61-64% 범위 — 추정 안정). msrresrchvc A100 슬롯은 5시간째 미확보.
+
+**이번 틱은 새 산출물을 만들지 않았다.** 준비물(SFT2 2종 발사·RL 런처 3종·(C′) 생성기·논문 한계·입구 문서·에스컬레이션 리포트)이 전부 끝났고, 남은 후보(eval 런처·`experiments.tex` 점검·`EXPERIMENT_LOG` 동기화)는 **한계효용이 뚜렷이 낮다** — 그것들은 RL 결과가 나온 뒤에 형태가 정해지는 편이 낫고, 지금 만들면 결과에 맞춰 다시 쓸 가능성이 크다. 대기 중 산출물을 쌓는 것 자체가 목적이 되면 나중에 폐기할 코드를 늘린다. 감시만 계속한다.
