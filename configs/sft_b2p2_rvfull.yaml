@@ -1,0 +1,49 @@
+# B2p2 SFT2 (C) — T1-IDENTICAL RV corpus. Replaces the 378-row filtered top-up.
+#
+# WHY (E-093 / E-094 / E-095). The previous SFT2 trained on a 378-row filter of
+# this same corpus. Three audits showed that filter was not what it claimed:
+#   E-093  its `think-closed` condition is a COVERT SCENARIO FILTER — `</think>`
+#          only ever arrives inside the force-fed wrong_prefix (0 of 1763 rows
+#          emit it in the generated recovery), and the redirect scenario cuts the
+#          prefix mid-think by construction, so redirect fell 554 -> 67 (1/8.3).
+#   E-094  the filter also INVERTED the meta position relative to SFT1. SFT1
+#          (b2on_v8meta_strict_sft) is 100% meta-INSIDE-think; the 378 rows are
+#          0% meta-inside. The top-up was undoing the structure SFT1 had just
+#          installed, and it discarded F011 (726 rows) which holds 69% of all
+#          redirect rows AND matches SFT1's meta position.
+#   E-095  render-layer token-id audit of THIS corpus: 0% truncation at 4096
+#          (max 3184 tokens), 100% of rows keep the final \boxed answer inside
+#          the trained region, 100% terminate with EOS. 524 rows (29.7%) have the
+#          meta block swallowed by the masked wrong_prefix and so teach nothing
+#          about meta emission — but T1 trained on those too, and won.
+#
+# So this config is T1's SFT2 recipe verbatim (archive/launchers_pre_rq3/
+# h100std_rv_functional_sft.yaml + configs/archive/sft_rv_functional.yaml):
+# the RAW 1763-row corpus, 3 epochs, lr 1e-5, max_length 4096 — differing from
+# T1 ONLY in the init (base-native SFT1 instead of the instruct one) and the
+# output name. Every filter we invented was an unvalidated deviation, and the
+# audits showed those deviations were harmful; a literal replication leaves no
+# room to blame a deviation if the base result comes out negative.
+#
+# sft.py auto-segment-masks because wrong_prefix is nonempty: prompt + flawed
+# prefix are masked, only meta + recovery are trained (sft.py:111-116).
+#
+# The G5-gated 1239-row variant (drop the 524 meta-dead rows) is the planned
+# SECOND attempt, not this one — see E-095 "발사 순서".
+#
+# OUTPUT NAME IS DELIBERATELY NEW (`b2p2_rvfull_sft`, not `b2p2_rvseg_sft`):
+# the running b2p/b3p arms stage their RL init from HF models/b2p2_rvseg_sft, so
+# reusing that name would silently swap the init under any resubmitted arm.
+model_name_or_path: /scratch/models/b2p_v8meta_strict_sft
+dataset_path: data/rv_redirect_verify_functional.parquet
+output_dir: /scratch/checkpoints/b2p2_rvfull_sft   # ABSOLUTE (0708 stranded-ckpt guard)
+run_name: b2p2-rvfull-sft2
+wandb_project: metacot-math
+
+num_train_epochs: 3
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 4
+learning_rate: 1.0e-5
+max_length: 4096
+save_strategy: epoch
+eval_strategy: "no"

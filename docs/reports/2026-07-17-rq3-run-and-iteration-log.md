@@ -1907,3 +1907,173 @@ redirect 비중: **T1 원본 31.4%(554/1763) → 현재 base SFT2 17.7%(67/378)*
 1. (A)/(C) 중 선택 + 잔여 140행 기준 재정의 → SFT2 재구축 → b2p2 SFT2 재학습
 2. 그 다음이 b0p arm 발사(재현 판정의 나머지 전제)
 3. **재현 판정 전제 2개 중 하나(SFT2 원인 특정)가 이로써 해소**. 남은 전제 = SFT2 실제 복원 + b0p 존재.
+
+---
+
+## tick 11:14-11:30 UTC (2026-07-26) — 카나리아 RED 유지·b3p queued·정리 4건 완료·HF squash 3repo·삭제후보 131.2GB는 승인대기로 보류
+
+### 상태
+| 항목 | 값 |
+|---|---|
+| basicvc 카나리아 | 🔴 **RED** (11:14, 1-CPU echo 여전히 거부) ⇒ E-092 환원 절차 미발동 |
+| b3p `rq3v2-b3p-a100` | **queued 31m** — 노드 미확보. L204 판정 불가 |
+| b2p `superb-terrier` | running **17h** |
+| durable frontier | `rq3v2_b2p {20: 23파일}`, `rq3v2_b3p {10: 19파일}` — b2p 다음 저장점 gs40(save_freq 20, ~4h 후) |
+
+### 완료: 표적 정리 4건
+1. **CLAUDE.md 데이터 계보 정정** — 존재하지 않는 `data/b23_rv_unmasked_sft.parquet` 경로를 현행 **2단 SFT 스택**으로 교체: b0p=`b0on_v8base_strict_sft`(Qwen3-8B-Base·3ep·1e-5) / b2p·b3p=SFT1 `b2on_v8meta_strict_sft`(3ep·1e-5) → SFT2 `b2p2_rvseg_sft2`(2ep·2e-6) → `models/b2p2_rvseg_sft`(양 arm 공용 RL init). think-off 세대는 retired로 분리하고 E-093 기아 경고 명시.
+2. **⭐HF 백업 3건** — 현행 계보 SFT 데이터가 **전부 HF에 없어** 로컬+코드tarball뿐인 단일 소실점이었다. `iamseungpil/metacot-rv`에 순수 추가 업로드 후 존재 검증:
+   - `data/b2p2_rvseg_sft2.parquet` 472,308 B
+   - `data/b0on_v8base_strict_sft.parquet` 2,830,364 B
+   - `data/b2on_v8meta_strict_sft.parquet` 3,960,627 B
+3. **커밋 `d81c85a`** (red커밋 가드 준수: pytest와 한 `&&` 체인, **747 passed / 8 skipped**) — 런처 8종·configs 3종·**이벤트 원장 1909행**(untracked = 최대 소실점이었음)·카나리아 런처·삭제 manifest. 미푸시 0.
+   - `h100std_rq3v2_b3p_tierSTD.yaml` **삭제** — 내가 만든 진단 부산물이고 결론은 E-091에 기록됨(자기 뒷정리 원칙)
+   - `paper` submodule은 **손대지 않음** — `M`의 원인은 별도 리포 내부의 untracked figure 파일(`figures/fig1_contrast_spec.txt`·`figures/outputs/`). 별개 결정이라 보고만.
+4. **⭐redirect 배제 사유 특정 완료** → E-093 (별도 항목)
+
+### HF 주기정리
+- **super_squash_history 3 repo 실행 완료**: `metacot-h200-triobj-dcpo-v3`(model)·`metacot-rv`·`metacot`(dataset). 무결성 게이트 **OK** — durable frontier 전후 완전 불변.
+- ⚠️**측정 방법 정정**: `repo_info(files_metadata=True)` 합계는 **현재 트리** 크기이므로 history LFS 해방분이 보이지 않는다. squash 전후 441.1GB 동일하게 나온 것은 실패가 아니라 **지표가 잘못된 것**. 트리 크기와 저장소 소비는 다른 양이다.
+- 트리 실측 분해(ckpt repo 279.0GB): `rq3_b0/gs300` 98.3GB · **`rq3v2_b2p/gs20` 98.3GB(LIVE)** · `rq3_b2/gs160` 32.8GB · **`rq3v2_b3p/gs10` 32.8GB(LIVE)** · `models` 16.4GB(LIVE, SFT init) · eval 0.4GB
+
+### ⛔ 삭제 후보 131.2GB — **실행 안 함, 승인 대기**
+`docs/reports/hf_deletion_candidate_20260726.json` 작성(비파괴). 은퇴한 RQ3 think-off 세대 `rq3_b0/gs300`(98.3GB) + `rq3_b2/gs160`(32.8GB).
+**보류 사유**: 이 repo의 `eval/`에는 두 후보의 held-out 산출물이 **없다** — `eval/`은 T1 instruct 세대(base_matched·gandhi·pmishift·shiftonly gs300) 전용이다. wandb엔 `rq3_b0`(finished·300steps)·`rq3_b2`(crashed·233steps) 학습궤적만 보존. **`rq3_b0`는 완주한 베이스라인이고 논문 부록 대상**이라, 삭제하면 재평가가 영구 불가하다. 0724 선례(`rq3_b3nopmi`)는 *포기된* arm이라 등급이 다르다.
+**긴급성 낮음**: 트리 441.1GB vs 과거 403 quota 실패 지점 ~1041.5GB + 방금 squash로 history 해방. ⇒ 자율 삭제 금지, 사용자 판단 대상으로 상신.
+
+### 다음 틱
+카나리아 → b3p 노드/L204 → b2p gs40 → (승인 시)삭제 실행 → SFT2 재구축 안(A/C) 선택.
+
+---
+
+## E-094 ⭐⭐⭐ SFT2 필터가 **SFT1과 싸우고 있었다** — "0% clean" 정의 추적 결과 필터는 목표를 달성하지 못한 채 세 번째 기준(meta-inside)을 **100%→0%로 역전**시켰고, redirect의 69%가 든 계열을 통째로 버렸다 (2026-07-26 11:47-12:05 UTC, GPU 0)
+
+E-093의 남은 질문("configs의 `raw corpus was 0% clean and is BANNED`에서 clean의 정의는?")을 추적했다. 정의는 **E-070 L0 감사**에 있다: clean = **think-closed AND meta-nested AND meta-INSIDE-think** 3중 조건. 당시 측정: b23 base 30/71/5/**0%** · b23 v2 31/100/0/**0%** · **v8 instruct(T1 우승) 100/100/100/100%**.
+
+### 1. 4개 코퍼스 재감사 (동일 3기준)
+| 코퍼스 | n | think-closed | meta-nested | **meta-INSIDE** | ALL-clean |
+|---|---|---|---|---|---|
+| T1 SFT1 `v8_meta_inside_strict` | 4264 | 100% | 100% | **100%** | **100%** |
+| base SFT1 `b2on_v8meta_strict_sft` | 4245 | 100% | 100% | **100%** | **100%** |
+| T1 SFT2 `rv_functional` RAW | 1763 | 41.2% | 70.6% | **63.5%** | 0% |
+| **base SFT2 (378 필터)** | 378 | 100% | 100% | **0.0%** | **0%** |
+
+🔴 **필터는 목표를 달성하지 못했다.** 목표가 "fully-clean rows"였는데 결과는 raw와 똑같이 **0% clean**이다. 두 기준을 100%로 올리는 대가로 **세 번째를 0%로 몰았다**. 게다가 T1 SFT2는 meta-inside를 **63.5%** 유지했다 — base는 0%.
+
+### 2. 왜 0%인가: raw 1763의 5계열 완전 분해
+| 계열 | closed | nested | inside | n | redirect | redirect 비중 |
+|---|---|---|---|---|---|---|
+| **F011** | ✗ | ✓ | **✓** | **726** | **382** | **52.6%** |
+| **F110** | ✓ | ✓ | ✗ | **518** | 75 | 14.5% |
+| F001 | ✗ | ✗ | ✓ | 311 | 88 | 28.3% |
+| F100 | ✓ | ✗ | ✗ | 126 | 8 | 6.3% |
+| F101 | ✓ | ✗ | ✓ | 82 | 1 | 1.2% |
+
+`closed & inside & nested = **0**`. closed+inside인 82행은 **전부 태그 개수 불일치**(open 2-3 vs close 1-3) ⇒ E-071의 "RV/답-뒤 설계로는 clean 불가"가 확증된다.
+
+### 3. 🔴 핵심: 필터는 **SFT1과 반대되는 계열**을 골랐다
+필터 풀 = **F110**(meta **OUTSIDE** think) → 378행 선택. 그런데 SFT1은 **100% meta-INSIDE**다. 즉 SFT2 top-up이 방금 SFT1이 심어놓은 구조 습관을 **정면으로 되돌리는 방향으로** 학습시켰다.
+그리고 버려진 **F011(726행)** 은:
+- meta **정상 중첩** ✓
+- meta **INSIDE think** ✓ ⇒ **SFT1 구조와 일치**
+- 결함은 `</think>` 하나뿐 (E-093: 이 행들은 `\boxed{}`로 답까지 완결·절단 아님)
+- **전체 redirect 554행 중 382행(69%)이 여기 있다**
+
+∴ 필터는 두 오류를 **동시에** 저질렀다: ①redirect를 굶겼다(69%가 든 계열 폐기) ②meta 위치 구조를 SFT1 대비 역전시켰다. E-089의 "1/35 학습량·1/8 redirect"는 이 중 ①의 정량화였고, ②는 이번에 처음 드러났다. b3p의 `emit 0.974`(높음)인데 `rmeta −1.08`·`derail>save`인 관측과 정합한다 — 메타 블록을 **내보내긴 하지만 SFT1·보상기계가 기대하는 위치와 다른 곳에** 두도록 배웠다면 그 블록의 역할이 달라진다.
+
+### 4. 재구축 안 재정렬 (사이징 확정)
+| 안 | 구성 | n | redirect 비중 | meta-inside | T1 대비 |
+|---|---|---|---|---|---|
+| **(C) T1 그대로** | raw 1763 전부 | 1763 | **31.4%** | 63.5% | **편차 0** |
+| (A′) 태그불일치만 배제 | F011+F110 | 1244 | 36.7% | 58.4% | 소편차 |
+| (D) SFT1 정합 최대화 | F011만 | 726 | 52.6% | 100% | redirect 과대·verify 손실 |
+| 현행(폐기) | F110 부분집합 | 378 | 17.7% | **0%** | 대편차 |
+
+**권고 = (C) raw 1763 + T1 용량(3ep·lr 1e-5)**. 근거: ①T1이 **정확히 이 SFT2로 이겼다** — `configs`의 "0% clean BANNED" 주장은 **SFT1 코퍼스 품질 논의를 SFT2에 잘못 적용한 것**이다(T1 자신의 SFT2가 그 raw 코퍼스다) ②base SFT1은 이미 100% clean base-native라 구조 습관은 T1과 동일한 출발점 ③우리가 발명하는 모든 필터는 검증되지 않은 편차이고, 이번 감사로 그 편차가 **해로울 수 있음이 실증**됐다.
+⚠️ 함께 가져갈 안전장치(과거 실패에서 학습): E-076의 **렌더층 token-id 수준 segment-mask 검증 게이트**(char-level 검사는 4행을 놓쳤다) + E-071의 L2 kill-switch(EOS rc0·truncation≤5%·emission≥0.85·wellformed≥0.90).
+⛔ **구현은 사전점검 후** — 표준 프로토콜(구조 사전검사·승인) 준수. 지금은 사이징·근거까지만.
+
+### 5. 틱 상태 (11:47 UTC)
+basicvc 카나리아 **RED**(3회 연속) · b3p `rq3v2-b3p-a100` **queued 1h**(노드 미확보, L204 판정 불가) · b2p running **17h** · durable `rq3v2_b2p{20:23}` `rq3v2_b3p{10:19}`(b2p 다음 gs40 ~15:30 예상)
+
+---
+
+## E-095 ⭐⭐⭐ 렌더층 token-id 감사 도구 신설 + **T1 자신의 SFT2에 메타신호가 죽은 행이 30%** 발견 / 시나리오 중립 대체조건 확정 (2026-07-26 12:16-12:45 UTC, GPU 0)
+
+E-094의 (C)안을 발사 전에 검증하기 위해 **`scripts/audit_sft2_render_mask.py`** 를 신설했다. `sft.py:tokenize_row`(L85-128)를 그대로 재현하고 — 실제 SFT 토크나이저(HF `models/b2p2_rvseg_sft`, `<|meta|>`=151669·`<|/meta|>`=151670 추가어휘 포함) —  최종 token id 층에서 5개 게이트를 계측한다. char-level 검사가 E-076에서 4행을 놓쳤기 때문이다.
+
+### 게이트 결과
+| 코퍼스 | n | G1 절단 | G2 답 학습영역 | **G5 메타블록 학습됨** | G4 EOS | G3 trace-shape |
+|---|---|---|---|---|---|---|
+| raw 1763 · redirect | 554 | 0.0% | 100% | **81.6%** (102행 사망) | 100% | 14.1% |
+| raw 1763 · verify | 1209 | 0.0% | 100% | **65.1%** (422행 사망) | 100% | 37.1% |
+| F011 (726) | 726 | 0.0% | 100% | **99.3%** (5행) | 100% | 0.0% |
+| F110 (518) | 518 | 0.0% | 100% | **100%** (0행) | 100% | 70-87% |
+| 현행 378 | 378 | 0.0% | 100% | 100% | 100% | 95.5-100% |
+
+### 🔴 핵심 발견: **T1의 SFT2에도 메타신호가 죽은 행이 524행(29.7%) 있었다**
+`sft.py`는 `[prompt]+[wrong_prefix]`를 마스킹한다(L112-116). 그런데 raw 1763 중 **524행은 `<|meta|>…<|/meta|>` 블록 전체가 그 마스크된 prefix 안에** 들어간다 ⇒ 그 행들은 **메타 방출에 관해 아무것도 가르치지 않고** recovery 텍스트만 학습시킨다. 보상이 나중에 채점하는 바로 그 행동을 조용히 굶기는 구조다.
+그 524행의 정체가 정확히 특정된다: **F001(311)+F100(126)+F101(82)=519 = 태그 개수 불일치 계열** + F011의 5행 = **524. 완전 일치.** ⇒ **"태그 개수 불일치" = "메타 신호 사망"** 이 동일 사건이다.
+T1은 이 1763행 전부로 학습해서 **이겼다.** 즉 30%의 죽은 행은 치명적이지 않았다 — 그러나 제거하면 순이득이다.
+
+### 시나리오 중립 대체조건 확정 (E-093 약속 이행)
+E-093에서 "대체 조건은 시나리오 중립이어야 한다"고 적었다. **G5가 그 조건이다**: *메타 블록 전체가 학습영역 안에 있어야 한다.* 시나리오를 보지 않고, 마스크 계약만 본다.
+- **G5 통과 = 1763 − 524 = 1239행**, redirect 452 = **36.5%** (T1 31.4% · 현행 17.7%)
+- 학습량 현행의 **3.3배**, G1/G2/G4 전부 green
+
+### 발사 순서 확정 (실험논리)
+지금까지의 병은 **계측 없이 발명한 편차**였다. 그래서:
+1. **1차 = (C) raw 1763 그대로 + T1 용량(3ep·lr 1e-5)** — T1과 문자 그대로 동일한 재현 시도. 죽은 30%까지 포함해서 동일하게 간다. b3p−b0p가 음수로 나와도 "편차 탓"이라는 해석 여지를 남기지 않는다.
+2. **2차 = (C′) G5 게이트 1239행** — 계측으로 정당화된 개선. (C)가 재현되면 (C′)는 추가 이득으로 보고, (C)가 실패하면 (C′)가 substrate-dependence와 데드로우를 분리한다.
+⇒ (A)/(D)는 폐기. redirect 비중을 임의로 조정하는 안은 근거가 G5보다 약하다.
+
+### ⚠️ 이번 감사에서 **내 지표 2건을 정정**한다
+1. **G4 EOS 최초 0.0% 보고는 내 측정 버그였다.** 템플릿이 `<|im_end|>`(=eos 151645) **뒤에 개행(198)** 을 붙이므로 마지막 토큰은 `\n`이다. `[-1]==eos`는 완벽히 종결된 코퍼스에서도 0%를 낸다. 꼬리창(`eos in [-3:]`)으로 교체 → **전 코퍼스 100%**. 부수 소득: E-093이 미해결로 남긴 "문서스펙의 `EOS im_end at render` 조건"은 **판별력이 원리적으로 0**(렌더 후엔 항상 존재)임이 확정 — 그 조건은 vacuous였다.
+2. **G3 최초 43/51% 보고도 내 지표 결함이었다.** decode 문자열 길이 비교는 선행공백 정규화 때문에 유령 1토큰 드리프트를 만든다. 경계 토큰을 직접 보니 `<|meta|>` 자체였다(마스크가 **정확**했다). 직접 계약검사로 교체 → 현행 378은 95.5/100%. **거짓 버그 보고 직전에 자체 반증됨.**
+3. ⚠️**G3은 게이트가 아니라 기술자다.** F011은 G3 0%지만 G5 99.3%다 — 메타 블록이 prefix 직후가 아니라 몇 토큰 뒤에서 시작할 뿐이고, 그 사이 텍스트는 recovery 서술이라 **학습되는 게 맞다**. 코퍼스 사용가능성 판정은 **G5로만** 한다. 스크립트 docstring에 이 구분을 명시했다.
+4. 잔여 140행 미스터리 **종결**: 실제 토큰 수로 재검정했으나 어떤 임계값도 생존/배제를 기저율(73%) 이상으로 설명하지 못하고, 1763행 중 4096 토큰 초과는 **0행**이다(max 3184). ⇒ 문서스펙 4조건 중 **2개(토큰상한·EOS)가 vacuous**, 나머지 2개는 518행을 주는데 산출물은 378행 ⇒ **실제 실행된 필터는 문서와 다르며 재구성 불가**. 코퍼스를 교체하므로 더 이상 블로커 아님.
+
+### 틱 상태 (12:16 UTC)
+basicvc 카나리아 **RED**(4회 연속) · b3p `rq3v2-b3p-a100` **queued 1h+**(노드 미확보) · b2p running **18h** · durable 불변(`rq3v2_b2p{20}`·`rq3v2_b3p{10}`)
+
+---
+
+## E-096 SFT2 (C)안 **발사 준비 완료** — config·런처·tarball 재패키징·전수 검증 (2026-07-26 13:03-13:20 UTC, GPU 0)
+
+E-095에서 확정한 1차안(raw 1763 + T1 용량)을 노드 확보 즉시 발사할 수 있는 상태로 만들었다.
+
+### 산출물
+1. **`configs/sft_b2p2_rvfull.yaml`** — T1의 `configs/archive/sft_rv_functional.yaml`을 그대로 미러: `dataset_path: data/rv_redirect_verify_functional.parquet`(raw 1763), **3ep · lr 1.0e-5 · max_length 4096 · bs1×ga4 · save_strategy epoch**. T1과 다른 점은 **init(base-native `b2p_v8meta_strict_sft`)과 출력 이름 둘뿐**.
+2. **`a100_sft_b2p2_rvfull.yaml`** — `h100std_sft_b2p2_rvseg.yaml`의 최소편집 클론. `msrresrchvc` + **80G4-A100 / Basic**(basicvc가 전면 거부 중이므로). E-071 L2 kill-switch(EOS 게이트 → `measure_sft_gate` 재게이트 `base_accuracy_greedy 0.5967` → 회귀시 ckpt 폐기) **원형 유지**.
+3. **tarball 재패키징** — `scripts/build_sdc_code_snapshot.sh`(configs·data 디렉토리 전체 복사 + 비밀 리댁션 패스)로 빌드. release `359072254` / tag `rq3v2-thinkon-20260724`에 **asset `490360017`** (`metacognition_rq3v2_0726_rvfull.tar.gz`, 34,163,963 B) 업로드.
+
+### ⭐출력 이름을 새로 만든 이유 (조용한 init 스왑 방지)
+기존 런처는 `/scratch/checkpoints/b2p2_rvseg_sft` → HF `models/b2p2_rvseg_sft`에 push하고, **실행 중인 b2p·b3p RL 런처가 바로 그 경로에서 init을 스테이징한다**(`h100std_rq3v2_b3p.yaml:106-107`). 같은 이름을 재사용하면 **재제출되는 arm 밑에서 init이 조용히 바뀐다** — E-092에서 막은 궤적 혼합과 같은 계열의 사고다. 그래서 전 경로를 `b2p2_rvfull_sft`로 분리했다: 체크포인트 디렉토리·HF 모델 경로·게이트 로그 디렉토리·wandb 이름·shard 검증 문자열 전부.
+
+### 발사 전 기계 검증 (전부 통과)
+| 검사 | 결과 |
+|---|---|
+| tarball에 `configs/sft_b2p2_rvfull.yaml` 존재 | ✅ |
+| tarball에 `data/rv_redirect_verify_functional.parquet` 존재 | ✅ (기존부터 포함) |
+| 비밀 유출 스캔(`ghp_`/`hf_` 패턴) | ✅ 0건 |
+| `.env` 미포함 | ✅ 0건 |
+| **round-trip md5** (업로드 후 재다운로드) | ✅ `a3817d7653c8fab30619dbfd9336d61b` 일치 |
+| 재다운로드본에 새 config 존재 | ✅ |
+| yaml 파싱 | ✅ target `msrresrchvc` / `80G4-A100` / `Basic` |
+| **shlex 토큰 3개**(`bash`,`-c`,payload) | ✅ 공백 word-split 없음 |
+| **`$$`→`$` 치환 후 inner `bash -n`** | ✅ 클론·원본 **양쪽** OK |
+| 치환본 원본↔클론 diff | ✅ **의도한 8곳만**(데이터·config·run명·ckpt·게이트dir·model명·push명·shard검증) |
+
+⚠️**sed 클론의 사각을 이번에도 실측으로 잡았다**: sed 치환 후에도 **description 전문이 낡은 상태로 남아 있었다**("382 fully-clean rows·2 epochs·lr 2e-6·models/b2p2_rvseg_sft"). yaml은 파싱되고 bash도 통과하므로 기계검사로는 안 걸린다 — 전수 diff를 눈으로 읽어야 잡힌다. `WANDB_TAGS`의 `rvseg`, 코퍼스 부재 에러 문구도 같이 낡아 있었다. 3건 모두 수정. **교훈 재확인: 클론 검증은 "파싱 통과"가 아니라 "전수 diff 통독"이다.**
+⚠️`$$(seq 1 30)`에 대한 첫 `bash -n` 실패는 **치환 전 검사라 발생한 거짓 오류**였다(amlt가 노드에서 `$$`→`$`로 바꾼다). 치환을 먼저 적용해야 유효한 검사가 된다 — 이 순서를 기록해 둔다.
+
+### 가역성
+`CODE_TAR_REVISION` **값 하나**만 `490360017`→`488239754`로 되돌리면 구 tarball로 복귀한다. 신규 발사가 부트스트랩을 깨도 즉시 복구 가능.
+
+### 남은 것
+- **발사 대기 = 노드**. `msrresrchvc` A100은 b3p가 2시간째 queued이므로 SFT까지 동시에 물리면 경합한다 ⇒ **b3p가 노드를 잡은 뒤 또는 b3p 판정 후 발사**.
+- SFT2 산출물(`b2p2_rvfull_sft`)이 나오면 그걸 init으로 쓰는 **b2p/b3p RL 런처 신규본**이 필요하다(기존 런처는 구 init을 가리킨다). 이건 SFT2 게이트 통과 후 작성.
+- b0p arm은 별개 전제로 여전히 미발사.
+
+### 틱 상태 (13:03 UTC)
+basicvc 카나리아 **RED**(5회 연속) · b3p `rq3v2-b3p-a100` **queued 2h**(노드 미확보) · b2p running **19h** · durable 불변
