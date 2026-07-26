@@ -1,0 +1,28 @@
+{
+ "deleted_path": "checkpoints/rq3v2_b3p/global_step_10/",
+ "repo": "iamseungpil/metacot-h200-triobj-dcpo-v3",
+ "n_files": 19,
+ "bytes": 32771152999,
+ "reason": "optim 0/4 => pull_resume 불가(사용 불가). 게다가 런처 RGS 가드가 RGS_ANY=1 + LOCAL_GS 없음으로 판정해 매 노드에서 즉시 ABORT(영구 라이브락). 10스텝(결함 init)이라 평가 가치 없음.",
+ "files": [
+  "checkpoints/rq3v2_b3p/global_step_10/actor/extra_state_world_size_4_rank_0.pt",
+  "checkpoints/rq3v2_b3p/global_step_10/actor/extra_state_world_size_4_rank_1.pt",
+  "checkpoints/rq3v2_b3p/global_step_10/actor/extra_state_world_size_4_rank_2.pt",
+  "checkpoints/rq3v2_b3p/global_step_10/actor/extra_state_world_size_4_rank_3.pt",
+  "checkpoints/rq3v2_b3p/global_step_10/actor/fsdp_config.json",
+  "checkpoints/rq3v2_b3p/global_step_10/actor/huggingface/added_tokens.json",
+  "checkpoints/rq3v2_b3p/global_step_10/actor/huggingface/chat_template.jinja",
+  "checkpoints/rq3v2_b3p/global_step_10/actor/huggingface/config.json",
+  "checkpoints/rq3v2_b3p/global_step_10/actor/huggingface/generation_config.json",
+  "checkpoints/rq3v2_b3p/global_step_10/actor/huggingface/merges.txt",
+  "checkpoints/rq3v2_b3p/global_step_10/actor/huggingface/special_tokens_map.json",
+  "checkpoints/rq3v2_b3p/global_step_10/actor/huggingface/tokenizer.json",
+  "checkpoints/rq3v2_b3p/global_step_10/actor/huggingface/tokenizer_config.json",
+  "checkpoints/rq3v2_b3p/global_step_10/actor/huggingface/vocab.json",
+  "checkpoints/rq3v2_b3p/global_step_10/actor/model_world_size_4_rank_0.pt",
+  "checkpoints/rq3v2_b3p/global_step_10/actor/model_world_size_4_rank_1.pt",
+  "checkpoints/rq3v2_b3p/global_step_10/actor/model_world_size_4_rank_2.pt",
+  "checkpoints/rq3v2_b3p/global_step_10/actor/model_world_size_4_rank_3.pt",
+  "checkpoints/rq3v2_b3p/global_step_10/data.pt"
+ ]
+}

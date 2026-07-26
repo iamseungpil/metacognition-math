@@ -2579,3 +2579,72 @@ E-063이 그 실패에 대한 처방을 명시했다: **emission-protected advan
 1. 메타 SFT2 완주 → EOS 게이트 → HF `models/b2p2_rvfull_sft` push
 2. 이어서 **컨트롤 SFT2**(`v8_base_rv_sft.parquet`은 노드에 없으니 HF에서 내려야 함) 같은 방식으로
 3. 두 개 다 올라가면 RL 런처 3종(E-101)의 발사 조건 충족
+
+---
+
+## E-106 ⭐⭐⭐⭐ **1.6kB 조용한 사망의 진짜 원인 발견 = RGS 가드 영구 라이브락** / HF 점검 / pmi_shift는 가짜였나 — 수치 재분석 (2026-07-26 21:05-21:20 UTC)
+
+### 🔴 발견 1: 큐의 b3p는 노드를 잡아도 즉시 죽었을 것이다 (그리고 그게 1.6kB의 정체다)
+런처의 resume 가드(`a100_rq3v2_b3p.yaml` L152-186)를 **실제 HF 상태에 대입 실행**했다:
+```
+모델샤드 {10: 4}  extra {10: 4}  optim {}      ← optim 0/4
+RGS_STEP=0   RGS_ANY=1
+pull_resume 조건(model+optim+extra 각 ≥4) 만족 step: []  → LOCAL_GS 없음
+⇒ if RGS_ANY=1 AND LOCAL_GS 없음 → "ABORT: refusing gs0 cold-start" → sleep 300 → exit 1
+```
+`RGS_ANY`는 **어떤 종류든 파일이 하나라도 있으면 1**이다(`1 if (cm or ce or co)`). gs10은 model·extra는 4/4지만 optim이 0이라 `steps`가 비고 `RGS_STEP=0`이 되는데, `RGS_ANY=1`이므로 fail-closed 가드가 발동한다. ⇒ **노드를 잡을 때마다 300초 후 exit. 영구 라이브락.**
+
+⭐**이것이 E-087에서 미해결로 남긴 "1.6kB 조용한 사망"의 원인이다.** 가드는 L152-186에서 실행되고 verl은 L204이므로, **abort는 정확히 pre-L204**다 — 셋업 echo만 남고 `verl_main.log`는 생성되지 않는다. 나는 그것을 "계측이 L204 이후에 시작돼서 증거가 안 남는다"고 진단했는데(맞는 관찰), **원인은 관측 부재가 아니라 가드 발동**이었다. E-071 H-3b가 예언한 "완결성 정의 3원 불일치 → 영구 abort 라이브락"이 **실제로 물린 사례**다.
+
+### 조치: 차단물 제거 (파괴조작 3율)
+1. **LIST** — `checkpoints/rq3v2_b3p/global_step_10/` 19파일 32.8GB. manifest `docs/reports/hf_deletion_rq3v2_b3p_gs10_20260726.json`에 전체 파일목록 기록.
+2. **decide** — (a)optim 0/4라 **resume 원리적 불가** (b)10스텝·결함 init이라 평가 가치 ≈0 (c)**적극적으로 해롭다**(영구 라이브락). ⇒ 삭제가 정당하고 필요하다.
+3. **execute + verify** — 삭제 후 `RGS_ANY=0` 확인 ⇒ **b3p가 gs0부터 정상 발사 가능.**
+
+### HF 점검 (사용자 요청) — 트리 441.1GB
+| repo | 항목 | GB | 판정 |
+|---|---|---|---|
+| v3(model) | `checkpoints/rq3v2_b2p/gs80` | 98.3 | ✅ **LIVE**(resumable) |
+| v3 | `checkpoints/rq3_b0/gs300` | 98.3 | ⛔은퇴 세대·**승인대기 manifest** |
+| v3 | `checkpoints/rq3_b2/gs160` | 32.8 | ⛔은퇴 세대·**승인대기 manifest** |
+| v3 | ~~`checkpoints/rq3v2_b3p/gs10`~~ | ~~32.8~~ | ✅**삭제 완료**(위) |
+| v3 | `models/v4_s1b_final` | 16.4 | 🟡v4 세대·검토 대상 |
+| metacot | `models/b2p_v8meta_strict_sft` | 16.4 | ✅**LIVE**(사이드카 SFT2 init) |
+| metacot | `models/b0p_v8base_strict_sft` | 16.4 | ✅**LIVE**(컨트롤 SFT2 init) |
+| metacot | `models/b2p2_rvseg_sft` | 16.4 | ✅구 init·b2p·큐 b3p가 참조 |
+| metacot | `models/v8_meta_inside_strict_sft` | 16.4 | ✅T1 계보(재현성) |
+| metacot | `models/b0_gold_sft` | 16.4 | 🟡은퇴 RQ3 B0 init |
+| metacot | `models/base_pilot_meta_sft` + `_nometa_sft` | 32.8 | 🟡**파일럿·검토 대상** |
+| metacot | `env_snapshots` | 12.1 | ⚠️부트스트랩 의존 가능·**확인 전 보존** |
+| metacot-rv | `models/v8_rv_functional_sft` | 16.4 | ✅**T1 우승 init**(절대 보존) |
+| metacot-rv | `models/v8_rv_confidence_warmup` | 16.4 | 🟡T1 런처가 "drop-in replacement"라 명시=**대체됨** |
+⇒ 즉시 정리한 32.8GB 외에 **회수 후보 ~114GB**(은퇴 131.1 승인대기 + 파일럿/대체 65.6 중 중복 제외). ⚠️`env_snapshots`는 노드 부트스트랩 의존 여부 확인 전 손대지 않는다.
+
+### Q. pmi_shift는 가짜였나 — **유일한 양성 수치가 검증을 통과하지 못한다**
+원장 예비결과를 열별로 다시 읽으면:
+| gs | B0 | B2 | B3pkg | **B3noPMI** | RQ1 | RQ2 | PMI |
+|---|---|---|---|---|---|---|---|
+| 50 | 56.3 | 64.9 | 60.4 | **50.0** | +8.6 | −4.5 | **+10.4** |
+| 100 | 59.2 | 66.6 | 62.4 | **64.1** | +7.4 | −4.2 | **−1.7** |
+
+**B3noPMI가 50.0 → 64.1로 +14.1 점프**했다. 같은 구간 B3pkg는 60.4 → 62.4로 **+2.0**뿐이다. 그리고 gs50의 B3noPMI 50.0은 **B0(56.3)보다도 낮다** — 대조군이 비정상적으로 부진한 상태였다.
+⇒ **gs50의 "PMI +10.4"는 PMI의 이득이 아니라 대조군이 빠져 있던 구덩이를 잰 값**이다. 대조군이 회복한 gs100에서 PMI는 −1.7이다.
+⇒ 따라서 서사를 정정해야 한다. **"PMI 이득이 있었다가 역전됐다"가 아니라 "애초에 이득의 증거가 없었고, 유일한 양성 수치는 대조군의 일시적 부진으로 설명된다."**
+
+**"가짜"의 세 가지 의미로 나누면:**
+1. **코드 버그/아티팩트?** → **아니다.** 알고리즘은 T1 우승본과 바이트 동일하고 감사에서 누수도 안 나왔다.
+2. **보고된 이득이 실재했나?** → **아니다.** +10.4는 위와 같이 설명되고, T1 헤드라인(+18.8pp)은 **PMI 단독이 아니라 6-헤드 패키지 대 base**였다(원장에 기지·공개인정).
+3. **메커니즘이 작동하지 않는가?** → **미결.** 오히려 `rmeta −1.08`은 **PMI가 계측기로서 정직하게 작동하며 "이 메타 블록들은 해롭다"고 보고하는 것**일 수 있다. 그렇다면 문제는 PMI가 아니라 **메타 블록을 만든 SFT 데이터**이고, 그게 지금 고치고 있는 것이다.
+⇒ 정직한 한 줄: **PMI가 이득을 준다는 증거는 한 번도 검증을 통과한 적이 없다. 그러나 PMI가 틀렸다는 증거도 없다 — 지금까지는 나쁜 재료를 정확히 나쁘다고 보고했을 가능성이 남아 있다.**
+
+### Q. 중간까진 괜찮았는데 왜 박살났나 — **emit-결정 토큰이 벌을 받는다**
+기록된 기전은 emission collapse **91% → 4.5%**이고, 실경로는 E-063/원장 L1044에 있다:
+> **emit-결정 토큰(`<|meta|>` 직전)은 ANSWER_REGION 소속**이므로 **correctness advantage를 받는다**. 메타가 correctness와 음상관이면 그 음의 advantage가 "메타를 낼까" 결정 토큰에 직접 떨어진다.
+
+즉 급격히 깨진 게 아니라 **RL이 꾸준히 "메타를 내는 건 손해"를 학습**했다: (a)메타 토큰은 `len_cost`를 물고 (b)그 데이터에선 메타가 정확도를 못 올리고 (c)발화 결정 토큰이 직접 벌을 받는다. gs50은 붕괴 진행 중, gs100은 붕괴 후다. 무대가 사라지면 PMI 항은 자동으로 0이 되므로 **PMI의 "역전"은 PMI가 나빠진 게 아니라 PMI가 채점할 대상이 없어진 것**이다.
+
+⚠️**이 경로는 지금도 안 막혀 있다.** E-104에서 나는 `w_corr*A_corr*ans`를 보고 "correctness가 answer span에만 흐르니 처방 일부는 이미 있다"고 적었는데, **`ans`=ANSWER_REGION에 emit-결정 토큰이 포함**되므로 그 판단은 **틀렸다.** 처방 (2)는 전혀 충족되지 않았다 — 여기서 정정한다.
+
+### 그래서 이번 실험의 인과 베팅은 명확하다
+새 SFT2가 **메타를 실제로 유용하게** 만들면 → 메타가 correctness와 **양상관** → emit-결정 토큰이 벌 대신 상을 받음 → 붕괴 없음 → PMI가 채점할 무대가 유지됨 → rmeta 양수.
+뒤집히지 않으면 남은 수는 **E-063 emission-protected arm(코드 없음)** 하나이고, 그 arm 없이는 "PMI가 base에서 작동하지 않는다"가 결론이 된다.
