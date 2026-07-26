@@ -2531,3 +2531,51 @@ E-063이 그 실패에 대한 처방을 명시했다: **emission-protected advan
 
 ### 요약 한 줄
 **b3p는 T1 레시피의 복제가 아니고(3축 이탈), 그것이 재는 축은 base에서 이미 −4.2~−4.5로 음성이 나왔으며, 그 실패의 처방은 코드에 없다.** 지금 수리한 것(SFT2·사다리)은 **붕괴 전제**를 없앴을 뿐 **PMI가 base에서 유용한 메타를 고르는지**는 아직 미검증이다.
+
+---
+
+## E-105 ⭐⭐⭐⭐ **돌파: b2p의 H100 노드에서 SFT2를 사이드카로 실행 중** — 6시간 큐 대기를 우회했다 (2026-07-26 20:45-21:00 UTC)
+
+사용자 제안: "노드를 멈추진 말고, **그 노드 위에서 그대로 실험을 진행할 방법은 없는 건가?**"
+→ **가능했다. 그리고 이것이 오늘의 유일한 실질 돌파다.**
+
+### 사용자 질문에 대한 사실 정리
+- **"b2p는 재현이 아니지?"** — 맞다. 재현축은 `b3p−b0p`이고 b2p는 둘 중 어느 것도 아니다(RQ1/RQ2 기준 arm).
+- **"b3p부터 하는 게 맞지 않아?"** — 취지는 맞으나 **정정이 필요하다**: 큐에 있는 b3p도 **구 init(378행 기아 SFT2)** 이라 재현이 아니다. 재현엔 **새 SFT2가 선행**이므로 **"b3p부터"의 실질은 "SFT2부터"** 다.
+- **"안 된 이유가 데이터 때문 아니었어?"** — 맞다. E-093(위장된 시나리오 필터)·E-094(SFT1과 반대 구조)·E-095(29.7%가 메타 안 가르침).
+
+### ⭐발견: 배치 잡에도 SSH가 된다
+`amlt ssh --help`는 *"For Singularity's managed mode, it is only possible to SSH into jobs that were already launched in interactive mode"* 라고 쓰여 있다. **실측 결과 배치 발사 잡(`superb-terrier`)에 SSH가 정상 접속된다.** ⇒ **문서가 실제보다 보수적이다.** 이건 앞으로 계속 쓸 수 있는 레버다(메모리 `singularity-interactive-fails-batch-works-0715`에 배치가 정답이라 적혀 있는데, **거기에 "배치도 SSH 된다"를 추가해야 한다**).
+
+### 노드 자원 실측 (b2p 단독 실행 중)
+| | 값 |
+|---|---|
+| GPU | 81.5GB × 4, 사용 35.2GB ⇒ **여유 45.8GB/GPU** |
+| CPU RAM | 1870GB 중 **954GB 가용** |
+| /scratch | 28TB 중 **25TB 여유** |
+| 코드·환경 | `/scratch/metacognition`·`/scratch/conda_envs/simplerl`(ds 0.19.2·acc 1.14.0·tf 4.57.6) |
+
+### 설계: b2p를 죽이지 않는 사이드카
+1. **옵티마이저를 CPU로 오프로드** — `/scratch/sft2_side/accelerate_sft_cpuoff.yaml`(zero3 + `offload_optimizer_device: cpu` + `main_process_port: 29711`로 포트 충돌 회피). Adam 상태 ~96GB를 GPU에서 CPU로 옮겨 **b2p의 GPU 메모리를 잠식하지 않는다**(CPU RAM 954GB 가용이라 여유).
+2. **config를 노드에 작성** — 노드의 tarball은 구버전(488239754)이라 `sft_b2p2_rvfull.yaml`이 없다. `/scratch/sft2_side/sft_b2p2_rvfull.yaml`로 직접 작성(raw 1763·3ep·lr1e-5·max_len4096 = T1 미러).
+3. **SFT1 init 스테이징** — 노드엔 `b2p2_rvseg_sft`(구 RL init)만 있고 SFT1이 없었다. HF `iamseungpil/metacot` `models/b2p_v8meta_strict_sft`를 **16GB·14파일** 다운로드 완료.
+4. **`setsid nohup`으로 발사** — SSH 세션이 끊겨도 살아남게.
+
+### 실행 상태 (21:00)
+| 항목 | 값 |
+|---|---|
+| SFT2 | **7/309 steps · 19.8s/it · ETA ~1h40m** |
+| **b2p verl** | **ALIVE** — 죽지 않았다 |
+| GPU | 56~68GB 사용 / **12~24GB 여유 남음** |
+| CPU RAM | **1402GB 가용** |
+| wandb | `gistdslab/metacot-math` run `b2p2-rvfull-sft2-side` |
+
+### 의미
+**6시간 큐 대기를 우회했다.** msrresrchvc A100 슬롯을 기다리는 대신, 이미 확보된 **H100 노드**에서 SFT2를 돈다. H100은 A100보다 2배 빠르므로 후속 RL도 이 노드에서 돌릴 수 있으면 arm당 ~3.1일이 아니라 **~1.6일**이 된다.
+⚠️단 노드 수명 제약: b2p가 끝나면(잔여 ~1.1일) 런처가 최종 push 후 `sleep 43200`(12h) → 그 다음 잡 종료·노드 반납. **RL 300스텝(H100 ~37h)은 이 창에 안 들어간다.** SFT2 2종(각 ~2h)은 충분히 들어간다.
+⇒ 전략: **이 창에서 SFT2 2종을 끝내 HF에 올린다.** RL은 큐/복구된 basicvc에서 새 init으로 발사.
+
+### 다음
+1. 메타 SFT2 완주 → EOS 게이트 → HF `models/b2p2_rvfull_sft` push
+2. 이어서 **컨트롤 SFT2**(`v8_base_rv_sft.parquet`은 노드에 없으니 HF에서 내려야 함) 같은 방식으로
+3. 두 개 다 올라가면 RL 런처 3종(E-101)의 발사 조건 충족
