@@ -2648,3 +2648,48 @@ pull_resume 조건(model+optim+extra 각 ≥4) 만족 step: []  → LOCAL_GS 없
 ### 그래서 이번 실험의 인과 베팅은 명확하다
 새 SFT2가 **메타를 실제로 유용하게** 만들면 → 메타가 correctness와 **양상관** → emit-결정 토큰이 벌 대신 상을 받음 → 붕괴 없음 → PMI가 채점할 무대가 유지됨 → rmeta 양수.
 뒤집히지 않으면 남은 수는 **E-063 emission-protected arm(코드 없음)** 하나이고, 그 arm 없이는 "PMI가 base에서 작동하지 않는다"가 결론이 된다.
+
+---
+
+## E-107 🔴⭐⭐⭐ **정정: instruct에서 PMI-shift는 격리 실험을 통과했다** — 내가 E-106에서 "증거가 한 번도 검증을 통과한 적 없다"고 쓴 것은 틀렸다 (2026-07-26 21:15-21:25 UTC)
+
+사용자 질문: "instruct에서는 가짜가 아니지 않았나?"
+→ **맞다. 내가 틀렸다.** E-106에서 나는 base think-off의 in-training 수치(+10.4→−1.7)와 B3noPMI 일시부진 분석만 보고 **"PMI가 이득을 준다는 증거는 한 번도 검증을 통과한 적이 없다"** 고 썼다. **instruct 세대에 gs300 held-out 격리 실험이 존재하고 그것은 유의하게 양성이다.** 여기서 정정한다.
+
+### 이미 존재하던 격리 실험 (2026-07-08 문서·내 발견이 아니다)
+`docs/reports/2026-07-08-RQ2-isolated-pmishift-net-shiftonly-vs-gandhi.md`
+두 arm은 **동일 meta-SFT init(`v8_rv_functional_sft`)** 에서 출발하고 **보상만** 다르다:
+- **gandhi**(B2-analog) = meta-SFT + VANILLA_GRPO(correctness only)
+- **shiftonly**(B3-analog) = meta-SFT + correctness + **PMI-shift만**(cal/format/emit/len_cost/over 전부 0·cf_group 제거)
+⇒ `shiftonly − gandhi` = **PMI-shift 보상의 격리 순효과**(priming 고정). 이것이 `pmishift − base`(패키지 대 base)나 `gandhi − base`(priming)가 줄 수 없던 클린 트윈이다.
+
+### 결과 (held-out 1030·avg@8·format-fair math_verify 재채점·paired bootstrap)
+| 벤치 | budget | gandhi | shiftonly | **PMI 순효과** | bootstrap p | McNemar p |
+|---|---|---|---|---|---|---|
+| GSM8K | 16k | 92.5 | 93.3 | +0.8 | .15 | .42 |
+| **MATH500** | 4k | 72.1 | 78.0 | **+5.9** | **<.001** | **<.001** |
+| **MATH500** | 16k | 71.5 | 77.1 | **+5.6** | **<.001** | **.001** |
+| AIME | 4k | 21.2 | 14.2 | −7.1 | <.001 | .25(n=30) |
+| AIME | 16k | 20.0 | 14.2 | −5.8 | .002 | 1.0(n=30) |
+
+⇒ **PMI-shift는 풀 수 있는 어려운 문제(MATH500)에서 실재하는 유의한 순양성(+5.6~5.9pp)** 이고, **능력한계 문제(AIME)에서는 음성(−5.8~−7.1pp)** 이다. AIME 음성의 기전은 길이 팽창이다: raw artifact 실측 — shiftonly AIME 평균 7432토큰·절단 84 vs gandhi 5903토큰·절단 66. 못 푸는 문제에서 늘어난 길이가 **미종결로 발현**된다.
+
+### ⚠️ 내가 새로 확인한 단서: **부호가 채점기에 의존한다**
+HF의 **raw eval artifact**를 직접 읽으니 재채점본과 다르다:
+| arm | bench | **raw artifact** | 0708 재채점 | 차이 |
+|---|---|---|---|---|
+| gandhi | math500 | 68.07 | 71.5 | +3.4 |
+| **shiftonly** | math500 | **62.28** | **77.1** | **+14.8** |
+| gandhi | aime2024 | 19.58 | 20.0 | +0.4 |
+| shiftonly | aime2024 | 14.17 | 14.2 | ~0 |
+⇒ **raw로 계산하면 MATH500 PMI 순효과가 −5.8(음성)**, 재채점하면 **+5.6(양성)**. 부호가 뒤집힌다.
+**설명은 정합적이다**: 스윙이 **shiftonly의 MATH500에만 +14.8pp** 집중되고 AIME는 거의 안 움직인다. shiftonly는 `w_format=0`이라 **답 포맷이 비정규**(LaTeX 표현식)일 수 있고, MATH500 답은 LaTeX이지만 AIME 답은 정수라 포맷 관용이 MATH500에서만 효과를 낸다. 그리고 이 프로젝트는 **raw 채점기가 깨졌다는 기록**이 있다(0625 `math500-grader-broken` — math_verify로 교체). ⇒ **재채점본이 방어 가능한 수치**다.
+그러나 정직하게: **주장의 크기가 "한 arm에만 14.8pp 영향을 주는 채점기 선택"에 걸려 있다.** 논문에 이 의존성을 적어야 한다.
+
+### 이것이 base 실험을 어떻게 재규정하는가
+1. **"base RQ2 음성"과 "instruct RQ2 양성"은 모순이 아닐 수 있다.** instruct 격리는 **MATH500 +5.6 / AIME −5.8**로 **벤치마크 의존**이다. base think-off의 −4.2는 9과목 평균이라, AIME형(능력한계) 실패가 지배했거나 emission collapse가 겹친 결과일 수 있다.
+2. ⇒ **base 재현의 판정은 종합 평균이 아니라 층별로 봐야 한다.** 사전등록 판정에 **MATH500(풀 수 있는 어려운 층)** 을 1차 지표로, AIME를 길이/종결 side-effect 지표로 분리해 넣는 것이 옳다.
+3. **PMI가 "가짜"가 아니라는 근거는 instruct에 있다.** base에서 안 되면 그것은 substrate-dependence이고, 그 자체가 발표 가능한 결과다(사전등록대로).
+
+### 내 오류의 원인 (재발 방지)
+E-106을 쓸 때 **원장(run log)과 예비 in-training 수치만 봤고 `docs/reports/`의 기존 분석 문서를 확인하지 않았다.** 같은 질문에 대한 **더 강한 증거가 18일 전에 이미 문서화**돼 있었다. ⇒ 규율 추가: **"증거가 없다"고 단언하기 전에 `docs/reports/` 전체를 grep한다.**
