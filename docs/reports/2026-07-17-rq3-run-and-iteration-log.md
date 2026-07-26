@@ -2166,3 +2166,32 @@ b3p는 결함 init(378행 기아 SFT2)에서 돌지만 b2p와 init이 매치되�
 
 ### 상태 (14:10 UTC)
 카나리아 **RED 7회** · SFT2-meta **queued 34m** · **SFT2-control preparing(신규)** · b3p **queued 3h** · b2p running **20h** · durable `rq3v2_b2p{20}`·`rq3v2_b3p{10}`
+
+---
+
+## E-098 ⚠️⭐⭐ **정정: b3p의 gs10은 resume 불가였다**(optim 0/4) — 여러 틱에 걸친 "durable gs10 안전 4/4" 기록은 파일 수만 센 것 / 우선순위 역전 해소를 위해 b3p 취소 (2026-07-26 14:39-14:50 UTC)
+
+### 🔴 정정
+E-091 이후 계속 "b3p durable gs10 안전 4/4"로 기록하고 런처 설명에도 "resumes from durable gs10"이라 적었다. **틀렸다.** 샤드 종류별로 세어 보니:
+
+| config | step | model | optim | extra | 판정 |
+|---|---|---|---|---|---|
+| `rq3v2_b2p` | gs20 | 4/4 | **4/4** | 4/4 | ✅ **RESUMABLE** |
+| `rq3v2_b3p` | gs10 | 4/4 | **0/4** | 4/4 | ❌ **resume 불가** |
+
+`pull_resume_ckpt.py:80`의 조건은 **model≥4 AND optim≥4 AND extra≥4**이고, 그 docstring이 이 함정을 이미 명시하고 있다: *"a step with model 4/4 but optim <4 (upload cut mid-flight) still crashes resume — all three shard sets must be complete"*. 내가 센 것은 **파일 총수 19개**였고 종류별 완결성이 아니었다. 19 = 23(b2p) − 4(optim 샤드) 로 정확히 설명된다.
+이것은 E-071 H-3b가 이미 기록한 **완결성 정의 3원 불일치**(푸셔=model+extra≥4 / pull_resume=model+optim+extra≥4)가 실제로 물린 사례다. 푸셔는 gs10을 "완결"로 보고 올렸지만 resume은 그것을 후보로 인정하지 않는다.
+⇒ **b3p A100 잡은 노드를 잡았어도 gs0부터 300스텝을 다시 돌 예정이었다.** A100 ~25-30min/step 추정이면 6~7일이 아니라 **처음부터 6~7일**.
+
+### 결정: b3p 취소 (파괴조작 3율)
+1. **LIST** — b3p: `queued 3h`, 노드 미확보(런타임 정보 없음), 소비한 계산 0, **resume 자산 0**(gs10 사용 불가). b2p gs20은 RESUMABLE로 무관.
+2. **decide** — msrresrchvc A100은 **전 SKU Basic 티어뿐**(Standard 없음 = 티어 레버 없음), 다른 VC 없음(`target list -a`로 확인: msrresrchbasicvc·msrresrchvc 2개뿐), 인스턴스 타입은 이미 양쪽 유연(`80G4-A100 | 80G4-A100-NvLink`). ⇒ 순수 opportunistic 용량 대기. b3p가 **가장 오래 기다린 잡**이라 다음 슬롯을 잡을 가능성이 높은데, 셋 중 **가치가 가장 낮다**(결함 init·resume 자산 없어 gs0부터·6~7일). 두 SFT2는 각 2~4h이고 재현 판정의 critical path. b3p가 슬롯을 잡으면 **SFT2가 일주일 막힌다** = 우선순위 역전.
+3. **execute** — `amlt cancel rq3v2-b3p-a100` → `killed`. **잃은 것은 큐 위치 3시간뿐, 데이터 0.**
+
+b3p는 새 SFT2(`b2p2_rvfull_sft`)가 게이트를 통과하면 **새 init으로 다시 발사**하는 것이 어차피 재현 축이다. 구 init 재실행은 계획에 없었다.
+⚠️단 대가를 정직하게 적는다: **RQ2 축(b3p−b2p, 구 init 매치) 측정이 무기한 연기**된다. b2p는 20h·gs20까지 그 축에 투입돼 있다. 새 init으로 b2p·b3p를 다시 돌리면 RQ2도 새 init에서 다시 나오므로 총량은 손해가 아니지만, **b2p의 20시간은 구 init RQ2 부록으로만 남는다**.
+
+### 상태 (14:39 UTC)
+카나리아 **RED 8회** · SFT2-meta `rq3v2-sft2-rvfull` **queued 1h** · SFT2-control `rq3v2-sft2-b0p2` **queued 28m** · b3p **killed** · b2p running **20h**(durable gs20 RESUMABLE)
+### 다음
+두 SFT2가 슬롯을 잡는지 확인 → 게이트 → 새 init RL 런처 3종 작성. b2p는 무개입 지속(gs40 ~15:30).
