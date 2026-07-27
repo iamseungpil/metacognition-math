@@ -99,9 +99,32 @@ jobs:
         export PYTHONPATH=/scratch/metacognition
         cd /scratch/metacognition
 
+        # ── IN-TRAINING CHECKPOINT PUSHER (E-122). The 0727 preemption proved why this
+        # cannot wait until after `accelerate launch` returns: the control run was
+        # taken at step ~125/303 and everything on /scratch went with the node. What
+        # survived was exactly what a concurrently-running pusher had already put on
+        # HF. This launcher previously pushed only at the end, i.e. never, for any
+        # run that does not outlive its window.
+        # NOTE ON RESUME: these uploads are WEIGHTS-ONLY. push_sft_ckpts_to_hf.py
+        # deliberately skips the DeepSpeed `global_step*/` optimizer subdir (~96 GB
+        # for 8B Adam under ZeRO-3), so a checkpoint recovered from HF cannot serve an
+        # exact `resume_from_checkpoint` — it is forensics and a warm-start source,
+        # not a resume point. Cross-node resume would need that 96 GB pushed every
+        # save, which is not affordable; the real answer to preemption is a run short
+        # enough to fit inside one window (see the 4-GPU variant).
+        nohup env -u HF_HUB_DISABLE_XET python /scratch/metacognition/scripts/push_sft_ckpts_to_hf.py \
+            --ckpt_dir /scratch/checkpoints/b2p2_rvfull_eb16_sft \
+            --repo_id iamseungpil/metacot-sft2-eb16 --repo_type model \
+            --path_prefix b2p2_eb16 \
+            --config_name b2p2_eb16 --keep 2 --interval 120 \
+            > /scratch/logs/push_b2p2_eb16.log 2>&1 &
+        PUSH_PID=$$!
+        echo "[YAML] in-training checkpoint pusher started pid=$${PUSH_PID}"
+
         python -m accelerate.commands.launch --config_file configs/accelerate_sft_1gpu_cpuoff.yaml \
             src/training/sft.py --config configs/sft_b2p2_rvfull_g1eb16.yaml
         SFT_RC=$$?
+        kill $${PUSH_PID} 2>/dev/null || true
         echo "[YAML] b2p2-rvfull-sft2 rc=$${SFT_RC}"
 
         CKPT=/scratch/checkpoints/b2p2_rvfull_eb16_sft
