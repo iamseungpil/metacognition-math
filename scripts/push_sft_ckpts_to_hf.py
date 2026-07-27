@@ -72,6 +72,7 @@ import argparse
 import json
 import os
 import re
+import sys
 import time
 from pathlib import Path
 
@@ -313,9 +314,47 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Backstop: require this many seconds since the newest file mtime")
     ap.add_argument("--marker_dir", default="/scratch",
                     help="Where to keep the same-node dedup marker")
+    ap.add_argument("--probe-only", dest="probe_only", action="store_true",
+                    help="Verify write access to --repo_id and exit 0/1 without starting the "
+                         "daemon. Run this SYNCHRONOUSLY from the launcher before training, so a "
+                         "permanently broken destination aborts the window instead of presenting "
+                         "as a healthy daemon that never uploads.")
     ap.add_argument("--once", action="store_true",
                     help="Run a single scan and exit (smoke-testing the wiring)")
     return ap
+
+
+def write_probe(api, repo_id: str, repo_type: str, path_prefix: str, token) -> tuple[bool, str]:
+    """Prove we can actually write to the destination, and clean up after.
+
+    Every failure inside the daemon loop is swallowed on purpose - a transient
+    HF error must not kill durability. The cost is that a PERMANENT failure
+    (wrong repo_id, token without write scope, repo owned by someone else) is
+    indistinguishable from a healthy idle daemon: the process is alive, the log
+    says "daemon start", and nothing is ever uploaded. The launcher sees
+    PUSH_PID and believes the run is protected.
+
+    So the permanent case gets its own check, once, at boot: upload a few bytes
+    and delete them. Anything that fails here will fail for the whole run.
+    """
+    probe_path = repo_path(path_prefix, ".push_probe")
+    try:
+        api.upload_file(
+            path_or_fileobj=b"probe\n",
+            path_in_repo=probe_path,
+            repo_id=repo_id,
+            repo_type=repo_type,
+            token=token,
+            commit_message="push_sft_ckpts write probe",
+        )
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {str(exc)[:300]}"
+    try:
+        api.delete_file(path_in_repo=probe_path, repo_id=repo_id,
+                        repo_type=repo_type, token=token)
+    except Exception as exc:  # wrote but could not clean up: still writable
+        return True, f"probe written; cleanup failed ({type(exc).__name__}) - harmless"
+    return True, "write+delete ok"
 
 
 def main(argv=None) -> None:
@@ -339,6 +378,19 @@ def main(argv=None) -> None:
         create_repo(repo_id=args.repo_id, token=token, repo_type=args.repo_type, exist_ok=True)
     except Exception as exc:
         print(f"[push-sft] repo create skipped: {exc}", flush=True)
+
+    ok, detail = write_probe(api, args.repo_id, args.repo_type, args.path_prefix, token)
+    if not ok:
+        print(
+            f"[push-sft] FATAL: cannot write to {args.repo_id} ({args.repo_type}) - {detail}\n"
+            f"[push-sft] This is permanent, not transient. Nothing would ever be uploaded while "
+            f"the daemon kept looking healthy and the run stayed undurable.",
+            flush=True,
+        )
+        sys.exit(1)
+    print(f"[push-sft] write probe: {detail}", flush=True)
+    if args.probe_only:
+        sys.exit(0)
 
     marker = Path(args.marker_dir) / f".pushed_sft_{args.config_name}.json"
     done = _load_marker(marker)
