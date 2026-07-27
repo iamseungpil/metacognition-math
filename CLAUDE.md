@@ -29,16 +29,37 @@ enabling self-assessment, error correction, and calibrated confidence.
   제거해야 한다.
 - TRAPI scope: api://trapi/.default (endpoint: trapi.research.microsoft.com/gcr/shared)
 
-## Compute
-- Cluster: msrresrchbasicvc (H100 × 4, **Standard** tier — 선점(preemption) 잦음,
-  ckpt 릴레이/resume 배선 필수)
+## Compute (0727 기준 — 두 VC 모두 제약이 있고, 그 제약이 실험 설계를 결정한다)
+
+**msrresrchbasicvc** — H100/H200/A100/MI300X 보유. **0726 05:49부터 우리 신원의 신규 제출을
+전부 거부**한다(`UserError: The virtual cluster does not exist`). 1-CPU echo 잡도 같은 메시지를
+받으므로 용량이나 SKU 문제가 아니다. 근인: 타 사용자는 `GroupPolicy: e9deff52-...` 태그를 달고
+같은 VC에서 H100을 돌리는데, 그 정책이 우리 신원으로는 해석되지 않는다
+(`amlt cache expand-sku -t "msrresrchbasicvc:e9deff52-..."` → could not be found). 즉 우리가 보는
+쿼터는 VC **기본** 그룹정책 발급분이고 그 정책이 제출을 안 받는다. **그룹정책 멤버십(행정 조치)
+으로만 풀린다** — 요청 내용은 `docs/reports/2026-07-26-basicvc-submission-block-escalation.md`.
+차단 이전에 진입한 잡은 영향 없이 계속 돈다. 이 VC에는 **Premium SLA가 없다**(Standard/Basic만).
+Standard 티어라 선점이 잦으므로 ckpt 릴레이/resume 배선은 여전히 필수다.
+
+**msrresrchvc** — A100/CPU/MI200만. **H100 없음.** 결정적 제약:
+| | 쿼터 | 사용자 한도 |
+|---|---|---|
+| A100 80GB (`NC_A100_v4`/`NDAMv4`) | Premium 4/4, Standard 0/0, Basic 0/32 | **1 GPU** |
+| A100 40GB (`NDv4`) | Premium 381/384 | 12 GPU |
+사용자 한도가 **1장**이라 2·4-GPU 잡은 제출은 수락되고 **영원히 스케줄되지 않는다**(21시간 대기
+관측). 1-GPU는 3분 만에 붙고 ~3.5h 후 선점된다. 8B SFT2는 1-GPU에서 ~7.7h가 필요하므로
+**선점창 안에 완주할 수 없고**, HF로 미는 체크포인트는 weights-only(DeepSpeed 옵티마이저 ~96GB
+제외)라 크로스노드 resume도 불가하다. 다GPU가 필요하면 40GB 계열이 유일한 길이다.
+
 - Image: mcr.microsoft.com/aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x
 - Conda env: /scratch/conda_envs/simplerl (conda-pack)
 - AMLT project: skilldiscovery2
-- YAML: h100std_rq3_b0/b2/b3.yaml (RL), h100std_sft_b0_gold.yaml /
-  h100std_sft_b23_unmasked.yaml (SFT)
-- (pre-rq3 세대: msrresrchvc Premium A100×4, metacognition_premium.yaml,
-  env grpo — 아카이브 세대 기록용)
+- **현행 런처**(그 외 루트의 `h100std_rq3_*`, `h100std_sft_*`, `a100g1_*`, `a100g2_*`는 은퇴):
+  - SFT2 쌍: `a100_sft_b0p2_rvfull.yaml`(컨트롤) / `a100_sft_b2p2_rvfull.yaml`(메타)
+  - RL: `a100_rq3v2f_{b0p,b2p,b3p}.yaml`(신 lineage) / `a100_rq3v2_b3p.yaml`(구 init)
+  - basicvc 복구 시: `h100std_rq3v2_{b2p,b3p}.yaml`
+- ⛔런처 yaml 편집 시 **`\`로 끝나는 줄 다음에 주석/빈 줄을 두지 말 것** — bash가 명령을 그
+  지점에서 끊는다. `bash -n`은 통과시키므로 `tests/test_launcher_yaml_lint.py`가 지킨다(E-125).
 
 ## Data (HuggingFace: datasets/iamseungpil/metacot)
 SFT inputs (current = **RQ3v2 think-on** matched ladder — 2단 SFT 스택):
