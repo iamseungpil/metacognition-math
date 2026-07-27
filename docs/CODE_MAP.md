@@ -1,4 +1,11 @@
-# CODE_MAP — 신규 인력용 코드 인벤토리 (read-only, 2026-07-17)
+# CODE_MAP — 신규 인력용 코드 인벤토리 (read-only, 2026-07-17 · 런처 이름 0727 갱신)
+
+> **세대 주석(0727).** 이 문서가 쓰인 시점의 현행은 **RQ3 think-off**(B0/B2/B3,
+> `h100std_rq3_*`)였고, 지금은 **RQ3v2 think-on**(b0p/b2p/b3p, 2단 SFT 스택)이다.
+> **아래 메커니즘 서술 — 모드 분기, config 상속 순서, §2의 rmeta 함정, §3의 RGS 규칙 —
+> 은 전부 그대로 유효하다.** 같은 장치를 현행 런처가 쓴다. 바뀐 것은 런처 파일명과 arm
+> 이름뿐이며 본문의 이름은 현행으로 갱신했다. 구세대 런처는
+> `archive/launchers_retired_0727/`에 있다.
 
 이 문서는 "지금 살아있는 코드가 무엇이고 어디서 불리는가"의 지도다. 수정
 지침이 아니다 — src/·configs/·h100std_*.yaml은 tarball(CODE_TAR_REVISION)과
@@ -6,7 +13,8 @@ byte-동일 유지가 원칙이다.
 
 ## 1. 라이브 트레이너 모드 2개와 호출 사슬
 
-**Mode 1 — VANILLA_GRPO** (B0 = `h100std_rq3_b0.yaml`, B2 = `h100std_rq3_b2.yaml`)
+**Mode 1 — VANILLA_GRPO** (컨트롤 b0p = `a100_rq3v2f_b0p.yaml`, 메타 b2p = `a100_rq3v2f_b2p.yaml`;
+H100 판은 `h100std_rq3v2f_*`)
 
 ```
 런처 yaml → python -m src.training.verl_sdc --config-name=base_matched_grpo_h100_4x4k
@@ -17,10 +25,11 @@ byte-동일 유지가 원칙이다.
     — teacher/PMI/cf_group forward는 절대 안 돈다
 ```
 
-B0 vs B2의 차이는 **`actor_rollout_ref.model.path` 하나뿐**
-(b0_gold_sft vs b23_rv_unmasked_sft).
+b0p vs b2p의 차이는 **init 하나뿐**이다. 현행 런처는 그 경로를 실행 시점에 해소해
+`/scratch/models/sft2_init`으로 고정 스테이징하며, **두 arm의 SFT2 산출물이 같은 접미사로
+모두 존재할 때만** 스테이징한다(한쪽만 있으면 world-size가 어긋난 짝이 되므로 abort).
 
-**Mode 2 — TRIOBJ_DCPO_V4** (B3pkg = `h100std_rq3_b3.yaml`, B3-noPMI = `h100std_rq3_b3nopmi.yaml`)
+**Mode 2 — TRIOBJ_DCPO_V4** (풀패키지 b3p = `a100_rq3v2f_b3p.yaml`; H100 판 `h100std_rq3v2f_b3p.yaml`)
 
 ```
 런처 yaml → --config-name=triobj_dcpo_v4_stage3b_h100_4x4k
@@ -38,7 +47,7 @@ B0 vs B2의 차이는 **`actor_rollout_ref.model.path` 하나뿐**
 
 ## 2. config 상속 사슬 (우선순위 높은 것부터)
 
-1. **런처 CLI 오버라이드** — `h100std_rq3_*.yaml`의 `++`/`key=`
+1. **런처 CLI 오버라이드** — `a100_rq3v2f_*.yaml`/`h100std_rq3v2f_*.yaml`의 `++`/`key=`
    (v2 레시피: temp 1.0, top_k −1, resp 8192, norm_adv_by_std=false,
    logprob micro_bs 2, save_freq, resume_mode=auto)
 2. **네임드 config**: `base_matched_grpo_h100_4x4k.yaml` 또는
@@ -51,18 +60,18 @@ B0 vs B2의 차이는 **`actor_rollout_ref.model.path` 하나뿐**
 
 `configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:175`는 yaml 기본값으로
 `dcpo_rmeta_source: cf_group`을 두지만, 라이브 B3 런처가 이를 **뒤집는다**:
-`h100std_rq3_b3.yaml:191`·`h100std_rq3_b3nopmi.yaml:169`이
-`++algorithm.dcpo_rmeta_source=pmi_shift`를 넘긴다. cf_group
+b3p 런처가 `++algorithm.dcpo_rmeta_source=pmi_shift`를 넘긴다(줄번호는 인용하지 않는다 —
+하루 만에 썩는다). cf_group
 with/without-arm 장치(cf_placebo_agent 등)는 rq3에서 **전부 휴면** —
 rollout은 single_turn, 전 arm 매치드. **yaml만 읽으면 보상 소스를 틀리게
-안다. 진실은 런처.** (b3nopmi는 추가로 `++algorithm.dcpo_w_meta=0.0` —
-같은 장치, 가중치 0.)
+안다. 진실은 런처.** (구세대에는 `++algorithm.dcpo_w_meta=0.0`인 b3nopmi arm이 있었다 — 같은 장치, 가중치 0.
+현행 3-arm에는 없다.)
 
 ## 3. 체크포인트 / 재개 장치
 
 | 부품 | 위치 | 역할 |
 |---|---|---|
-| RGS 완전성 규칙 | 런처 yaml 인라인 (예: `h100std_rq3_b3.yaml:120-166`) | HF repo `iamseungpil/metacot-h200-triobj-dcpo-v3`에서 model+extra+optim 샤드 ≥4인 최고 `global_step_N` 탐색; fail-closed — RGS 빈/깨짐 → abort, RGS=−1(HF 3회 실패) → abort, 계보 존재하나 pull 결과 없음 → abort(gs0 콜드스타트 거부) |
+| RGS 완전성 규칙 | 런처 yaml 인라인 (예: `a100_rq3v2f_b3p.yaml`) | HF repo `iamseungpil/metacot-h200-triobj-dcpo-v3`에서 model+extra+optim 샤드 ≥4인 최고 `global_step_N` 탐색; fail-closed — RGS 빈/깨짐 → abort, RGS=−1(HF 3회 실패) → abort, 계보 존재하나 pull 결과 없음 → abort(gs0 콜드스타트 거부) |
 | `scripts/pull_resume_ckpt.py` | yaml 인라인 호출, 3회 재시도 | 최신 완전 ckpt를 `/scratch/checkpoints/<arm>`으로 pull → `trainer.resume_mode=auto`가 재개 |
 | `scripts/push_ckpts_to_hf.py` | nohup 데몬 (`--interval 90 --keep 2`) | 학습 중 신규 global_step 디렉토리를 per-file 내구 push |
 | 최종 sync push | verl 종료 후 yaml 인라인 | `pkill push_ckpts_to_hf` 후 동기 `upload_folder` 최대 10회 재시도 + 샤드 수 검증 |
@@ -92,7 +101,7 @@ rollout은 single_turn, 전 arm 매치드. **yaml만 읽으면 보상 소스를 
 eval_hf.py(pre-vLLM), pmi_shift_signal.py(pmi 오프라인 프로브),
 decoy_did_pregate.py, eval_counterfactual_difficulty*, eval_passk_headroom.py,
 cf_stats.py, redirect_* 등. **rq3 ckpt의 held-out eval은
-`scripts/eval_vllm_1030.py`**(h100std_sft_*.yaml에서 참조)이며 src/eval이
+`scripts/eval_vllm_1030.py`**(SFT 런처 `*_sft_b?p2_rvfull.yaml`에서 참조)이며 src/eval이
 아니다.
 
 ## 6. scripts/ (75개 — 그룹만)
@@ -117,11 +126,21 @@ cf_stats.py, redirect_* 등. **rq3 ckpt의 held-out eval은
 | sft_v8_*, accelerate_grpo.yaml, archive/(30+) | 구세대 | LEGACY |
 | mainline_contract.yaml, CTSD_NODE_INDEX.md | 계약/색인 문서 | Meta |
 
-루트 런처(실제 rq3 진입 표면): `h100std_rq3_b0.yaml`, `h100std_rq3_b2.yaml`,
-`h100std_rq3_b3.yaml`(b3pkg), `h100std_rq3_b3nopmi.yaml`,
-`h100std_rq3_b3_dbg.yaml`(디버그), `h100std_sft_b0_gold.yaml`,
-`h100std_sft_b23_unmasked.yaml`, `h100std_env_builder.yaml`(conda env 빌더).
-`h100std_rq3_b1.yaml`은 아직 없다(B1 arm은 EXPERIMENT_PLAN E1의 신설 예정).
+루트 런처(실제 진입 표면, 0727 현재). **순서가 있다** — SFT2 쌍이 HF에 착지해야 RL이
+init을 스테이징한다:
+
+| 단계 | A100 판 | H100 판 |
+|---|---|---|
+| SFT2 컨트롤 | `a100_sft_b0p2_rvfull.yaml` | `h100std_sft_b0p2_rvfull.yaml` |
+| SFT2 메타 | `a100_sft_b2p2_rvfull.yaml` | `h100std_sft_b2p2_rvfull.yaml` |
+| RL 3-arm | `a100_rq3v2f_{b0p,b2p,b3p}.yaml` | `h100std_rq3v2f_{b0p,b2p,b3p}.yaml` |
+
+A100/H100 판은 target·sku·tier만 다르고 내용은 같다. 어느 쪽이 실제로 제출 가능한지는
+CLAUDE.md의 Compute 절을 볼 것 — 두 VC 모두 현재 제약이 있다.
+
+그 밖에: `a100_rq3v2_b3p.yaml`은 **구 init**(`b2p2_rvseg_sft`)을 쓰는 RQ2 부록 전용이며
+복제 결과로 보고하면 안 된다. `h100std_env_builder.yaml`은 conda env 빌더(실험 아님).
+구세대 런처 전량은 `archive/launchers_retired_0727/`와 `archive/launchers_pre_rq3/`.
 
 ## 8. experiments/ — §4 인과 프로브 워크스트림 (rq3 아님)
 

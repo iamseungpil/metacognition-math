@@ -27,14 +27,14 @@ tree is history — superseded variants and probes, kept for reproducibility und
 > still accurate; the launcher names and the init checkpoints are not.
 
 ```
-SFT      h100std_sft_b0_gold.yaml        → configs/sft_b0_gold.yaml        → models/b0_gold_sft        (B0 init, no-meta gold)
-         h100std_sft_b23_unmasked.yaml   → configs/sft_b23_unmasked.yaml   → models/b23_rv_unmasked_sft (B2/B3 init, meta RV unmasked)
+SFT      archive/launchers_retired_0727/h100std_sft_b0_gold.yaml        → configs/sft_b0_gold.yaml        → models/b0_gold_sft        (B0 init, no-meta gold)
+         archive/launchers_retired_0727/h100std_sft_b23_unmasked.yaml   → configs/sft_b23_unmasked.yaml   → models/b23_rv_unmasked_sft (B2/B3 init, meta RV unmasked)
    │  src/training/sft.py  (wrong_prefix segment-mask)
    ▼
-LAUNCH   h100std_rq3_b0.yaml   (B0: no-meta init + VANILLA_GRPO)
-         h100std_rq3_b2.yaml   (B2: meta init  + VANILLA_GRPO)
-         h100std_rq3_b3.yaml   (B3pkg: meta init + TRIOBJ_DCPO_V4 FULL package — w_meta 0.8/w_format 0.35/w_emit 0.1/w_cal 0.3/len 0.08, w_over=0, rmeta=pmi_shift; ⚠️ 2026-07-12 corrected — the pmi-only strip failed)
-         h100std_rq3_b3nopmi.yaml (B3-noPMI: same as B3pkg with only ++algorithm.dcpo_w_meta=0.0 — pmi-isolation control)
+LAUNCH   archive/launchers_retired_0727/h100std_rq3_b0.yaml   (B0: no-meta init + VANILLA_GRPO)
+         archive/launchers_retired_0727/h100std_rq3_b2.yaml   (B2: meta init  + VANILLA_GRPO)
+         archive/launchers_retired_0727/h100std_rq3_b3.yaml   (B3pkg: meta init + TRIOBJ_DCPO_V4 FULL package — w_meta 0.8/w_format 0.35/w_emit 0.1/w_cal 0.3/len 0.08, w_over=0, rmeta=pmi_shift; ⚠️ 2026-07-12 corrected — the pmi-only strip failed)
+         archive/launchers_retired_0727/h100std_rq3_b3nopmi.yaml (B3-noPMI: same as B3pkg with only ++algorithm.dcpo_w_meta=0.0 — pmi-isolation control)
    │  amlt → python -m src.training.verl_sdc
    ▼
 CONFIG   configs/base_matched_grpo_h100_4x4k.yaml       (B0/B2)

@@ -13,14 +13,14 @@ Advantage composition (region-split) lives in `src/training/dcpo_region.py`;
 SFT is `src/training/sft.py` (wrong_prefix segment-mask). The three live
 launchers are the ground truth:
 
-- **B0 / no-meta baseline** — `h100std_rq3_b0.yaml` → config
+- **B0 / no-meta baseline** — `archive/launchers_retired_0727/h100std_rq3_b0.yaml` → config
   `base_matched_grpo_h100_4x4k` (mode `VANILLA_GRPO`, init `models/b0_gold_sft`
   = no-meta gold SFT from `data/b0_gold_sft.parquet`, public-HF gold, 1290 rows).
-- **B2 / meta-SFT + vanilla GRPO** — `h100std_rq3_b2.yaml` → config
+- **B2 / meta-SFT + vanilla GRPO** — `archive/launchers_retired_0727/h100std_rq3_b2.yaml` → config
   `base_matched_grpo_h100_4x4k` (SAME `VANILLA_GRPO` reward path as B0; differs
   ONLY in init = `models/b23_rv_unmasked_sft`, the meta RV unmasked SFT from
   `data/b23_rv_unmasked_sft.parquet`, 1763 rows).
-- **B3 / region-split pmi_shift** — `h100std_rq3_b3.yaml` → config
+- **B3 / region-split pmi_shift** — `archive/launchers_retired_0727/h100std_rq3_b3.yaml` → config
   `triobj_dcpo_v4_stage3b_h100_4x4k` (same init as B2; region-split advantage,
   `dcpo_rmeta_source=pmi_shift`, every other meta head zeroed via `++`
   overrides — correctness→ANSWER span, pmi_shift→META_CONTENT span).
@@ -29,8 +29,8 @@ Science questions: **RQ1 = B2 − B0** (meta-SFT effect), **RQ2 = B3 − B2**
 (replacing correctness-on-meta with pmi_shift). A *pure* RQ2 isolation needs the
 planned **B2-R** arm (region-split with meta advantage = 0) — not launched yet.
 
-Corresponding SFT launchers: `h100std_sft_b0_gold.yaml`
-(`configs/sft_b0_gold.yaml`) and `h100std_sft_b23_unmasked.yaml`
+Corresponding SFT launchers: `archive/launchers_retired_0727/h100std_sft_b0_gold.yaml`
+(`configs/sft_b0_gold.yaml`) and `archive/launchers_retired_0727/h100std_sft_b23_unmasked.yaml`
 (`configs/sft_b23_unmasked.yaml`). The b23 parquet ships with the `wrong_prefix`
 field EMPTY → whole-response training; this unmask fix raised base meta emission
 38% → 92%.
@@ -120,7 +120,7 @@ observation.)
 > B3-noPMI arm(패키지에서 w_meta=0 하나만 제거, §10)이 담당하며 보류 중.
 > 아래 원문은 실패 기록의 근거로 보존한다.
 
-`h100std_rq3_b3.yaml` routes the PMI-shift signal onto `<|meta|>` spans and
+`archive/launchers_retired_0727/h100std_rq3_b3.yaml` routes the PMI-shift signal onto `<|meta|>` spans and
 turns every other auxiliary head OFF via `++` overrides on
 `triobj_dcpo_v4_stage3b`:
 

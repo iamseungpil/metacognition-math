@@ -133,7 +133,7 @@ jobs:
         EOS_RC=$$?
         echo "[YAML][eos-gate] verify_eos_invariant rc=$${EOS_RC} (0=GREEN required)"
 
-        # GATE = b0p precedent (h100std_sft_b0p.yaml). measure_sft_gate is NOT used:
+        # GATE = b0p precedent (archive/launchers_retired_0727/h100std_sft_b0p.yaml). measure_sft_gate is NOT used:
         # its pmi auc criterion needs a meta block and this arm has none by design.
         # Anchors to compare against (b0p SFT1): MATH500-100 55.5 pct, AIME 8.3 pct,
         # meta_rate ~0.5 pct. A meta_rate rise here would mean the twin leaked meta.

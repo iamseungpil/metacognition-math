@@ -147,7 +147,7 @@ absolute-mallard·fair-vulture·sunny-camel·sterling-firefly.
 |---|---|---|---|---|---|---|
 | B0 | models/b0_gold_sft | VANILLA_GRPO | elegant-walleye 계열 | rq3-b0-2 | **gs300** | **완료** — 재제출 금지 |
 | B2 | models/b23_rv_unmasked_sft | VANILLA_GRPO | first-hawk (retry_001~007) | rq3-b2-2 | gs150 (HF 안전) | 2026-07-16 12:52 UTC **영구 failed** — 재제출 시 resume_mode=auto로 gs150부터 |
-| B3pkg | models/b23_rv_unmasked_sft | TRIOBJ_DCPO_V4 풀 패키지 | (미발사) | rq3-b3pkg-2 | gs0 | **미발사** — h100std_rq3_b3.yaml 준비완료, CODE_TAR_REVISION=476703893 |
+| B3pkg | models/b23_rv_unmasked_sft | TRIOBJ_DCPO_V4 풀 패키지 | (미발사) | rq3-b3pkg-2 | gs0 | **미발사** — archive/launchers_retired_0727/h100std_rq3_b3.yaml 준비완료, CODE_TAR_REVISION=476703893 |
 | B3-noPMI | models/b23_rv_unmasked_sft | 풀 패키지 − pmi | (보류) | rq3-b3nopmi-2 | gs0 | **보류** — b3pkg 우선 (사용자 결정 2026-07-15) |
 
 B3pkg head 구성: w_meta 0.8 / w_format 0.35 / w_emit 0.1 / w_cal 0.3 /

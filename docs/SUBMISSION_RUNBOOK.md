@@ -23,7 +23,7 @@ the token / setup failures we hit on 0714**. Read this before every submit.
 cd /home/v-seungplee/metacognition-math      # amlt must run from the project dir
 export PATH=/home/v-seungplee/miniconda3/envs/amlt/bin:$PATH
 set -a; source .env; set +a                  # <-- REQUIRED, do not skip
-amlt run h100std_rq3_b0.yaml -y
+amlt run archive/launchers_retired_0727/h100std_rq3_b0.yaml -y
 ```
 
 **Why.** The launcher injects tokens by *shell substitution at submit time*
@@ -54,17 +54,17 @@ matches. Only GH was the problem, but sourcing `.env` fixes both regardless.
 cd /home/v-seungplee/metacognition-math
 export PATH=/home/v-seungplee/miniconda3/envs/amlt/bin:$PATH
 set -a; source .env; set +a
-for y in h100std_rq3_b0.yaml h100std_rq3_b2.yaml h100std_rq3_b3.yaml h100std_rq3_b3nopmi.yaml; do
+for y in archive/launchers_retired_0727/h100std_rq3_b0.yaml archive/launchers_retired_0727/h100std_rq3_b2.yaml archive/launchers_retired_0727/h100std_rq3_b3.yaml archive/launchers_retired_0727/h100std_rq3_b3nopmi.yaml; do
   amlt run "$y" -y
 done
 ```
 
 | Launcher | Arm | config-name | init model | key knob |
 |---|---|---|---|---|
-| h100std_rq3_b0.yaml | B0 baseline | base_matched_grpo_h100_4x4k | b0_gold_sft | vanilla GRPO |
-| h100std_rq3_b2.yaml | B2 meta-SFT | base_matched_grpo_h100_4x4k | b23_rv_unmasked_sft | vanilla GRPO |
-| h100std_rq3_b3.yaml | B3pkg | triobj_dcpo_v4_stage3b_h100_4x4k | b23_rv_unmasked_sft | full pkg, w_meta=0.8 |
-| h100std_rq3_b3nopmi.yaml | B3-noPMI | triobj_dcpo_v4_stage3b_h100_4x4k | b23_rv_unmasked_sft | full pkg, w_meta=0.0 |
+| archive/launchers_retired_0727/h100std_rq3_b0.yaml | B0 baseline | base_matched_grpo_h100_4x4k | b0_gold_sft | vanilla GRPO |
+| archive/launchers_retired_0727/h100std_rq3_b2.yaml | B2 meta-SFT | base_matched_grpo_h100_4x4k | b23_rv_unmasked_sft | vanilla GRPO |
+| archive/launchers_retired_0727/h100std_rq3_b3.yaml | B3pkg | triobj_dcpo_v4_stage3b_h100_4x4k | b23_rv_unmasked_sft | full pkg, w_meta=0.8 |
+| archive/launchers_retired_0727/h100std_rq3_b3nopmi.yaml | B3-noPMI | triobj_dcpo_v4_stage3b_h100_4x4k | b23_rv_unmasked_sft | full pkg, w_meta=0.0 |
 
 Shared v2 collapse-fixed recipe (all arms): `temperature=1.0 top_k=-1 top_p=1.0
 max_response_length=8192 norm_adv_by_std_in_grpo=false`. `save_freq` is

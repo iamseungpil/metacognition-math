@@ -3496,3 +3496,33 @@ README·ARCHITECTURE·SUBMISSION_RUNBOOK·CONSTITUTION이 참조하는 것은 �
 (참조 11건)까지 함께 처리할 때 한다.
 
 **같은 틱.** 카나리아 RED 34회. b2p durable gs200 유지. 전체 스위트 854 passed.
+
+### E-131 — 구세대 런처 아카이브 완료, 참조 32건 해소 (0727 15:35 UTC)
+
+E-130에서 문서 4종의 **지시**를 고친 뒤, 남은 `docs/CODE_MAP.md`(참조 11건)를 처리하고 구세대
+런처 10종을 옮겼다.
+
+**CODE_MAP 처리 원칙.** 이 문서의 메커니즘 서술 — 모드 분기, config 상속 순서, §2의 "rmeta 소스는
+yaml이 아니라 런처가 결정한다"는 함정, §3의 RGS 완전성 규칙 — 은 **전부 그대로 유효하다.** 현행
+런처가 같은 장치를 쓴다. 그래서 본문을 다시 쓰지 않고 (a) 헤더에 세대 주석, (b) 런처 이름을 현행
+으로 갱신, (c) §7 루트 런처 인벤토리만 재작성했다. 줄번호 인용
+(`h100std_rq3_b3.yaml:191`)은 **인용 자체를 제거**했다 — 오늘 그 클래스가 하루 만에 썩는 것을
+두 번 봤다.
+
+**이동.** `h100std_rq3_b0/b2/b3/b3_dbg/b3nopmi.yaml` +
+`h100std_sft_b0_gold/b0p/b2p/b23_unmasked/b2p2_rvseg.yaml` → `archive/launchers_retired_0727/`.
+`h100std_env_builder.yaml`은 **실험이 아니라 conda env 빌더**이므로 루트에 남겼다.
+
+**참조 해소 32건.** 이동 후 존재하지 않는 경로를 가리키는 참조를 전수 탐색해 아카이브 경로를
+부여했다 — ARCHITECTURE(6) · SUBMISSION_RUNBOOK(9) · CODE_MAP · LOCAL_RUN(1) ·
+EXPERIMENT_PLAN(1) · base_rl_recipe(6) · EXPERIMENT_LOG(1) · experiments/README(3), 그리고
+**살아있는 SFT2 런처 2종의 선례 인용**(`# GATE = b0p precedent (...)`). `docs/reports/`의 런로그는
+역사 기록이라 손대지 않았다. 자동 재검사 결과 **미해결 0건**.
+
+**`h100std_sft_b0p/b2p.yaml`은 예외적으로 값이 있다** — 현행 SFT1 init
+(`b0p_v8base_strict_sft`·`b2p_v8meta_strict_sft`)을 만든 런처이고 현행 SFT2 런처가 게이트 기준을
+여기서 인용한다. 삭제가 아니라 아카이브인 이유다.
+
+**루트 런처 최종 상태(14종).** 현행 A100 6 + H100 5 + 구 init RQ2 부록 1(`a100_rq3v2_b3p.yaml`) +
+`h100std_rq3v2_{b2p,b3p}.yaml`(폐기 lineage, CLAUDE.md가 금지 표기) + env 빌더 1.
+0727 시작 시점 27종에서 줄었다. 834 passed.

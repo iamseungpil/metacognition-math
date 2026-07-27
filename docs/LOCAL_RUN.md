@@ -106,7 +106,7 @@ repo 루트에서, `export PYTHONPATH=<repo루트> LOCAL_RANK=0 VLLM_USE_V1=1`
 서버면 쓰기 가능한 `/scratch/logs`를 만들어 두거나(sudo mkdir + chown)
 해당 기능 실패를 감수한다(학습 자체는 진행).
 
-**B2** (`h100std_rq3_b2.yaml` 171–190행 전사 + 로컬 경로 치환):
+**B2** (`archive/launchers_retired_0727/h100std_rq3_b2.yaml` 171–190행 전사 + 로컬 경로 치환):
 
 ```bash
 cd <repo루트> && python -u -m src.training.verl_sdc \
