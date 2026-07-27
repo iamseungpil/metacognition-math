@@ -1,0 +1,117 @@
+{
+  "arm_config_differences": [
+    "dataset_path: control='data/v8_base_rv_sft.parquet'  meta='data/rv_redirect_verify_functional.parquet'",
+    "model_name_or_path: control='/scratch/models/b0p_v8base_strict_sft'  meta='/scratch/models/b2p_v8meta_strict_sft'",
+    "output_dir: control='/scratch/checkpoints/b0p2_rvfull_sft'  meta='/scratch/checkpoints/b2p2_rvfull_sft'",
+    "run_name: control='b0p2-rvfull-sft2'  meta='b2p2-rvfull-sft2'"
+  ],
+  "arms": {
+    "control": {
+      "config": {
+        "dataset_path": "data/v8_base_rv_sft.parquet",
+        "eval_strategy": "no",
+        "gradient_accumulation_steps": 4,
+        "learning_rate": 1e-05,
+        "max_length": 4096,
+        "model_name_or_path": "/scratch/models/b0p_v8base_strict_sft",
+        "num_train_epochs": 3,
+        "output_dir": "/scratch/checkpoints/b0p2_rvfull_sft",
+        "per_device_train_batch_size": 1,
+        "run_name": "b0p2-rvfull-sft2",
+        "save_strategy": "epoch",
+        "wandb_project": "metacot-math"
+      },
+      "config_path": "configs/sft_b0p2_rvfull.yaml",
+      "config_sha256": "c45a64e667cfbda140f897caacb8b01cdc52fcbcd149cf17486a72f8fd92e124",
+      "corpus": {
+        "columns": [
+          "confidence_label",
+          "messages",
+          "prefix_split_char",
+          "scenario",
+          "split_tags",
+          "wrong_prefix"
+        ],
+        "content_sha256": "8111785ed38f8733b0d3cc52b8a6430e0256a7844ebd27e371f2ec81948c4fa8",
+        "exists": true,
+        "path": "/home/v-seungplee/metacognition-math/data/v8_base_rv_sft.parquet",
+        "rows": 1763,
+        "scenario_counts": {
+          "redirect": 554,
+          "verify": 1209
+        },
+        "token_len": {
+          "max": 4206,
+          "mean": 676.6171298922292,
+          "p50": 431,
+          "p90": 1630,
+          "total": 1192876
+        }
+      },
+      "effective_batch_per_process": 4
+    },
+    "meta": {
+      "config": {
+        "dataset_path": "data/rv_redirect_verify_functional.parquet",
+        "eval_strategy": "no",
+        "gradient_accumulation_steps": 4,
+        "learning_rate": 1e-05,
+        "max_length": 4096,
+        "model_name_or_path": "/scratch/models/b2p_v8meta_strict_sft",
+        "num_train_epochs": 3,
+        "output_dir": "/scratch/checkpoints/b2p2_rvfull_sft",
+        "per_device_train_batch_size": 1,
+        "run_name": "b2p2-rvfull-sft2",
+        "save_strategy": "epoch",
+        "wandb_project": "metacot-math"
+      },
+      "config_path": "configs/sft_b2p2_rvfull.yaml",
+      "config_sha256": "05ba8297fd55376c16fbb3e3f4e5105e0c90bfb223d8f177e3140bc88ad19c08",
+      "corpus": {
+        "columns": [
+          "confidence_label",
+          "messages",
+          "prefix_split_char",
+          "scenario",
+          "split_tags",
+          "wrong_prefix"
+        ],
+        "content_sha256": "afce25b78cc417cfc41063e85f318a30654e41454a366829e2e741e562927741",
+        "exists": true,
+        "path": "/home/v-seungplee/metacognition-math/data/rv_redirect_verify_functional.parquet",
+        "rows": 1763,
+        "scenario_counts": {
+          "redirect": 554,
+          "verify": 1209
+        },
+        "token_len": {
+          "max": 4253,
+          "mean": 728.1627906976744,
+          "p50": 482,
+          "p90": 1703,
+          "total": 1283751
+        }
+      },
+      "effective_batch_per_process": 4
+    }
+  },
+  "git": {
+    "branch": "master",
+    "commit": "90eaeb5b86b3137eebba033d56b7f71563229e9d",
+    "dirty": true
+  },
+  "grader": {
+    "meaning": "boxed if present, else the runtime answer_extracted, both via robust_grade",
+    "mode": "format_fair",
+    "module_sha256": "1d8982418d70975a6a36f2f57c53e774018a6fa7b5c60a929c74fa4e69f44949"
+  },
+  "objective_files": {
+    "experiments/analysis/analysis_common.py": "1d8982418d70975a6a36f2f57c53e774018a6fa7b5c60a929c74fa4e69f44949",
+    "src/training/dcpo_pmi_shift.py": "2b25766eeaa726aa797a02e41860863d2789446ac98c32eecf709a2e19f2133b",
+    "src/training/dcpo_region.py": "79554ef4ad121047fe60e834723d0b076ce95152341a3fc1c59854ad37089741",
+    "src/training/rewards.py": "3c2fe7f5e83ec1d4613a44730b7409c9ecbd0d6c566a638be6a4732c5080a51b",
+    "src/training/sft.py": "f8e595c9200d06e7c704e6d4f4c6fa8e67e1d379e165835d5366afcf89d31730",
+    "src/training/verl_sdc.py": "9b6829ceeb335bb7be811e5699ad5a31d5dc0369cf6a2ca413205ebf360c6cbd"
+  },
+  "stage": "sft2"
+}
