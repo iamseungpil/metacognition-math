@@ -198,7 +198,7 @@ jobs:
         # form scaffold -> wellformed 0.43->0.02, RQ2 +0.042->-0.120. Restoring the package.
         # Collapse-fixed v2 recipe overrides (temp 1.0 / top_k -1 / top_p 1.0 /
         # max_response 8192 / max_model_len+max_num_batched_tokens 10240 / Dr.GRPO
-        # norm_adv_by_std=false / log_prob micro-batch 2 OOM guard) applied identically
+        # norm_adv_by_std=false / log_prob micro-batch 1 + the E-052 memory levers, 0727) applied identically
         # to all three arms.
         WANDB_NAME=rq3v2f_b3p /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
             --config-name=triobj_dcpo_v4_stage3b_h100_4x4k \
