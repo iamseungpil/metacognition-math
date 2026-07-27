@@ -1,4 +1,4 @@
-description: "RQ3v2-F B2 (META-SFT2-RVFULL + VANILLA_GRPO). Same correctness-only GRPO as before; the ONLY change is the INIT, now models/b2p2_rvfull_sft — the SFT2 retrained on the RAW 1763-row RV corpus (T1 recipe: 3 epochs, lr 1e-5) instead of the 378-row filtered subset. WHY: three audits killed that filter. E-093 its think-closed condition was a covert scenario filter (redirect 554->67). E-094 it also inverted the meta position relative to SFT1 (SFT1 is 100 pct meta-inside, the 378 rows are 0 pct) and discarded the family holding 69 pct of all redirect rows. E-095 render-layer audit put numbers on what survives. Checkpoint lineage is DELIBERATELY renamed rq3v2f_b2p so it cannot collide with or resume from the old-init run rq3v2f_b2p, which stays on HF as the RQ2 appendix. A100x4 on msrresrchvc (basicvc rejects ALL submissions since 0726 05:49, E-091). Matched hyperparams unchanged: train_batch 64, ppo_mini 8, rollout.n 8, lr 1e-6, 300 steps, clip 0.2/0.28, temp 1.0, top_k -1, top_p 1.0, max_response 8192, Dr.GRPO norm_adv_by_std=false."
+description: "RQ3v2-F B2 (META-SFT2-RVFULL + VANILLA_GRPO). Same correctness-only GRPO as before; the ONLY change is the INIT, now models/b2p2_rvfull_eb16_sft — the SFT2 retrained on the RAW 1763-row RV corpus (T1 recipe: 3 epochs, lr 1e-5) instead of the 378-row filtered subset. WHY: three audits killed that filter. E-093 its think-closed condition was a covert scenario filter (redirect 554->67). E-094 it also inverted the meta position relative to SFT1 (SFT1 is 100 pct meta-inside, the 378 rows are 0 pct) and discarded the family holding 69 pct of all redirect rows. E-095 render-layer audit put numbers on what survives. Checkpoint lineage is DELIBERATELY renamed rq3v2f_b2p so it cannot collide with or resume from the old-init run rq3v2f_b2p, which stays on HF as the RQ2 appendix. A100x4 on msrresrchvc (basicvc rejects ALL submissions since 0726 05:49, E-091). Matched hyperparams unchanged: train_batch 64, ppo_mini 8, rollout.n 8, lr 1e-6, 300 steps, clip 0.2/0.28, temp 1.0, top_k -1, top_p 1.0, max_response 8192, Dr.GRPO norm_adv_by_std=false."
 
 target:
   service: sing
@@ -115,23 +115,31 @@ jobs:
         find $${SIMPLERL_DIR}/lib -maxdepth 3 -name "hf_xet*" -exec rm -rf {} + 2>/dev/null || true
         python /scratch/metacognition/scripts/pull_parquets.py 2>&1 | tail -3
 
-        # ── stage the B2 INIT: the META SFT (b2p2_rvfull_sft, 92% emission) as the RL init.
+        # ── stage the B2 INIT: the META SFT (b2p2_rvfull_eb16_sft, 92% emission) as the RL init.
         # This is the ONLY difference from B0 (which inits from the base-stripped SFT). Reward
         # path is byte-identical correctness-only VANILLA_GRPO. From dataset iamseungpil/metacot
-        # under models/b2p2_rvfull_sft/ (pushed by the b23-rv-unmasked SFT arm).
+        # under models/b2p2_rvfull_eb16_sft/ (pushed by the b23-rv-unmasked SFT arm).
         python -c "
         from huggingface_hub import snapshot_download
         import os, shutil
         snapshot_download(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
-            allow_patterns=[\"models/b2p2_rvfull_sft/**\"], local_dir=\"/scratch/models_dl\")
-        src=\"/scratch/models_dl/models/b2p2_rvfull_sft\"; dst=\"/scratch/models/b2p2_rvfull_sft\"
+            allow_patterns=[\"models/b2p2_rvfull_eb16_sft/**\"], local_dir=\"/scratch/models_dl\")
+        src=\"/scratch/models_dl/models/b2p2_rvfull_eb16_sft\"; dst=\"/scratch/models/b2p2_rvfull_eb16_sft\"
         shutil.rmtree(dst, ignore_errors=True); shutil.copytree(src, dst); print(\"b23 rv meta SFT staged\")
         "
         python -c "
-        import json, os; p=\"/scratch/models/b2p2_rvfull_sft/tokenizer_config.json\"
+        import json, os; p=\"/scratch/models/b2p2_rvfull_eb16_sft/tokenizer_config.json\"
         if os.path.exists(p):
             cfg=json.load(open(p)); cfg.pop(\"extra_special_tokens\", None); json.dump(cfg, open(p,\"w\"), indent=2); print(\"tokenizer patched\")
         "
+
+        # FAIL-CLOSED INIT GATE (E-121). Nothing here checked that the init actually
+        # landed. `set +e` is in force, so a missing artifact lets snapshot_download
+        # and copytree fail, verl start on a nonexistent model path, crash, and the
+        # window fall through to `sleep 86400` — holding A100x4 idle for a day on a
+        # silent failure. That is exactly the hazard the manual submission gate has
+        # been standing in for; encode it in the launcher instead of in a human.
+        ls -l /scratch/models/b2p2_rvfull_eb16_sft/config.json || { echo "[YAML] FATAL init /scratch/models/b2p2_rvfull_eb16_sft missing or incomplete; ABORT window"; sleep 300; exit 1; }
 
         nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
         # durable per-file pusher for the live RL checkpoint dir.
@@ -215,7 +223,7 @@ jobs:
         # worker actors inherit a valid value when spawned (memory amlt-i pitfall).
         export LOCAL_RANK=0
         # RQ3 B2: correctness-only VANILLA_GRPO (config base_matched_grpo_h100_4x4k =
-        # SAME reward path as B0). model.path = the META SFT (b2p2_rvfull_sft) —
+        # SAME reward path as B0). model.path = the META SFT (b2p2_rvfull_eb16_sft) —
         # the ONLY B2-vs-B0 difference. NO pmi_shift, NO meta CLI overrides.
         # ── MATCHED v2 recipe (collapse-fixed): temp 1.0 / top_k -1 / top_p 1.0,
         #    max_response 8192, max_model_len + max_num_batched_tokens 10240,
@@ -225,7 +233,7 @@ jobs:
             trainer.experiment_name=rq3v2f_b2p \
             trainer.default_local_dir=/scratch/checkpoints/rq3v2f_b2p \
             trainer.project_name=metacot-dcpo-v4 \
-            actor_rollout_ref.model.path=/scratch/models/b2p2_rvfull_sft \
+            actor_rollout_ref.model.path=/scratch/models/b2p2_rvfull_eb16_sft \
             actor_rollout_ref.rollout.temperature=1.0 \
             actor_rollout_ref.rollout.top_k=-1 \
             actor_rollout_ref.rollout.top_p=1.0 \

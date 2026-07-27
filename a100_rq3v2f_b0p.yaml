@@ -1,4 +1,4 @@
-description: "RQ3v2-F B0 (CONTROL: meta-removed twin at BOTH SFT stages + VANILLA_GRPO). This arm did not exist before: HF metacot models/ had no b0p2_* checkpoint, so the ladder ran two supervised stages on the meta side and ONE on the control side, and the replication axis b3p-b0p mixed the meta mechanism with one extra SFT pass over the RV corpus (E-097). Init = models/b0p2_rvfull_sft, the SFT2 trained on data/v8_base_rv_sft.parquet, the meta-removed twin that matches the meta corpus row for row (1763), in scenario mix (verify 1209 / redirect 554), and in think-closed rate (41.2 pct), while carrying zero meta delimiters. Reward path is correctness-only, byte-identical to B2. Together with rq3v2f_b2p and rq3v2f_b3p this closes RQ1 = b2p-b0p, RQ2 = b3p-b2p, and the replication axis b3p-b0p. A100x4 on msrresrchvc (E-091)."
+description: "RQ3v2-F B0 (CONTROL: meta-removed twin at BOTH SFT stages + VANILLA_GRPO). This arm did not exist before: HF metacot models/ had no b0p2_* checkpoint, so the ladder ran two supervised stages on the meta side and ONE on the control side, and the replication axis b3p-b0p mixed the meta mechanism with one extra SFT pass over the RV corpus (E-097). Init = models/b0p2_rvfull_eb16_sft, the SFT2 trained on data/v8_base_rv_sft.parquet, the meta-removed twin that matches the meta corpus row for row (1763), in scenario mix (verify 1209 / redirect 554), and in think-closed rate (41.2 pct), while carrying zero meta delimiters. Reward path is correctness-only, byte-identical to B2. Together with rq3v2f_b2p and rq3v2f_b3p this closes RQ1 = b2p-b0p, RQ2 = b3p-b2p, and the replication axis b3p-b0p. A100x4 on msrresrchvc (E-091)."
 
 target:
   service: sing
@@ -115,7 +115,7 @@ jobs:
         find $${SIMPLERL_DIR}/lib -maxdepth 3 -name "hf_xet*" -exec rm -rf {} + 2>/dev/null || true
         python /scratch/metacognition/scripts/pull_parquets.py 2>&1 | tail -3
 
-        # ── stage the B0 CONTROL INIT: the META-REMOVED twin SFT2 (b0p2_rvfull_sft).
+        # ── stage the B0 CONTROL INIT: the META-REMOVED twin SFT2 (b0p2_rvfull_eb16_sft).
         # This arm is the control, so its init carries NO meta convention at either
         # supervised stage: SFT1 on the base-render corpus, then SFT2 on
         # data/v8_base_rv_sft.parquet — the meta-stripped twin of the same RV corpus
@@ -123,20 +123,28 @@ jobs:
         # zero meta delimiters). Adding this second stage is what makes b3p-b0p measure
         # the meta mechanism instead of one extra SFT pass (E-097). Reward path is
         # byte-identical correctness-only VANILLA_GRPO, same as B2. From dataset
-        # iamseungpil/metacot under models/b0p2_rvfull_sft/ (pushed by rq3v2-sft2-b0p2).
+        # iamseungpil/metacot under models/b0p2_rvfull_eb16_sft/ (pushed by rq3v2-sft2-b0p2).
         python -c "
         from huggingface_hub import snapshot_download
         import os, shutil
         snapshot_download(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
-            allow_patterns=[\"models/b0p2_rvfull_sft/**\"], local_dir=\"/scratch/models_dl\")
-        src=\"/scratch/models_dl/models/b0p2_rvfull_sft\"; dst=\"/scratch/models/b0p2_rvfull_sft\"
+            allow_patterns=[\"models/b0p2_rvfull_eb16_sft/**\"], local_dir=\"/scratch/models_dl\")
+        src=\"/scratch/models_dl/models/b0p2_rvfull_eb16_sft\"; dst=\"/scratch/models/b0p2_rvfull_eb16_sft\"
         shutil.rmtree(dst, ignore_errors=True); shutil.copytree(src, dst); print(\"b23 rv meta SFT staged\")
         "
         python -c "
-        import json, os; p=\"/scratch/models/b0p2_rvfull_sft/tokenizer_config.json\"
+        import json, os; p=\"/scratch/models/b0p2_rvfull_eb16_sft/tokenizer_config.json\"
         if os.path.exists(p):
             cfg=json.load(open(p)); cfg.pop(\"extra_special_tokens\", None); json.dump(cfg, open(p,\"w\"), indent=2); print(\"tokenizer patched\")
         "
+
+        # FAIL-CLOSED INIT GATE (E-121). Nothing here checked that the init actually
+        # landed. `set +e` is in force, so a missing artifact lets snapshot_download
+        # and copytree fail, verl start on a nonexistent model path, crash, and the
+        # window fall through to `sleep 86400` — holding A100x4 idle for a day on a
+        # silent failure. That is exactly the hazard the manual submission gate has
+        # been standing in for; encode it in the launcher instead of in a human.
+        ls -l /scratch/models/b0p2_rvfull_eb16_sft/config.json || { echo "[YAML] FATAL init /scratch/models/b0p2_rvfull_eb16_sft missing or incomplete; ABORT window"; sleep 300; exit 1; }
 
         nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
         # durable per-file pusher for the live RL checkpoint dir.
@@ -221,7 +229,7 @@ jobs:
         export LOCAL_RANK=0
         # RQ3v2-F B0 (CONTROL): correctness-only VANILLA_GRPO (config
         # base_matched_grpo_h100_4x4k = the SAME reward path B2 uses).
-        # model.path = the meta-REMOVED twin SFT2 (b0p2_rvfull_sft) — the init is
+        # model.path = the meta-REMOVED twin SFT2 (b0p2_rvfull_eb16_sft) — the init is
         # the ONLY B2-vs-B0 difference. NO pmi_shift, NO meta CLI overrides.
         # ── MATCHED v2 recipe (collapse-fixed): temp 1.0 / top_k -1 / top_p 1.0,
         #    max_response 8192, max_model_len + max_num_batched_tokens 10240,
@@ -231,7 +239,7 @@ jobs:
             trainer.experiment_name=rq3v2f_b0p \
             trainer.default_local_dir=/scratch/checkpoints/rq3v2f_b0p \
             trainer.project_name=metacot-dcpo-v4 \
-            actor_rollout_ref.model.path=/scratch/models/b0p2_rvfull_sft \
+            actor_rollout_ref.model.path=/scratch/models/b0p2_rvfull_eb16_sft \
             actor_rollout_ref.rollout.temperature=1.0 \
             actor_rollout_ref.rollout.top_k=-1 \
             actor_rollout_ref.rollout.top_p=1.0 \

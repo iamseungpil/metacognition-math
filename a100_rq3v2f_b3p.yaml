@@ -1,4 +1,4 @@
-description: "RQ3v2-F B3 (META-SFT2-RVFULL + PMI-SHIFT full package). Identical reward setup to the T1-winning archive/launchers_pre_rq3/h100std_pmishift.yaml (dcpo_rmeta_source=pmi_shift, w_over=0, config-default heads w_meta 0.8 / w_format 0.35 / trunc_open 0.3 / w_emit 0.1 / w_cal 0.3 / len_cost 0.08); the ONLY change from the previous b3p arm is the INIT, now models/b2p2_rvfull_sft (SFT2 on the RAW 1763-row RV corpus, T1 recipe 3ep lr 1e-5) instead of the 378-row filtered subset that E-093/E-094 showed was a covert scenario filter which also inverted the meta position against SFT1. Checkpoint lineage DELIBERATELY renamed rq3v2f_b3p: the old rq3v2f_b3p gs10 on HF is NOT resumable (optim 0/4, E-098) and must not be picked up. Same init as B2 so RQ2 = b3p - b2p stays matched. A100x4 on msrresrchvc (E-091). cf_group OFF (single_turn rollout matches B0/B2)."
+description: "RQ3v2-F B3 (META-SFT2-RVFULL + PMI-SHIFT full package). Identical reward setup to the T1-winning archive/launchers_pre_rq3/h100std_pmishift.yaml (dcpo_rmeta_source=pmi_shift, w_over=0, config-default heads w_meta 0.8 / w_format 0.35 / trunc_open 0.3 / w_emit 0.1 / w_cal 0.3 / len_cost 0.08); the ONLY change from the previous b3p arm is the INIT, now models/b2p2_rvfull_eb16_sft (SFT2 on the RAW 1763-row RV corpus, T1 recipe 3ep lr 1e-5) instead of the 378-row filtered subset that E-093/E-094 showed was a covert scenario filter which also inverted the meta position against SFT1. Checkpoint lineage DELIBERATELY renamed rq3v2f_b3p: the old rq3v2f_b3p gs10 on HF is NOT resumable (optim 0/4, E-098) and must not be picked up. Same init as B2 so RQ2 = b3p - b2p stays matched. A100x4 on msrresrchvc (E-091). cf_group OFF (single_turn rollout matches B0/B2)."
 
 target:
   service: sing
@@ -97,22 +97,30 @@ jobs:
         python /scratch/metacognition/scripts/pull_parquets.py 2>&1 | tail -3
 
         # ── stage the B23 meta-SFT init (RL init + frozen ref worker) from iamseungpil/metacot ──
-        # SAME init as B2 (models/b2p2_rvfull_sft). B3 vs B2 differ ONLY by the added
-        # pmi_shift meta head. Must exist under iamseungpil/metacot models/b2p2_rvfull_sft/
+        # SAME init as B2 (models/b2p2_rvfull_eb16_sft). B3 vs B2 differ ONLY by the added
+        # pmi_shift meta head. Must exist under iamseungpil/metacot models/b2p2_rvfull_eb16_sft/
         # (produced by the B23 meta-SFT run) before this launch.
         python -c "
         from huggingface_hub import snapshot_download
         import os, shutil
         snapshot_download(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
-            allow_patterns=[\"models/b2p2_rvfull_sft/**\"], local_dir=\"/scratch/models_dl\")
-        src=\"/scratch/models_dl/models/b2p2_rvfull_sft\"; dst=\"/scratch/models/b2p2_rvfull_sft\"
+            allow_patterns=[\"models/b2p2_rvfull_eb16_sft/**\"], local_dir=\"/scratch/models_dl\")
+        src=\"/scratch/models_dl/models/b2p2_rvfull_eb16_sft\"; dst=\"/scratch/models/b2p2_rvfull_eb16_sft\"
         shutil.rmtree(dst, ignore_errors=True); shutil.copytree(src, dst); print(\"b23 meta-SFT staged\")
         "
         python -c "
-        import json, os; p=\"/scratch/models/b2p2_rvfull_sft/tokenizer_config.json\"
+        import json, os; p=\"/scratch/models/b2p2_rvfull_eb16_sft/tokenizer_config.json\"
         if os.path.exists(p):
             cfg=json.load(open(p)); cfg.pop(\"extra_special_tokens\", None); json.dump(cfg, open(p,\"w\"), indent=2); print(\"tokenizer patched\")
         "
+
+        # FAIL-CLOSED INIT GATE (E-121). Nothing here checked that the init actually
+        # landed. `set +e` is in force, so a missing artifact lets snapshot_download
+        # and copytree fail, verl start on a nonexistent model path, crash, and the
+        # window fall through to `sleep 86400` — holding A100x4 idle for a day on a
+        # silent failure. That is exactly the hazard the manual submission gate has
+        # been standing in for; encode it in the launcher instead of in a human.
+        ls -l /scratch/models/b2p2_rvfull_eb16_sft/config.json || { echo "[YAML] FATAL init /scratch/models/b2p2_rvfull_eb16_sft missing or incomplete; ABORT window"; sleep 300; exit 1; }
 
         nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
         # durable per-file checkpoint pusher for this RL run.
@@ -205,7 +213,7 @@ jobs:
             trainer.experiment_name=rq3v2f_b3p \
             trainer.default_local_dir=/scratch/checkpoints/rq3v2f_b3p \
             trainer.project_name=metacot-dcpo-v4 \
-            actor_rollout_ref.model.path=/scratch/models/b2p2_rvfull_sft \
+            actor_rollout_ref.model.path=/scratch/models/b2p2_rvfull_eb16_sft \
             ++algorithm.dcpo_rmeta_source=pmi_shift \
             ++algorithm.dcpo_w_over=0.0 \
             actor_rollout_ref.rollout.temperature=1.0 \

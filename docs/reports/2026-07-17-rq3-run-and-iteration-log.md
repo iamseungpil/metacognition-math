@@ -3158,3 +3158,39 @@ E-116의 체크포인트 데몬은 크래시 대비를 해주지만 회전하는
 **같은 틱.** 컨트롤 **91/303**, pusher 회전 정상(`checkpoint-25` 프루닝, 50·75 유지, 업로드
 176초). b3p oomfix queued 50m, 메타 eb16 queued 3h, 4GPU 메타 queued 18h, b2p durable gs140.
 카나리아 RED 29회.
+
+### E-121 — RL 런처가 존재하지 않을 init을 가리키고 있었다 + fail-closed 게이트 (0727 08:30 UTC)
+
+**발견.** 컨트롤 완주를 기다리며 다음 단계를 미리 점검하다 잡았다. eb16 전환(E-112)에서 산출물
+lineage를 **의도적으로 분리**했는데(`b*p2_rvfull_eb16_sft`), 그 사실이 RL 런처에 반영되지 않았다:
+
+| RL 런처 | 스테이징하던 init | 실제로 생길 것 |
+|---|---|---|
+| `a100_rq3v2f_b0p.yaml` | `models/b0p2_rvfull_sft` | **없음** → `b0p2_rvfull_eb16_sft` |
+| `a100_rq3v2f_b2p.yaml` | `models/b2p2_rvfull_sft` | **없음** → `b2p2_rvfull_eb16_sft` |
+| `a100_rq3v2f_b3p.yaml` | `models/b2p2_rvfull_sft` | **없음** → `b2p2_rvfull_eb16_sft` |
+
+(`a100_rq3v2_b3p.yaml`은 구 init `b2p2_rvseg_sft`를 쓰며 그건 HF에 실재하므로 그대로 둔다.)
+
+**왜 세 arm 모두 eb16 이름인가.** matched 비교는 **두 arm이 같은 world size**여야 성립한다
+(E-112 불변식). 컨트롤은 1-GPU 수술 런이므로, 짝이 되는 메타도 1-GPU eb16이어야 한다.
+18시간째 대기 중인 4-GPU 메타(`rq3v2-sft2-rvfull`)가 먼저 착지하면 그 산출물은
+`b2p2_rvfull_sft`가 되는데, 그건 **1-GPU 컨트롤과 world size가 어긋난 짝**이다. 실효 배치는
+양쪽 16으로 같으니 배치-4 때보다 훨씬 작은 편차지만 여전히 미검증 비대칭이므로,
+기본 경로는 1-GPU 쌍으로 잡고 4-GPU 메타는 대체 경로로 둔다.
+
+**더 나쁜 것 — 가드가 없었다.** 스테이징 블록에 착지 검증이 전혀 없었다. `set +e`가 걸려 있어
+아티팩트가 없으면 `snapshot_download`/`copytree`가 실패해도 스크립트가 계속 진행하고, verl이
+없는 경로로 떠서 죽고, 윈도우는 `sleep 86400`까지 흘러가 **A100×4를 하루 놀린다.** 이것이 내가
+매 틱 손으로 지켜온 "SFT 산출물 HF 착지 전 RL 제출 금지" 게이트의 실체였다. 사람이 아니라
+런처에 넣었다:
+
+```
+ls -l /scratch/models/<init>/config.json || { echo "[YAML] FATAL init ... ABORT window"; sleep 300; exit 1; }
+```
+
+**검증.** 세 파일 모두 구 이름 잔존 0, eb16 이름 10~11회, 가드 1개, yaml 파싱 + `bash -n` 통과.
+
+**같은 틱.** 컨트롤 **101/303**(로컬 `checkpoint-100`, HF 50/75). 노드 3종 프로세스(트레이너·
+체크포인트 pusher·최종 push 감시자) 전부 생존. b3p oomfix queued 1h, 메타 eb16 queued 3h,
+4GPU 메타 queued 18h, b2p durable gs140.
