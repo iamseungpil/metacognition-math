@@ -112,3 +112,67 @@ six days per arm on A100.
 *Evidence in this report is reproducible with the YAML above. Fuller narrative,
 including the falsification sequence, is in
 `docs/reports/2026-07-17-rq3-run-and-iteration-log.md` entries E-091 and E-099.*
+
+---
+
+## UPDATE 2026-07-27 — the block is a GROUP POLICY membership gap, not a missing VC
+
+A user in the SAME workspace (`msra-sh-aml-ws`), submitting to the SAME virtual
+cluster (`msrresrchbasicvc`), is running an H100 job right now:
+
+```
+displayName: debug            status: Running       StartTimeUtc: 2026-07-25 22:05:02
+tags:  GroupPolicy: e9deff52-56e7-4074-bb58-056bbd931bb6
+properties:  amlt.job.sku: G4-H100
+             azureml.SLATier: Standard
+             azureml.InstanceType: Singularity.ND48_H100_v5
+             azureml.VC: .../virtualclusters/msrresrchbasicvc
+```
+
+Their job carries a **`GroupPolicy` tag**. Ours do not. Amulet exposes this as
+`-t NAME[:GROUP_POLICY]`, and resolving that policy for our identity fails:
+
+```
+$ amlt cache expand-sku -t "msrresrchbasicvc:e9deff52-56e7-4074-bb58-056bbd931bb6" 80G4-H100 --sla Standard
+"msrresrchbasicvc:e9deff52-56e7-4074-bb58-056bbd931bb6" could not be found.
+```
+
+### What this changes about the diagnosis
+
+Everything previously reported still holds — the VC resource is readable
+(`az resource show` returns `westus2`), the SKU resolves
+(`80G4-H100 -> Singularity.ND48_H100_v5` under both Standard and Basic), and
+`amlt ti sing` still shows H100 quota against our identity (Standard 307/560,
+Basic 29/1120, user max 16). What is new is *why* those can all be true while
+submission fails: the quota we can see is issued by the VC's **default** group
+policy, and that default policy no longer admits us for job submission. The
+"virtual cluster does not exist" text is how `managementfrontend` reports a
+policy/entitlement miss, which is why it appeared identically for a 1-CPU echo
+job and for H100.
+
+Two further observations that were not in the original report:
+
+- `msrresrchbasicvc` has **no Premium SLA on any instance**. Probing Premium
+  returns `Selected target 'msrresrchbasicvc' has no Premium SLA for any
+  instance` and lists exactly one resolvable SKU, `3C1` (Dv3 CPU, Basic). So
+  raising the tier is not an available workaround there.
+- On `msrresrchvc` the A100-80GB **user max is 1 GPU** (both `NC_A100_v4` and
+  `NDAMv4`), which is why 2- and 4-GPU jobs there are accepted at submit time and
+  then never scheduled. Only A100-40GB (`NDv4`) has a user max above 1 (12), and
+  it sits at 381/384 Premium.
+
+### Revised ask
+
+Instead of "restore submission access", the specific request is:
+
+1. Add `sc-vhr286860@microsoft.com` to a group policy on `msrresrchbasicvc` that
+   carries `NDH100v5` (and ideally `NDAMv4`) entitlement — the same kind of
+   membership that lets `GroupPolicy e9deff52-56e7-4074-bb58-056bbd931bb6` submit
+   H100 jobs today.
+2. Or confirm which group policy our identity is expected to use now, so we can
+   pass it as `-t msrresrchbasicvc:<policy-id>`.
+3. If our default-policy submission right was removed deliberately around
+   2026-07-26 05:49 UTC, say so, so we stop treating it as an outage.
+
+Jobs admitted before the change are unaffected: our `rq3v2_b2p` H100x4 job on
+that VC has been running for three days and is still making progress.
