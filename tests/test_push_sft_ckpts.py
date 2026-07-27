@@ -235,12 +235,24 @@ def test_ignore_patterns_exclude_deepspeed_optimizer_dump():
 # loop behaviour against a fake HfApi (no network)
 # ---------------------------------------------------------------------------
 class FakeApi:
-    def __init__(self, files=(), fail_upload=False):
+    def __init__(self, files=(), fail_upload=False, fail_probe=False):
         self.files = list(files)
         self.uploads = []
         self.deletes = []
         self.squashes = 0
         self.fail_upload = fail_upload
+        self.fail_probe = fail_probe
+        self.probes = []
+        self.probe_deletes = []
+
+    def upload_file(self, *, path_or_fileobj, path_in_repo, repo_id, repo_type,
+                    commit_message, token=None):
+        if self.fail_probe:
+            raise RuntimeError("403 Forbidden: token has no write scope")
+        self.probes.append(path_in_repo)
+
+    def delete_file(self, *, path_in_repo, repo_id, repo_type, token=None):
+        self.probe_deletes.append(path_in_repo)
 
     def list_repo_files(self, repo_id, repo_type="model"):
         return list(self.files)
@@ -366,3 +378,24 @@ def test_no_token_flag_exists():
 
     opts = {o for a in build_parser()._actions for o in a.option_strings}
     assert "--token" not in opts
+
+
+def test_boot_probe_writes_and_cleans_up(tmp_path, fake_hub):
+    """A healthy destination leaves nothing behind - the probe file is deleted."""
+    make_ckpt(tmp_path / "out", 25)
+    fake_hub["api"] = api = FakeApi()
+    _run(tmp_path, api)
+    assert api.probes == [".push_probe"]
+    assert api.probe_deletes == [".push_probe"]
+
+
+def test_boot_probe_aborts_when_the_destination_is_unwritable(tmp_path, fake_hub):
+    """The failure this guards against: a typo'd repo_id or a read-only token
+    let the daemon look healthy forever while the run stayed undurable. It must
+    die at boot instead, before the compute window is spent."""
+    make_ckpt(tmp_path / "out", 25)
+    fake_hub["api"] = api = FakeApi(fail_probe=True)
+    with pytest.raises(SystemExit) as exc:
+        _run(tmp_path, api)
+    assert exc.value.code == 1
+    assert api.uploads == []  # never got as far as pretending to work
