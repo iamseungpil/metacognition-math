@@ -3466,3 +3466,33 @@ SKU·YAML·쿼터 오류가 아니라 `The virtual cluster does not exist` 하�
 구세대 11종(`h100std_rq3_*`·`h100std_sft_*`)은 README·ARCHITECTURE·CODE_MAP·SUBMISSION_RUNBOOK·
 CONSTITUTION이 참조하므로 문서 갱신과 묶어 별도 처리한다. H100 SKU라 현재 제출 자체가 불가능해
 오발사 위험은 없다.
+
+### E-130 — 문서 4종이 은퇴한 세대를 "현행 실행 절차"로 안내하고 있었다 (0727 15:20 UTC)
+
+구세대 런처 11종을 아카이브하려고 참조 관계를 조사하다, **파일 이동보다 급한 문제**를 찾았다.
+README·ARCHITECTURE·SUBMISSION_RUNBOOK·CONSTITUTION이 참조하는 것은 기록이 아니라 **지시**였다:
+
+- `README.md:75-79` — `amlt run h100std_rq3_b0.yaml ...` 를 **실행 명령으로** 제시.
+- `docs/CONSTITUTION.md:18` — "**현행 실험명**: RQ3 매치드 래더 (`h100std_rq3_b0/b2/b3.yaml`)"
+  라고 **선언**. 헌법이 은퇴한 세대를 현행으로 규정하고 있었다.
+- `docs/SUBMISSION_RUNBOOK.md:16,47,54-57` — 제출 절차와 4-arm 표 전부 구세대.
+- `ARCHITECTURE.md:24-31` — SFT/LAUNCH 블록이 구세대 런처와 init.
+
+파일명만 낡은 게 아니라 **세대 전체가 낡았다**. 구세대는 think-off RQ3(B0/B2/B3, init
+`b0_gold_sft`/`b23_rv_unmasked_sft`)이고 현행은 think-on RQ3v2(2단 SFT 스택 위의 b0p/b2p/b3p)다.
+게다가 구세대 SFT2 필터는 E-093에서 **위장된 시나리오 선택자**로 판명돼 폐기된 것이다.
+
+**조치.** 각 문서를 읽고 성격에 맞게 처리했다.
+- `README.md`: 실행 블록을 현행 순서로 교체 — SFT2 쌍 먼저, **HF 4샤드 착지 후** RL 3종.
+  구세대 런처는 "실행하지 말 것"으로 명시하고 사전등록 문서를 가리키게 했다.
+- `docs/CONSTITUTION.md`: 현행 실험 정의를 RQ3v2로 갱신하고, 구세대는 은퇴 사유(필터가 시나리오
+  선택자)와 함께 괄호로 남겼다.
+- `docs/SUBMISSION_RUNBOOK.md` / `ARCHITECTURE.md`: 본문을 다시 쓰지 않고 **세대 주석**을 머리에
+  달았다. 두 문서의 실질(토큰 주입 시점 substitution·제출 전 점검·데이터 흐름·트레이너 진입점)은
+  세대와 무관하게 여전히 정확하기 때문이다. 이름만 옮겨 읽으라고 명시했다.
+
+**파일 이동은 아직 하지 않았다.** 문서가 올바른 런처를 가리키게 된 이상 구세대 파일이 루트에
+남아 있는 위험은 크게 줄었고, 11종은 H100 SKU라 현재 제출 자체가 불가능하다. 이동은 `docs/CODE_MAP.md`
+(참조 11건)까지 함께 처리할 때 한다.
+
+**같은 틱.** 카나리아 RED 34회. b2p durable gs200 유지. 전체 스위트 854 passed.

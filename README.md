@@ -70,13 +70,24 @@ python scripts/eval_vllm_1030.py \
     --output_dir results/eval_1030_my_eval/ \
     --max_tokens 16384 --temperature 0.7 --num_samples 8 --seed 42
 
-# RL 학습 (MSR 클러스터, amlt) — rq3 매치드 래더 4-arm
+# 학습 (MSR 클러스터, amlt) — 현행 세대는 RQ3v2 think-on 매치드 래더다.
+# 순서가 중요하다: SFT2 쌍이 HF에 착지해야 RL이 init을 스테이징할 수 있고,
+# RL 런처는 두 arm이 모두 있을 때만 스테이징하도록 fail-closed 되어 있다.
 set -a; source .env; set +a
-amlt run h100std_rq3_b0.yaml rq3-b0-<날짜> -d "B0 no-meta baseline RL"
-amlt run h100std_rq3_b2.yaml rq3-b2-<날짜> -d "B2 meta-SFT + vanilla GRPO"
-amlt run h100std_rq3_b3.yaml rq3-b3-<날짜> -d "B3 region-split pmi_shift"
-amlt run h100std_rq3_b3nopmi.yaml rq3-b3nopmi-<날짜> -d "B3-noPMI pmi 격리 대조"  # 4번째 arm — b3pkg 완주 확인 후 발사
-# (SFT init 재생성이 필요하면: h100std_sft_b0_gold.yaml / h100std_sft_b23_unmasked.yaml)
+
+# 1) SFT2 쌍 (각 ~2h). 컨트롤은 메타 제거 twin 코퍼스를 쓴다.
+amlt run h100std_sft_b0p2_rvfull.yaml sft2-b0p2-<날짜>   # 컨트롤
+amlt run h100std_sft_b2p2_rvfull.yaml sft2-b2p2-<날짜>   # 메타
+# 2) models/{b0p2,b2p2}_rvfull_sft 가 HF에 4샤드 착지한 뒤에만 RL
+amlt run h100std_rq3v2f_b0p.yaml rq3v2f-b0p-<날짜>   # 컨트롤 + VANILLA_GRPO
+amlt run h100std_rq3v2f_b2p.yaml rq3v2f-b2p-<날짜>   # 메타   + VANILLA_GRPO
+amlt run h100std_rq3v2f_b3p.yaml rq3v2f-b3p-<날짜>   # 메타   + triobj(pmi_shift) 풀패키지
+# A100 판(`a100_*`)은 동일 내용이며 target/sku만 다르다. 어느 쪽이 가능한지는
+# CLAUDE.md의 Compute 절 참조 — 두 VC 모두 현재 제약이 있다.
+#
+# ⛔ 루트의 `h100std_rq3_b0/b2/b3*.yaml`·`h100std_sft_b0_gold/b23_unmasked.yaml`은
+#    **은퇴한 think-off 세대**다. 실행하지 말 것. 발사 전 판정 기준은
+#    docs/PREREGISTRATION_rq3v2_base_replication.md 에 동결되어 있다.
 ```
 
 데이터 parquet은 HF dataset `iamseungpil/metacot`, RL 체크포인트는

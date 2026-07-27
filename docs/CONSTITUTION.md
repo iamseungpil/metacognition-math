@@ -15,8 +15,14 @@
 **We are developing a metacognition RL method that, from a self-distillation standpoint,
 reinforces a *specific useful habit* so that math accuracy goes up.**
 
-> 현행 실험명: **RQ3 매치드 래더** (`h100std_rq3_b0/b2/b3.yaml`, init =
-> `models/b0_gold_sft` · `models/b23_rv_unmasked_sft`).
+> 현행 실험명: **RQ3v2 think-on 매치드 래더** — 2단 SFT 스택(SFT1 → SFT2) 위의 3-arm.
+> 런처 `h100std_rq3v2f_{b0p,b2p,b3p}.yaml`(A100 판은 `a100_rq3v2f_*`),
+> init = `models/{b0p2,b2p2}_rvfull_sft`(SFT2 산출물, 런처가 실행 시점에 해소).
+> 발사 전 판정 기준은 `docs/PREREGISTRATION_rq3v2_base_replication.md`에 동결.
+>
+> (구세대 **RQ3 think-off**는 `h100std_rq3_b0/b2/b3.yaml`, init `models/b0_gold_sft` ·
+> `models/b23_rv_unmasked_sft`였다. 은퇴했으며 실행 대상이 아니다 — 그 SFT2 필터가
+> 위장된 시나리오 선택자였음이 밝혀졌다.)
 
 Precise claims:
 

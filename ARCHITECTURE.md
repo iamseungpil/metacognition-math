@@ -20,6 +20,12 @@ B3pkg−B3-noPMI). Everything else in the
 tree is history — superseded variants and probes, kept for reproducibility under
 `runs/archive/` and `configs/archive/`.
 
+> **0727: the block below is the retired RQ3 think-off generation.** The current
+> generation is RQ3v2 think-on — a two-stage SFT stack (SFT1 → SFT2 on the RV
+> corpus and its meta-removed twin) feeding `a100_rq3v2f_{b0p,b2p,b3p}.yaml`
+> (H100 판 `h100std_rq3v2f_*`). The data flow and trainer entry points below are
+> still accurate; the launcher names and the init checkpoints are not.
+
 ```
 SFT      h100std_sft_b0_gold.yaml        → configs/sft_b0_gold.yaml        → models/b0_gold_sft        (B0 init, no-meta gold)
          h100std_sft_b23_unmasked.yaml   → configs/sft_b23_unmasked.yaml   → models/b23_rv_unmasked_sft (B2/B3 init, meta RV unmasked)
