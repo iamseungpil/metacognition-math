@@ -1,0 +1,318 @@
+description: "RQ3v2-F B3 (META-SFT2-RVFULL + PMI-SHIFT full package). Identical reward setup to the T1-winning archive/launchers_pre_rq3/h100std_pmishift.yaml (dcpo_rmeta_source=pmi_shift, w_over=0, config-default heads w_meta 0.8 / w_format 0.35 / trunc_open 0.3 / w_emit 0.1 / w_cal 0.3 / len_cost 0.08); the ONLY change from the previous b3p arm is the INIT, now models/b2p2_rvfull_eb16_sft (SFT2 on the RAW 1763-row RV corpus, T1 recipe 3ep lr 1e-5) instead of the 378-row filtered subset that E-093/E-094 showed was a covert scenario filter which also inverted the meta position against SFT1. Checkpoint lineage DELIBERATELY renamed rq3v2f_b3p: the old rq3v2f_b3p gs10 on HF is NOT resumable (optim 0/4, E-098) and must not be picked up. Same init as B2 so RQ2 = b3p - b2p stays matched. H100x4 on msrresrchbasicvc (E-091). cf_group OFF (single_turn rollout matches B0/B2). H100 VARIANT (0727): identical recipe, retargeted to msrresrchbasicvc / 80G4-H100 / sla_tier Standard. basicvc offers NO Premium SLA on any instance, so Standard is the top tier available there. This file exists because the A100 path is capped at ONE GPU per user on msrresrchvc, so 4-GPU jobs there are accepted at submit time and then never scheduled, while H100 quota on basicvc is 16 GPUs per user with capacity free. It is unusable until the group-policy block on basicvc is lifted: submissions currently fail with a virtual-cluster-does-not-exist error because our quota comes from the VC default policy, which no longer admits us. Launch this the moment that clears."
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  registry: mcr.microsoft.com
+  image: aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x:latest
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: h100_rq3v2f_b3p
+    sku: 80G4-H100
+    # TIER RENAME 0717: the 1120-slot opportunistic H100 pool we always ran on was
+    # relabeled Standard->Basic in the July-16 reallocation (portal: NDH100v5 Basic
+    # 1120 / Standard 560). Submitting as "Standard" now targets the 560 pool where
+    # we hold no allocation -> managementfrontend "VC does not exist". Same physical
+    # pool + preemption semantics as B0/B2's runs — name change only, substrate matched.
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 604800
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        # 0717 재패키징 완료(tag rq3-code-20260717)
+        CODE_TAR_REVISION: "490407111"
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        # DURABILITY FIX 0719 (E-062): Xet-enabled repo needs hf_xet for large-shard upload.
+        # Global disable keeps bootstrap downloads on HTTP; pusher unsets it (env -u) for Xet.
+        HF_HUB_DISABLE_XET: "1"
+        WANDB_API_KEY: ${WANDB_API_KEY}
+        WANDB_KEY: ${WANDB_API_KEY}
+        WANDB_PROJECT: metacot-dcpo-v4
+        WANDB_RUN_GROUP: rq3_matched_ladder
+        WANDB_NAME: rq3v2f_b3p
+        WANDB_RUN_ID: rq3v2f-b3p-1
+        WANDB_RESUME: allow
+        WANDB_INIT_TIMEOUT: "300"
+        WANDB_TAGS: RQ3,matched_ladder,B3pkg,meta_sft,pmi_shift,full_triobj_package,matches_T1_pmishift,v2_recipe,from-b23-rv-sft,fresh-gs0
+        DCPO_WANDB_ROLLOUTS: "1"
+        DCPO_WANDB_ROLLOUTS_EVERY: "1"
+        DCPO_META_CLOSE_FORCE: "1"
+        DCPO_META_CLOSE_N: "96"
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        DCPO_DEBUG: "1"
+        # OBSERVABILITY 0713: 9 silent ~160s deaths ("pass", verl emits ZERO to
+        # stdout/std_log). Root cause of the VOID = the `| tee` block-buffers and
+        # loses its buffer on the process-group SIGKILL. faulthandler dumps a
+        # C-level traceback on segfault/abort/SIGTERM so the real crash finally
+        # lands. Pure observability — NO behavior change. w_meta/gpu_mem/extra-
+        # teacher-forward all falsified as causes (B3-noPMI w_meta=0 runs the
+        # IDENTICAL pmi_shift machinery + w_meta has an 80-step warmup so gs1 is
+        # effectively w_meta=0 anyway). Next death MUST leave evidence.
+        PYTHONFAULTHANDLER: "1"
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints /scratch/models
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        # inline GPU spinner from t~0 (close the Singularity suspend-on-idle window).
+        nohup python -c "
+        import torch, time
+        g = torch.cuda.device_count()
+        ts = [torch.randn(2048, 2048, device=f\"cuda:{i}\", dtype=torch.float16) for i in range(g)]
+        while True:
+            for i in range(g): ts[i] = (ts[i] @ ts[i]) * 0.5
+            time.sleep(2)
+        " > /scratch/logs/gpu_keeper_inline.log 2>&1 &
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        set +x  # do NOT leak GH_TOKEN into xtrace logs
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION} || { echo "[YAML] code tar download FAILED; ABORT window"; sleep 300; exit 1; }
+        set -x
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch || { echo "[YAML] code tar extract FAILED; ABORT window"; sleep 300; exit 1; }
+        echo "$${CODE_TAR_REVISION}" > /scratch/metacognition/.bootstrap_version
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper_early.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        # hard-remove hf_xet (env flag + pip uninstall insufficient — memory hf-xet-pitfall).
+        pip uninstall -y hf_xet 2>&1 | tail -1 || true
+        find $${SIMPLERL_DIR}/lib -maxdepth 3 -name "hf_xet*" -exec rm -rf {} + 2>/dev/null || true
+        python /scratch/metacognition/scripts/pull_parquets.py 2>&1 | tail -3
+
+        # ── stage the B23 meta-SFT init (RL init + frozen ref worker) from iamseungpil/metacot ──
+        # SAME init as B2 (models/b2p2_rvfull_eb16_sft). B3 vs B2 differ ONLY by the added
+        # pmi_shift meta head. Must exist under iamseungpil/metacot models/b2p2_rvfull_eb16_sft/
+        # (produced by the B23 meta-SFT run) before this launch.
+        # ── INIT RESOLUTION (E-123). Two internally matched SFT2 paths exist and it is
+        # not yet known which one survives its preemption window (E-122): the 1-GPU
+        # eb16 pair (b2p2_rvfull_eb16_sft / b2p2_rvfull_eb16_sft) and the 4-GPU pair
+        # (b2p2_rvfull_sft / b2p2_rvfull_sft). Both train at effective batch 16 and differ
+        # only in world size. Hard-coding one name is a bet this launcher does not need
+        # to make, and losing it would stage a nonexistent init. Resolve at run time,
+        # preferring the eb16 name, and stage into a FIXED local path so everything
+        # downstream (tokenizer patch, gate, model.path) is name-independent.
+        # The arms must still be paired within a path — a 1-GPU control against a
+        # 4-GPU meta is an unvalidated world-size asymmetry.
+        python -c "
+        import os, shutil, sys
+        from huggingface_hub import HfApi, snapshot_download
+        tok=os.environ[\"HF_TOKEN\"]
+        fs=HfApi(token=tok).list_repo_files(\"iamseungpil/metacot\", repo_type=\"dataset\")
+        dst=\"/scratch/models/sft2_init\"
+        for sfx in [\"_eb16_sft\", \"_sft\"]:
+            pair = [\"b0p2_rvfull\" + sfx, \"b2p2_rvfull\" + sfx]
+            if all((\"models/%s/config.json\" % q) in fs for q in pair):
+                name = \"b2p2_rvfull\" + sfx
+                snapshot_download(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=tok,
+                    allow_patterns=[\"models/%s/**\" % name], local_dir=\"/scratch/models_dl\")
+                shutil.rmtree(dst, ignore_errors=True)
+                shutil.copytree(os.path.join(\"/scratch/models_dl\", \"models\", name), dst)
+                print(\"[init] resolved PAIR%s -> %s (%s)\" % (sfx, dst, name)); sys.exit(0)
+        print(\"[init] no suffix has BOTH b0p2_rvfull* and b2p2_rvfull* on HF - refusing to pair mismatched arms\"); sys.exit(1)
+        "
+        python -c "
+        import json, os; p=\"/scratch/models/sft2_init/tokenizer_config.json\"
+        if os.path.exists(p):
+            cfg=json.load(open(p)); cfg.pop(\"extra_special_tokens\", None); json.dump(cfg, open(p,\"w\"), indent=2); print(\"tokenizer patched\")
+        "
+
+        # FAIL-CLOSED INIT GATE (E-121). `set +e` is in force, so without this a missing
+        # artifact lets staging fail, verl start on a nonexistent model path, crash, and
+        # the window fall through to `sleep 86400` — holding H100x4 idle for a day on a
+        # silent failure. That is the hazard the manual submission gate stood in for.
+        ls -l /scratch/models/sft2_init/config.json || { echo "[YAML] FATAL init /scratch/models/sft2_init missing or incomplete; ABORT window"; sleep 300; exit 1; }
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        # durable per-file checkpoint pusher for this RL run.
+        # SECURITY 0716: no --token arg — under set -x the expanded token lands in std_log
+        # plaintext.
+        # CONTRACT FIX 0717: the env fallback exists only in pull_resume_ckpt.py — the
+        # old tarball copy of push_ckpts_to_hf.py had --token required=True,
+        # so without the arg argparse kills the pusher at boot and NO checkpoints reach
+        # HF (silent until preemption loses the window). Patch the staged copy to the
+        # env-fallback default; ABORT the window if the patch does not land (fail closed).
+        sed -i "s/ap.add_argument(\"--token\", required=True)/ap.add_argument(\"--token\", default=os.environ.get(\"HF_TOKEN\"))/" /scratch/metacognition/scripts/push_ckpts_to_hf.py
+        grep -q "add_argument(\"--token\", default=os.environ.get(\"HF_TOKEN\"))" /scratch/metacognition/scripts/push_ckpts_to_hf.py || { echo "[YAML] pusher --token contract patch FAILED; ABORT window"; sleep 300; exit 1; }
+        # ── REGRESSION GUARDS 0717 (fresh tarball 480254660 must carry the fixed code) ──
+        if grep -q "agent_loop_config_path" /scratch/metacognition/configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml; then echo "[YAML] STALE triobj config (agent block); ABORT window"; sleep 300; exit 1; fi
+        grep -q "optim_world_size" /scratch/metacognition/scripts/push_ckpts_to_hf.py || { echo "[YAML] pusher 3-way completeness missing; ABORT window"; sleep 300; exit 1; }
+        grep -q "extra_state_world_size" /scratch/metacognition/scripts/pull_resume_ckpt.py || { echo "[YAML] puller 3-way completeness missing; ABORT window"; sleep 300; exit 1; }
+        python -m pip install --quiet --upgrade hf_xet 2>&1 | tail -2 || echo "[YAML] hf_xet install failed (non-fatal)"
+        python -c "import hf_xet" && echo "[YAML] hf_xet ready" || echo "[YAML] hf_xet import FAILED"
+        nohup env -u HF_HUB_DISABLE_XET python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rq3v2f_b3p --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --interval 90 --keep 1 --config_name rq3v2f_b3p > /scratch/logs/push_rq3v2f_b3p.log 2>&1 &
+
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+        # ── RGS COMPLETENESS RULE (copied from B0): a global_step is RESUMABLE only when
+        # >=4 model shards AND >=4 extra_state shards are on HF. Used to (a) FAIL CLOSED if HF
+        # is unreachable and (b) harden resume against gs0 cold-start. ──
+        RGS=$$(python -c "
+        import os, re, time
+        from collections import Counter
+        from huggingface_hub import HfApi
+        for i in range(3):
+            try:
+                fs=HfApi(token=os.environ[\"HF_TOKEN\"]).list_repo_files(\"iamseungpil/metacot-h200-triobj-dcpo-v3\", repo_type=\"model\")
+                break
+            except Exception as e:
+                if i==2: print(-1); raise SystemExit
+                time.sleep(30)
+        cm=Counter(); ce=Counter(); co=Counter()
+        for f in fs:
+            m=re.search(r\"rq3v2f_b3p/global_step_(\d+)/actor/(model|extra_state|optim)_world_size_\d+_rank_\d+\.pt$$\",f)
+            if m: {\"model\":cm,\"extra_state\":ce,\"optim\":co}[m.group(2)][int(m.group(1))]+=1
+        steps=sorted(s for s,n in cm.items() if n>=4 and ce[s]>=4 and co[s]>=4)
+        print((steps[-1] if steps else 0), (1 if (cm or ce or co) else 0))
+        ")
+        # COMPLETENESS UNIFICATION 0716: a step is complete only with model+extra+OPTIM >=4
+        # — matches pull_resume_ckpt.py, so RGS can never claim a step pull refuses (that
+        # mismatch = permanent-abort livelock; real case: rq3_b2 gs150 had optim 3/4).
+        # RGS now prints "STEP ANY" (ANY=1 if any lineage files exist at all).
+        echo "[YAML] existing GRPO resume gs (model+extra+optim>=4) = $${RGS}"
+        # SANITY 0716: empty/garbled RGS (python died before printing) must NOT vacuously
+        # pass the guards below into an unguarded gs0 cold-start. Abort instead.
+        RGS_STEP=$${RGS%% *}; RGS_ANY=$${RGS##* }
+        case "$${RGS_STEP}" in ""|*[!0-9-]*) echo "[YAML] RGS empty/garbled ($${RGS}); ABORT window"; sleep 300; exit 1;; esac
+        # FAIL CLOSED: RGS=-1 means HF was unreachable 3x — cold-starting now could let the
+        # pusher/prune overwrite real progress with a new gs0 lineage. Abort; next window retries.
+        if [ "$${RGS_STEP}" = "-1" ]; then echo "[YAML] HF unreachable for RGS; ABORT window"; sleep 300; exit 1; fi
+        # RESUME HARDENING (copied from B0): if HF already has a checkpoint (RGS>0), a short
+        # window may preempt pull_resume mid-download -> verl would silently COLD-START from gs0.
+        # Retry the pull up to 3x; if RGS>0 but NO local global_step_* landed, ABORT rather than restart.
+        for rp in 1 2 3; do
+          python /scratch/metacognition/scripts/pull_resume_ckpt.py --repo iamseungpil/metacot-h200-triobj-dcpo-v3 --config_name rq3v2f_b3p --local_dir /scratch/checkpoints/rq3v2f_b3p 2>&1 | tail -5
+          ls -d /scratch/checkpoints/rq3v2f_b3p/global_step_* >/dev/null 2>&1 && break
+          echo "[YAML] pull_resume attempt $${rp} landed no local checkpoint; retry"; sleep 30
+        done
+        LOCAL_GS=$$(ls -d /scratch/checkpoints/rq3v2f_b3p/global_step_* 2>/dev/null | grep -oE "global_step_[0-9]+" | grep -oE "[0-9]+" | sort -n | tail -1)
+        echo "[YAML] RGS(HF)=$${RGS_STEP} ANY=$${RGS_ANY} LOCAL_GS(pulled)=$${LOCAL_GS:-NONE}"
+        # 0716: abort on ANY existing lineage (not just a complete step) — a partial-only
+        # lineage with a failed pull must also refuse the gs0 cold-start.
+        if [ "$${RGS_ANY}" = "1" ] && [ -z "$${LOCAL_GS}" ]; then
+          echo "[YAML] ABORT: HF has rq3v2f_b3p lineage (complete gs=$${RGS_STEP}) but resume pull produced no local checkpoint; refusing gs0 cold-start. Next window retries."
+          sleep 300
+          exit 1
+        fi
+        # `amlt run -i` sets LOCAL_RANK='' (empty); export a valid "0" so Ray
+        # worker actors inherit a valid value when spawned (memory amlt-i pitfall).
+        export LOCAL_RANK=0
+        # ── B3pkg = META-SFT init + FULL TRIOBJ PACKAGE (matches T1-winning pmishift) ──
+        # dcpo_rmeta_source=pmi_shift; ONLY w_over=0.0 overridden. ALL other meta heads
+        # stay at triobj config defaults — w_meta 0.8 (pmi magnitude, 80-step warmup),
+        # w_format 0.35 (maintains wellformed meta under RL — the scaffold), trunc_open_penalty
+        # 0.3 (penalizes cut meta blocks), w_emit 0.1 (emission floor), w_cal 0.3, len_cost 0.08.
+        # This is IDENTICAL reward config to archive/launchers_pre_rq3/h100std_pmishift.yaml.
+        # CORRECTION 0712: prior rq3-b3 zeroed those 5 heads for clean isolation -> stripped the
+        # form scaffold -> wellformed 0.43->0.02, RQ2 +0.042->-0.120. Restoring the package.
+        # Collapse-fixed v2 recipe overrides (temp 1.0 / top_k -1 / top_p 1.0 /
+        # max_response 8192 / max_model_len+max_num_batched_tokens 10240 / Dr.GRPO
+        # norm_adv_by_std=false / log_prob micro-batch 1 + the E-052 memory levers, 0727) applied identically
+        # to all three arms.
+            # OOM FIX 0727 (E-118): PORTED FROM B2, WHICH ALREADY CARRIES IT.
+            # b3p died with torch.OutOfMemoryError inside loss.backward() at
+            # step 78/300 (main-mink retry_013): 70.52 GiB resident, 3.35 GiB
+            # free, backward asked for 5.54 GiB. That is the SAME failure and
+            # the SAME ~70.5 GB footprint that E-047/E-051/E-052 chased on b2p,
+            # where the root cause was pinned to the 8192-token BACKWARD
+            # ACTIVATION peak. b2p was fixed on 0718; the fix was never ported
+            # here, so b3p has been running the pre-fix memory configuration
+            # ever since — and b3p needs MORE memory than b2p, because the
+            # triobj package scores counterfactual decoys on top of the rollout.
+            # All four levers are memory-only and gradient-identical, so the
+            # matched b3p-b2p comparison is unaffected; in fact the arms are
+            # MORE matched with them than without, since b2p already has them.
+            # enable_activation_offload is the load-bearing one (E-052);
+            # enforce_eager drops the vLLM CUDA-graph reservation for headroom.
+        WANDB_NAME=rq3v2f_b3p /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
+            --config-name=triobj_dcpo_v4_stage3b_h100_4x4k \
+            trainer.experiment_name=rq3v2f_b3p \
+            trainer.default_local_dir=/scratch/checkpoints/rq3v2f_b3p \
+            trainer.project_name=metacot-dcpo-v4 \
+            actor_rollout_ref.model.path=/scratch/models/sft2_init \
+            ++algorithm.dcpo_rmeta_source=pmi_shift \
+            ++algorithm.dcpo_w_over=0.0 \
+            actor_rollout_ref.rollout.temperature=1.0 \
+            actor_rollout_ref.rollout.top_k=-1 \
+            actor_rollout_ref.rollout.top_p=1.0 \
+            data.max_response_length=8192 \
+            actor_rollout_ref.rollout.max_model_len=10240 \
+            actor_rollout_ref.rollout.max_num_batched_tokens=10240 \
+            ++algorithm.norm_adv_by_std_in_grpo=false \
+            actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
+            actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
+            actor_rollout_ref.rollout.gpu_memory_utilization=0.35 \
+            actor_rollout_ref.actor.fsdp_config.optimizer_offload=true \
+            ++actor_rollout_ref.model.enable_activation_offload=true \
+            actor_rollout_ref.rollout.enforce_eager=true \
+            trainer.resume_mode=auto \
+            trainer.save_freq=5 \
+            trainer.test_freq=50 \
+            ++trainer.val_before_train=False \
+            ++hydra.searchpath=[pkg://verl/trainer/config] \
+            > /scratch/logs/verl_main.log 2>&1 &
+        VERL_PID=$$!
+        # OBSERVABILITY 0713 (round 2): the `| tee` pipe lost ALL verl output on
+        # the process-group SIGKILL — 9+ silent ~160s deaths, std_log ends at
+        # LOCAL_RANK=0 with ZERO verl lines even after stdbuf. ROOT FIX = NO PIPE:
+        # verl writes unbuffered (-u) straight to a file; `tail -n +1 -F` streams
+        # it live into the amlt-captured std_log so already-written lines survive a
+        # kill. 10s heartbeat (host MemAvailable + gpu0 used) disambiguates
+        # preemption (abrupt stop, mem fine) vs OOM (mem to cap) vs real crash
+        # (faulthandler C-traceback lands in the file). No awk → no single-quote
+        # clash with the outer bash -c '...'.  (Env, code, w_meta all falsified;
+        # working twin B3-noPMI shows the same EnvironmentNameNotFound and trains.)
+        tail -n +1 -F /scratch/logs/verl_main.log &
+        TAIL_PID=$$!
+        ( while kill -0 $${VERL_PID} 2>/dev/null; do echo "[HB $$(date)] $$(grep MemAvailable /proc/meminfo) gpu0used=$$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -i 0 2>/dev/null)MB"; sleep 10; done ) &
+        HB_PID=$$!
+        wait $${VERL_PID}
+        VERL_RC=$$?
+        kill $${TAIL_PID} $${HB_PID} 2>/dev/null || true
+        echo "[YAML] verl_sdc rq3v2f_b3p rc=$${VERL_RC}; tail of verl_main.log:"
+        tail -60 /scratch/logs/verl_main.log 2>/dev/null
+        # ── FINAL SYNC PUSH (copied from B0): the background pusher can freeze mid-run; do a
+        # SYNCHRONOUS, VERIFIED, RETRIED push of the highest local global_step so the FINAL
+        # checkpoint reliably reaches HF for the held-out eval. Stop the background pusher first
+        # (its per-file commits + super_squash_history racing this upload_folder can drop the
+        # final commit). ──
+        pkill -f push_ckpts_to_hf 2>/dev/null || true
+        sleep 5
+        FINAL=$$(ls -d /scratch/checkpoints/rq3v2f_b3p/global_step_* 2>/dev/null | sort -V | tail -1)
+        FN=$$(basename "$${FINAL}")
+        echo "[YAML] final sync push target: $${FINAL}"
+        if [ -n "$${FINAL}" ]; then
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            OUT=$$(python -c "
+        from huggingface_hub import HfApi
+        import os
+        api=HfApi(token=os.environ[\"HF_TOKEN\"])
+        api.upload_folder(folder_path=\"$${FINAL}\", path_in_repo=\"checkpoints/rq3v2f_b3p/$${FN}\", repo_id=\"iamseungpil/metacot-h200-triobj-dcpo-v3\", repo_type=\"model\", ignore_patterns=[\"*.tmp\",\"*.lock\"])
+        fs=api.list_repo_files(\"iamseungpil/metacot-h200-triobj-dcpo-v3\", repo_type=\"model\")
+        nm=sum(1 for f in fs if (\"$${FN}/actor/model_world_size\" in f) and f.endswith(\".pt\"))
+        ne=sum(1 for f in fs if (\"$${FN}/actor/extra_state_world_size\" in f) and f.endswith(\".pt\"))
+        no=sum(1 for f in fs if (\"$${FN}/actor/optim_world_size\" in f) and f.endswith(\".pt\"))
+        print(\"SHARDS=%d\" % min(nm, ne, no))
+        " 2>&1)
+            echo "$${OUT}" | tail -2
+            echo "$${OUT}" | grep -qE "SHARDS=[4-9]|SHARDS=[1-9][0-9]" && { echo "[YAML] FINAL PUSH DURABLE $${FN}"; break; } || { echo "[YAML] final push retry $$i"; sleep 60; }
+          done
+        fi
+        sleep 86400
+        '

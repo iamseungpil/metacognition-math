@@ -57,11 +57,13 @@ Standard 티어라 선점이 잦으므로 ckpt 릴레이/resume 배선은 여전
 - **현행 런처**(그 외 루트의 `h100std_rq3_*`, `h100std_sft_*`, `a100g1_*`, `a100g2_*`는 은퇴):
   - SFT2 쌍: `a100_sft_b0p2_rvfull.yaml`(컨트롤) / `a100_sft_b2p2_rvfull.yaml`(메타)
   - RL: `a100_rq3v2f_{b0p,b2p,b3p}.yaml`(신 lineage) / `a100_rq3v2_b3p.yaml`(구 init)
-  - ⛔basicvc 복구 시 **`h100std_rq3v2_{b2p,b3p}.yaml`를 먼저 쓰지 말 것** — 이들은
-    `b2p2_rvseg_sft`(E-093에서 위장된 시나리오 필터로 폐기된 378행 init)를 스테이징한다.
-    RQ2 부록 전용이며 **복제 결과로 보고 금지**. 복구 시 올바른 순서는
-    SFT2 쌍(`a100_sft_{b0p2,b2p2}_rvfull.yaml`의 H100 판) → `a100_rq3v2f_*`의 H100 판이다.
-    (H100 판은 아직 없다 — 복구 시점에 a100 런처를 target/sku만 바꿔 복제할 것.)
+  - **basicvc 복구 시 순서**: `h100std_sft_{b0p2,b2p2}_rvfull.yaml`(SFT2 쌍) → 두 산출물이
+    HF에 착지한 뒤 `h100std_rq3v2f_{b0p,b2p,b3p}.yaml`(RL). 이 5종은 0727에 a100 판에서
+    복제해 두었고 target/sku/tier만 다르다(`msrresrchbasicvc` / `80G4-H100` / Standard —
+    basicvc엔 Premium SLA가 없다).
+  - ⛔**`h100std_rq3v2_{b2p,b3p}.yaml`(f 없는 구 lineage)는 쓰지 말 것** — `b2p2_rvseg_sft`
+    (E-093에서 위장된 시나리오 필터로 폐기된 378행 init)를 스테이징한다. RQ2 부록 전용이며
+    **복제 결과로 보고 금지**.
 - ⛔런처 yaml 편집 시 **`\`로 끝나는 줄 다음에 주석/빈 줄을 두지 말 것** — bash가 명령을 그
   지점에서 끊는다. `bash -n`은 통과시키므로 `tests/test_launcher_yaml_lint.py`가 지킨다(E-125).
 

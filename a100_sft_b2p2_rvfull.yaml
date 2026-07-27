@@ -24,12 +24,18 @@ jobs:
         _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
         HF_TOKEN: ${HF_TOKEN}
         GH_TOKEN: ${GH_TOKEN}
-        # 0726 repackage (E-095): asset 490360017 = metacognition_rq3v2_0726_rvfull.tar.gz,
-        # md5 a3817d7653c8fab30619dbfd9336d61b, round-trip verified. Adds
-        # configs/sft_b2p2_rvfull.yaml (this run's config) + scripts/audit_sft2_render_mask.py.
-        # data/rv_redirect_verify_functional.parquet was already present.
-        # REVERSIBLE: fall back to "488239754" by editing this value only.
-        CODE_TAR_REVISION: "490360017"
+        # 0727 repin (E-129). asset 491027629 = metacognition_rq3v2_0727_eb16.tar.gz,
+        # md5 570c3e322c9acaee4c867ceb6acab406, verified by re-fetching through the same
+        # asset URL this command uses. It is a superset of the previously pinned asset on
+        # every file this run touches - both SFT configs, configs/accelerate_sft.yaml, both
+        # corpora and scripts/{push_models_hf,verify_eos_invariant,measure_sft_gate,
+        # eval_vllm_1030}.py are byte-identical - and the only shared file that changed is
+        # src/training/sft.py, whose two new resolvers are no-ops for this config (no
+        # resume_from_checkpoint key -> None, no save_total_limit key -> the old hardcoded
+        # 3). Both arms now pin the SAME asset; they previously pinned different ones.
+        # REQUIRED by the in-training pusher below: scripts/push_sft_ckpts_to_hf.py exists
+        # only in this asset, which is why the guard right before it fails closed.
+        CODE_TAR_REVISION: "491027629"
         HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
         WANDB_API_KEY: ${WANDB_API_KEY}
         WANDB_KEY: ${WANDB_API_KEY}
@@ -95,9 +101,30 @@ jobs:
         export PYTHONPATH=/scratch/metacognition
         cd /scratch/metacognition
 
+        # ── STALE-TARBALL GUARD, then the IN-TRAINING PUSHER (E-129).
+        # The 0727 preemption is the argument: a run was taken at step ~125/303 and
+        # everything on /scratch went with the node; the only survivors were what a
+        # concurrently-running pusher had already put on HF. This launcher previously
+        # pushed only after `accelerate launch` returns, which for any run that does not
+        # outlive its window means never. The guard exists because under `set +e` a missing
+        # script would no-op into a log nobody reads and the run would look fixed while
+        # staying exactly as undurable.
+        # These uploads are WEIGHTS-ONLY: push_sft_ckpts_to_hf.py skips the DeepSpeed
+        # global_step*/ optimizer dir (~96 GB for 8B Adam), so a recovered checkpoint is a
+        # warm-start source and forensics, not an exact resume point.
+        ls -l /scratch/metacognition/scripts/push_sft_ckpts_to_hf.py || { echo "[YAML][pusher] MISSING push_sft_ckpts_to_hf.py - STALE TARBALL, this run would be NON-DURABLE; ABORT window"; sleep 300; exit 1; }
+        nohup python /scratch/metacognition/scripts/push_sft_ckpts_to_hf.py \
+            --ckpt_dir /scratch/checkpoints/b2p2_rvfull_sft \
+            --repo_id iamseungpil/metacot-sft2-4g --repo_type model \
+            --path_prefix b2p2_4g --config_name b2p2_4g --keep 2 --interval 120 \
+            > /scratch/logs/push_b2p2_4g.log 2>&1 &
+        PUSH_PID=$$!
+        echo "[YAML] in-training checkpoint pusher started pid=$${PUSH_PID}"
+
         python -m accelerate.commands.launch --config_file configs/accelerate_sft.yaml \
             src/training/sft.py --config configs/sft_b2p2_rvfull.yaml
         SFT_RC=$$?
+        kill $${PUSH_PID} 2>/dev/null || true
         echo "[YAML] b2p2-rvfull-sft2 rc=$${SFT_RC}"
 
         CKPT=/scratch/checkpoints/b2p2_rvfull_sft

@@ -1,8 +1,8 @@
-description: "B0p2 SFT2 RVFULL — the MISSING second stage of the CONTROL arm (E-097). The think-on ladder was two-stage on the meta side (b2p/b3p: SFT1 -> SFT2 on the RV corpus) and ONE-stage on the control side (b0p: SFT1 only; HF metacot models/ has no b0p2_* checkpoint), so the replication axis b3p-b0p conflated the meta mechanism with one extra SFT pass over the RV corpus. This run adds the matched stage using the META-REMOVED TWIN that scripts/build_base_rv_sft_data.py was written to produce and that has been sitting unused on HF: data/v8_base_rv_sft.parquet. Verified 0726 — 1763 rows EXACT 1:1 with the meta corpus, ZERO meta delimiters, identical scenario split (verify 1209 / redirect 554), identical think-closed 41.2 pct, wrong_prefix nonempty 100 pct so sft.py segment-masks IDENTICALLY, and render-layer audit clean (0 pct truncation at 4096, max 3124 tok; 100 pct keep the final boxed answer in the trained region; 100 pct EOS). Dose matched to the meta arm (C) run: 3 epochs, lr 1e-5, max_length 4096, bs1 x ga4 — the only remaining difference between the arms at this stage is the meta block. Pushes to iamseungpil/metacot models/b0p2_rvfull_sft/. A100x4 on msrresrchvc (basicvc rejects ALL submissions since 0726 05:49 — E-091)."
+description: "B0p2 SFT2 RVFULL — the MISSING second stage of the CONTROL arm (E-097). The think-on ladder was two-stage on the meta side (b2p/b3p: SFT1 -> SFT2 on the RV corpus) and ONE-stage on the control side (b0p: SFT1 only; HF metacot models/ has no b0p2_* checkpoint), so the replication axis b3p-b0p conflated the meta mechanism with one extra SFT pass over the RV corpus. This run adds the matched stage using the META-REMOVED TWIN that scripts/build_base_rv_sft_data.py was written to produce and that has been sitting unused on HF: data/v8_base_rv_sft.parquet. Verified 0726 — 1763 rows EXACT 1:1 with the meta corpus, ZERO meta delimiters, identical scenario split (verify 1209 / redirect 554), identical think-closed 41.2 pct, wrong_prefix nonempty 100 pct so sft.py segment-masks IDENTICALLY, and render-layer audit clean (0 pct truncation at 4096, max 3124 tok; 100 pct keep the final boxed answer in the trained region; 100 pct EOS). Dose matched to the meta arm (C) run: 3 epochs, lr 1e-5, max_length 4096, bs1 x ga4 — the only remaining difference between the arms at this stage is the meta block. Pushes to iamseungpil/metacot models/b0p2_rvfull_sft/. H100x4 on msrresrchbasicvc, Standard tier. H100 VARIANT (0727): identical recipe, retargeted to msrresrchbasicvc / 80G4-H100 / sla_tier Standard. basicvc offers NO Premium SLA on any instance, so Standard is the top tier available there. This file exists because the A100 path is capped at ONE GPU per user on msrresrchvc, so 4-GPU jobs there are accepted at submit time and then never scheduled, while H100 quota on basicvc is 16 GPUs per user with capacity free. It is unusable until the group-policy block on basicvc is lifted: submissions currently fail with a virtual-cluster-does-not-exist error because our quota comes from the VC default policy, which no longer admits us. Launch this the moment that clears."
 
 target:
   service: sing
-  name: msrresrchvc
+  name: msrresrchbasicvc
   workspace_name: msra-sh-aml-ws
 
 environment:
@@ -13,9 +13,9 @@ code:
   local_dir: $CONFIG_DIR/
 
 jobs:
-  - name: sft_b0p2_rvfull
-    sku: 80G4-A100
-    sla_tier: Basic
+  - name: h100_sft_b0p2_rvfull
+    sku: 80G4-H100
+    sla_tier: Standard
     priority: high
     identity: managed
     submit_args:

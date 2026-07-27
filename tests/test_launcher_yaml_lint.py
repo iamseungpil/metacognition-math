@@ -32,15 +32,33 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _launcher_yamls():
-    out = []
+    """Every root yaml that parses AND declares jobs.
+
+    Parse failures are collected separately rather than skipped. Skipping them is
+    how this file first failed: five freshly written launchers had a stray quote
+    that terminated the description scalar early, they raised YAMLError, this
+    function dropped them, and the suite reported all green over a set that no
+    longer contained the broken files. A lint that quietly shrinks its own input
+    is worse than no lint.
+    """
+    out, broken = [], []
     for p in sorted(ROOT.glob("*.yaml")):
         try:
             doc = yaml.safe_load(p.read_text())
-        except yaml.YAMLError:
+        except yaml.YAMLError as exc:
+            broken.append((p.name, str(exc).splitlines()[0]))
             continue
         if isinstance(doc, dict) and isinstance(doc.get("jobs"), list):
             out.append((p, doc))
-    return out
+    return out, broken
+
+
+LAUNCHERS, UNPARSEABLE = _launcher_yamls()
+
+
+def test_every_root_yaml_parses():
+    assert not UNPARSEABLE, "root yaml that does not parse (and would be skipped by every" \
+        " other check here):\n" + "\n".join(f"  {n}: {e}" for n, e in UNPARSEABLE)
 
 
 def _command_blocks(doc):
@@ -49,9 +67,6 @@ def _command_blocks(doc):
         for idx, cmd in enumerate(job.get("command") or []):
             if isinstance(cmd, str):
                 yield job.get("name", "<unnamed>"), idx, cmd
-
-
-LAUNCHERS = _launcher_yamls()
 
 
 def test_there_are_launchers_to_lint():
