@@ -24,12 +24,16 @@ jobs:
         _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
         HF_TOKEN: ${HF_TOKEN}
         GH_TOKEN: ${GH_TOKEN}
-        # 0726 repackage #2 (E-097): asset 490407111 = metacognition_rq3v2_0726_b0p2.tar.gz,
-        # md5 881fb4a609a6978c0e1c825b25c3d122, round-trip verified. Superset of
-        # 490360017: adds configs/sft_b0p2_rvfull.yaml AND data/v8_base_rv_sft.parquet
-        # (the meta-removed twin — it was NOT in 490360017; it lived only on HF).
-        # REVERSIBLE: this run cannot fall back (its corpus exists only here).
-        CODE_TAR_REVISION: "__PENDING__"
+        # 0727 repackage (effective-batch fix): asset 491027629 =
+        # metacognition_rq3v2_0727_eb16.tar.gz, md5 570c3e322c9acaee4c867ceb6acab406,
+        # round-trip verified by re-downloading through the SAME asset URL this
+        # command uses. Superset of 490894146: adds configs/sft_{b0p2,b2p2}_rvfull_g1eb16.yaml
+        # (ga 16 = T1's effective batch on one process) and the sft.py
+        # save_total_limit / resume resolvers.
+        # REVERSIBLE: fall back to "490894146" by editing this value only — but
+        # that tarball has no g1eb16 config, so the job would die at argparse
+        # rather than train at the wrong batch. Fail-loud by construction.
+        CODE_TAR_REVISION: "491027629"
         HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
         WANDB_API_KEY: ${WANDB_API_KEY}
         WANDB_KEY: ${WANDB_API_KEY}
