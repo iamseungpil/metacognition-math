@@ -1,0 +1,132 @@
+description: "B2p2 SFT2 (C) RVFULL — T1-IDENTICAL corpus, replaces the 378-row filtered top-up. Stages the durable SFT1 init models/b2p_v8meta_strict_sft from HF, then SFT2 on data/rv_redirect_verify_functional.parquet: the RAW 1763-row RV corpus, i.e. EXACTLY T1 SFT2 (3 epochs, lr 1e-5, max_length 4096) — differing from T1 only in the base-native init and the output name. WHY: three audits killed the old filter. E-093 its think-closed condition is a COVERT SCENARIO FILTER (</think> arrives only inside the force-fed wrong_prefix; 0 of 1763 rows emit it in the generated recovery; redirect cuts mid-think by construction) so redirect fell 554->67 = 1/8.3. E-094 the filter also INVERTED meta position vs SFT1 (SFT1 is 100 pct meta-INSIDE-think, the 378 rows are 0 pct) and discarded F011 (726 rows) which holds 69 pct of all redirect rows AND matches SFT1. E-095 render-layer token-id audit of THIS raw corpus: 0 pct truncation at 4096 (max 3184 tok), 100 pct keep the final boxed answer inside the trained region, 100 pct terminate with EOS; 524 rows (29.7 pct) have the meta block swallowed by the masked prefix, but T1 trained on those too and won. sft.py auto-segment-masks (wrong_prefix nonempty): prompt + flawed prefix masked, only meta + recovery trained. OUTPUT NAME IS NEW (b2p2_rvfull_sft, NOT b2p2_rvseg_sft) because the running b2p/b3p arms stage their RL init from HF models/b2p2_rvseg_sft — reusing that name would silently swap the init under any resubmitted arm. Then EOS gate + measure_sft_gate RE-GATE with base_accuracy_greedy 0.5967 (SFT1 anchor): required = wellformed/termination NO-REGRESSION vs SFT1 AND pmi auc improvement. Pushes ckpt to iamseungpil/metacot models/b2p2_rvfull_sft/ + gate json. If regression -> DISCARD ckpt, keep RL on the old init (E-071 kill-switch). A100x4 on msrresrchvc (basicvc rejects ALL submissions since 0726 05:49 — E-091). SINGLE-GPU VARIANT (0727): identical training recipe, but sku 80G1-A100 and DeepSpeed ZeRO-3 with the Adam states offloaded to CPU, so it needs one A100 instead of four. Reason: every A100 SKU on msrresrchvc is Basic (opportunistic) tier, so a job only runs on capacity another team leaves idle, and our 4-GPU jobs sat queued 11-12h. A single-GPU slot is far easier to scavenge. Eval tp_size dropped to 1 to match. Output paths and lineage are UNCHANGED from the 4-GPU variant, so whichever lands first produces the same artifact."
+
+target:
+  service: sing
+  name: msrresrchvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  registry: mcr.microsoft.com
+  image: aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x:latest
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: sft_b2p2_rvfull_g1
+    sku: 80G1-A100
+    sla_tier: Basic
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 259200
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        # 0726 repackage (E-095): asset 490360017 = metacognition_rq3v2_0726_rvfull.tar.gz,
+        # md5 a3817d7653c8fab30619dbfd9336d61b, round-trip verified. Adds
+        # configs/sft_b2p2_rvfull.yaml (this run's config) + scripts/audit_sft2_render_mask.py.
+        # data/rv_redirect_verify_functional.parquet was already present.
+        # REVERSIBLE: fall back to "488239754" by editing this value only.
+        CODE_TAR_REVISION: "490894146"
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        WANDB_API_KEY: ${WANDB_API_KEY}
+        WANDB_KEY: ${WANDB_API_KEY}
+        WANDB_PROJECT: metacot-math
+        WANDB_RUN_GROUP: rq3v2_thinkon
+        WANDB_NAME: b2p2_rvfull_sft2_g1
+        WANDB_TAGS: rq3v2,thinkon,sft2,rvfull,segment-masked,t1-stack,t1-parity
+        HF_HUB_DISABLE_XET: "1"
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints /scratch/models
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        nohup python -c "
+        import torch, time
+        g = torch.cuda.device_count()
+        ts = [torch.randn(2048, 2048, device=i, dtype=torch.float16) for i in range(g)]
+        while True:
+            for i in range(g): ts[i] = (ts[i] @ ts[i]) * 0.5
+            time.sleep(2)
+        " > /scratch/logs/gpu_keeper_inline.log 2>&1 &
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper_early.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        pip uninstall -y hf_xet 2>&1 | tail -1 || true
+        find $${SIMPLERL_DIR}/lib -maxdepth 3 -name "hf_xet*" -exec rm -rf {} + 2>/dev/null || true
+        python -c "import deepspeed" 2>/dev/null || pip install -q deepspeed 2>&1 | tail -1
+
+        # stage the SFT1 init from HF (retry + verify)
+        python -c "
+        import os, time, shutil
+        from huggingface_hub import snapshot_download
+        dst = \"/scratch/models/b2p_v8meta_strict_sft\"
+        for attempt in range(5):
+            try:
+                p = snapshot_download(\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"], allow_patterns=[\"models/b2p_v8meta_strict_sft/*\"])
+                src = os.path.join(p, \"models\", \"b2p_v8meta_strict_sft\")
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+                assert os.path.exists(os.path.join(dst, \"config.json\")), \"config.json missing\"
+                print(\"staged SFT1 init OK\")
+                break
+            except Exception as e:
+                print(\"stage attempt\", attempt, \"failed:\", repr(e)[:120])
+                time.sleep(20 * (attempt + 1))
+        "
+        ls -l /scratch/models/b2p_v8meta_strict_sft/config.json || echo "[YAML][stage] FATAL init missing"
+        ls -l /scratch/metacognition/data/rv_redirect_verify_functional.parquet || echo "[YAML][corpus] MISSING rv_redirect_verify_functional.parquet - repackage tarball"
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+
+        python -m accelerate.commands.launch --config_file configs/accelerate_sft_1gpu_cpuoff.yaml \
+            src/training/sft.py --config configs/sft_b2p2_rvfull.yaml
+        SFT_RC=$$?
+        echo "[YAML] b2p2-rvfull-sft2 rc=$${SFT_RC}"
+
+        CKPT=/scratch/checkpoints/b2p2_rvfull_sft
+
+        python /scratch/metacognition/scripts/verify_eos_invariant.py $${CKPT}
+        EOS_RC=$$?
+        echo "[YAML][eos-gate] verify_eos_invariant rc=$${EOS_RC} (0=GREEN required)"
+
+        python scripts/measure_sft_gate.py \
+            --model_path $${CKPT} \
+            --output_dir /scratch/logs/b2p2_rvfull_gate \
+            --model_name b2p2_rvfull_sft2 \
+            --benchmarks math500 \
+            --max_problems 300 \
+            --max_tokens 8192 \
+            --tp_size 1 \
+            --n_pmi 200 \
+            --base_accuracy_greedy 0.5967
+        GATE_RC=$$?
+        echo "[YAML][re-gate] measure_sft_gate rc=$${GATE_RC}"
+        echo "[YAML][re-gate] ---- sft_gate.json ----"
+        cat /scratch/logs/b2p2_rvfull_gate/sft_gate.json 2>/dev/null | head -140
+
+        for i in $$(seq 1 30); do
+            python /scratch/metacognition/scripts/push_models_hf.py --model_path $${CKPT} --model_name b2p2_rvfull_sft --repo_id iamseungpil/metacot 2>&1 | tail -3
+            N=$$(python -c "from huggingface_hub import HfApi;import os;fs=HfApi().list_repo_files(\"iamseungpil/metacot\",repo_type=\"dataset\",token=os.environ[\"HF_TOKEN\"]);print(sum(1 for f in fs if \"b2p2_rvfull_sft/model-\" in f and f.endswith(\".safetensors\")))")
+            echo "[YAML][push] attempt $$i: shards_on_hf=$$N/4"
+            [ "$$N" = "4" ] && echo "[YAML][push] all 4 shards durable" && break
+            sleep 120
+        done
+        sleep 43200
+        '

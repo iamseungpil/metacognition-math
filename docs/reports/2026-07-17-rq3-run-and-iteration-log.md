@@ -2748,3 +2748,45 @@ E-108에서 "b2p 사망·노드 반납·사이드카 전손"이라 적었다. **
 
 ### 현재 자산
 b2p durable **gs120**(잔여 180스텝) · 새 SFT2 산출물 0 · 큐 3건(A100 5h/12h/11h 대기) · basicvc 여전히 차단
+
+---
+
+## E-110 ⭐⭐ 큐가 안 풀리는 이유 특정 + **1-GPU 변종 발사**로 우회 (2026-07-27 01:57-02:02 UTC)
+
+사용자 질문: "queue가 왜 안 풀리지?"
+
+### 원인: **msrresrchvc의 A100은 SKU 9종 전부 `Basic` 티어다 — Standard가 없다**
+```
+80G4-A100-NvLink  NC96ad_A100_v4  Basic     80G4-A100  ND48am_A100_v4  Basic
+80G2-A100 / 80G1-A100 / 80G8-* ...          전부 Basic
+```
+Singularity에서 **Basic = opportunistic** — 보장 할당이 없고 **Standard 보유자가 놀리는 용량만 주워** 쓴다(이 프로젝트 0717 기록의 "1120-slot opportunistic pool"과 같은 의미). 따라서:
+1. 우리에겐 그 VC에 **보장 할당이 0**이라 스케줄러가 우선할 이유가 없다
+2. msrresrchvc는 작은 연구 VC(A100/CPU/MI200만·H100/H200 없음)라 풀 자체가 작다
+3. **우리 잡은 4-GPU 연속 슬롯을 요구** — 기회편승으로 4장을 한 번에 잡는 건 1~2장보다 훨씬 어렵다
+4. 티어 상향 불가(Standard 미제공) + basicvc 차단
+⇒ **"제출 에러"가 아니라 "순번이 안 오는 것"이다. 같은 SKU로 잡을 더 넣어도 빨라지지 않는다.**
+
+### 미사용 레버: GPU 수 축소
+SKU 목록에 `80G1-A100`·`80G2-A100`이 있다. **SFT2는 1장으로 충분하다** — ZeRO-3 + Adam을 CPU로 오프로드하면 GPU당 params 16GB + grads 16GB + activations ~5GB ≈ **37GB**(A100 80GB). 이 배치는 0726 사이드카에서 **RL 잡과 공존하며 실증**됐다(당시 CPU RAM 954GB 여유).
+
+### 산출물
+- **`configs/accelerate_sft_1gpu_cpuoff.yaml`**(신규) — zero3·`offload_optimizer_device: cpu`·`num_processes: 1`
+- **`a100g1_sft_b2p2_rvfull.yaml`** / **`a100g1_sft_b0p2_rvfull.yaml`**(신규) — 4-GPU판의 최소편집 클론
+- tarball 재패키징 **asset 490894146**(round-trip md5 `fa07db4c264ccccd788419a6e4db2c2a` 일치·1gpu config 동봉 확인·비밀 0·`.env` 0)
+
+### 전수 diff = 의도한 5곳만 (양 파일 동일 패턴)
+`job name` · `sku 80G4→80G1` · `CODE_TAR_REVISION` · `WANDB_NAME` · `accelerate config` · **`--tp_size 4 → 1`**
+⭐마지막 항목이 중요하다: 1-GPU에서 게이트 eval이 `tp_size 4`면 실패한다. 4틱 연속 전수 diff 통독이 실제 결함을 잡아온 자리이고, 이번에도 여기서 잡혔다.
+
+### 발사
+| 실험 | job | SKU | 상태 |
+|---|---|---|---|
+| `a100g1-sft-b2p2-rvfull` | `sft_b2p2_rvfull_g1` | **80G1-A100** | preparing (02:01:46) |
+| `a100g1-sft-b0p2-rvfull` | `sft_b0p2_rvfull_g1` | **80G1-A100** | preparing (02:02:01) |
+기존 4-GPU 잡 2건은 **그대로 둔다** — 먼저 붙는 쪽이 이긴다. **출력 계보(`models/b2p2_rvfull_sft`·`models/b0p2_rvfull_sft`)가 동일**하므로 어느 쪽이 완주해도 같은 자산이 나온다.
+⚠️둘 다 완주하면 같은 HF 경로에 중복 push가 되지만 `push_models_hf.py`는 덮어쓰기이므로 손상은 없다. 다만 **한쪽이 running으로 확인되면 다른 쪽을 취소**해 낭비를 막는다.
+red커밋 가드 준수: `pytest 755 passed, 8 skipped` && 제출.
+
+### 워크플로 진행
+`wf_89a8db4d-9e2`: **started 9 / completed 6** — Recon 2 + Regrade 4 완료, Verify 3인 진행 중.

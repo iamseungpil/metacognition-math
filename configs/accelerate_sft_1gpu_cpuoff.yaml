@@ -1,0 +1,27 @@
+# Single-GPU SFT with DeepSpeed ZeRO-3 + CPU optimizer offload.
+#
+# WHY (0727): every A100 SKU on msrresrchvc is Basic (opportunistic) tier — we
+# hold no allocation there, so a job only runs on capacity someone else leaves
+# idle. A 4-GPU contiguous slot is far rarer to scavenge than a single GPU, and
+# our 4-GPU SFT2 jobs have sat queued 11-12h. This config lets the same SFT2 run
+# on one A100.
+#
+# It fits: an 8B model under ZeRO-3 with the Adam states offloaded to CPU needs
+# roughly params 16GB + grads 16GB + activations ~5GB at bs1/seq4096 = ~37GB,
+# well inside an 80GB A100. The optimizer (~96GB fp32) lives in host RAM, which
+# the node has in abundance (measured 954GB free while an RL job was running).
+# Verified in practice: the 0726 sidecar ran this same offload arrangement
+# alongside a full RL job without disturbing it.
+compute_environment: LOCAL_MACHINE
+debug: false
+deepspeed_config:
+  offload_optimizer_device: cpu
+  offload_param_device: none
+  zero3_init_flag: true
+  zero3_save_16bit_model: true
+  zero_stage: 3
+distributed_type: DEEPSPEED
+downcast_bf16: 'no'
+mixed_precision: bf16
+num_machines: 1
+num_processes: 1
