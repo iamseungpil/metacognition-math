@@ -2790,3 +2790,59 @@ red커밋 가드 준수: `pytest 755 passed, 8 skipped` && 제출.
 
 ### 워크플로 진행
 `wf_89a8db4d-9e2`: **started 9 / completed 6** — Recon 2 + Regrade 4 완료, Verify 3인 진행 중.
+
+---
+
+## E-111 ⭐⭐⭐⭐⭐ **Stage 0 완료 — 4 arm을 한 채점기에 올렸다.** 내 C축 판단이 틀렸고, 진짜 취약한 것은 **A축(priming)** 이다 (2026-07-27 02:15 UTC, ultracode `wf_89a8db4d-9e2`, 11 agents)
+
+### 결과 — MATH500 16k, format-fair 재채점
+| arm | raw | **format-fair** |
+|---|---|---|
+| base_matched | 54.4 | **63.3** |
+| gandhi | 68.1 | **71.5** |
+| shiftonly | 62.3 | **77.2** |
+| pmishift | 66.0 | **81.9** |
+
+| 축 | MATH500 16k | AIME 16k(avg@16) | GSM8K 16k |
+|---|---|---|---|
+| **A priming**(gandhi−base) | **+8.2** | +15.2 | +2.3 |
+| **B PMI 단독**(shiftonly−gandhi) | **+5.6** | **−5.8** | +0.8 |
+| **C 풀패키지**(pmishift−gandhi) | **+10.4** | −1.5 | +0.8 |
+| 헤드라인(pmishift−base) | **+18.6** | +13.8 | +3.1 |
+헤드라인이 논문의 +18.8/+14.2와 일치 ⇒ **논문 수치는 처음부터 format-fair 채점기 산출물이었다.**
+
+### 🔴 정정 1 — 내가 E-104/E-106에서 "C축은 instruct에서도 음성(−2.1)"이라 한 것은 **틀렸다**
+그건 **raw 채점** 기준이었다. 방어 가능한 채점기에서 **C = +10.4pp**다. 그리고 **pmishift의 raw는 −15.9pp 저평가**돼 있었다(66.0 vs 81.9).
+⇒ 여기서 파생된 "**b3p는 틀린 arm이다**"라는 내 주장도 **철회한다.** C(+10.4)는 B(+5.6)보다 크고 AIME 손해도 작다(−1.5 vs −5.8). **풀 패키지가 PMI 단독보다 낫다** — 보조 헤드들이 PMI를 망치는 게 아니라 **PMI의 길이 부작용을 교정한다.** b3p는 올바른 arm이다.
+
+### 🔴 정정 2 — 취약한 축은 B/C가 아니라 **A(priming)** 이다 (적대검증이 발견)
+Skeptic 1(**SOUND**) 실측:
+- shiftonly의 up-flip **608건 전부 BOXED 경로**, fallback 경로는 **0건**. pmishift도 fallback 기여 +0.05pp.
+- **fallback을 쓰는 arm은 gandhi**(382행 = **+9.55pp**) — 세 축 전부의 **공유 대조군**이다.
+- ⇒ **fallback은 B·C축을 낮춘다.** 실제로 fallback을 끄면(엄격: `\boxed` 필수) **B +5.6→+15.1**, **C +10.4→+19.8**로 커진다. *"공격 대상 메커니즘을 제거하면 효과가 커진다"* ⇒ 아티팩트가 아니다.
+- **A축은 반대다**: gandhi 9.55pp vs base 0.35pp를 fallback에서 얻는다 ⇒ A = **+13.7(raw) / +8.2(fair) / −0.97(엄격)** — **세 가지 방어 가능한 채점기 선택에서 부호가 뒤집힌다.**
+- 기전: base의 무-boxed 행은 **99.7%가 절단**(구할 게 없음), gandhi는 **15%만 절단** — 나머지는 `\boxed` 없이 산문으로 답을 쓴 완결 응답.
+
+### 재채점이 편향을 **만든 게 아니라 제거**했다는 증거
+- 표면 정규화 후 gold와 동일한 부분집합에서 새 채점기는 **전 arm 100.000%** 인정(n=2367/2278/2850/3043·예외 0). raw는 86.4/86.0/**82.6**/**82.3**% ⇒ raw가 **효과를 억누르던 두 arm에 3.5~4pp 차별적 위음성**을 갖고 있었다.
+- flip 실검사: byte-identical 또는 사소한 LaTeX 변형(`2\sqrt{5}` vs `2 \sqrt{5}`, `C` vs `\text{(C)}`)만. **오답 인정 0건.** shiftonly down-flip 13건은 전부 raw의 위양성 정정.
+- leniency placebo(다른 문제의 gold로 채점): **0/600 위양성**, 전 arm.
+- 독립 재계산(Skeptic 3, **SOUND**): pmishift MATH500 81.85%를 **레포 코드 미사용 자체 구현**으로 재현, delta 0.00pp. 아티팩트 byte-identical 확인.
+
+### ⚠️ 남은 진짜 약점 (Skeptic 2 **SUSPECT**)
+fallback은 `answer_extracted`를 채점하는데 그 말단 분기가 `nums[-1]`(**응답 어디든 마지막 숫자**)이고, **레포 자신이 2026-07-14 버그픽스 주석에서 이 휴리스틱을 비난**했다. 즉 fallback은 약한 채점기이고 **gandhi만 크게 사용**한다. 생성 측 비교가능성은 깨끗하다(4개 런처가 identity 4줄만 다르고 런타임 메타데이터 temp 0.7·top_p 0.95·n=8·tp 4·max_model_len 20480 전부 동일).
+⇒ **논문 RQ1(priming) 주장은 채점기 선택에 걸려 있다.** B/C는 견고하고 A가 위태롭다 — 내가 지금까지 정반대로 말해 왔다.
+
+### 🔴 제출 안전감사 — **최대 위험 발견**
+`rq3v2f_b0p/b2p/b3p` 세 RL 런처를 **지금 제출하면**: 제출 성공 → 노드 확보 → **SFT2 init이 HF에 없어 모델 로드에서 조용히 실패** → **`sleep 86400`으로 A100×4 노드를 24시간 점유**. 12시간째 4-GPU 슬롯을 못 잡는 기회편승 풀에서 **가장 희소한 자원을 정확히 사용자가 막으려는 방식으로 낭비**한다. 스테이징 블록에 **fail-closed 가드가 없다.**
+⇒ **SFT2 산출물 2종이 HF에 4샤드 착지하기 전에는 RL 3종을 절대 제출하지 않는다.** (그 외 검사는 전부 PASS: VC/SKU 유효·tarball 3종 멤버 확인·RGS 가드 전부 abort 안 함·yaml/shlex/bash -n 통과.)
+
+### crash-safe config 생성됨 — **다만 절반만 작동**
+`configs/sft_b2p2_rvfull_safe.yaml`·`sft_b0p2_rvfull_safe.yaml`(save_strategy steps·save_steps 25). 검증 결과:
+- `save_strategy`·`save_steps`는 `sft.py:450-451`이 읽는다 ✅
+- `save_total_limit`은 **`sft.py:452`에 3으로 하드코딩**돼 yaml 키가 무시된다(디스크만 더 씀)
+- ⚠️**더 큰 문제: resume 배선이 없다.** `sft.py:486`이 `trainer.train()`을 **`resume_from_checkpoint` 없이** 호출한다 ⇒ 자주 저장해도 **아무도 그걸 집어가지 않는다.** 노드가 또 죽으면 step 0부터. **잦은 저장은 필요조건이지 충분조건이 아니다.**
+
+### 운영 조치
+- **1-GPU 컨트롤 SFT2 `sft_b0p2_rvfull_g1` RUNNING 12분**(GPU 37,828 MiB = 예측 ~37GB와 일치·util 8%). **1-GPU 레버가 통했다** — 4-GPU가 12시간 못 잡던 슬롯을 4분에 확보.
+- 감사관의 "동일 durable 경로 동시 push 경합" 경고에 따라 **중복 4-GPU 잡 `rq3v2-sft2-b0p2` 취소**(1-GPU running 확인 후).
