@@ -2902,3 +2902,31 @@ md5 `570c3e322c9acaee4c867ceb6acab406`. 노드가 쓰는 **동일 asset URL로 �
   대리변수 함정 재확인. gs160 도달 여부가 resume 성공의 판정 신호다.
 - basicvc 카나리아 **RED 21회째** (동일 `The virtual cluster does not exist`).
 - pytest `tests/`: 804 passed, 8 skipped.
+
+### E-113 — b2p resume 성공 확증, 그리고 SSH가 막힌 잡을 관측하는 법 (0727 05:00 UTC)
+
+**정정.** 직전 틱에서 "02:45 이후 gs160 커밋이 없다"를 이상 신호로 다뤘는데, 성급했다.
+학습 속도가 **~373 s/it**라 20스텝 간격 체크포인트는 약 2시간에 하나다. gs160은 정상적으로
+06:30 UTC 무렵에 온다.
+
+**관측 채널.** `amlt status`가 `failed`(1.6 kB)를 보고하고 `amlt ssh`는
+"No running/queued job found"로 거부하며 `amlt logs list`는 Azure artifact API 502/503을
+낸다. 그런데 노드의 백그라운드 pusher는 살아 있어서 **wandb 디렉터리를 HF로 계속 올린다**.
+`list_repo_tree(..., expand=True)`로 `last_commit.date`를 보면 `wandb/rq3v2_b2p/output.log`가
+04:54에 갱신된 것이 보이고, 그 파일을 받으면 학습 stdout을 그대로 읽을 수 있다.
+**amlt 3경로가 전부 막힌 잡의 상태를 읽는 유일한 방법**으로 기록해 둔다.
+
+**판정 (output.log 원문).**
+```
+Found checkpoint: /scratch/checkpoints/rq3v2_b2p/global_step_140
+Load from checkpoint folder: /scratch/checkpoints/rq3v2_b2p/global_step_140
+Setting global step to 140
+Resuming from /scratch/checkpoints/rq3v2_b2p/global_step_140
+Training Progress:  48%|████▊  | 143/300 [17:29<14:57:50, 343.13s/it]
+```
+04:31의 재시작은 **gs140에서 정확히 resume**했다 — gs0 재시작도, 죽은 것도 아니다.
+durable이 model/optim/extra 각 4로 완비돼 있던 것이 값을 했다(E-106에서 gs10이 optim 0/4라
+resume 불가였던 것과 대비된다). 잔여 157스텝 × ~6분 ≈ 15.7h.
+
+**기타.** ga4 컨트롤(헤지) 254/1212 정상. eb16 두 잡 여전히 queued(14분).
+카나리아 **RED 22회째**. eb16 산출물 HF 0파일(정상).
