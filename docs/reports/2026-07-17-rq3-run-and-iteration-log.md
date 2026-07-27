@@ -3130,3 +3130,31 @@ compute가 없었으므로, 이번만은 **취소 → 제출** 순서가 옳다(
 
 **같은 틱.** 컨트롤 eb16 **58/303**, pusher 회전 정상(`checkpoint-25`+`checkpoint-50`, `--keep 2`).
 메타 eb16 queued 2h. b2p durable gs140 그대로. 카나리아 RED 27회.
+
+### E-120 — 수술 런의 마지막 빈틈: 최종 모델 push 감시자 설치 (0727 08:10 UTC)
+
+E-114의 노드 재활용 수술로 컨트롤 eb16을 **손으로** 띄웠기 때문에, 이 런에는 학습 종료 후
+최종 모델을 HF로 올리는 주체가 없다. 원래 런처 셸(PID 1877)은 아직 살아 있지만 그 push 루프는
+**구 경로** `/scratch/checkpoints/b0p2_rvfull_sft`를 밀고 있고 이 런은 그 경로에 쓰지 않는다.
+E-116의 체크포인트 데몬은 크래시 대비를 해주지만 회전하는 `checkpoint-N/`을 **다른 레포**
+(`metacot-sft2-eb16`)에 올릴 뿐, RL 런처가 init을 스테이징하는 곳
+(`iamseungpil/metacot` 데이터셋의 `models/<name>/`)에는 아무것도 남기지 않는다.
+즉 5시간 뒤 학습이 끝나도 **다음 단계가 쓸 산출물은 노드에만 존재**하게 된다 —
+0726 사이드카가 전손된 것과 같은 구조다.
+
+**설치.** `/scratch/final_push_eb16.sh` — 트레이너 PID 28843이 사라질 때까지 대기했다가
+`push_models_hf.py`로 `models/b0p2_rvfull_eb16_sft`에 올리고, 4샤드가 실제로 착지할 때까지
+최대 20회 재시도한다. `setsid nohup`으로 띄워 SSH 세션과 무관하게 산다.
+
+**게이트.** 밀기 전에 `$CKPT/config.json` 존재를 확인한다. `sft.py:556`의
+`trainer.save_model(output_dir)`이 실제로 실행돼야만 생기는 파일이므로, 선점으로 죽은 런에서는
+없다. **부분 디렉터리를 올리는 것은 아무것도 안 올리는 것보다 나쁘다** — 다음 단계가 그것을
+정상 init으로 착각한다.
+
+**검증.** 노드에서 `wc -l` 30줄, `bash -n` 통과, 핵심 줄(TPID/CKPT/model_name/repo_id/게이트)
+육안 확인, 감시자 프로세스 생존 확인. heredoc이 원격으로 전송되며 잘리지 않았음을 확인한 것이
+요점이다(0718 `amlt bash -c` 따옴표 절단 전례).
+
+**같은 틱.** 컨트롤 **91/303**, pusher 회전 정상(`checkpoint-25` 프루닝, 50·75 유지, 업로드
+176초). b3p oomfix queued 50m, 메타 eb16 queued 3h, 4GPU 메타 queued 18h, b2p durable gs140.
+카나리아 RED 29회.
