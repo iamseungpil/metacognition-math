@@ -3399,3 +3399,34 @@ arm별 코퍼스 행수·내용 해시·시나리오 분할·토큰 길이 분�
 주석에 근거까지 적혀 있다(gandhi arm은 GSM8K에서 ~85%만 boxed, base/pmishift는 ~100% → boxed
 부재를 오답 처리하면 arm별 형식 편향). 따라서 필요한 조치는 **신규 작성이 아니라 동결**이었고,
 manifest가 모듈 해시와 선언된 모드를 함께 기록한다.
+
+### E-128 — 길이 교란 해소: T1이 같은 코퍼스 쌍을 썼고 네 config가 dose-matched다 (0727 14:15 UTC)
+
+E-127이 남긴 미확인 항목("T1도 메타 corpus + 메타제거 twin 쌍을 썼는가")을 확정했다.
+
+**T1 메타 arm**: `archive/launchers_pre_rq3/h100std_rv_functional_sft.yaml:98`이
+`configs/sft_rv_functional.yaml`로 `data/rv_redirect_verify_functional.parquet`을 학습.
+**T1 컨트롤 arm**: `archive/launchers_pre_rq3/h100std_base_matched_pipeline.yaml:133-135`가
+`configs/sft_base_rv.yaml`로 SFT2를 돌리고, 그 대상이 **`data/v8_base_rv_sft.parquet`** —
+우리 base 컨트롤이 쓰는 바로 그 메타 제거 twin이다.
+
+컨트롤 config는 `d565b52`("repo cleanup: archive pre-rq3 launchers/configs/trainers")에서
+삭제돼 트리에 없었다. git 이력에서 복원해 대조했고, 참조 가능하도록
+`configs/archive/sft_base_rv.yaml`로 되살렸다.
+
+| | T1 메타 | T1 컨트롤 | base 메타 | base 컨트롤 |
+|---|---|---|---|---|
+| dataset | rv_redirect_verify_functional | **v8_base_rv_sft** | rv_redirect_verify_functional | **v8_base_rv_sft** |
+| epochs / lr | 3 / 1e-5 | 3 / 1e-5 | 3 / 1e-5 | 3 / 1e-5 |
+| bs × ga | 1 × 4 | 1 × 4 | 1 × 4 | 1 × 4 |
+| max_length | 4096 | 4096 | 4096 | 4096 |
+| save_strategy | epoch | epoch | epoch | epoch |
+
+**결론.** E-127에서 잰 학습 구간 29.5% 토큰 차이는 **T1에서 복제된 성질이지 새로 도입된 교란이
+아니다.** T1의 승리도 같은 비대칭 위에서 나왔으므로, 복제 실험으로서는 이 성질을 유지하는 것이
+옳다. 네 config가 전부 dose-matched이고 남은 차이는 init과 데이터, 즉 처치뿐이다.
+
+**방법론 메모.** 이 확인은 삭제된 파일을 git 이력에서 복원해야 가능했다. T1 대조 워크플로는
+`sft_base_rv.yaml`을 "트리에 없음"으로 처리하고 넘어갔는데, 아카이브 정리로 사라진 파일이
+있으면 워킹 트리 grep만으로는 과거 레시피를 복원할 수 없다. **T1 계보를 다룰 때는
+`git log --all -- <path>`를 기본 절차로 둔다.**
