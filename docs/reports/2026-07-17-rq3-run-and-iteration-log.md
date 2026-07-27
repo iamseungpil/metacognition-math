@@ -3240,3 +3240,31 @@ E-116에서 붙인 학습 중 pusher가 올려둔 것이 전부다. 그게 없�
 
 **같은 틱.** b2p durable이 **gs140 → gs160**으로 움직였다(동결 해제). 긴 윈도우가 걸렸다는 뜻이며
 E-117의 `save_freq=5` 수정은 여전히 다음 제출에서 효력을 갖는다. 카나리아 RED 30회.
+
+### E-123 — RL 런처의 init 이름 베팅 제거 (0727 09:58 UTC)
+
+E-121에서 RL 런처 3종을 경로 A(1-GPU eb16) 이름으로 **고정**했다. E-122에서 경로가 둘로
+갈리면서 그 고정은 베팅이 됐다 — 경로 B(4-GPU)가 먼저 완주하면 존재하지 않는 이름을 스테이징한다.
+런처가 할 필요 없는 베팅이므로 없앴다.
+
+**해소 방식.** 실행 시점에 HF를 조회해 `models/<name>/config.json`이 실재하는 첫 후보를 고른다
+(eb16 우선, 없으면 평문). 그리고 **고정 로컬 경로 `/scratch/models/sft2_init`**로 복사하므로
+하위 단계(tokenizer 패치·fail-closed 게이트·`model.path`)는 전부 이름과 무관해진다.
+두 후보가 모두 없으면 `sys.exit(1)` → E-121 게이트가 윈도우를 ABORT한다.
+
+| 런처 | 1순위 | 2순위 |
+|---|---|---|
+| `a100_rq3v2f_b0p.yaml` | `b0p2_rvfull_eb16_sft` | `b0p2_rvfull_sft` |
+| `a100_rq3v2f_b2p.yaml` | `b2p2_rvfull_eb16_sft` | `b2p2_rvfull_sft` |
+| `a100_rq3v2f_b3p.yaml` | `b2p2_rvfull_eb16_sft` | `b2p2_rvfull_sft` |
+
+⚠️불변식은 그대로다 — **arm은 같은 경로 안에서 짝지어야 한다.** 1-GPU 컨트롤 대 4-GPU 메타는
+미검증 world-size 비대칭이다. 이 자동 해소는 이름 문제만 없애고 짝짓기 판단을 대신하지 않는다.
+
+**검증 방식이 요점.** yaml 블록 스칼라 → bash 큰따옴표 → `python -c` 세 겹의 이스케이프를 지나면
+embedded python은 **노드에서만** 깨진다. 그래서 yaml을 로드하고 `$$`→`$`를 되돌린 뒤 bash가
+풀어줄 `\"`→`"`까지 적용해 **python이 실제로 받게 될 소스를 뽑아 `compile()`** 했다. 3종 모두 통과.
+지금 HF에는 후보가 하나도 없으므로 해소 로직은 의도대로 ABORT 경로를 탄다.
+
+**같은 틱.** 5개 잡 전부 queued(1GPU 컨트롤 23m·4GPU 컨트롤 22m·1GPU 메타 5h·4GPU 메타 20h·
+b3p oomfix 2h). b2p durable gs160 유지. 노드를 잡은 것이 없어 새 런타임 검증 없음.

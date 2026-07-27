@@ -124,27 +124,42 @@ jobs:
         # the meta mechanism instead of one extra SFT pass (E-097). Reward path is
         # byte-identical correctness-only VANILLA_GRPO, same as B2. From dataset
         # iamseungpil/metacot under models/b0p2_rvfull_eb16_sft/ (pushed by rq3v2-sft2-b0p2).
+        # ── INIT RESOLUTION (E-123). Two internally matched SFT2 paths exist and it is
+        # not yet known which one survives its preemption window (E-122): the 1-GPU
+        # eb16 pair (b0p2_rvfull_eb16_sft / b2p2_rvfull_eb16_sft) and the 4-GPU pair
+        # (b0p2_rvfull_sft / b2p2_rvfull_sft). Both train at effective batch 16 and differ
+        # only in world size. Hard-coding one name is a bet this launcher does not need
+        # to make, and losing it would stage a nonexistent init. Resolve at run time,
+        # preferring the eb16 name, and stage into a FIXED local path so everything
+        # downstream (tokenizer patch, gate, model.path) is name-independent.
+        # The arms must still be paired within a path — a 1-GPU control against a
+        # 4-GPU meta is an unvalidated world-size asymmetry.
         python -c "
-        from huggingface_hub import snapshot_download
-        import os, shutil
-        snapshot_download(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
-            allow_patterns=[\"models/b0p2_rvfull_eb16_sft/**\"], local_dir=\"/scratch/models_dl\")
-        src=\"/scratch/models_dl/models/b0p2_rvfull_eb16_sft\"; dst=\"/scratch/models/b0p2_rvfull_eb16_sft\"
-        shutil.rmtree(dst, ignore_errors=True); shutil.copytree(src, dst); print(\"b23 rv meta SFT staged\")
+        import os, shutil, sys
+        from huggingface_hub import HfApi, snapshot_download
+        tok=os.environ[\"HF_TOKEN\"]
+        fs=HfApi(token=tok).list_repo_files(\"iamseungpil/metacot\", repo_type=\"dataset\")
+        dst=\"/scratch/models/sft2_init\"
+        for name in [\"b0p2_rvfull_eb16_sft\", \"b0p2_rvfull_sft\"]:
+            if \"models/%s/config.json\" % name in fs:
+                snapshot_download(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=tok,
+                    allow_patterns=[\"models/%s/**\" % name], local_dir=\"/scratch/models_dl\")
+                shutil.rmtree(dst, ignore_errors=True)
+                shutil.copytree(os.path.join(\"/scratch/models_dl\", \"models\", name), dst)
+                print(\"[init] resolved %s -> %s\" % (name, dst)); sys.exit(0)
+        print(\"[init] NEITHER b0p2_rvfull_eb16_sft NOR b0p2_rvfull_sft exists on HF\"); sys.exit(1)
         "
         python -c "
-        import json, os; p=\"/scratch/models/b0p2_rvfull_eb16_sft/tokenizer_config.json\"
+        import json, os; p=\"/scratch/models/sft2_init/tokenizer_config.json\"
         if os.path.exists(p):
             cfg=json.load(open(p)); cfg.pop(\"extra_special_tokens\", None); json.dump(cfg, open(p,\"w\"), indent=2); print(\"tokenizer patched\")
         "
 
-        # FAIL-CLOSED INIT GATE (E-121). Nothing here checked that the init actually
-        # landed. `set +e` is in force, so a missing artifact lets snapshot_download
-        # and copytree fail, verl start on a nonexistent model path, crash, and the
-        # window fall through to `sleep 86400` — holding A100x4 idle for a day on a
-        # silent failure. That is exactly the hazard the manual submission gate has
-        # been standing in for; encode it in the launcher instead of in a human.
-        ls -l /scratch/models/b0p2_rvfull_eb16_sft/config.json || { echo "[YAML] FATAL init /scratch/models/b0p2_rvfull_eb16_sft missing or incomplete; ABORT window"; sleep 300; exit 1; }
+        # FAIL-CLOSED INIT GATE (E-121). `set +e` is in force, so without this a missing
+        # artifact lets staging fail, verl start on a nonexistent model path, crash, and
+        # the window fall through to `sleep 86400` — holding A100x4 idle for a day on a
+        # silent failure. That is the hazard the manual submission gate stood in for.
+        ls -l /scratch/models/sft2_init/config.json || { echo "[YAML] FATAL init /scratch/models/sft2_init missing or incomplete; ABORT window"; sleep 300; exit 1; }
 
         nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
         # durable per-file pusher for the live RL checkpoint dir.
@@ -239,7 +254,7 @@ jobs:
             trainer.experiment_name=rq3v2f_b0p \
             trainer.default_local_dir=/scratch/checkpoints/rq3v2f_b0p \
             trainer.project_name=metacot-dcpo-v4 \
-            actor_rollout_ref.model.path=/scratch/models/b0p2_rvfull_eb16_sft \
+            actor_rollout_ref.model.path=/scratch/models/sft2_init \
             actor_rollout_ref.rollout.temperature=1.0 \
             actor_rollout_ref.rollout.top_k=-1 \
             actor_rollout_ref.rollout.top_p=1.0 \
