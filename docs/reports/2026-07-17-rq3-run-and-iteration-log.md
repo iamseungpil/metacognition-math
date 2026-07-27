@@ -2846,3 +2846,59 @@ fallback은 `answer_extracted`를 채점하는데 그 말단 분기가 `nums[-1]
 ### 운영 조치
 - **1-GPU 컨트롤 SFT2 `sft_b0p2_rvfull_g1` RUNNING 12분**(GPU 37,828 MiB = 예측 ~37GB와 일치·util 8%). **1-GPU 레버가 통했다** — 4-GPU가 12시간 못 잡던 슬롯을 4분에 확보.
 - 감사관의 "동일 durable 경로 동시 push 경합" 경고에 따라 **중복 4-GPU 잡 `rq3v2-sft2-b0p2` 취소**(1-GPU running 확인 후).
+
+---
+
+## E-112 — 1-GPU 전환이 실효 배치를 4배 줄인 것을 발견·수정, eb16 쌍 제출 (0727 04:30–04:50 UTC)
+
+**근인.** 0727에 A100 4장 큐(11–12h 대기)를 피하려고 SFT2를 1-GPU로 옮기면서
+`gradient_accumulation_steps: 4`를 그대로 뒀다. T1의 SFT2는 `bs1 × ga4`를 **4 프로세스**로
+돌려 실효 배치가 **16**이었는데(`configs/archive/sft_rv_functional.yaml:20-21` +
+`configs/accelerate_sft.yaml:13`), 같은 값이 1 프로세스에서는 실효 배치 **4**가 된다.
+스텝 수가 이를 확증한다 — 1763행 × 3ep ÷ 4 = 1322스텝이고 실제 잡은 1212스텝을 보고했다
+(길이 필터 후). 배치 16이면 ~330스텝이다. 이 런의 존재 이유가 "T1을 문자 그대로 복제해서
+음성 결과를 우리가 만든 편차 탓으로 돌릴 수 없게 하는 것"이므로, 4배 편차는 그 목적을 무효화한다.
+
+**수정.** `configs/sft_{b0p2,b2p2}_rvfull_g1eb16.yaml` — ga 16, 별도 `output_dir`.
+메모리는 불변(누적은 마이크로배치를 순차 실행, per-device bs는 1 유지).
+두 파일에 불변식을 박아뒀다: **실효 배치는 어느 world size에서도 16**
+(1 GPU → ga 16, 2 → 8, 4 → 4), 그리고 **두 arm은 같은 world size에서 돌아야 한다**.
+
+**낡은 텍스트 5건**(sed-clone 함정 5연속). 전수 diff 통독으로만 잡혔다:
+1. `_safe` 클론이 물려받은 resume 주석이 `resume_from_checkpoint: auto`를 약속하는데
+   그 키는 의도적으로 제거된 상태였다(sft.py:375-377이 None을 반환 → 매번 콜드 스타트).
+   런처에 HF에서 체크포인트를 되받는 단계가 없어 resume은 "죽지 않은 노드"에서만 의미가
+   있는데 그건 resume이 필요 없는 경우다. 주석을 사실대로 고쳤다 — `save_steps 25`가 실제로
+   사는 건 수동 탈출구(시작 15분 내 로컬 ckpt 존재 → 위험 감지 시 손으로 push).
+2. b0p2 config 서두 "Dose ... bs1 x ga4" (2곳), 3. b2p2 config 동일 문구,
+4. 런처 description의 push 경로가 구 lineage(`models/b0p2_rvfull_sft/`)를 가리킴,
+5. b2p2 런처의 "OUTPUT NAME IS NEW (b2p2_rvfull_sft…)".
+
+**충돌 회피(파괴조작 3율).** 신규 잡은 `b{0,2}p2_rvfull_eb16_sft`로 **별도 lineage**를 쓴다.
+덕분에 **돌고 있는 ga4 컨트롤을 죽이지 않고** 나란히 큐에 넣을 수 있다 — 기회편승(Basic)
+티어에서 슬롯은 희소 자원이므로, 대체가 확보되기 전에는 폐기하지 않는다. ga4 컨트롤은
+큐 헤지로만 남기고 eb16이 노드를 잡으면 취소한다.
+반면 **큐에만 있던 ga4 메타 잡**(`a100g1-sft-b2p2-rvfull`, compute 미점유)은 즉시 취소했다 —
+그건 잘못된 배치로 학습할 뿐 아니라 산출물 이름이 4-GPU 잡(`rq3v2-sft2-rvfull`, 배치 16으로
+올바름)과 **충돌**했다.
+
+**타르볼.** asset **491027629** = `metacognition_rq3v2_0727_eb16.tar.gz`,
+md5 `570c3e322c9acaee4c867ceb6acab406`. 노드가 쓰는 **동일 asset URL로 되받아** md5 왕복
+일치 확인, 비밀 스캔 0건, 필수 12파일 존재 확인, 되받은 타르볼 안 ga=16 재확인.
+490894146의 superset(g1eb16 config 2종 + sft.py resolver 추가). 폴백 시 argparse에서 죽으므로
+조용히 틀린 배치로 학습할 길은 없다.
+
+**제출 결과** (둘 다 오류 없음):
+| 실험 | 잡 | 상태 |
+|---|---|---|
+| `worthy-snail` | `sft_b2p2_rvfull_g1eb16` (메타) | queued |
+| `a100g1-sft-b0p2-eb16` | `sft_b0p2_rvfull_g1eb16` (컨트롤) | queued |
+
+**기타 관측.**
+- ga4 컨트롤(헤지): 232/1212, ETA 11h. `save_strategy: epoch`이라 첫 로컬 저장은 step 404.
+- b2p: durable **gs140 (model 4 / optim 4 / extra 4 = RESUMABLE)**. 02:45 이후 새 global_step
+  커밋 없음. **04:31에 새 wandb run**(`run-20260727_043127`)이 생겨 프로세스가 재시작됐다.
+  amlt는 `failed`(1.6 kB)로 표시하고 SSH도 거부하는데 HF 커밋은 계속 도착한다 —
+  대리변수 함정 재확인. gs160 도달 여부가 resume 성공의 판정 신호다.
+- basicvc 카나리아 **RED 21회째** (동일 `The virtual cluster does not exist`).
+- pytest `tests/`: 804 passed, 8 skipped.
