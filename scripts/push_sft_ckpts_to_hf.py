@@ -1,9 +1,11 @@
 """Watch an HF-Trainer output dir and stream new `checkpoint-N/` dirs to HuggingFace.
 
 WHY THIS EXISTS (0727).  The SFT launchers push models to HF only AFTER
-`accelerate launch` returns (a100g1_sft_b0p2_rvfull.yaml:129,133), so a node
-death mid-training leaves NOTHING durable — one sidecar SFT2 run reached ~40/309
-steps and vanished with its node, leaving models/b2p2_rvfull_sft with 0 files.
+`accelerate launch` returns, so a node death mid-training leaves NOTHING
+durable — one sidecar SFT2 run reached ~40/309 steps and vanished with its node,
+leaving models/b2p2_rvfull_sft with 0 files.  It happened again the same day: a
+run was preempted at step ~125/303 and the only survivors were the checkpoints
+this daemon had already uploaded.
 The RL launchers do not have this hole because they run
 `nohup push_ckpts_to_hf.py --interval 90 &` CONCURRENTLY with training, which is
 why rq3v2_b2p keeps landing gs120/gs140 on HF even while amlt reads "failed".
