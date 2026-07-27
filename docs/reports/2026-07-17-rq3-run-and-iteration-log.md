@@ -11,7 +11,37 @@
 > emit≥0.8 · pmishift_attempted≥0.3 · n_save>0 · entropy>0.1 (gs~25). 게이트 실패 = GPU 낭비 전 상류 수정.
 > pre-register 해석표(Codex 수렴): B3pkg>B2 & B3pkg>B3-noPMI → 패키지+조건부PMI / B3pkg>B2 & B3pkg≈B3-noPMI → form/패키지, PMI 철회 / 셋≈ → mechanism·form-vs-function 논문 / B3pkg<B2 or noPMI>B3pkg → PMI 유해 음성결과.
 
-## 실험 상태판 (running tally) — 갱신 0719 07:29
+## 실험 상태판 (running tally) — 갱신 0727 16:45
+
+> **이 파일을 여는 사람에게**: 아래가 현행이다. 그 다음 절의 0719 상태판은 **은퇴한
+> RQ3(think-off) 세대**이며 부록 전용으로 보존된 것이다. 두 판을 섞어 읽지 말 것.
+
+**현행 세대 = RQ3v2 think-on matched ladder.** 그 안에 두 lineage가 있고, 구분이 결과 해석을
+좌우한다:
+
+| lineage | RL init | 런처 | 지위 |
+|---|---|---|---|
+| **rvseg (구)** | `models/b2p2_rvseg_sft` (378행) | `h100std_rq3v2_{b2p,b3p}.yaml` | ⛔**부록 전용**. E-093에서 init이 위장된 시나리오 필터로 redirect 기아(554→67)임이 확정됐다. **복제 결과로 보고 금지.** |
+| **rvfull (본선)** | `models/b2p2_rvfull_sft` (미생성) | `h100std_rq3v2f_{b0p,b2p,b3p}.yaml` | 본선. SFT2 쌍이 먼저 필요하다. |
+
+| Arm | exp | lineage | 상태 | durable / 트레이너 스텝 |
+|---|---|---|---|---|
+| b2p | `inviting-jackal` (basicvc H100x4) | **rvseg(부록)** | running 3일차 | gs220 / **228**·300 (~6.0분/스텝, ~7h) |
+| b3p | — | rvseg | **미발사** | — |
+| b0p·b2p·b3p (본선) | — | rvfull | **미발사** — 컴퓨트 차단 | — |
+| SFT2 쌍 (b0p2·b2p2 rvfull) | — | — | **미발사** — 본선의 선행조건 | — |
+
+> ⚠️ **인프라**: `msrresrchbasicvc`가 0726 05:49부터 신규 제출을 전면 거부(그룹정책 멤버십
+> 공백·행정 조치 대기). 카나리아 38회 연속 RED. `msrresrchvc`는 A100-80GB 사용자 한도 1장이라
+> 4-GPU 잡이 영원히 스케줄되지 않는다. 그래서 **본선 5종이 전부 대기 중**이고, 지금 도는
+> 유일한 잡이 부록 lineage인 것이다.
+
+> **판정 규약**: `docs/PREREGISTRATION_rq3v2_base_replication.md`. 결과 3종(전이 /
+> substrate-특이 / **무효런**), 셀별 주장 금지, `format_fair` 채점기 동결.
+
+---
+
+## [은퇴] RQ3(think-off) 세대 상태판 — 0719 07:29 시점, 부록 보존용
 
 | Arm | exp(현재) | 상태 | durable/in-mem gs | 판정 축 |
 |---|---|---|---|---|
