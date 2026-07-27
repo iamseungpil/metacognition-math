@@ -140,14 +140,16 @@ jobs:
         tok=os.environ[\"HF_TOKEN\"]
         fs=HfApi(token=tok).list_repo_files(\"iamseungpil/metacot\", repo_type=\"dataset\")
         dst=\"/scratch/models/sft2_init\"
-        for name in [\"b0p2_rvfull_eb16_sft\", \"b0p2_rvfull_sft\"]:
-            if \"models/%s/config.json\" % name in fs:
+        for sfx in [\"_eb16_sft\", \"_sft\"]:
+            pair = [\"b0p2_rvfull\" + sfx, \"b2p2_rvfull\" + sfx]
+            if all((\"models/%s/config.json\" % q) in fs for q in pair):
+                name = \"b0p2_rvfull\" + sfx
                 snapshot_download(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=tok,
                     allow_patterns=[\"models/%s/**\" % name], local_dir=\"/scratch/models_dl\")
                 shutil.rmtree(dst, ignore_errors=True)
                 shutil.copytree(os.path.join(\"/scratch/models_dl\", \"models\", name), dst)
-                print(\"[init] resolved %s -> %s\" % (name, dst)); sys.exit(0)
-        print(\"[init] NEITHER b0p2_rvfull_eb16_sft NOR b0p2_rvfull_sft exists on HF\"); sys.exit(1)
+                print(\"[init] resolved PAIR%s -> %s (%s)\" % (sfx, dst, name)); sys.exit(0)
+        print(\"[init] no suffix has BOTH b0p2_rvfull* and b2p2_rvfull* on HF - refusing to pair mismatched arms\"); sys.exit(1)
         "
         python -c "
         import json, os; p=\"/scratch/models/sft2_init/tokenizer_config.json\"
