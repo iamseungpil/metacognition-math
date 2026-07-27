@@ -243,6 +243,17 @@ jobs:
         # ── MATCHED v2 recipe (collapse-fixed): temp 1.0 / top_k -1 / top_p 1.0,
         #    max_response 8192, max_model_len + max_num_batched_tokens 10240,
         #    Dr.GRPO norm_adv_by_std=false, log_prob micro_batch 2 (OOM guard at 8192).
+            # SAVE CADENCE 0727 (E-117). Was save_freq=20. The window architecture
+            # discards every step a window fails to bank: on preemption the next
+            # window pulls the newest COMPLETE checkpoint off HF and redoes the
+            # rest. Measured on rq3v2_b2p: ~380 s/step, so 20 steps needs 2.1 h of
+            # pure training, plus the test_freq validation when one falls inside
+            # the interval. Observed window lifetimes were 5.3 h (banked gs140)
+            # and then 2.0 h and ~2.0 h (banked nothing) — four hours produced
+            # zero durable progress. save_freq=5 needs ~32 min per bank, which
+            # every observed window clears, so the arm advances even under short
+            # windows. Cost is more HF traffic; the pusher already prunes to
+            # --keep 1, so steady-state storage is unchanged.
         WANDB_NAME=rq3v2f_b2p /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
             --config-name=base_matched_grpo_h100_4x4k \
             trainer.experiment_name=rq3v2f_b2p \
@@ -263,17 +274,6 @@ jobs:
             ++actor_rollout_ref.model.enable_activation_offload=true \
             actor_rollout_ref.rollout.enforce_eager=true \
             trainer.resume_mode=auto \
-            # SAVE CADENCE 0727 (E-117). Was save_freq=20. The window architecture
-            # discards every step a window fails to bank: on preemption the next
-            # window pulls the newest COMPLETE checkpoint off HF and redoes the
-            # rest. Measured on rq3v2_b2p: ~380 s/step, so 20 steps needs 2.1 h of
-            # pure training, plus the test_freq validation when one falls inside
-            # the interval. Observed window lifetimes were 5.3 h (banked gs140)
-            # and then 2.0 h and ~2.0 h (banked nothing) — four hours produced
-            # zero durable progress. save_freq=5 needs ~32 min per bank, which
-            # every observed window clears, so the arm advances even under short
-            # windows. Cost is more HF traffic; the pusher already prunes to
-            # --keep 1, so steady-state storage is unchanged.
             trainer.save_freq=5 \
             trainer.test_freq=50 \
             ++trainer.val_before_train=False \

@@ -56,7 +56,7 @@ eval_strategy: "no"
 # in danger can have its checkpoint pushed to HF by hand before the node goes.
 
 # ── 0727 EFFECTIVE-BATCH FIX ────────────────────────────────────────────────
-# T1's SFT2 ran bs1 x ga16 on 1 GPU (effective 16, see 0727 fix below) on FOUR processes => effective batch 16
+# T1's SFT2 ran bs1 x ga4 on FOUR processes => effective batch 16
 # (configs/archive/sft_rv_functional.yaml:20-21 + configs/accelerate_sft.yaml:13).
 # The 1-GPU variant created on 0727 to escape the 11-12h queue kept ga=4, which
 # on one process is effective batch 4 — a silent 4x deviation from the recipe we

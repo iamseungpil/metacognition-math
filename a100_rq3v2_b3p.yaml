@@ -200,21 +200,6 @@ jobs:
         # max_response 8192 / max_model_len+max_num_batched_tokens 10240 / Dr.GRPO
         # norm_adv_by_std=false / log_prob micro-batch 1 + the E-052 memory levers, 0727) applied identically
         # to all three arms.
-        WANDB_NAME=rq3v2_b3p /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
-            --config-name=triobj_dcpo_v4_stage3b_h100_4x4k \
-            trainer.experiment_name=rq3v2_b3p \
-            trainer.default_local_dir=/scratch/checkpoints/rq3v2_b3p \
-            trainer.project_name=metacot-dcpo-v4 \
-            actor_rollout_ref.model.path=/scratch/models/b2p2_rvseg_sft \
-            ++algorithm.dcpo_rmeta_source=pmi_shift \
-            ++algorithm.dcpo_w_over=0.0 \
-            actor_rollout_ref.rollout.temperature=1.0 \
-            actor_rollout_ref.rollout.top_k=-1 \
-            actor_rollout_ref.rollout.top_p=1.0 \
-            data.max_response_length=8192 \
-            actor_rollout_ref.rollout.max_model_len=10240 \
-            actor_rollout_ref.rollout.max_num_batched_tokens=10240 \
-            ++algorithm.norm_adv_by_std_in_grpo=false \
             # OOM FIX 0727 (E-118): PORTED FROM B2, WHICH ALREADY CARRIES IT.
             # b3p died with torch.OutOfMemoryError inside loss.backward() at
             # step 78/300 (main-mink retry_013): 70.52 GiB resident, 3.35 GiB
@@ -230,6 +215,21 @@ jobs:
             # MORE matched with them than without, since b2p already has them.
             # enable_activation_offload is the load-bearing one (E-052);
             # enforce_eager drops the vLLM CUDA-graph reservation for headroom.
+        WANDB_NAME=rq3v2_b3p /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc \
+            --config-name=triobj_dcpo_v4_stage3b_h100_4x4k \
+            trainer.experiment_name=rq3v2_b3p \
+            trainer.default_local_dir=/scratch/checkpoints/rq3v2_b3p \
+            trainer.project_name=metacot-dcpo-v4 \
+            actor_rollout_ref.model.path=/scratch/models/b2p2_rvseg_sft \
+            ++algorithm.dcpo_rmeta_source=pmi_shift \
+            ++algorithm.dcpo_w_over=0.0 \
+            actor_rollout_ref.rollout.temperature=1.0 \
+            actor_rollout_ref.rollout.top_k=-1 \
+            actor_rollout_ref.rollout.top_p=1.0 \
+            data.max_response_length=8192 \
+            actor_rollout_ref.rollout.max_model_len=10240 \
+            actor_rollout_ref.rollout.max_num_batched_tokens=10240 \
+            ++algorithm.norm_adv_by_std_in_grpo=false \
             actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
             actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
             actor_rollout_ref.rollout.gpu_memory_utilization=0.35 \
