@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import subprocess
+
 import pytest
 import yaml
 
@@ -105,3 +107,30 @@ def test_no_blank_line_inside_a_continuation_chain(path, doc):
         "a blank line directly after a line ending in `\\` ends the command:\n"
         + "\n".join(offenders)
     )
+
+
+@pytest.mark.parametrize("path,doc", LAUNCHERS, ids=[p.name for p, _ in LAUNCHERS])
+def test_every_command_is_syntactically_valid_bash(path, doc):
+    """The outer command is `bash -c '<whole script>'`, so a single apostrophe
+    anywhere inside - including inside a comment - closes that quote and the
+    rest of the job becomes garbage. yaml parses it, a diff reads fine, and the
+    node fails at runtime. `bash -n` is what actually sees it.
+    """
+    for i, job in enumerate(doc["jobs"]):
+        command = job.get("command")
+        if command is None:
+            continue
+        script = command if isinstance(command, str) else "\n".join(command)
+        proc = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True)
+        assert proc.returncode == 0, (
+            f"{path.name} jobs[{i}] is not valid bash:\n{proc.stderr.strip()}"
+        )
+
+
+def test_the_bash_check_would_catch_a_stray_apostrophe():
+    """Negative control: without this, the test above could pass by never running."""
+    proc = subprocess.run(
+        ["bash", "-n"], text=True, capture_output=True,
+        input="bash -c '\necho hi\n# a typo'd word\necho bye\n'\n",
+    )
+    assert proc.returncode != 0

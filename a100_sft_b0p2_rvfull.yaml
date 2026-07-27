@@ -113,6 +113,13 @@ jobs:
         # global_step*/ optimizer dir (~96 GB for 8B Adam), so a recovered checkpoint is a
         # warm-start source and forensics, not an exact resume point.
         ls -l /scratch/metacognition/scripts/push_sft_ckpts_to_hf.py || { echo "[YAML][pusher] MISSING push_sft_ckpts_to_hf.py - STALE TARBALL, this run would be NON-DURABLE; ABORT window"; sleep 300; exit 1; }
+        # A permanently unwritable destination (misspelled repo, token without write scope)
+        # looks EXACTLY like a healthy idle daemon from here: PUSH_PID set, "daemon start"
+        # logged, nothing ever uploaded. Ask synchronously so that case dies now rather
+        # than after the whole window is spent producing nothing durable.
+        python /scratch/metacognition/scripts/push_sft_ckpts_to_hf.py --probe-only --ckpt_dir /scratch --config_name probe \
+            --repo_id iamseungpil/metacot-sft2-4g --repo_type model --path_prefix b0p2_4g \
+            || { echo "[YAML][pusher] destination not writable - this run would be NON-DURABLE; ABORT window"; sleep 300; exit 1; }
         nohup python /scratch/metacognition/scripts/push_sft_ckpts_to_hf.py \
             --ckpt_dir /scratch/checkpoints/b0p2_rvfull_sft \
             --repo_id iamseungpil/metacot-sft2-4g --repo_type model \
