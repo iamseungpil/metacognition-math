@@ -3430,3 +3430,39 @@ E-127이 남긴 미확인 항목("T1도 메타 corpus + 메타제거 twin 쌍을
 `sft_base_rv.yaml`을 "트리에 없음"으로 처리하고 넘어갔는데, 아카이브 정리로 사라진 파일이
 있으면 워킹 트리 grep만으로는 과거 레시피를 복원할 수 없다. **T1 계보를 다룰 때는
 `git log --all -- <path>`를 기본 절차로 둔다.**
+
+### E-129 — H100 런처 5종 준비·검증, 사전등록 문서 동결 (0727 14:55 UTC)
+
+**H100 런처를 실제로 제출해 봤다.** 아직 발사가 아니라 **온전성 검정**이다: 거부 사유가
+SKU·YAML·쿼터 오류가 아니라 `The virtual cluster does not exist` 하나뿐이면, amlt가 타깃·SKU·
+티어를 전부 해석한 뒤 마지막 관문에서만 막힌 것이므로 파일은 정상이다. 5종 모두 그랬다.
+**그룹정책만 풀리면 그대로 붙는다.**
+
+| 런처 | 제출 결과 |
+|---|---|
+| `h100std_sft_b0p2_rvfull.yaml` | VC 차단(예상) → 런처 정상 |
+| `h100std_sft_b2p2_rvfull.yaml` | 〃 |
+| `h100std_rq3v2f_{b0p,b2p,b3p}.yaml` | 〃 |
+
+**wandb 지표 배선 확인.** `src/`에 `dcpo/` 접두 지표가 **36개** 정의돼 있고, 사전등록 판정에 쓸
+것이 전부 실재한다 — `dcpo/meta_emit_rate`(verl_sdc.py:1017) ·
+`dcpo/pmishift_attempted_rate` · `dcpo/pmishift_n_save`(:2564) · `dcpo/pmishift_n_derail` ·
+`dcpo/wellformed_rate`(:1045) · `dcpo/acc_with` · `dcpo/acc_without`. 엔트로피와 클립은 verl
+내부 지표(`actor/entropy`, `actor/pg_clipfrac`)이며 0727 b2p 로그에서 관측을 확인했다.
+
+**사전등록 문서 동결**: `docs/PREREGISTRATION_rq3v2_base_replication.md`.
+- **결과 3종**을 못박았다. 특히 **Outcome C(무효 런)** — gs25에서 emit<0.80 / attempted<0.10 /
+  n_save=0 / entropy<0.1 중 하나면 보상이 굶은 것이고, **중단·상류 수정·재발사**이며 이를
+  "재현 실패"로 부르는 것이 사전등록된 오류다. 직전 b3p가 정확히 이 상태였다.
+- **검정력 제약을 명시**했다: 단일 시드·500문항은 15~20pp엔 충분하나 5pp엔 한계, 6셀은 셀당
+  83문항 → **셀별 주장 금지**, "Qwen3-8B-Base 일반"으로 확대 금지.
+- **채점기 동결**: `format_fair`를 판정용으로, `strict_boxed`는 **함께** 보고(대체 아님).
+  A5 조건이 존재하는 이유가 두 채점기 사이의 A축 부호 반전이다.
+- E-127/E-128의 학습구간 29.5% 비대칭을 **수용된 기지 비대칭**으로 기록했다 — T1도 같은 성질을
+  가졌으므로 복제된 것이며, 나중에 불리한 결과를 설명하는 "발견"으로 제시될 수 없게 못박았다.
+- 문서가 인용한 지표 키 7종과 파일 경로 6종을 **전수 실재 검증**했다.
+
+**정리 진행**: 죽은 런처 8종은 `archive/launchers_retired_0727/`로 이동 완료(README 포함).
+구세대 11종(`h100std_rq3_*`·`h100std_sft_*`)은 README·ARCHITECTURE·CODE_MAP·SUBMISSION_RUNBOOK·
+CONSTITUTION이 참조하므로 문서 갱신과 묶어 별도 처리한다. H100 SKU라 현재 제출 자체가 불가능해
+오발사 위험은 없다.
