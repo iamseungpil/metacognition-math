@@ -106,10 +106,44 @@ def load_yaml(path: Path):
     return yaml.safe_load(path.read_text())
 
 
+def assistant_and_trained_text(row) -> tuple[str, str]:
+    r"""Split a row into (whole assistant turn, the part loss is applied to).
+
+    ``sft.py`` masks the prompt and, when ``wrong_prefix`` is non-empty, the
+    flawed prefix at the head of the assistant target as well - so the trained
+    region starts at ``prefix_split_char``. Measuring the whole assistant turn
+    instead understates the asymmetry badly: on the 0727 SFT2 pair the whole
+    turn differs between arms by 9.7% while the TRAINED region differs by 29.5%,
+    because masking removes shared prefix from both sides and leaves the meta
+    block as a much larger share of what remains. The trained figure is the one
+    that says anything about gradient exposure, so it is the one recorded.
+    """
+    messages = row["messages"]
+    msgs = json.loads(messages) if isinstance(messages, str) else messages
+    assistant = next(
+        (m["content"] for m in reversed(msgs) if m.get("role") == "assistant"), ""
+    )
+    cut = int(row.get("prefix_split_char", 0) or 0)
+    return assistant, assistant[cut:]
+
+
+def _length_stats(lens: list[int]) -> dict:
+    lens = sorted(lens)
+    n = len(lens)
+    return {
+        "mean": sum(lens) / n,
+        "p50": lens[n // 2],
+        "p90": lens[int(n * 0.9)],
+        "max": lens[-1],
+        "total": sum(lens),
+    }
+
+
 def corpus_fingerprint(parquet: Path, tokenizer_dir: str | None):
-    """Row count, content hash, and - if a tokenizer is reachable - the token
-    length distribution. The distribution is the part that matters: it is how a
-    'same batch size' claim gets falsified."""
+    """Row count, content hash, scenario split, and - given a tokenizer - the
+    token length distribution of BOTH the whole assistant turn and the trained
+    region. The trained-region distribution is the part that matters: it is how
+    a 'same batch size, so same dose' claim gets falsified."""
     out: dict = {"path": str(parquet), "exists": parquet.exists()}
     if not parquet.exists():
         return out
@@ -133,18 +167,22 @@ def corpus_fingerprint(parquet: Path, tokenizer_dir: str | None):
             from transformers import AutoTokenizer
 
             tok = AutoTokenizer.from_pretrained(tokenizer_dir, trust_remote_code=True)
-            lens = []
-            for v in df[col].astype(str):
-                lens.append(len(tok(v, add_special_tokens=False)["input_ids"]))
-            lens.sort()
-            n = len(lens)
-            out["token_len"] = {
-                "mean": sum(lens) / n,
-                "p50": lens[n // 2],
-                "p90": lens[int(n * 0.9)],
-                "max": lens[-1],
-                "total": sum(lens),
-            }
+
+            def ntok(text: str) -> int:
+                return len(tok(text, add_special_tokens=False)["input_ids"])
+
+            whole, trained = [], []
+            has_split = "messages" in df.columns
+            for _, row in df.iterrows():
+                if has_split:
+                    a, t = assistant_and_trained_text(row)
+                    whole.append(ntok(a))
+                    trained.append(ntok(t))
+                else:
+                    whole.append(ntok(str(row[col])))
+            out["token_len_assistant"] = _length_stats(whole)
+            if trained:
+                out["token_len_trained"] = _length_stats(trained)
         except Exception as exc:  # tokenizer not staged locally is the normal case
             out["token_len_error"] = repr(exc)[:200]
     return out
@@ -206,6 +244,35 @@ def _flatten(d, prefix=""):
     return out
 
 
+def token_exposure(manifest: dict) -> dict:
+    """How much gradient-bearing text each arm sees, and the ratio between them.
+
+    Computed here rather than left for a human to divide later, because on 0727
+    the ratio was worked out by hand and only then turned out to be the number
+    that mattered. If it is not in the manifest it will not be looked at.
+    """
+    arms = manifest.get("arms", {})
+    rows = {}
+    for name, arm in arms.items():
+        t = (arm.get("corpus") or {}).get("token_len_trained")
+        if t:
+            rows[name] = t
+    if len(rows) != 2:
+        return {"available": False, "reason": f"trained-token stats for {len(rows)}/2 arms"}
+    (n1, t1), (n2, t2) = rows.items()
+    return {
+        "available": True,
+        "per_arm_trained_tokens": {n1: t1["total"], n2: t2["total"]},
+        "ratio": {f"{n2}/{n1}": t2["total"] / t1["total"]},
+        "mean_delta_tokens": t2["mean"] - t1["mean"],
+        "note": (
+            "The difference is the treatment when it equals the meta block length. It is "
+            "a confound only if it was not present in the run being replicated - check "
+            "that before treating it as a finding."
+        ),
+    }
+
+
 def arm_symmetry(manifest: dict) -> list[str]:
     """Report every config key that differs between arms. Differences are not
     errors - the treatment IS a difference - but each one has to be intended."""
@@ -258,6 +325,7 @@ def main() -> None:
     manifest = freeze(args)
     diffs = arm_symmetry(manifest)
     manifest["arm_config_differences"] = diffs
+    manifest["token_exposure"] = token_exposure(manifest)
 
     text = json.dumps(manifest, indent=2, sort_keys=True, default=str)
     if args.out:
@@ -269,6 +337,12 @@ def main() -> None:
         print(text)
 
     print(f"\ngrader frozen as: {args.grader_mode} — {GRADER_MODES[args.grader_mode]}")
+    te = manifest["token_exposure"]
+    if te.get("available"):
+        for k, v in te["ratio"].items():
+            print(f"trained-token exposure {k} = {v:.4f}  (mean delta {te['mean_delta_tokens']:+.1f} tok)")
+    else:
+        print(f"trained-token exposure: not computed ({te.get('reason')}) — pass --tokenizer")
     print(f"config keys differing between arms: {len(diffs)}")
     for d in diffs:
         print(f"  {d}")

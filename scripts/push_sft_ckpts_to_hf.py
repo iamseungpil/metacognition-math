@@ -55,10 +55,16 @@ Usage:
         --repo_id iamseungpil/metacot-sft2-b0p2-rvfull \
         --interval 60 --config_name b0p2_rvfull_sft --keep 2
 
-The token comes from the HF_TOKEN environment variable ONLY.  There is
-deliberately no --token flag: SECURITY 0716 — a launcher running under `set -x`
-expands the argument into std_log, and the value is visible in `ps` output for
-the daemon's whole lifetime.
+There is deliberately NO `--token` flag: SECURITY 0716 — a launcher running
+under `set -x` expands the argument into std_log, and the value stays visible in
+`ps` output for the daemon's whole lifetime.  (That risk is not theoretical: on
+0727 a `set -x` in an unrelated remote command printed a GitHub PAT in full.)
+
+So the token is read from the environment, preferring `HF_TOKEN`.  Note this is
+a statement about the *interface*, not about the source: passing `token=None`
+into huggingface_hub additionally lets it fall back to
+`HUGGING_FACE_HUB_TOKEN` or a cached `huggingface-cli login`, which is why a
+daemon can still authenticate on a node where `HF_TOKEN` was never exported.
 """
 from __future__ import annotations
 

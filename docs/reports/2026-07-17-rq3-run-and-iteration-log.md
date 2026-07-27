@@ -3526,3 +3526,33 @@ EXPERIMENT_PLAN(1) · base_rl_recipe(6) · EXPERIMENT_LOG(1) · experiments/READ
 **루트 런처 최종 상태(14종).** 현행 A100 6 + H100 5 + 구 init RQ2 부록 1(`a100_rq3v2_b3p.yaml`) +
 `h100std_rq3v2_{b2p,b3p}.yaml`(폐기 lineage, CLAUDE.md가 금지 표기) + env 빌더 1.
 0727 시작 시점 27종에서 줄었다. 834 passed.
+
+### E-132 — 학습 구간 토큰 계산을 manifest에 내장 (0727 15:45 UTC)
+
+E-127에서 학습 구간 29.5% 차이를 **손으로** 계산했다. 손계산은 다음 발사 때 반복되지 않으므로
+`scripts/freeze_run_manifest.py`가 자동으로 재게 했다.
+
+**왜 학습 구간이어야 하는가.** `sft.py`는 prompt와 wrong_prefix를 마스킹하므로 손실이 걸리는
+구간은 `prefix_split_char` 이후다. assistant 전체를 재면 비율이 **1.0972**로 나오고 이건
+"9.7% 차이, 무시 가능"으로 읽힌다. 실제로 그래디언트가 걸리는 구간은 **1.2951**이다. 마스킹이
+양쪽에서 공유 prefix를 걷어내면 남은 것 중 메타 블록의 비중이 훨씬 커지기 때문이다. **어느 쪽을
+재느냐가 "볼 만한 값인가"를 가른다.**
+
+manifest는 이제 `token_len_assistant`와 `token_len_trained`를 **둘 다** 기록하고,
+`token_exposure`에 arm 간 비율과 평균 차를 계산해 넣는다. 실행 시 표준출력에도 찍는다:
+`trained-token exposure meta/control = 1.2951 (mean delta +48.9 tok)` — 손계산 값과 일치.
+사람이 나중에 나눠보기를 기대하지 않는다. **manifest에 없으면 아무도 안 본다.**
+
+`token_exposure`에는 해석 규칙도 함께 적었다 — 차이가 메타 블록 길이와 같으면 그것은 처치이고,
+**복제 대상 런에 그 성질이 없었을 때만** 교란이다. E-128에서 T1도 같은 코퍼스 쌍을 썼음을 확인했
+으므로 현재는 처치다.
+
+**테스트 10개**(`tests/test_freeze_run_manifest.py`): 분할 경계, `prefix_split_char=0`(VERIFY 행은
+마스킹 없음), messages가 list로 오는 경우, 컬럼 부재, 0727 측정값 1.2951 **회귀 핀**,
+`--tokenizer` 없을 때 **침묵하지 않고 이유를 남기는지**(침묵은 "arm이 일치함"과 구별 불가),
+arm 간 config 차이 열거, 쌍이 아닌 입력 거부, 채점 모드 2종 선언. 844 passed.
+
+**부수**: fable P3 지적대로 pusher docstring의 "token comes from HF_TOKEN **ONLY**"를 고쳤다.
+`--token` 플래그가 없다는 **인터페이스** 서술이지 토큰 **출처**에 대한 서술이 아니었는데, 실제로는
+`token=None`이 `HUGGING_FACE_HUB_TOKEN`/캐시 로그인 폴백을 허용한다. 0727의 실제 PAT 노출 사고도
+근거로 덧붙였다.

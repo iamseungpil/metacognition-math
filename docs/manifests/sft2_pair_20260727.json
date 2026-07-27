@@ -40,12 +40,19 @@
           "redirect": 554,
           "verify": 1209
         },
-        "token_len": {
-          "max": 4206,
-          "mean": 676.6171298922292,
-          "p50": 431,
-          "p90": 1630,
-          "total": 1192876
+        "token_len_assistant": {
+          "max": 2884,
+          "mean": 520.5110606920023,
+          "p50": 306,
+          "p90": 1323,
+          "total": 917661
+        },
+        "token_len_trained": {
+          "max": 1893,
+          "mean": 165.82699943278502,
+          "p50": 139,
+          "p90": 255,
+          "total": 292353
         }
       },
       "effective_batch_per_process": 4
@@ -84,12 +91,19 @@
           "redirect": 554,
           "verify": 1209
         },
-        "token_len": {
-          "max": 4253,
-          "mean": 728.1627906976744,
-          "p50": 482,
-          "p90": 1703,
-          "total": 1283751
+        "token_len_assistant": {
+          "max": 2944,
+          "mean": 571.0901871809416,
+          "p50": 356,
+          "p90": 1390,
+          "total": 1006832
+        },
+        "token_len_trained": {
+          "max": 1953,
+          "mean": 214.75553034600114,
+          "p50": 190,
+          "p90": 311,
+          "total": 378614
         }
       },
       "effective_batch_per_process": 4
@@ -97,7 +111,7 @@
   },
   "git": {
     "branch": "master",
-    "commit": "90eaeb5b86b3137eebba033d56b7f71563229e9d",
+    "commit": "1b3cf42554e9978b9e0c025643be6047d92318c4",
     "dirty": true
   },
   "grader": {
@@ -113,5 +127,17 @@
     "src/training/sft.py": "f8e595c9200d06e7c704e6d4f4c6fa8e67e1d379e165835d5366afcf89d31730",
     "src/training/verl_sdc.py": "9b6829ceeb335bb7be811e5699ad5a31d5dc0369cf6a2ca413205ebf360c6cbd"
   },
-  "stage": "sft2"
+  "stage": "sft2",
+  "token_exposure": {
+    "available": true,
+    "mean_delta_tokens": 48.92853091321612,
+    "note": "The difference is the treatment when it equals the meta block length. It is a confound only if it was not present in the run being replicated - check that before treating it as a finding.",
+    "per_arm_trained_tokens": {
+      "control": 292353,
+      "meta": 378614
+    },
+    "ratio": {
+      "meta/control": 1.2950576871111295
+    }
+  }
 }
