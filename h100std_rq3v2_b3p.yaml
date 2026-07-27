@@ -215,8 +215,27 @@ jobs:
             actor_rollout_ref.rollout.max_model_len=10240 \
             actor_rollout_ref.rollout.max_num_batched_tokens=10240 \
             ++algorithm.norm_adv_by_std_in_grpo=false \
-            actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 \
-            actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2 \
+            # OOM FIX 0727 (E-118): PORTED FROM B2, WHICH ALREADY CARRIES IT.
+            # b3p died with torch.OutOfMemoryError inside loss.backward() at
+            # step 78/300 (main-mink retry_013): 70.52 GiB resident, 3.35 GiB
+            # free, backward asked for 5.54 GiB. That is the SAME failure and
+            # the SAME ~70.5 GB footprint that E-047/E-051/E-052 chased on b2p,
+            # where the root cause was pinned to the 8192-token BACKWARD
+            # ACTIVATION peak. b2p was fixed on 0718; the fix was never ported
+            # here, so b3p has been running the pre-fix memory configuration
+            # ever since — and b3p needs MORE memory than b2p, because the
+            # triobj package scores counterfactual decoys on top of the rollout.
+            # All four levers are memory-only and gradient-identical, so the
+            # matched b3p-b2p comparison is unaffected; in fact the arms are
+            # MORE matched with them than without, since b2p already has them.
+            # enable_activation_offload is the load-bearing one (E-052);
+            # enforce_eager drops the vLLM CUDA-graph reservation for headroom.
+            actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
+            actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
+            actor_rollout_ref.rollout.gpu_memory_utilization=0.35 \
+            actor_rollout_ref.actor.fsdp_config.optimizer_offload=true \
+            ++actor_rollout_ref.model.enable_activation_offload=true \
+            actor_rollout_ref.rollout.enforce_eager=true \
             trainer.resume_mode=auto \
             trainer.save_freq=10 \
             trainer.test_freq=50 \

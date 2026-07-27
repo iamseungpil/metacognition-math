@@ -3047,3 +3047,63 @@ b3p 계열은 이미 `save_freq=10`(≈63분)이라 관측 윈도우를 넘으�
 "정상 진행"이라 보고한 것은 로그의 진행바만 봤기 때문이며, durable 기준으로는 02:45 이후
 전진이 없다. **진행 신호는 오직 HF 커밋**이라는 규칙을 내가 로그 진행바에 한해 느슨하게
 적용했던 것이 원인이다.
+
+### E-118 — b3p가 durable을 못 남긴 근인: E-052 OOM 수정이 b3p에 이식되지 않았다 (0727 07:30 UTC)
+
+**질문.** b3p는 `rq3v2_b3p` 계열 durable 체크포인트가 **HF에 하나도 없다**. 그런데 `main-mink`는
+17시간을 돌았다. 왜 아무것도 안 남았나.
+
+**로그.** `main-mink :rq3v2_b3p`는 **retry_013까지** 있다(14 윈도우). 가장 멀리 간 retry_013을
+받아 읽었다:
+
+```
+[YAML] existing GRPO resume gs (model+extra+optim>=4) = 20 1
+[YAML] RGS(HF)=20 ANY=1 LOCAL_GS(pulled)=20      ← 당시엔 완전한 gs20이 HF에 있었다
+...
+local_global_step_folder: /scratch/checkpoints/rq3v2_b3p/global_step_40
+local_global_step_folder: /scratch/checkpoints/rq3v2_b3p/global_step_60
+...
+File ".../fsdp/transformer_impl.py", line 595, in forward_backward_batch
+    loss.backward()
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 5.54 GiB.
+GPU 0 has a total capacity of 79.18 GiB of which 3.35 GiB is free.
+Including non-PyTorch memory, this process has 70.52 GiB memory in use.
+Training Progress: 26%|██▌ | 78/300 [6:31:33<24:58:45, 405.07s/it]
+```
+
+즉 **선점이 아니라 CUDA OOM**이다. 6시간 31분을 돌아 step 78에서 backward가 터졌다.
+(다른 윈도우는 선점도 섞여 있다 — retry_010은 부트스트랩 도중 `Caught signal 15`로 죽어
+학습을 시작조차 못 했다. 두 살해자가 공존한다.)
+
+**근인.** b2p 런처 55–80행에 3라운드짜리 OOM 추적 기록이 그대로 남아 있다 —
+E-047(expandable_segments는 vLLM이 hard-assert해서 되돌림) → E-051(micro_batch 1로도 부족,
+gs162 재발) → **E-052(진짜 피크는 8192토큰 BACKWARD ACTIVATION이며,
+`enable_activation_offload=true`가 load-bearing lever)**. b2p는 0718에 고쳐졌다.
+**그 수정이 b3p에는 한 번도 이식되지 않았다.**
+
+| 레버 | b2p | b3p (수정 전) |
+|---|---|---|
+| `log_prob_micro_batch_size_per_gpu` | 1 | **2** |
+| `rollout.gpu_memory_utilization` | 0.35 | **없음** |
+| `fsdp_config.optimizer_offload` | true | **없음** |
+| `model.enable_activation_offload` | true | **없음** |
+| `rollout.enforce_eager` | true | **없음** |
+
+두 실패의 footprint까지 일치한다 — b2p가 재발했을 때 70.26→70.46 GB, b3p는 70.52 GB.
+게다가 b3p는 triobj 패키지가 롤아웃 위에 반사실 decoy까지 채점하므로 b2p보다 **더** 쓴다.
+즉 b3p는 더 무거운 작업을 **수정 이전 메모리 설정으로** 계속 돌려온 셈이다.
+
+**durable이 0인 경위.** gs20은 실재했고 retry_013이 거기서 resume했다. 이후 로컬로 gs40·gs60을
+저장했지만 HF에는 남지 않았다 — 0726에 optim 0/4인 불완전 `rq3v2_b3p gs10`을 RGS 기아를 풀려고
+삭제했고(E-106), 그 시점 이후로 완전한 원격 체크포인트가 재생성된 적이 없다. **먼저 고쳐야 할
+것은 OOM이다**: 매 윈도우가 step 78 벽에 부딪히면 은행에 넣는 양이 벽 이전으로 제한된다.
+
+**수정.** b2p의 네 레버를 b3p 런처 3종(`h100std_rq3v2_b3p.yaml`·`a100_rq3v2_b3p.yaml`·
+`a100_rq3v2f_b3p.yaml`)에 그대로 이식하고 micro_batch를 2→1로 내렸다. 전부 메모리 전용이며
+gradient-identical이므로 matched 비교는 유지된다 — 오히려 b2p가 이미 갖고 있던 레버라
+**넣는 쪽이 더 matched**다. 4종 플래그 존재를 b2p와 대조해 5/5 일치 확인, yaml 파싱과
+`bash -n` 통과.
+
+**교훈.** 한 arm에서 근인을 규명해 고쳤으면 **같은 사다리의 다른 arm에도 이식했는지 그 자리에서
+확인**해야 한다. E-097(컨트롤 arm의 SFT2 누락)과 정확히 같은 종류의 비대칭이며, 이번에는
+9일 동안 b3p의 모든 실행을 조용히 죽여 왔다.
