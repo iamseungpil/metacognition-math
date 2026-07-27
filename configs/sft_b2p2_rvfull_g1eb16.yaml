@@ -36,13 +36,13 @@
 # reusing that name would silently swap the init under any resubmitted arm.
 model_name_or_path: /scratch/models/b2p_v8meta_strict_sft
 dataset_path: data/rv_redirect_verify_functional.parquet
-output_dir: /scratch/checkpoints/b2p2_rvfull_sft   # ABSOLUTE (0708 stranded-ckpt guard)
-run_name: b2p2-rvfull-sft2
+output_dir: /scratch/checkpoints/b2p2_rvfull_eb16_sft   # ABSOLUTE (0708 stranded-ckpt guard)
+run_name: b2p2-rvfull-sft2-eb16
 wandb_project: metacot-math
 
 num_train_epochs: 3
 per_device_train_batch_size: 1
-gradient_accumulation_steps: 4
+gradient_accumulation_steps: 16
 learning_rate: 1.0e-5
 max_length: 4096
 save_strategy: steps
@@ -50,8 +50,26 @@ save_steps: 25
 save_total_limit: 2
 eval_strategy: "no"
 
-# Preemption survival: on a resubmission that lands on a node where output_dir
-# still holds checkpoint-*, resume from the newest COMPLETE one (sft.py
-# _resolve_resume_checkpoint). On a first/fresh node the dir is absent and this
-# degrades silently to a normal cold start, so the SAME config is correct for
-# both the first submission and every relaunch.
+# Preemption posture, stated honestly: this config does NOT set
+# `resume_from_checkpoint`, so sft.py resolves it to None and every launch is a
+# cold start (sft.py:375-377). Auto-resume was left off on purpose — the
+# launcher has no step that pulls a checkpoint back from HF, so a resumed run
+# could only ever find state on a node that never died, which is the case that
+# does not need resuming. What save_steps 25 buys instead is a manual escape
+# hatch: a local checkpoint exists within ~15 min of start, so a job seen to be
+# in danger can have its checkpoint pushed to HF by hand before the node goes.
+
+# ── 0727 EFFECTIVE-BATCH FIX ────────────────────────────────────────────────
+# T1's SFT2 ran bs1 x ga16 on 1 GPU (effective 16, see 0727 fix below) on FOUR processes => effective batch 16
+# (configs/archive/sft_rv_functional.yaml:20-21 + configs/accelerate_sft.yaml:13).
+# The 1-GPU variant created on 0727 to escape the 11-12h queue kept ga=4, which
+# on one process is effective batch 4 — a silent 4x deviation from the recipe we
+# are trying to replicate literally. Step count confirms it: 1763 rows x 3 epochs
+# / 4 = 1322 steps, and the live job reported 1212 (after length filtering),
+# whereas batch 16 gives ~330.
+# ga is raised to 16 here so ONE process reproduces T1's effective batch exactly.
+# Memory is unaffected: gradient accumulation runs micro-batches sequentially and
+# per_device_train_batch_size stays 1.
+# Invariant to preserve: effective batch MUST be 16 at every world size, so both
+# arms are optimised identically and both match T1.
+#     1 GPU -> ga 16      2 GPUs -> ga 8      4 GPUs -> ga 4

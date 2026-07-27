@@ -1,0 +1,986 @@
+{
+ "created_utc": "2026-07-26T11:2x",
+ "status": "CANDIDATE — NOT EXECUTED. 사용자 승인 대기.",
+ "repo": "iamseungpil/metacot-h200-triobj-dcpo-v3",
+ "rationale": "ckpt repo 트리 279.0GB 중 은퇴한 RQ3(think-off) 세대가 131.1GB. RQ3v2(think-on)가 본선이므로 재사용 계획 없음.",
+ "blocker": "⚠️ 이 repo의 eval/ 폴더에는 rq3_b0/rq3_b2의 held-out 평가 산출물이 없다(eval/은 T1 instruct 세대 base_matched/gandhi/pmishift/shiftonly 전용). wandb에 rq3_b0(finished,300steps)·rq3_b2(crashed,233steps) 학습궤적은 보존되나 held-out 1030 결과는 미확인. rq3_b0는 *완주한 베이스라인*이고 논문 부록 대상이라, 삭제하면 재평가 불가.",
+ "precedent": "docs/reports/hf_deletion_manifest_20260724.json — rq3_b3nopmi 삭제 시 wandb val 궤적 보존으로 충분했음. 단 그것은 *포기된* arm이었고 본 후보는 *완주 베이스라인*이라 등급이 다르다.",
+ "urgency": "낮음. 트리 441.1GB(3 repo 합) vs 과거 403 quota 실패 지점 ~1041.5GB. 0726 11:2x super_squash 3 repo 완료로 history LFS 해방됨(트리 측정치엔 반영 안 됨).",
+ "candidates": {
+  "checkpoints/rq3_b0/global_step_300": {
+   "GB": 98.3,
+   "n_files": 23
+  },
+  "checkpoints/rq3_b2/global_step_160": {
+   "GB": 32.8,
+   "n_files": 19
+  },
+  "checkpoints/rq3_b2/global_step_159": {
+   "GB": 0.0,
+   "n_files": 15
+  },
+  "checkpoints/rq3_b2/global_step_161": {
+   "GB": 0.0,
+   "n_files": 15
+  },
+  "checkpoints/rq3_b2/global_step_162": {
+   "GB": 0.0,
+   "n_files": 15
+  },
+  "checkpoints/rq3_b2/global_step_163": {
+   "GB": 0.0,
+   "n_files": 15
+  },
+  "checkpoints/rq3_b2/global_step_164": {
+   "GB": 0.0,
+   "n_files": 15
+  },
+  "checkpoints/rq3_b2/global_step_165": {
+   "GB": 0.0,
+   "n_files": 15
+  },
+  "checkpoints/rq3_b2/global_step_166": {
+   "GB": 0.0,
+   "n_files": 15
+  },
+  "checkpoints/rq3_b2/global_step_167": {
+   "GB": 0.0,
+   "n_files": 15
+  },
+  "checkpoints/rq3_b2/global_step_168": {
+   "GB": 0.0,
+   "n_files": 15
+  },
+  "checkpoints/rq3_b2/global_step_180": {
+   "GB": 0.0,
+   "n_files": 15
+  },
+  "checkpoints/rq3_b2/global_step_200": {
+   "GB": 0.0,
+   "n_files": 15
+  },
+  "checkpoints/rq3_b2/global_step_220": {
+   "GB": 0.0,
+   "n_files": 15
+  }
+ },
+ "total_reclaimable_GB": 131.2,
+ "files": {
+  "checkpoints/rq3_b0/global_step_300": [
+   {
+    "f": "checkpoints/rq3_b0/global_step_300/actor/extra_state_world_size_4_rank_0.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b0/global_step_300/actor/extra_state_world_size_4_rank_1.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b0/global_step_300/actor/extra_state_world_size_4_rank_2.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b0/global_step_300/actor/extra_state_world_size_4_rank_3.pt",
+    "size": 15205
+   },
+   {
+    "f": "checkpoints/rq3_b0/global_step_300/actor/fsdp_config.json",
+    "size": 46
+   },
+   {
+    "f": "checkpoints/rq3_b0/global_step_300/actor/huggingface/added_tokens.json",
+    "size": 752
+   },
+   {
+    "f": "checkpoints/rq3_b0/global_step_300/actor/huggingface/chat_template.jinja",
+    "size": 4116
+   },
+   {
+    "f": "checkpoints/rq3_b0/global_step_300/actor/huggingface/config.json",
+    "size": 1571
+   },
+   {
+    "f": "checkpoints/rq3_b0/global_step_300/actor/huggingface/generation_config.json",
+    "size": 127
+   },
+   {
+    "f": "checkpoints/rq3_b0/global_step_300/actor/huggingface/merges.txt",
+    "size": 1671853
+   },
+   {
+    "f": "checkpoints/rq3_b0/global_step_300/actor/huggingface/special_tokens_map.json",
+    "size": 613
+   },
+   {
+    "f": "checkpoints/rq3_b0/global_step_300/actor/huggingface/tokenizer.json",
+    "size": 11423025
+   },
+   {
+    "f": "checkpoints/rq3_b0/global_step_300/actor/huggingface/tokenizer_config.json",
+    "size": 5755
+   },
+   {
+    "f": "checkpoints/rq3_b0/global_step_300/actor/huggingface/vocab.json",
+    "size": 2776833
+   },
+   {
+    "f": "checkpoints/rq3_b0/global_step_300/actor/model_world_size_4_rank_0.pt",
+    "size": 8188808347
+   },
+   {
+    "f": "checkpoints/rq3_b0/global_step_300/actor/model_world_size_4_rank_1.pt",
+    "size": 8188808347
+   },
+   {
+    "f": "checkpoints/rq3_b0/global_step_300/actor/model_world_size_4_rank_2.pt",
+    "size": 8188808347
+   },
+   {
+    "f": "checkpoints/rq3_b0/global_step_300/actor/model_world_size_4_rank_3.pt",
+    "size": 8188775579
+   },
+   {
+    "f": "checkpoints/rq3_b0/global_step_300/actor/optim_world_size_4_rank_0.pt",
+    "size": 16377162775
+   },
+   {
+    "f": "checkpoints/rq3_b0/global_step_300/actor/optim_world_size_4_rank_1.pt",
+    "size": 16377162775
+   },
+   {
+    "f": "checkpoints/rq3_b0/global_step_300/actor/optim_world_size_4_rank_2.pt",
+    "size": 16377162775
+   },
+   {
+    "f": "checkpoints/rq3_b0/global_step_300/actor/optim_world_size_4_rank_3.pt",
+    "size": 16377162775
+   },
+   {
+    "f": "checkpoints/rq3_b0/global_step_300/data.pt",
+    "size": 7188
+   }
+  ],
+  "checkpoints/rq3_b2/global_step_159": [
+   {
+    "f": "checkpoints/rq3_b2/global_step_159/actor/extra_state_world_size_4_rank_0.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_159/actor/extra_state_world_size_4_rank_1.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_159/actor/extra_state_world_size_4_rank_2.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_159/actor/extra_state_world_size_4_rank_3.pt",
+    "size": 15205
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_159/actor/fsdp_config.json",
+    "size": 46
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_159/actor/huggingface/added_tokens.json",
+    "size": 752
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_159/actor/huggingface/chat_template.jinja",
+    "size": 4116
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_159/actor/huggingface/config.json",
+    "size": 1571
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_159/actor/huggingface/generation_config.json",
+    "size": 127
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_159/actor/huggingface/merges.txt",
+    "size": 1671853
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_159/actor/huggingface/special_tokens_map.json",
+    "size": 613
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_159/actor/huggingface/tokenizer.json",
+    "size": 11423025
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_159/actor/huggingface/tokenizer_config.json",
+    "size": 5755
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_159/actor/huggingface/vocab.json",
+    "size": 2776833
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_159/data.pt",
+    "size": 7188
+   }
+  ],
+  "checkpoints/rq3_b2/global_step_160": [
+   {
+    "f": "checkpoints/rq3_b2/global_step_160/actor/extra_state_world_size_4_rank_0.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_160/actor/extra_state_world_size_4_rank_1.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_160/actor/extra_state_world_size_4_rank_2.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_160/actor/extra_state_world_size_4_rank_3.pt",
+    "size": 15205
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_160/actor/fsdp_config.json",
+    "size": 46
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_160/actor/huggingface/added_tokens.json",
+    "size": 752
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_160/actor/huggingface/chat_template.jinja",
+    "size": 4116
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_160/actor/huggingface/config.json",
+    "size": 1571
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_160/actor/huggingface/generation_config.json",
+    "size": 127
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_160/actor/huggingface/merges.txt",
+    "size": 1671853
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_160/actor/huggingface/special_tokens_map.json",
+    "size": 613
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_160/actor/huggingface/tokenizer.json",
+    "size": 11423025
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_160/actor/huggingface/tokenizer_config.json",
+    "size": 5755
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_160/actor/huggingface/vocab.json",
+    "size": 2776833
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_160/actor/model_world_size_4_rank_0.pt",
+    "size": 8188808347
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_160/actor/model_world_size_4_rank_1.pt",
+    "size": 8188808347
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_160/actor/model_world_size_4_rank_2.pt",
+    "size": 8188808347
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_160/actor/model_world_size_4_rank_3.pt",
+    "size": 8188775579
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_160/data.pt",
+    "size": 7188
+   }
+  ],
+  "checkpoints/rq3_b2/global_step_161": [
+   {
+    "f": "checkpoints/rq3_b2/global_step_161/actor/extra_state_world_size_4_rank_0.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_161/actor/extra_state_world_size_4_rank_1.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_161/actor/extra_state_world_size_4_rank_2.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_161/actor/extra_state_world_size_4_rank_3.pt",
+    "size": 15205
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_161/actor/fsdp_config.json",
+    "size": 46
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_161/actor/huggingface/added_tokens.json",
+    "size": 752
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_161/actor/huggingface/chat_template.jinja",
+    "size": 4116
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_161/actor/huggingface/config.json",
+    "size": 1571
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_161/actor/huggingface/generation_config.json",
+    "size": 127
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_161/actor/huggingface/merges.txt",
+    "size": 1671853
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_161/actor/huggingface/special_tokens_map.json",
+    "size": 613
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_161/actor/huggingface/tokenizer.json",
+    "size": 11423025
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_161/actor/huggingface/tokenizer_config.json",
+    "size": 5755
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_161/actor/huggingface/vocab.json",
+    "size": 2776833
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_161/data.pt",
+    "size": 7188
+   }
+  ],
+  "checkpoints/rq3_b2/global_step_162": [
+   {
+    "f": "checkpoints/rq3_b2/global_step_162/actor/extra_state_world_size_4_rank_0.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_162/actor/extra_state_world_size_4_rank_1.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_162/actor/extra_state_world_size_4_rank_2.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_162/actor/extra_state_world_size_4_rank_3.pt",
+    "size": 15205
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_162/actor/fsdp_config.json",
+    "size": 46
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_162/actor/huggingface/added_tokens.json",
+    "size": 752
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_162/actor/huggingface/chat_template.jinja",
+    "size": 4116
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_162/actor/huggingface/config.json",
+    "size": 1571
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_162/actor/huggingface/generation_config.json",
+    "size": 127
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_162/actor/huggingface/merges.txt",
+    "size": 1671853
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_162/actor/huggingface/special_tokens_map.json",
+    "size": 613
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_162/actor/huggingface/tokenizer.json",
+    "size": 11423025
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_162/actor/huggingface/tokenizer_config.json",
+    "size": 5755
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_162/actor/huggingface/vocab.json",
+    "size": 2776833
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_162/data.pt",
+    "size": 7188
+   }
+  ],
+  "checkpoints/rq3_b2/global_step_163": [
+   {
+    "f": "checkpoints/rq3_b2/global_step_163/actor/extra_state_world_size_4_rank_0.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_163/actor/extra_state_world_size_4_rank_1.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_163/actor/extra_state_world_size_4_rank_2.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_163/actor/extra_state_world_size_4_rank_3.pt",
+    "size": 15205
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_163/actor/fsdp_config.json",
+    "size": 46
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_163/actor/huggingface/added_tokens.json",
+    "size": 752
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_163/actor/huggingface/chat_template.jinja",
+    "size": 4116
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_163/actor/huggingface/config.json",
+    "size": 1571
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_163/actor/huggingface/generation_config.json",
+    "size": 127
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_163/actor/huggingface/merges.txt",
+    "size": 1671853
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_163/actor/huggingface/special_tokens_map.json",
+    "size": 613
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_163/actor/huggingface/tokenizer.json",
+    "size": 11423025
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_163/actor/huggingface/tokenizer_config.json",
+    "size": 5755
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_163/actor/huggingface/vocab.json",
+    "size": 2776833
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_163/data.pt",
+    "size": 7188
+   }
+  ],
+  "checkpoints/rq3_b2/global_step_164": [
+   {
+    "f": "checkpoints/rq3_b2/global_step_164/actor/extra_state_world_size_4_rank_0.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_164/actor/extra_state_world_size_4_rank_1.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_164/actor/extra_state_world_size_4_rank_2.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_164/actor/extra_state_world_size_4_rank_3.pt",
+    "size": 15205
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_164/actor/fsdp_config.json",
+    "size": 46
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_164/actor/huggingface/added_tokens.json",
+    "size": 752
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_164/actor/huggingface/chat_template.jinja",
+    "size": 4116
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_164/actor/huggingface/config.json",
+    "size": 1571
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_164/actor/huggingface/generation_config.json",
+    "size": 127
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_164/actor/huggingface/merges.txt",
+    "size": 1671853
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_164/actor/huggingface/special_tokens_map.json",
+    "size": 613
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_164/actor/huggingface/tokenizer.json",
+    "size": 11423025
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_164/actor/huggingface/tokenizer_config.json",
+    "size": 5755
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_164/actor/huggingface/vocab.json",
+    "size": 2776833
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_164/data.pt",
+    "size": 7188
+   }
+  ],
+  "checkpoints/rq3_b2/global_step_165": [
+   {
+    "f": "checkpoints/rq3_b2/global_step_165/actor/extra_state_world_size_4_rank_0.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_165/actor/extra_state_world_size_4_rank_1.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_165/actor/extra_state_world_size_4_rank_2.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_165/actor/extra_state_world_size_4_rank_3.pt",
+    "size": 15205
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_165/actor/fsdp_config.json",
+    "size": 46
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_165/actor/huggingface/added_tokens.json",
+    "size": 752
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_165/actor/huggingface/chat_template.jinja",
+    "size": 4116
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_165/actor/huggingface/config.json",
+    "size": 1571
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_165/actor/huggingface/generation_config.json",
+    "size": 127
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_165/actor/huggingface/merges.txt",
+    "size": 1671853
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_165/actor/huggingface/special_tokens_map.json",
+    "size": 613
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_165/actor/huggingface/tokenizer.json",
+    "size": 11423025
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_165/actor/huggingface/tokenizer_config.json",
+    "size": 5755
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_165/actor/huggingface/vocab.json",
+    "size": 2776833
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_165/data.pt",
+    "size": 7188
+   }
+  ],
+  "checkpoints/rq3_b2/global_step_166": [
+   {
+    "f": "checkpoints/rq3_b2/global_step_166/actor/extra_state_world_size_4_rank_0.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_166/actor/extra_state_world_size_4_rank_1.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_166/actor/extra_state_world_size_4_rank_2.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_166/actor/extra_state_world_size_4_rank_3.pt",
+    "size": 15205
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_166/actor/fsdp_config.json",
+    "size": 46
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_166/actor/huggingface/added_tokens.json",
+    "size": 752
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_166/actor/huggingface/chat_template.jinja",
+    "size": 4116
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_166/actor/huggingface/config.json",
+    "size": 1571
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_166/actor/huggingface/generation_config.json",
+    "size": 127
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_166/actor/huggingface/merges.txt",
+    "size": 1671853
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_166/actor/huggingface/special_tokens_map.json",
+    "size": 613
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_166/actor/huggingface/tokenizer.json",
+    "size": 11423025
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_166/actor/huggingface/tokenizer_config.json",
+    "size": 5755
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_166/actor/huggingface/vocab.json",
+    "size": 2776833
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_166/data.pt",
+    "size": 7188
+   }
+  ],
+  "checkpoints/rq3_b2/global_step_167": [
+   {
+    "f": "checkpoints/rq3_b2/global_step_167/actor/extra_state_world_size_4_rank_0.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_167/actor/extra_state_world_size_4_rank_1.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_167/actor/extra_state_world_size_4_rank_2.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_167/actor/extra_state_world_size_4_rank_3.pt",
+    "size": 15205
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_167/actor/fsdp_config.json",
+    "size": 46
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_167/actor/huggingface/added_tokens.json",
+    "size": 752
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_167/actor/huggingface/chat_template.jinja",
+    "size": 4116
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_167/actor/huggingface/config.json",
+    "size": 1571
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_167/actor/huggingface/generation_config.json",
+    "size": 127
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_167/actor/huggingface/merges.txt",
+    "size": 1671853
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_167/actor/huggingface/special_tokens_map.json",
+    "size": 613
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_167/actor/huggingface/tokenizer.json",
+    "size": 11423025
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_167/actor/huggingface/tokenizer_config.json",
+    "size": 5755
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_167/actor/huggingface/vocab.json",
+    "size": 2776833
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_167/data.pt",
+    "size": 7188
+   }
+  ],
+  "checkpoints/rq3_b2/global_step_168": [
+   {
+    "f": "checkpoints/rq3_b2/global_step_168/actor/extra_state_world_size_4_rank_0.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_168/actor/extra_state_world_size_4_rank_1.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_168/actor/extra_state_world_size_4_rank_2.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_168/actor/extra_state_world_size_4_rank_3.pt",
+    "size": 15205
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_168/actor/fsdp_config.json",
+    "size": 46
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_168/actor/huggingface/added_tokens.json",
+    "size": 752
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_168/actor/huggingface/chat_template.jinja",
+    "size": 4116
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_168/actor/huggingface/config.json",
+    "size": 1571
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_168/actor/huggingface/generation_config.json",
+    "size": 127
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_168/actor/huggingface/merges.txt",
+    "size": 1671853
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_168/actor/huggingface/special_tokens_map.json",
+    "size": 613
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_168/actor/huggingface/tokenizer.json",
+    "size": 11423025
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_168/actor/huggingface/tokenizer_config.json",
+    "size": 5755
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_168/actor/huggingface/vocab.json",
+    "size": 2776833
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_168/data.pt",
+    "size": 7188
+   }
+  ],
+  "checkpoints/rq3_b2/global_step_180": [
+   {
+    "f": "checkpoints/rq3_b2/global_step_180/actor/extra_state_world_size_4_rank_0.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_180/actor/extra_state_world_size_4_rank_1.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_180/actor/extra_state_world_size_4_rank_2.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_180/actor/extra_state_world_size_4_rank_3.pt",
+    "size": 15205
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_180/actor/fsdp_config.json",
+    "size": 46
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_180/actor/huggingface/added_tokens.json",
+    "size": 752
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_180/actor/huggingface/chat_template.jinja",
+    "size": 4116
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_180/actor/huggingface/config.json",
+    "size": 1571
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_180/actor/huggingface/generation_config.json",
+    "size": 127
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_180/actor/huggingface/merges.txt",
+    "size": 1671853
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_180/actor/huggingface/special_tokens_map.json",
+    "size": 613
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_180/actor/huggingface/tokenizer.json",
+    "size": 11423025
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_180/actor/huggingface/tokenizer_config.json",
+    "size": 5755
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_180/actor/huggingface/vocab.json",
+    "size": 2776833
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_180/data.pt",
+    "size": 7188
+   }
+  ],
+  "checkpoints/rq3_b2/global_step_200": [
+   {
+    "f": "checkpoints/rq3_b2/global_step_200/actor/extra_state_world_size_4_rank_0.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_200/actor/extra_state_world_size_4_rank_1.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_200/actor/extra_state_world_size_4_rank_2.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_200/actor/extra_state_world_size_4_rank_3.pt",
+    "size": 15205
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_200/actor/fsdp_config.json",
+    "size": 46
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_200/actor/huggingface/added_tokens.json",
+    "size": 752
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_200/actor/huggingface/chat_template.jinja",
+    "size": 4116
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_200/actor/huggingface/config.json",
+    "size": 1571
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_200/actor/huggingface/generation_config.json",
+    "size": 127
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_200/actor/huggingface/merges.txt",
+    "size": 1671853
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_200/actor/huggingface/special_tokens_map.json",
+    "size": 613
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_200/actor/huggingface/tokenizer.json",
+    "size": 11423025
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_200/actor/huggingface/tokenizer_config.json",
+    "size": 5755
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_200/actor/huggingface/vocab.json",
+    "size": 2776833
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_200/data.pt",
+    "size": 7188
+   }
+  ],
+  "checkpoints/rq3_b2/global_step_220": [
+   {
+    "f": "checkpoints/rq3_b2/global_step_220/actor/extra_state_world_size_4_rank_0.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_220/actor/extra_state_world_size_4_rank_1.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_220/actor/extra_state_world_size_4_rank_2.pt",
+    "size": 15141
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_220/actor/extra_state_world_size_4_rank_3.pt",
+    "size": 15205
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_220/actor/fsdp_config.json",
+    "size": 46
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_220/actor/huggingface/added_tokens.json",
+    "size": 752
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_220/actor/huggingface/chat_template.jinja",
+    "size": 4116
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_220/actor/huggingface/config.json",
+    "size": 1571
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_220/actor/huggingface/generation_config.json",
+    "size": 127
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_220/actor/huggingface/merges.txt",
+    "size": 1671853
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_220/actor/huggingface/special_tokens_map.json",
+    "size": 613
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_220/actor/huggingface/tokenizer.json",
+    "size": 11423025
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_220/actor/huggingface/tokenizer_config.json",
+    "size": 5755
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_220/actor/huggingface/vocab.json",
+    "size": 2776833
+   },
+   {
+    "f": "checkpoints/rq3_b2/global_step_220/data.pt",
+    "size": 7188
+   }
+  ]
+ }
+}

@@ -351,6 +351,75 @@ class DistillTrainerMixin:
         return total / total_weight
 
 
+def _resolve_resume_checkpoint(config: dict, output_dir: str):
+    """Resolve the `resume_from_checkpoint` argument for trainer.train().
+
+    Backward compatible by construction: a config without the key returns None,
+    and `trainer.train(resume_from_checkpoint=None)` is byte-identical in
+    behaviour to the old bare `trainer.train()` (the Trainer kwarg defaults to
+    None; transformers 4.57.6 trainer.py:2236 also folds False -> None).
+
+    We must NOT pass True unconditionally. transformers 4.57.6
+    trainer.py:2290-2293 resolves True via get_last_checkpoint(args.output_dir)
+    and raises ValueError("No valid checkpoint found in output directory") when
+    the directory holds no checkpoint-* dir -- which is every fresh run. And
+    trainer_utils.get_last_checkpoint (line 215-224) starts with os.listdir(),
+    so it raises FileNotFoundError when output_dir does not exist yet. Hence the
+    two guards below: existence of the dir, then existence of a checkpoint.
+
+    Accepted values for `resume_from_checkpoint`:
+      absent / null / false  -> fresh run (legacy behaviour)
+      true / "auto"          -> newest checkpoint-* in output_dir, else fresh
+      "<path>"               -> that exact checkpoint dir
+    """
+    setting = config.get("resume_from_checkpoint", None)
+    if setting is None or setting is False:
+        return None
+
+    if isinstance(setting, str) and setting.strip().lower() not in ("auto", "true", "yes", "1"):
+        path = setting.strip()
+        if not os.path.isdir(path):
+            raise ValueError(f"[resume] resume_from_checkpoint path does not exist: {path}")
+        print(f"[resume] explicit checkpoint: {path}")
+        return path
+
+    if not os.path.isdir(output_dir):
+        print(f"[resume] auto: {output_dir} does not exist yet -> fresh start")
+        return None
+
+    # Newest-first, skipping torn checkpoints. A node that dies mid-save leaves a
+    # checkpoint-N dir that get_last_checkpoint() will happily return but that
+    # trainer.py:2299 then chokes on (it reads trainer_state.json before any
+    # deepspeed/FSDP branch). trainer_state.json is written LAST in
+    # _save_checkpoint (trainer.py:3362, after _save_optimizer_and_scheduler at
+    # :3345), so its presence certifies the rest of the dir landed.
+    candidates = sorted(
+        (d for d in os.listdir(output_dir)
+         if d.startswith("checkpoint-") and d.split("-", 1)[1].isdigit()
+         and os.path.isdir(os.path.join(output_dir, d))),
+        key=lambda d: int(d.split("-", 1)[1]),
+        reverse=True,
+    )
+    for name in candidates:
+        path = os.path.join(output_dir, name)
+        if os.path.isfile(os.path.join(path, "trainer_state.json")):
+            print(f"[resume] auto: resuming from {path}")
+            return path
+        print(f"[resume] auto: skipping incomplete {path} (no trainer_state.json)")
+    print(f"[resume] auto: no complete checkpoint-* under {output_dir} -> fresh start")
+    return None
+
+
+def _resolve_save_total_limit(config: dict) -> int:
+    """How many checkpoint-* dirs Trainer keeps on disk.
+
+    Was hardcoded to 3; now a yaml passthrough. The default is the OLD hardcoded
+    value, and no config in the repo except the new *_safe.yaml pair sets the
+    key, so every existing run is unchanged.
+    """
+    return int(config.get("save_total_limit", 3))
+
+
 def run_sft(config_path: str):
     """Run Meta-CoT SFT training."""
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -449,7 +518,7 @@ def run_sft(config_path: str):
         logging_steps=10,
         save_strategy=config.get("save_strategy", "steps"),
         save_steps=config.get("save_steps", 500),
-        save_total_limit=3,
+        save_total_limit=_resolve_save_total_limit(config),
         report_to="wandb",
         eval_strategy=config.get("eval_strategy", "no"),
         deepspeed=config.get("deepspeed", None),
@@ -483,7 +552,7 @@ def run_sft(config_path: str):
 
     trainer = TrainerClass(**trainer_kwargs)
 
-    trainer.train()
+    trainer.train(resume_from_checkpoint=_resolve_resume_checkpoint(config, output_dir))
     trainer.save_model(output_dir)
     tokenizer.save_pretrained(output_dir)
     print(f"SFT model saved to {output_dir}")

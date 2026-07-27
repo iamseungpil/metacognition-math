@@ -1,0 +1,182 @@
+description: "B0p2 SFT2 RVFULL — the MISSING second stage of the CONTROL arm (E-097). The think-on ladder was two-stage on the meta side (b2p/b3p: SFT1 -> SFT2 on the RV corpus) and ONE-stage on the control side (b0p: SFT1 only; HF metacot models/ has no b0p2_* checkpoint), so the replication axis b3p-b0p conflated the meta mechanism with one extra SFT pass over the RV corpus. This run adds the matched stage using the META-REMOVED TWIN that scripts/build_base_rv_sft_data.py was written to produce and that has been sitting unused on HF: data/v8_base_rv_sft.parquet. Verified 0726 — 1763 rows EXACT 1:1 with the meta corpus, ZERO meta delimiters, identical scenario split (verify 1209 / redirect 554), identical think-closed 41.2 pct, wrong_prefix nonempty 100 pct so sft.py segment-masks IDENTICALLY, and render-layer audit clean (0 pct truncation at 4096, max 3124 tok; 100 pct keep the final boxed answer in the trained region; 100 pct EOS). Dose matched to the meta arm (C) run: 3 epochs, lr 1e-5, max_length 4096, bs1 x ga4 — the only remaining difference between the arms at this stage is the meta block. Pushes the final model to iamseungpil/metacot models/b0p2_rvfull_sft/. A100x2 on msrresrchvc (basicvc rejects ALL submissions since 0726 05:49 — E-091). TWO-GPU DURABLE VARIANT (0727, _g2): same corpus, init, epochs (3), lr (1e-5), max_length (4096) and per-device bs1 x ga4 as the _g1 launcher, and the same output artifact path, but sku 80G2-A100 with DeepSpeed ZeRO-3 + CPU Adam offload (configs/accelerate_sft_2gpu_cpuoff.yaml). TWO changes vs _g1, both measured. (1) SPEED — the live g1 job sft_b0p2_rvfull_g1 measured 101/1212 steps in 1h07m = ~40s per step, ETA ~12h, at ~599 pct CPU with GPU utilisation near zero: the bottleneck is DeepSpeedCPUAdam running the whole optimizer step on one rank, not the A100. ZeRO-3 shards optimizer state per rank, so 2 GPUs should roughly halve it (~20s per step, ~6.5h). Four GPUs are still avoided on purpose: every A100 SKU here is Basic (opportunistic) tier, our 4-GPU SFT2 jobs sat queued 11-12h, and a 2-GPU contiguous slot is still far easier to scavenge. (2) DURABILITY — the _g1 launcher ran NO background pusher (push_models_hf.py fires only after training returns) and configs/sft_b0p2_rvfull.yaml used save_strategy epoch, so for the first ~4.5h nothing existed on disk and for ~13h nothing existed on HF; a node death lost the entire run. That already happened once (a 0726 sidecar reached ~40/309 steps and vanished with its node, leaving models/b2p2_rvfull_sft with 0 files). This launcher therefore trains from configs/sft_b0p2_rvfull_safe.yaml (save_strategy steps, save_steps 25, save_total_limit 2) and starts scripts/push_sft_ckpts_to_hf.py as a nohup daemon BEFORE the accelerate launch, streaming every completed checkpoint-N to the dedicated per-run repo iamseungpil/metacot-sft2-b0p2-rvfull — the same concurrent-pusher pattern that keeps the RL arms landing checkpoints on HF even while amlt status reads failed. Eval tp_size raised to 2 to match the GPU count. WORLD-SIZE LOCK: ZeRO-3 optimizer shards are per-rank, so any resubmission of THIS job must reuse the 2-GPU accelerate config, and it cannot resume the in-flight g1 run's 1-GPU checkpoints. NOT IDENTICAL TO g1 IN ONE RESPECT: bs and ga are PER DEVICE, so world_size 2 gives effective batch 8 (vs 4 at g1, 16 at the original 4-GPU launcher) and ~606 optimizer steps instead of 1212. Same data, different optimization trajectory — so the control arm and the meta arm MUST be trained at the same world size, never one at g1 and the other at g2. To restore exact g1 parity instead, set gradient_accumulation_steps 2 in the _safe config; that is an orchestrator decision and was deliberately not taken here. Output paths and lineage are UNCHANGED (models/b0p2_rvfull_sft, models/b2p2_rvfull_sft), so g1 and g2 write the same artifact name — run only ONE width per arm."
+
+target:
+  service: sing
+  name: msrresrchvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  registry: mcr.microsoft.com
+  image: aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x:latest
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: sft_b0p2_rvfull_g2
+    sku: 80G2-A100
+    sla_tier: Basic
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 259200
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        # INHERITED FROM a100g1_sft_b0p2_rvfull.yaml — asset 490894146 predates the
+        # _safe configs, configs/accelerate_sft_2gpu_cpuoff.yaml and
+        # scripts/push_sft_ckpts_to_hf.py, so it CANNOT run this launcher. Left
+        # untouched on purpose: the orchestrator repackages the tarball and injects the
+        # new revision after these files are verified. The three `ls -l` guards below
+        # fail the window closed if a stale tarball is used by mistake.
+        CODE_TAR_REVISION: "490894146"
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        WANDB_API_KEY: ${WANDB_API_KEY}
+        WANDB_KEY: ${WANDB_API_KEY}
+        WANDB_PROJECT: metacot-math
+        WANDB_RUN_GROUP: rq3v2_thinkon
+        WANDB_NAME: b0p2_rvfull_sft2_g2
+        WANDB_TAGS: rq3v2,thinkon,sft2,rvfull,control,meta-removed-twin,matched-stage2
+        HF_HUB_DISABLE_XET: "1"
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints /scratch/models
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        nohup python -c "
+        import torch, time
+        g = torch.cuda.device_count()
+        ts = [torch.randn(2048, 2048, device=i, dtype=torch.float16) for i in range(g)]
+        while True:
+            for i in range(g): ts[i] = (ts[i] @ ts[i]) * 0.5
+            time.sleep(2)
+        " > /scratch/logs/gpu_keeper_inline.log 2>&1 &
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper_early.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        pip uninstall -y hf_xet 2>&1 | tail -1 || true
+        find $${SIMPLERL_DIR}/lib -maxdepth 3 -name "hf_xet*" -exec rm -rf {} + 2>/dev/null || true
+        python -c "import deepspeed" 2>/dev/null || pip install -q deepspeed 2>&1 | tail -1
+
+        # stage the SFT1 init from HF (retry + verify)
+        python -c "
+        import os, time, shutil
+        from huggingface_hub import snapshot_download
+        dst = \"/scratch/models/b0p_v8base_strict_sft\"
+        for attempt in range(5):
+            try:
+                p = snapshot_download(\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"], allow_patterns=[\"models/b0p_v8base_strict_sft/*\"])
+                src = os.path.join(p, \"models\", \"b0p_v8base_strict_sft\")
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+                assert os.path.exists(os.path.join(dst, \"config.json\")), \"config.json missing\"
+                print(\"staged SFT1 init OK\")
+                break
+            except Exception as e:
+                print(\"stage attempt\", attempt, \"failed:\", repr(e)[:120])
+                time.sleep(20 * (attempt + 1))
+        "
+        ls -l /scratch/models/b0p_v8base_strict_sft/config.json || echo "[YAML][stage] FATAL init missing"
+        ls -l /scratch/metacognition/data/v8_base_rv_sft.parquet || echo "[YAML][corpus] MISSING v8_base_rv_sft.parquet - repackage tarball"
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+
+        CKPT=/scratch/checkpoints/b0p2_rvfull_sft
+        mkdir -p $${CKPT}
+        echo "[YAML][disk] /scratch headroom before training (save_steps 25 x save_total_limit 2):"
+        df -h /scratch | tail -2
+
+        # ── STALE-TARBALL GUARDS (fail closed) ──────────────────────────────────────
+        # All three files are NEW as of 0727 and absent from every pre-0727 asset. If any
+        # is missing the tarball is stale: the _safe config would fall back to nothing
+        # (accelerate would error) and, worse, a missing pusher would let the run train
+        # for ~6.5h with ZERO durable state. Abort the window instead.
+        ls -l /scratch/metacognition/configs/sft_b0p2_rvfull_safe.yaml || { echo "[YAML][config] MISSING sft_b0p2_rvfull_safe.yaml - STALE TARBALL; ABORT window"; sleep 300; exit 1; }
+        ls -l /scratch/metacognition/configs/accelerate_sft_2gpu_cpuoff.yaml || { echo "[YAML][accel] MISSING accelerate_sft_2gpu_cpuoff.yaml - STALE TARBALL; ABORT window"; sleep 300; exit 1; }
+        ls -l /scratch/metacognition/scripts/push_sft_ckpts_to_hf.py || { echo "[YAML][pusher] MISSING push_sft_ckpts_to_hf.py - STALE TARBALL, run would be NON-DURABLE; ABORT window"; sleep 300; exit 1; }
+
+        # ── DURABLE IN-FLIGHT CHECKPOINT PUSHER (0727) ──────────────────────────────
+        # Structural fix for the exposure that killed the 0726 sidecar. Started BEFORE
+        # the accelerate launch so checkpoint-25 reaches HF ~8 min in, not ~13h in. This
+        # is the same concurrent-nohup arrangement the RL launchers use for
+        # push_ckpts_to_hf.py (a100_rq3v2_b3p.yaml), which is why rq3v2_b2p keeps landing
+        # gs120/gs140 on HF even when its amlt status reads failed.
+        # SECURITY 0716: no --token arg — under set -x an expanded token lands in std_log
+        # plaintext; the pusher reads HF_TOKEN from the env instead.
+        # Target is a DEDICATED per-run model repo, NOT the shared dataset repo
+        # iamseungpil/metacot: at 2 GPUs the run takes ~606 optimizer steps, so save_steps
+        # 25 produces ~24 checkpoints, i.e. ~24 x ~16GB of LFS commits — enough to wreck
+        # the repo every other job reads from. The final durable artifact still goes to
+        # iamseungpil/metacot models/b0p2_rvfull_sft/ via push_models_hf.py below.
+        # DELIBERATE DEVIATION from the RL idiom: no "env -u HF_HUB_DISABLE_XET" wrapper.
+        # This lineage uninstalls hf_xet a few lines above (0724 xet large-file silent-404
+        # pitfall), so unsetting the disable flag would only re-arm a code path whose
+        # library has been deleted from the env.
+        nohup python /scratch/metacognition/scripts/push_sft_ckpts_to_hf.py --ckpt_dir $${CKPT} --repo_id iamseungpil/metacot-sft2-b0p2-rvfull --interval 90 --keep 2 --config_name b0p2_rvfull_sft > /scratch/logs/push_sft_b0p2_rvfull.log 2>&1 &
+
+        python -m accelerate.commands.launch --config_file configs/accelerate_sft_2gpu_cpuoff.yaml \
+            src/training/sft.py --config configs/sft_b0p2_rvfull_safe.yaml
+        SFT_RC=$$?
+        echo "[YAML] b0p2-rvfull-sft2 rc=$${SFT_RC}"
+        # Training is over: the final model is written to the top of $${CKPT} and the
+        # in-flight checkpoint-N dirs no longer matter. Stop the daemon so it cannot race
+        # the eval or the final push, and tail its log for forensics.
+        pkill -f push_sft_ckpts_to_hf 2>/dev/null || true
+        sleep 5
+        echo "[YAML][pusher] ---- tail push_sft_b0p2_rvfull.log ----"
+        tail -20 /scratch/logs/push_sft_b0p2_rvfull.log 2>/dev/null
+
+        python /scratch/metacognition/scripts/verify_eos_invariant.py $${CKPT}
+        EOS_RC=$$?
+        echo "[YAML][eos-gate] verify_eos_invariant rc=$${EOS_RC} (0=GREEN required)"
+
+        # GATE = b0p precedent (h100std_sft_b0p.yaml). measure_sft_gate is NOT used:
+        # its pmi auc criterion needs a meta block and this arm has none by design.
+        # Anchors to compare against (b0p SFT1): MATH500-100 55.5 pct, AIME 8.3 pct,
+        # meta_rate ~0.5 pct. A meta_rate rise here would mean the twin leaked meta.
+        if [ "$${EOS_RC}" != "0" ]; then
+            echo "[YAML][eos-gate] RED checkpoint - terminator mismatch. DO NOT launch RL. Skipping eval, still pushing ckpt for forensics."
+        else
+            python /scratch/metacognition/scripts/eval_vllm_1030.py \
+                --model_path $${CKPT} \
+                --model_name b0p2_rvfull_term \
+                --output_dir /scratch/logs/b0p2_rvfull_term_eval \
+                --benchmarks math500 aime2024 \
+                --max_problems 100 \
+                --max_tokens 8192 \
+                --max_model_len 10240 \
+                --temperature 1.0 \
+                --tp_size 2 \
+                --num_samples 2
+            EVAL_RC=$$?
+            echo "[YAML][term-eval] eval_vllm_1030 rc=$${EVAL_RC} (see b0p2_rvfull_term_eval/*.json for truncation pct + emission + acc)"
+            python /scratch/metacognition/scripts/push_models_hf.py --model_path /scratch/logs/b0p2_rvfull_term_eval --model_name b0p2_rvfull_term_eval --repo_id iamseungpil/metacot 2>&1 | tail -3 || echo "[YAML][term-eval] eval-json push failed (non-fatal)"
+        fi
+
+        # push_models_hf.py already carries checkpoint-* / checkpoint-*/* in its
+        # IGNORE_PATTERNS (scripts/push_models_hf.py:43-44), so pointing it at $${CKPT}
+        # uploads the final model only and never sweeps up the save_steps checkpoints.
+        for i in $$(seq 1 30); do
+            python /scratch/metacognition/scripts/push_models_hf.py --model_path $${CKPT} --model_name b0p2_rvfull_sft --repo_id iamseungpil/metacot 2>&1 | tail -3
+            N=$$(python -c "from huggingface_hub import HfApi;import os;fs=HfApi().list_repo_files(\"iamseungpil/metacot\",repo_type=\"dataset\",token=os.environ[\"HF_TOKEN\"]);print(sum(1 for f in fs if \"b0p2_rvfull_sft/model-\" in f and f.endswith(\".safetensors\")))")
+            echo "[YAML][push] attempt $$i: shards_on_hf=$$N/4"
+            [ "$$N" = "4" ] && echo "[YAML][push] all 4 shards durable" && break
+            sleep 120
+        done
+        sleep 43200
+        '

@@ -1,0 +1,56 @@
+# Two-GPU SFT with DeepSpeed ZeRO-3 + CPU optimizer offload.
+#
+# WHY TWO AND NOT ONE (0727): the 1-GPU variant (configs/accelerate_sft_1gpu_cpuoff.yaml)
+# works but is slow for the wrong reason. Measured on the live job sft_b0p2_rvfull_g1:
+# 101/1212 steps in 1h07m = ~40s/step, ETA ~12h, with GPU utilisation near zero and the
+# process pinned at ~599% CPU. The bottleneck is not the A100 — it is DeepSpeedCPUAdam
+# doing the whole optimizer step on the host for all 8.2B params on a single rank. Under
+# ZeRO-3 that work is sharded across ranks, so going 1 -> 2 GPUs halves the per-rank
+# optimizer bytes (~98GB fp32 master+moments -> ~49GB per rank) and should roughly halve
+# step time (~20s/step, ~6.5h instead of ~13h).
+#
+# ⚠️ RECIPE CONSEQUENCE — READ BEFORE PAIRING ARMS. gradient_accumulation_steps and
+# per_device_train_batch_size are PER DEVICE, so world_size=2 doubles the effective batch
+# (2 x 1 x 4 = 8, vs 4 at world_size=1 and 16 at the original world_size=4) and halves the
+# optimizer-step count (the g1 run reports 1212 steps; at 2 GPUs expect ~606, so the LR
+# schedule is stretched over half as many steps). This does NOT change the data seen, but
+# it IS a different optimization trajectory. The matched-ladder design requires the control
+# arm (b0p2) and the meta arm (b2p2) to be trained at the SAME effective batch, so BOTH
+# must run at the same world size — never one at g1 and the other at g2. If exact parity
+# with the in-flight g1 run is required instead, set gradient_accumulation_steps: 2 in the
+# _safe configs to restore effective batch 4 and the 1212-step schedule. That is an
+# orchestrator decision, deliberately NOT made here.
+#
+# WHY NOT FOUR: every A100 SKU on msrresrchvc is Basic (opportunistic) tier — we hold no
+# allocation, so a job only runs on capacity another team leaves idle. Our 4-GPU SFT2 jobs
+# sat queued 11-12h, which is the entire reason the 1-GPU trick was invented. A 2-GPU
+# contiguous slot is still far easier to scavenge than a 4-GPU one, so this is the
+# throughput/queue-time optimum rather than a compromise.
+#
+# It still fits: an 8B model under ZeRO-3 with the Adam states offloaded to CPU needs
+# roughly params 16GB + grads 16GB + activations ~5GB at bs1/seq4096 = ~37GB per rank
+# before sharding, well inside an 80GB A100, and sharding across 2 ranks only lowers it.
+# Host RAM is ample (measured 954GB free while an RL job was running).
+#
+# ⚠️ WORLD-SIZE LOCK: ZeRO-3 optimizer state is sharded per rank, so a checkpoint written
+# at world_size=2 can only be resumed at world_size=2 (deepspeed load_checkpoint has no
+# reshard path without ds_to_universal.py). Consequences: (a) a job using this config must
+# be RESUBMITTED with this same config, never the 1-GPU one; (b) it cannot resume the
+# in-flight 1-GPU run's checkpoints — that would be a warm restart from bf16 weights, not
+# a resume.
+compute_environment: LOCAL_MACHINE
+debug: false
+deepspeed_config:
+  offload_optimizer_device: cpu
+  offload_param_device: none
+  zero3_init_flag: true
+  zero3_save_16bit_model: true
+  zero_stage: 3
+distributed_type: DEEPSPEED
+downcast_bf16: 'no'
+main_process_port: 29517   # distinct from the accelerate default 29500 that the 1-GPU
+                           # config leaves implicit, so a 1-GPU and a 2-GPU SFT can share
+                           # a node without a rendezvous port collision.
+mixed_precision: bf16
+num_machines: 1
+num_processes: 2
