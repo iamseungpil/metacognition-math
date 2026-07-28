@@ -33,11 +33,14 @@ enabling self-assessment, error correction, and calibrated confidence.
 
 **msrresrchbasicvc** — H100/H200/A100/MI300X 보유. **0726 05:49부터 우리 신원의 신규 제출을
 전부 거부**한다(`UserError: The virtual cluster does not exist`). 1-CPU echo 잡도 같은 메시지를
-받으므로 용량이나 SKU 문제가 아니다. 근인: 타 사용자는 `GroupPolicy: e9deff52-...` 태그를 달고
-같은 VC에서 H100을 돌리는데, 그 정책이 우리 신원으로는 해석되지 않는다
-(`amlt cache expand-sku -t "msrresrchbasicvc:e9deff52-..."` → could not be found). 즉 우리가 보는
-쿼터는 VC **기본** 그룹정책 발급분이고 그 정책이 제출을 안 받는다. **그룹정책 멤버십(행정 조치)
-으로만 풀린다** — 요청 내용은 `docs/reports/2026-07-26-basicvc-submission-block-escalation.md`.
+받으므로 용량이나 SKU 문제가 아니다. ⚠️0727의 "`GroupPolicy: e9deff52-...`에 멤버십을 받으면
+된다"는 진단은 **0728에 철회**됐다 — 그 값은 제출자의 AAD object id이지 가입 가능한 정책이 아니다
+(VC의 `groupPolicies` 17개 중 우리 것도 그 사용자 것도 없고, `expand-sku` 프로브는 모든 id에
+대해 실패한다). 확정된 것은 **서비스측 권한 판정**이라는 사실뿐이다: amlt **11.9.1·11.14.2·
+11.16.0 세 버전 모두** 동일한 서버 에러(클라이언트·yaml·SKU 별칭 배제), 제출하는 VC ARM id는
+정상 잡과 바이트 동일, ARM 읽기(쿼터 GET)는 지금도 성공. 유력 가설(미확인)은 0716 GCR 재할당 때
+우리 신원이 새 allocation으로 이관되지 않았고 구 경로가 0726 05:49에 폐기됐다는 것.
+요청서 = `docs/reports/2026-07-26-basicvc-submission-block-escalation.md`(correlation ID 포함).
 차단 이전에 진입한 잡은 영향 없이 계속 돈다. 이 VC에는 **Premium SLA가 없다**(Standard/Basic만).
 Standard 티어라 선점이 잦으므로 ckpt 릴레이/resume 배선은 여전히 필수다.
 
