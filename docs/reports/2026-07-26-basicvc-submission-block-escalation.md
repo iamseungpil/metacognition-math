@@ -115,7 +115,11 @@ including the falsification sequence, is in
 
 ---
 
-## UPDATE 2026-07-27 — the block is a GROUP POLICY membership gap, not a missing VC
+## ~~UPDATE 2026-07-27 — the block is a GROUP POLICY membership gap~~ — **SUPERSEDED, see 07-28 below**
+
+> ⚠️ **The ask in this section is withdrawn.** Its reading of the `GroupPolicy` tag is wrong
+> (see 07-28). Its *symptom description* — quota is visible while admission fails — still holds
+> and is why the section is kept rather than deleted.
 
 A user in the SAME workspace (`msra-sh-aml-ws`), submitting to the SAME virtual
 cluster (`msrresrchbasicvc`), is running an H100 job right now:
@@ -229,8 +233,8 @@ request:   c873fcb3948dd25d
 
 ### 4. Corrected ask
 
-Please look up the admission decision for submitter object ID **`3e6b95a6`-scoped identity
-`sc-vhr286860@microsoft.com`** against virtual cluster
+Please look up the admission decision for **`sc-vhr286860@microsoft.com`**
+(AAD object id **`a22660cc-8fa9-4dd1-b5fc-eafa9718e257`**) against virtual cluster
 `/subscriptions/22da88f6-1210-4de2-a5a3-da4c7c2a1213/resourcegroups/gcr-singularity/providers/microsoft.machinelearningservices/virtualclusters/msrresrchbasicvc`
 from workspace `msra-sh-aml-ws`, using the correlation IDs above, and tell us:
 
@@ -244,3 +248,39 @@ from workspace `msra-sh-aml-ws`, using the correlation IDs above, and tell us:
 
 Note that jobs admitted before that timestamp were unaffected: our `rq3v2_b2p` H100x4 job kept
 running for three more days and completed all 300 steps on 2026-07-28.
+
+### 5. Additional verified evidence (2026-07-28, independent review)
+
+- **Our identity**: `sc-vhr286860@microsoft.com`, AAD object id
+  `a22660cc-8fa9-4dd1-b5fc-eafa9718e257` (verified via `az ad signed-in-user show`).
+  The working submitter is a different object id, `e9deff52-...`.
+- **The VC ARM id we submit is byte-identical to the working job's.** Our Amulet target cache
+  holds `/subscriptions/22da88f6-.../resourceGroups/gcr-singularity/providers/Microsoft.MachineLearningServices/virtualclusters/msrresrchbasicvc`,
+  the same string as the working job's `azureml.VC`, and Resource Graph shows exactly one VC
+  of that name across every subscription visible to us. Stale/incorrect target resolution is ruled out.
+- **ARM reads on the VC still succeed for us today.** The per-VC quota GET returns live numbers
+  (NDH100v5 Standard 560 total / 218 busy; per-user "Overall" 16) and that per-user row comes from
+  `defaultGroupPolicyOverallQuotas` — i.e. the default group policy still *quotes* us while
+  managementfrontend refuses to *admit* us.
+- **`groupPolicies` on the VC enumerate as 17 objects, each named after an individual user's
+  object id — and neither our object id nor the working submitter's exists among them.** A direct
+  GET for either returns "Unable to find group policy", symmetrically. This is the concrete reason
+  the 07-27 `expand-sku -t "msrresrchbasicvc:e9deff52-..."` probe proved nothing: it fails for every
+  object id, including that of a user actively running on the VC.
+- **AAD group difference between the two identities is small.** The working submitter holds four
+  groups we do not (`bonete06-scalt-esg`, `bonete06-m365`, `UHF Users M365 Group`, and an alphabet
+  shard); we hold two they do not (a different alphabet shard, and a conditional-access rollout
+  group). All GCR/MSR groups are shared. **No group named after `msrresrchbasicvc` exists in the
+  tenant at all**, so there is no obvious "add them to this group" answer visible from our side.
+- **Timeline that fits.** The identical error string appeared transiently on 2026-07-15 22:41 during
+  preparation for the GCR-wide B200 reallocation; the reallocation executed on 07-16 with new
+  allocations going live, and allocation updates were to be handled by each lab's GPU delegate —
+  ours was never contacted. The permanent block then began 07-26 05:49 with an unchanged client.
+
+**Leading hypothesis (stated as a hypothesis, not a finding):** the post-reallocation allocation
+migration did not carry this identity over, and the legacy admission path was decommissioned at
+07-26 05:49. We cannot see the Singularity allocation registry, so we cannot confirm this — which is
+precisely what we are asking you to check.
+
+**Earlier correlation IDs** (2026-07-26): operation `cebe26f9d9105d31e359ad11ce058a18`,
+request `478560a673cba078`.
