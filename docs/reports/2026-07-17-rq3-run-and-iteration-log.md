@@ -1207,3 +1207,41 @@ per-user 쿼터 행이 `defaultGroupPolicyOverallQuotas`에서 나온다(기본 
 
 **산출물**: 요청서에 correlation ID 2쌍(0726·0728) 추가, 0727 절은 삭제 대신 **SUPERSEDED 표시**
 (증상 서술은 여전히 유효하므로), CLAUDE.md Compute 절도 같은 오진을 담고 있어 정정.
+
+### E-149 (0728 07:35) — 워크스페이스 축을 처음 시험했다. `gcrllm2ws`에서 **다른 실패 모드**가 나왔다
+
+사용자가 "그럴 리 없다"고 밀어붙여 재검토했고, 그 결과 **한 번도 안 본 축**이 두 개 있었다.
+
+**① 프로젝트 등록은 원인이 아니다.** 새 amlt 프로젝트(`vcprobe0728`, version 11.16.0으로 깨끗
+하게 생성)에서 제출해도 동일. 우리 `.amltconfig`의 `"version": "11.9.1"` 흔적은 무관하다.
+
+**② 워크스페이스가 세 개나 있었다.** 24개 구독 전수 조회 결과 접근 가능한 AML 워크스페이스는
+`msra-sh-aml-ws`(westus2·우리가 쓰던 것), **`singularity`**(eastus, RG `aml`), **`gcrllm2ws`**
+(westus3, RG `gcrllm`, "3rd Party LLMs" 구독). 셋 다 등록하고 `amlt run -w <ws>`로 각각 basicvc에
+카나리아를 던졌다.
+
+| workspace | 결과 |
+|---|---|
+| `msra-sh-aml-ws` (westus2) | `UserError: The virtual cluster does not exist` |
+| `singularity` (eastus) | **동일** — correlation op `0334ddc5e99bf24d35be991fa7611382` / req `5afe7ea439f0dbe4` |
+| **`gcrllm2ws`** (westus3) | **다름!** VC 해석을 통과해 실험까지 생성(`Created new experiment ... on msrresrchbasicvc`)하고, **데이터스토어 쓰기 권한**에서 막힘 |
+
+`gcrllm2ws`의 에러 전문:
+
+```
+You don't have permission to perform this operation on the AzureML workspace.
+Action: Microsoft.MachineLearningServices/workspaces/datastores/write.
+Scope: /subscriptions/ca45784d-.../resourceGroups/gcrllm/.../workspaces/gcrllm2ws/datastores/...
+Ensure you have the 'AzureML Data Scientist' role ...
+```
+
+**왜 중요한가.** 이 경로는 "VC가 없다"가 **아니다**. 코드 패키지 업로드 단계에서 권한으로 멈춘
+것이고, 그 앞 단계는 통과했다. 다만 **여기서 VC admission까지 갔다고 단정할 수는 없다** — 업로드는
+제출보다 앞이므로 admission은 아직 시험되지 않았다. 그럼에도 **요청 가능한 구체적 대상**이 처음
+생겼다: `gcrllm2ws`에 **`AzureML Data Scientist` 역할** 하나. "Singularity allocation을 고쳐달라"
+보다 훨씬 작고 명확한 요청이다.
+
+**부수 확인**: `singularity` 워크스페이스는 **eastus**에서 같은 에러를 냈다. 즉 westus2·eastus 두
+리전에서 동일 → 리전/서비스 인스턴스 문제가 아니라 신원 축이라는 기존 판단과 정합.
+
+**남은 대기**: 사용자 요청으로 30분 간격 재신청 루프로 전환.
