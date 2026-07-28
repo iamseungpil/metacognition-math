@@ -176,3 +176,71 @@ Instead of "restore submission access", the specific request is:
 
 Jobs admitted before the change are unaffected: our `rq3v2_b2p` H100x4 job on
 that VC has been running for three days and is still making progress.
+
+---
+
+## UPDATE 2026-07-28 — RETRACTION of the 0727 group-policy reading, plus a client-version test that rules out our tooling
+
+### 1. Retraction: `GroupPolicy: e9deff52-...` is the submitter's object ID, not a policy to join
+
+The full job spec of the working H100 job was obtained. In it:
+
+```
+tags:      GroupPolicy: e9deff52-56e7-4074-bb58-056bbd931bb6
+createdBy: userObjectId: e9deff52-56e7-4074-bb58-056bbd931bb6   ("Woogyeol Jin (SC-ALT)")
+userId:                  e9deff52-56e7-4074-bb58-056bbd931bb6
+```
+
+The tag value is **identical to the submitting user's AAD object ID**. It is submitter
+identity metadata, not a group-policy resource. Asking to be "added to group policy
+e9deff52-..." is therefore meaningless — it would amount to asking to become that user.
+**The 0727 "Revised ask" item 1 and 2 are withdrawn.** (`amlt cache expand-sku -t
+"msrresrchbasicvc:e9deff52-..."` failing is consistent with this: there is no such policy.)
+
+### 2. Client version is ruled out — three versions, same server error
+
+Because the working job ran `amlt.version: 11.14.2` and we had only ever tried 11.9.1 (the
+version in use when the block began) and 11.16.0, 11.14.2 was installed into an isolated venv
+from the internal index and the same 1-CPU canary was submitted under the **same identity**:
+
+| amlt version | result on `msrresrchbasicvc` |
+|---|---|
+| 11.9.1 (in use when block began) | `UserError: The virtual cluster does not exist` |
+| **11.14.2** (version of the working job) | **`UserError: The virtual cluster does not exist`** |
+| 11.16.0 (current) | `UserError: The virtual cluster does not exist` |
+
+The failure surfaces as `HttpResponseError` from `handle_job_submission`, i.e. it is the
+**service** rejecting the request, not client-side target resolution. (11.14.2 first reported
+"target could not be found" only because the fresh venv had an empty target cache; after
+`amlt target list sing` populated it — and it lists `msrresrchbasicvc` with H100 among its
+accelerators — the submission produced the same server error.)
+
+**Conclusion: the block is not our tooling, our yaml, our SKU alias, or our client version.
+It is an identity/entitlement decision made service-side.**
+
+### 3. Correlation IDs for the support team
+
+From a failing submission at **2026-07-28T06:23:47Z**, region **westus2**:
+
+```
+operation: c3840a2450a9283d91b827e4c548679f
+request:   c873fcb3948dd25d
+```
+
+### 4. Corrected ask
+
+Please look up the admission decision for submitter object ID **`3e6b95a6`-scoped identity
+`sc-vhr286860@microsoft.com`** against virtual cluster
+`/subscriptions/22da88f6-1210-4de2-a5a3-da4c7c2a1213/resourcegroups/gcr-singularity/providers/microsoft.machinelearningservices/virtualclusters/msrresrchbasicvc`
+from workspace `msra-sh-aml-ws`, using the correlation IDs above, and tell us:
+
+1. **Why** the service maps this request to "the virtual cluster does not exist" — which
+   entitlement, allowlist, namespace, or Hobo/quota-subscription binding is missing. The
+   working job carries `HoboSubscription: cd7aec42-baee-4068-be0f-f41c0f1b8347`; we cannot
+   see what ours resolves to.
+2. Whether our submission right was **removed deliberately** on 2026-07-26 ~05:49 UTC, so we
+   can stop treating this as an outage.
+3. If it was not deliberate, please **restore or rebind** it.
+
+Note that jobs admitted before that timestamp were unaffected: our `rq3v2_b2p` H100x4 job kept
+running for three more days and completed all 300 steps on 2026-07-28.
