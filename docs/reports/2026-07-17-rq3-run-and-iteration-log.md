@@ -1601,3 +1601,12 @@ b2p는 gs35에서 0스텝. 실제 비용은 **감지 지연 + 재초기화(~15�
 
 **틱 절차에 고정**: 매 틱 세 arm의 `[HB ...]` 최신 시각을 확인하고, **5분 이상 정지 시 사망으로
 간주**한다. wandb `state=crashed`도 동일 신호. `amlt status`만으로는 절대 판정하지 않는다.
+
+**정정(E-155/E-156 후속, 0731 18:13)**: b0p의 실제 resume 지점은 **gs30이 아니라 gs25**였다
+(`Training Progress: 25/300`, 로그에 `global_step_25`). durable에는 gs25·gs30이 모두 있었으나
+`pull_resume_ckpt`는 newest-first로 고르되 **torn checkpoint를 건너뛴다** — step 31 도중 사망하며
+gs30이 불완전하게 남은 것으로 보인다. 따라서 **b0p 손실은 1스텝이 아니라 6스텝(31→25)**이다.
+E-155의 "손실 1스텝"을 이 값으로 정정한다. 교훈: durable 목록에 gsN이 보인다고 해서 그 지점에서
+재개된다는 보장은 없다 — **재개 후 실제 progress를 확인해야 한다.**
+
+0731 18:13 상태: b0p running(gs25, HB 신선) · b2p queued 16분(노드 대기) · b3p running(38/300, HB 신선).
