@@ -1414,3 +1414,55 @@ G4 SFT1 init 쌍이 HF에 실재. 이 게이트는 E-151과 E-152를 죽인 두 
 **발사**: `fond-panda`(b0p2 control) / `neat-hyena`(b2p2 meta), 둘 다 80G4-H100 Standard.
 
 **누적 손실**: H100 4-GPU 윈도 4개(각 ~13분). 전부 학습 시작 전에 죽어 체크포인트 손실은 없다.
+
+---
+
+## E-153 (0731 15:2x UTC) — SFT2 쌍 완주·착지, RL 3-arm 발사
+
+**rvfull lineage의 SFT2가 프로젝트 최초로 완주했다.** E-097이 지목한 사다리의 빠진 단이 메워졌다.
+
+| arm | 실험 | 스텝 | 최종 loss | HF 착지 |
+|---|---|---|---|---|
+| control `b0p2` | fond-panda | 303 (3ep) | 0.053 | `models/b0p2_rvfull_sft/` 4샤드+config+tokenizer (14파일) |
+| meta `b2p2` | neat-hyena | 309 (3ep) | — | `models/b2p2_rvfull_sft/` 동일 14파일 |
+
+양쪽 std_log에서 `[YAML][push] all 4 shards durable` 확인. H100 4장에서 arm당 **약 20분**
+(예상 2시간의 1/6). term-eval(`verify_eos_invariant` → `eval_vllm_1030` → `measure_sft_gate rc=0`)도
+양쪽 통과. durable pusher는 `metacot-sft2-4g`에 b0p2_4g 32파일 / b2p2_4g 16파일을 남겼다.
+
+**GPU quota 정리**: basicvc H100은 16 GPU/user이고 SFT 두 잡이 8개를 쥔 채 런처 말미의
+`sleep 43200`(12h) keep-alive로 놓지 않는다. RL 3-arm은 12개가 필요하므로(8+12=20>16)
+**HF에서 4샤드 착지를 확인한 뒤에만** 두 잡을 취소했다(파괴조작 3율: LIST→decide→execute).
+취소 후 `killed`, 산출물은 전부 durable.
+
+**RL 발사 게이트 G1~G5 — E-151/E-152 재발 방지를 명시적 검사로 전환**:
+
+| 게이트 | 결과 |
+|---|---|
+| G1 세 토큰 로드(`.env`) | PASS |
+| G2 asset 490407111이 GH_TOKEN으로 HTTP 200 | PASS |
+| G3 **런처가 호출하는 모든 스크립트 인자를 그 asset 버전으로 대조** | PASS |
+| G4 b3p init 해석 블록 로컬 실행 | `resolved PAIR_sft` exit 0 |
+| G5 `test_launcher_yaml_lint.py` | 45 passed |
+
+**세 RL 런처는 동일 asset 490407111을 pin**한다(매치드 유지). G3에서 특히 확인한 것:
+런처는 `push_ckpts_to_hf.py`의 `--token` 인자를 sed로 패치한 뒤 grep으로 검증하고 실패 시
+abort하는데, **이 asset에는 sed 대상 문자열이 없다**(이미 패치된 형태). sed는 no-op이지만
+grep이 검사하는 것은 **최종 상태**이므로 통과한다. E-152의 probe는 인터페이스의 존재를
+가정했기 때문에 죽었고, 이쪽은 결과를 검사하기 때문에 산다 — 같은 종류의 가드라도 설계가 다르다.
+
+**발사**(전부 80G4-H100 Standard, queued):
+
+| arm | 실험 | 잡 |
+|---|---|---|
+| b0p (control GRPO) | mature-swift | `:h100_rq3v2f_b0p` |
+| b2p (meta-SFT2 GRPO) | steady-mule | `:h100_rq3v2f_b2p` |
+| b3p (full triobj PMI-shift) | fair-calf | `:h100_rq3v2f_b3p` |
+
+셋을 **동시에** 띄운 이유: RQ2는 `b3p − b2p`, 복제축은 `b3p − b0p`이므로 arm이 서로 다른 시점의
+노드·드리프트를 타면 매치드 설계가 깨진다.
+
+**미해결(다음 여유에 규명)**: 두 SFT2 arm의 총 스텝이 **303 vs 309**(epoch당 101 vs 103).
+corpus는 둘 다 정확히 1763행 1:1임을 parquet에서 직접 확인했으므로, 유효 샘플이 1616 vs 1648로
+~2% 어긋난다. `max_length 4096`의 truncation인지 drop인지 `src/training/sft.py`로 가려야 한다.
+런처가 주장하는 dose-matched에 직접 걸리는 지점이다.
