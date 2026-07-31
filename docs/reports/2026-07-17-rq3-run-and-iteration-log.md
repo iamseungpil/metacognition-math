@@ -1466,3 +1466,63 @@ grep이 검사하는 것은 **최종 상태**이므로 통과한다. E-152의 pr
 corpus는 둘 다 정확히 1763행 1:1임을 parquet에서 직접 확인했으므로, 유효 샘플이 1616 vs 1648로
 ~2% 어긋난다. `max_length 4096`의 truncation인지 drop인지 `src/training/sft.py`로 가려야 한다.
 런처가 주장하는 dose-matched에 직접 걸리는 지점이다.
+
+---
+
+## E-154 (0731 16:1x UTC) — SFT2 스텝 불일치(303 vs 309) 규명: dose는 1:1이 아니다
+
+**관측**: SFT2 두 arm의 총 스텝이 303(control) vs 309(meta)였다. corpus는 parquet에서 직접
+세어 둘 다 정확히 1763행이므로, 학습 파이프라인 안에서 갈라진다는 뜻이다.
+
+**재현**: 로컬에서 `prepare_sft_dataset`을 노드와 동일한 토크나이저·`max_length=4096`으로 돌려
+관측 스텝을 **정확히 재현**했다.
+
+| arm | raw | kept | dropped | eval(5%) | train | steps/ep(ceil/16) | ×3ep |
+|---|---|---|---|---|---|---|---|
+| control | 1763 | 1701 | **62** | 85 | 1616 | 101 | **303** |
+| meta | 1763 | 1725 | **38** | 86 | 1639 | 103 | **309** |
+
+**드롭 경로는 truncation이 아니다.** `max_length` 초과는 `full_ids[:max_len]`로 자를 뿐이고,
+행이 사라지는 곳은 그 다음이다:
+
+```python
+ds = ds.filter(lambda row: row["num_target_tokens"] > 0)
+```
+
+**시나리오별 분해 — 드롭은 verify에 집중되고 control에서 23행 더 난다**:
+
+| arm | scenario | raw | kept | dropped |
+|---|---|---|---|---|
+| control | verify | 1209 | 1149 | **60** |
+| control | redirect | 554 | 552 | 2 |
+| meta | verify | 1209 | 1172 | **37** |
+| meta | redirect | 554 | 553 | 1 |
+
+**메커니즘**: 모든 행이 `wrong_prefix`를 갖고 있어(매니페스트 확인) 전부 segment-mask 경로를 탄다.
+control은 **meta 블록이 제거된 twin**이므로 prefix를 마스킹하고 나면 학습 대상 토큰이 하나도
+남지 않는 행이 생긴다 — verify에서 60행. meta arm에서는 meta 블록 자체가 학습 대상으로 남아
+그 행들이 살아남는다. **버그가 아니라 meta-removed twin 설계의 필연적 귀결이다.**
+
+**타당성에 대한 판정**:
+- 런처/매니페스트의 "1763 rows EXACT 1:1"은 **raw 수준에서만 참**이다. 학습 수준에서는 1701 vs 1725,
+  실제 dose는 1616 vs 1639 — **1.4% 차이**.
+- 따라서 "dose matched (3 epochs, lr 1e-5, ...)" 주장은 **step-matched가 아니다**. 보고 시 각주 필요.
+- 다만 차이의 유일한 원천이 meta 블록이므로 **독립적 교란은 아니다**. meta 블록을 제거하면
+  일부 행의 학습 신호가 필연적으로 사라진다.
+- **시나리오 구성 왜곡은 미미**하다: 학습되는 verify 비율이 control 67.55% vs meta 67.94%
+  (원본 68.58%) — 0.4%p 차이. 매니페스트의 "identical scenario split" 주장은 raw에서는 참이고
+  학습 후에도 실질적으로 유지된다.
+
+**남는 선택지**(지금 결정하지 않음): ①현 상태로 진행하고 1.4% dose 차이를 각주로 보고,
+②control에서 드롭되는 60행을 meta에서도 제외해 강제 step-match. ②는 meta arm의 데이터를
+control의 결함에 맞춰 깎는 것이라 그 자체가 새로운 선택 편향이다. 현재는 ①로 진행 중이며
+RL은 이미 이 init 위에서 돌고 있다.
+
+**동시 관측(RL 3-arm, 0731 16:03)**: 전부 running. b0p의 초기 `grad_norm 66.99`(E-153에서
+주시 대상으로 걸어둔 값)는 **warmup 스파이크였고 해소**됐다 — s11에서 1.97. 세 arm 안정 구간:
+
+| arm | step | grad_norm | correctness/mean | durable ckpt |
+|---|---|---|---|---|
+| b0p | 11 | 1.97 | +0.113 | gs5, gs10 |
+| b2p | 9 | 1.00 | +0.293 | gs5 |
+| b3p | 9 | 0.40 | +0.382 | gs5 |
