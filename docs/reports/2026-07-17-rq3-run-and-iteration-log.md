@@ -1526,3 +1526,44 @@ RL은 이미 이 init 위에서 돌고 있다.
 | b0p | 11 | 1.97 | +0.113 | gs5, gs10 |
 | b2p | 9 | 1.00 | +0.293 | gs5 |
 | b3p | 9 | 0.40 | +0.382 | gs5 |
+
+---
+
+## E-155 (0731 17:33 UTC) — b0p 사망을 amlt는 running으로 보고했다. wandb가 잡았다
+
+**b0p이 죽어 있었고 amlt는 `running`이었다.** heartbeat는 10초 간격인데 마지막이 **17:15:41**,
+발견 시각 17:33 기준 **18분 침묵**. 같은 시각 b2p 17:32:20 / b3p 17:34:06은 정상이었다.
+
+| arm | last HB | progress | `Caught signal 15` |
+|---|---|---|---|
+| **b0p** | **17:15:41** | 31/300 | 1 |
+| b2p | 17:32:20 | 35/300 | 2 |
+| b3p | 17:34:06 | 30/300 | 0 |
+
+**SIGTERM 자체는 즉사가 아니다** — b2p는 두 번 받고도 계속 돌았다. b0p만 신호 뒤 프로세스가
+멎었고, 노드는 살아 있어(런처 말미 keep-alive) **amlt가 running을 유지했다. 그래서 자동 retry도
+걸리지 않았다.**
+
+**탐지 경로가 결정적이었다.** `amlt status`만 봤다면 놓쳤다. wandb에서 `rq3v2f_b0p`의 state가
+`crashed`이고 step이 30에서 정체된 것을 보고 역추적했다. → **틱 절차에 heartbeat 신선도 검사를
+추가한다. `running`은 프로세스 생존의 증거가 아니다.**
+
+**복구**: durable ckpt가 `global_step_30`까지 있고 사망은 step 31 직후 → **손실 1스텝**.
+gs30 확인 후(파괴조작 3율) 잡 취소 → 게이트 통과 후 재제출(`sharp-llama`).
+`pull_resume_ckpt.py --config_name rq3v2f_b0p`가 HF에서 gs30을 끌어와 이어받는다.
+
+**부수 확인 — wandb project가 둘로 갈린다**: SFT2는 `metacot-math`, RL은 **`metacot-dcpo-v4`**
+(그룹 `rq3_matched_ladder`). 처음에 `metacot-math`를 조회해 "RL run이 없다"고 잘못 볼 뻔했다.
+
+**같은 step에서의 arm 비교(train reward, 공통 구간 step 18~29)**:
+
+| | b0p | b2p | b3p |
+|---|---|---|---|
+| 구간 평균 | 0.406 | 0.399 | **0.467** |
+| 최고를 차지한 step 수 | 1 | 0 | **11** |
+
+복제축 `b3p − b0p = +0.061`, RQ2 `b3p − b2p = +0.068`. **방향은 Instruct T1과 일치**하지만
+이는 **train reward**이며 held-out이 아니다. 단일 step은 ±0.2 튀고(16:19의 b3p 0.660은 노이즈),
+12 step 평균이라 순위가 안정적으로 보일 뿐이다. **판정은 gs50 val부터.**
+
+**총 스텝은 300**(`Training Progress: n/300`), 스텝당 약 220s → 완주까지 약 16시간.
