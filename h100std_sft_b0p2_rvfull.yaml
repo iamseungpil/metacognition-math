@@ -35,7 +35,13 @@ jobs:
         # 3). Both arms now pin the SAME asset; they previously pinned different ones.
         # REQUIRED by the in-training pusher below: scripts/push_sft_ckpts_to_hf.py exists
         # only in this asset, which is why the guard right before it fails closed.
-        CODE_TAR_REVISION: "491027629"
+        # 0731 repin (E-152). asset 496769353 = metacognition_rq3v2_0731_probe.tar.gz,
+        # md5 b43789e0c89b93451597ec767198ed27. It is asset 491027629 with EXACTLY ONE
+        # file replaced - scripts/push_sft_ckpts_to_hf.py - verified by extracting both
+        # and diffing all 459 files. The old asset predates the --probe-only flag this
+        # launcher calls, so argparse rejected it and the guard below aborted two H100
+        # windows before any training started.
+        CODE_TAR_REVISION: "496769353"
         HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
         WANDB_API_KEY: ${WANDB_API_KEY}
         WANDB_KEY: ${WANDB_API_KEY}

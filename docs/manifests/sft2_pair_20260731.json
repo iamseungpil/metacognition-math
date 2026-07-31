@@ -1,0 +1,143 @@
+{
+  "arm_config_differences": [
+    "dataset_path: control='data/v8_base_rv_sft.parquet'  meta='data/rv_redirect_verify_functional.parquet'",
+    "model_name_or_path: control='/scratch/models/b0p_v8base_strict_sft'  meta='/scratch/models/b2p_v8meta_strict_sft'",
+    "output_dir: control='/scratch/checkpoints/b0p2_rvfull_sft'  meta='/scratch/checkpoints/b2p2_rvfull_sft'",
+    "run_name: control='b0p2-rvfull-sft2'  meta='b2p2-rvfull-sft2'"
+  ],
+  "arms": {
+    "control": {
+      "config": {
+        "dataset_path": "data/v8_base_rv_sft.parquet",
+        "eval_strategy": "no",
+        "gradient_accumulation_steps": 4,
+        "learning_rate": 1e-05,
+        "max_length": 4096,
+        "model_name_or_path": "/scratch/models/b0p_v8base_strict_sft",
+        "num_train_epochs": 3,
+        "output_dir": "/scratch/checkpoints/b0p2_rvfull_sft",
+        "per_device_train_batch_size": 1,
+        "run_name": "b0p2-rvfull-sft2",
+        "save_strategy": "epoch",
+        "wandb_project": "metacot-math"
+      },
+      "config_path": "configs/sft_b0p2_rvfull.yaml",
+      "config_sha256": "c45a64e667cfbda140f897caacb8b01cdc52fcbcd149cf17486a72f8fd92e124",
+      "corpus": {
+        "columns": [
+          "confidence_label",
+          "messages",
+          "prefix_split_char",
+          "scenario",
+          "split_tags",
+          "wrong_prefix"
+        ],
+        "content_sha256": "8111785ed38f8733b0d3cc52b8a6430e0256a7844ebd27e371f2ec81948c4fa8",
+        "exists": true,
+        "path": "/home/v-seungplee/metacognition-math/data/v8_base_rv_sft.parquet",
+        "rows": 1763,
+        "scenario_counts": {
+          "redirect": 554,
+          "verify": 1209
+        },
+        "token_len_assistant": {
+          "max": 2884,
+          "mean": 520.5110606920023,
+          "p50": 306,
+          "p90": 1323,
+          "total": 917661
+        },
+        "token_len_trained": {
+          "max": 1893,
+          "mean": 165.82699943278502,
+          "p50": 139,
+          "p90": 255,
+          "total": 292353
+        }
+      },
+      "effective_batch_per_process": 4
+    },
+    "meta": {
+      "config": {
+        "dataset_path": "data/rv_redirect_verify_functional.parquet",
+        "eval_strategy": "no",
+        "gradient_accumulation_steps": 4,
+        "learning_rate": 1e-05,
+        "max_length": 4096,
+        "model_name_or_path": "/scratch/models/b2p_v8meta_strict_sft",
+        "num_train_epochs": 3,
+        "output_dir": "/scratch/checkpoints/b2p2_rvfull_sft",
+        "per_device_train_batch_size": 1,
+        "run_name": "b2p2-rvfull-sft2",
+        "save_strategy": "epoch",
+        "wandb_project": "metacot-math"
+      },
+      "config_path": "configs/sft_b2p2_rvfull.yaml",
+      "config_sha256": "05ba8297fd55376c16fbb3e3f4e5105e0c90bfb223d8f177e3140bc88ad19c08",
+      "corpus": {
+        "columns": [
+          "confidence_label",
+          "messages",
+          "prefix_split_char",
+          "scenario",
+          "split_tags",
+          "wrong_prefix"
+        ],
+        "content_sha256": "afce25b78cc417cfc41063e85f318a30654e41454a366829e2e741e562927741",
+        "exists": true,
+        "path": "/home/v-seungplee/metacognition-math/data/rv_redirect_verify_functional.parquet",
+        "rows": 1763,
+        "scenario_counts": {
+          "redirect": 554,
+          "verify": 1209
+        },
+        "token_len_assistant": {
+          "max": 2944,
+          "mean": 571.0901871809416,
+          "p50": 356,
+          "p90": 1390,
+          "total": 1006832
+        },
+        "token_len_trained": {
+          "max": 1953,
+          "mean": 214.75553034600114,
+          "p50": 190,
+          "p90": 311,
+          "total": 378614
+        }
+      },
+      "effective_batch_per_process": 4
+    }
+  },
+  "git": {
+    "branch": "master",
+    "commit": "69a6a7feb8c996256521990f637a1a34f79f01d1",
+    "dirty": true
+  },
+  "grader": {
+    "meaning": "boxed if present, else the runtime answer_extracted, both via robust_grade",
+    "mode": "format_fair",
+    "module_sha256": "1d8982418d70975a6a36f2f57c53e774018a6fa7b5c60a929c74fa4e69f44949"
+  },
+  "objective_files": {
+    "experiments/analysis/analysis_common.py": "1d8982418d70975a6a36f2f57c53e774018a6fa7b5c60a929c74fa4e69f44949",
+    "src/training/dcpo_pmi_shift.py": "2b25766eeaa726aa797a02e41860863d2789446ac98c32eecf709a2e19f2133b",
+    "src/training/dcpo_region.py": "79554ef4ad121047fe60e834723d0b076ce95152341a3fc1c59854ad37089741",
+    "src/training/rewards.py": "3c2fe7f5e83ec1d4613a44730b7409c9ecbd0d6c566a638be6a4732c5080a51b",
+    "src/training/sft.py": "f8e595c9200d06e7c704e6d4f4c6fa8e67e1d379e165835d5366afcf89d31730",
+    "src/training/verl_sdc.py": "9b6829ceeb335bb7be811e5699ad5a31d5dc0369cf6a2ca413205ebf360c6cbd"
+  },
+  "stage": "sft2",
+  "token_exposure": {
+    "available": true,
+    "mean_delta_tokens": 48.92853091321612,
+    "note": "The difference is the treatment when it equals the meta block length. It is a confound only if it was not present in the run being replicated - check that before treating it as a finding.",
+    "per_arm_trained_tokens": {
+      "control": 292353,
+      "meta": 378614
+    },
+    "ratio": {
+      "meta/control": 1.2950576871111295
+    }
+  }
+}

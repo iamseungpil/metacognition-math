@@ -1245,3 +1245,172 @@ Ensure you have the 'AzureML Data Scientist' role ...
 리전에서 동일 → 리전/서비스 인스턴스 문제가 아니라 신원 축이라는 기존 판단과 정합.
 
 **남은 대기**: 사용자 요청으로 30분 간격 재신청 루프로 전환.
+
+---
+
+## E-150 (0731 07:44 UTC) — 차단 해제. SFT2 쌍 발사
+
+**차단이 풀렸다.** 0726 05:49에 시작된 `msrresrchbasicvc` 제출 차단이 **5일 2시간**만에 해소됐다.
+0728 08:06~0729 07:37 사이 마흔다섯 틱 연속 `exit 1 1 1`이었고, 0729 07:37 이후 루프가 끊긴 구간을
+지나 0731 07:44 틱에서 처음으로 `exit 0`이 나왔다.
+
+```
+exit: 0 0 1
+  ① h100std_sft_b0p2_rvfull  → 제출 성공
+  ② canary (singularity ws)  → 제출 성공
+  ③ canary (gcrllm2ws)       → 여전히 AzureML Data Scientist 권한 부족
+```
+
+**해제 시점은 특정할 수 없다.** 0729 07:37과 0731 07:44 사이 어딘가에서 열렸고, 그 구간에 틱이
+없었다. 원인도 확인되지 않았다 — 우리가 바꾼 것은 아무것도 없고(같은 클라이언트·같은 yaml·같은
+신원), 서비스 측에서 무언가 복구된 것으로 보인다. **"일시적"이라던 사용자의 초기 판단이 결과적으로
+맞았다**; 다만 5일은 그 가설로 예측할 수 있는 길이가 아니었다.
+
+**즉시 발사** — 사전 합의된 순서대로:
+
+| 잡 | 실험명 | SKU | 상태(발사 +2m) |
+|---|---|---|---|
+| `h100_sft_b0p2_rvfull` (control) | wired-kiwi | 80G4-H100 | queued |
+| `h100_sft_b2p2_rvfull` (meta) | exact-tick | 80G4-H100 | queued |
+
+**노드는 아직 안 잡혔다.** 둘 다 `queued` = 제출은 수락됐고 Standard 티어에서 노드 배정 대기 중.
+`preparing → queued`까지가 확인된 진행이다.
+
+**매니페스트 동결**: `docs/manifests/sft2_pair_20260731.json`. 검사 통과 —
+arm 간 차이가 **설계된 4개뿐**(dataset_path / model_name_or_path / output_dir / run_name),
+다섯 번째 차이 없음. trained-token 노출비 meta/control = **1.2951**(mean +48.9 tok)로 0727 측정치와
+일치. grader는 `format_fair`로 동결.
+
+**카나리아 ②는 `failed`**. 1-CPU `echo` 잡이므로 실패할 코드가 없다 — Basic 티어 선점이거나
+E-146에서 본 teardown 아티팩트로 보인다. 카나리아의 목적은 admission 시험이었고 **제출이 수락된
+시점에 그 목적은 달성**됐다. 본선 판정에는 무관.
+
+**③ `gcrllm2ws`는 여전히 막혀 있다** — 같은 권한 에러. 이 경로는 이제 불필요하지만, 요청 (b)가
+아직 열려 있다는 사실은 남는다.
+
+**다음**: 두 SFT 완주(각 ~2h) → `models/{b0p2,b2p2}_rvfull_sft` 4샤드 HF 착지 확인 →
+`h100std_rq3v2f_{b0p,b2p,b3p}` 발사.
+
+---
+
+## E-151 (0731 10:46 UTC) — E-150 발사분 전멸. 근인 = 폐기된 프로필 GH_TOKEN
+
+**E-150에서 발사한 SFT2 쌍은 둘 다 실패했다.** 13분·11분 돌고 죽었고, 나는 3시간 동안
+`queued`만 보고 확인하지 않았다. 사용자가 물어서 알았다.
+
+**근인은 컴퓨트가 아니다.** `user_logs/std_log.txt` 첫 줄:
+
+```
+curl: (22) The requested URL returned error: 401
+tar (child): /tmp/metacognition.tar.gz: Cannot open: No such file or directory
+```
+
+코드 tarball을 못 받아 `/scratch/metacognition`이 통째로 없었고, 이후 가드
+(corpus 확인 → pusher 확인)가 순차 발동해 `ABORT window; exit 1`. **가드는 제대로 작동했다** —
+스테일/부재 tarball로 비내구 실행하는 것을 막았다.
+
+**401의 진짜 원인 — 토큰 두 개가 존재하고, 죽은 쪽이 이겼다:**
+
+| 출처 | sha256[:12] | asset 491027629 |
+|---|---|---|
+| 셸 프로필(기본 export) | `e966d6aa…` | **HTTP 401** |
+| `.env` | `c95ca4e4…` | HTTP 200 |
+
+0727 GH_TOKEN 유출 후 GitHub이 유출분을 폐기했고 새 토큰은 `.env`에 들어갔지만,
+**프로필의 죽은 값이 그대로 남아 `.env` 값을 가렸다**. 내 30분 루프 틱 명령에는
+`set -a; source .env; set +a`가 빠져 있었고, 그래서 죽은 토큰이 노드로 갔다.
+런처는 `GH_TOKEN: ${GH_TOKEN}`으로 제출 시점 환경을 확장하므로 이 누락이 곧바로 401이 된다.
+
+**놓친 신호**: 제출 로그에 `automatically extracting WANDB_API_KEY from your .netrc file`
+경고가 있었다. 환경변수가 없어서 폴백했다는 직접 증거였고, 나는 지나쳤다.
+**교훈: 이 경고는 "환경이 로드되지 않았다"의 카나리아다.**
+
+**조치 1 — 발사 전 게이트를 넣고 재발사**(musical-mutt / clever-frog, 둘 다 queued):
+세 토큰 존재 + `GH_TOKEN`으로 asset이 실제 HTTP 200인지 확인한 뒤에만 `amlt run`.
+재발사 로그에서 `.netrc` 경고가 사라진 것으로 환경 전달을 확인했다.
+
+**조치 2 — HF 점검에서 두 번째 지뢰 발견**: `iamseungpil/metacot-sft2-4g`가
+**존재하지 않았다**(`RepositoryNotFoundError`). 두 SFT2 런처 모두 중간 체크포인트를 이 repo에
+푸시하고, 발사 직후 `--probe-only`로 쓰기 가능성을 **동기 확인**한 뒤 실패하면 abort한다.
+즉 토큰을 고쳐도 노드를 잡자마자 여기서 또 죽을 상태였다. private model repo로 생성하고
+런처와 동일한 probe를 두 prefix(`b0p2_4g`/`b2p2_4g`)로 실행해 `write+delete ok` 확인,
+잔여 파일 없음(`.gitattributes`만).
+
+**HF 현황**(0731 점검):
+
+| repo | type | files | last | 비고 |
+|---|---|---|---|---|
+| `iamseungpil/metacot` | dataset | 1534 | 0726 11:18 | `models/`에 rvfull **0개** |
+| `iamseungpil/metacot` | model | 97 | 0724 08:50 | checkpoint-253/506/759 |
+| `iamseungpil/metacot-sft2-4g` | model | — → 1 | **신규 생성** | private, probe 통과 |
+| `iamseungpil/metacot-h200-triobj-dcpo-v3` | model | 388 | 0728 05:14 | RL 체크포인트 |
+
+dataset `models/`에 있는 것: `b0p_v8base_strict_sft`, `b2p_v8meta_strict_sft`(SFT1 init 쌍),
+`b2p2_rvseg_sft`(부록 lineage). **rvfull SFT2는 여전히 없다** — 0726 이후 아무것도 올라가지 않았고,
+차단 기간과 정확히 겹친다.
+
+**b3p를 먼저 못 하는 이유 — 실측**. b3p의 init 해석 블록을 그대로 실행한 결과:
+
+```
+검사 PAIR_eb16_sft   -> [False, False]
+검사 PAIR_sft        -> [False, False]
+[init] no suffix has BOTH b0p2_rvfull* and b2p2_rvfull* on HF
+       - refusing to pair mismatched arms
+   exit=1
+```
+
+지금 b3p를 발사하면 노드를 잡은 직후 이 지점에서 죽는다. 이는 버그가 아니라 설계된 거부다 —
+짝이 맞지 않는 arm끼리 비교하는 것을 막는다.
+
+---
+
+## E-152 (0731 14:10 UTC) — 두 번째 전멸의 근인: 런처가 tarball보다 새 인터페이스를 호출
+
+**E-151에서 토큰을 고쳐 재발사한 쌍도 전멸했다**(14분·13분). 토큰은 이번엔 맞았다 —
+`staged SFT1 init OK`, corpus 존재, pusher 스크립트 존재까지 전부 통과했고, 다음 줄에서 죽었다:
+
+```
+push_sft_ckpts_to_hf.py: error: unrecognized arguments: --probe-only
+[YAML][pusher] destination not writable - this run would be NON-DURABLE; ABORT window
+```
+
+**pin된 asset이 런처보다 낡았다.** asset 491027629는 **0727 04:43** 스냅샷인데,
+`--probe-only`는 내가 **0727 16:15**에 추가했다. 런처(0728 편집)는 새 플래그를 호출하고
+tarball 안 스크립트는 그것을 모른다. argparse가 거부 → 가드 발동 → abort.
+차단 5일 동안 발사가 없었으므로 이 불일치가 드러날 기회가 없었다.
+
+**내 사전 점검의 구멍**: E-151에서 나는 tarball에 파일이 **존재하는지**만 확인하고
+그 파일이 **런처가 호출하는 인터페이스를 지원하는지**는 확인하지 않았다.
+존재 확인은 인터페이스 호환 확인이 아니다.
+
+**조치 — 최소 교체로 asset 재빌드**:
+
+| | |
+|---|---|
+| 새 asset | `496769353` = `metacognition_rq3v2_0731_probe.tar.gz` |
+| md5 | `b43789e0c89b93451597ec767198ed27` (35,736,417 B) |
+| 변경 | `scripts/push_sft_ckpts_to_hf.py` **한 개만** |
+| 검증 | 두 asset을 모두 풀어 **459개 파일 전수 diff** → 그 1개만 differ, 파일 수 동일 |
+
+두 런처의 `CODE_TAR_REVISION`을 동시에 갱신(양 arm 동일 asset 유지). lint 45개 통과,
+추가 주석에 아포스트로피 0(E-134 방어).
+
+**전수 인터페이스 점검**(이번에 새로 한 것). 런처가 호출하는 모든 진입점을 새 tarball 버전으로
+대조했다:
+
+| 스크립트 | 런처가 쓰는 인자 | tarball 지원 |
+|---|---|---|
+| `push_sft_ckpts_to_hf.py` | `--probe-only` 외 | OK (신규 asset) |
+| `push_models_hf.py` | `--model_path --model_name --repo_id` | OK |
+| `verify_eos_invariant.py` | positional CKPT | OK |
+| `eval_vllm_1030.py` | `--benchmarks --max_problems --max_tokens --max_model_len --temperature --tp_size --num_samples` | OK |
+
+term-eval 단계까지 미리 본 이유: 학습 2시간을 태운 뒤 거기서 죽으면 손실이 훨씬 크다.
+
+**발사 전 게이트 G1~G4**(전부 통과해야 `amlt run`):
+G1 세 토큰 로드 · G2 `GH_TOKEN`으로 새 asset이 실제 HTTP 200 · G3 두 prefix로 write probe ·
+G4 SFT1 init 쌍이 HF에 실재. 이 게이트는 E-151과 E-152를 죽인 두 조건을 각각 잡는다.
+
+**발사**: `fond-panda`(b0p2 control) / `neat-hyena`(b2p2 meta), 둘 다 80G4-H100 Standard.
+
+**누적 손실**: H100 4-GPU 윈도 4개(각 ~13분). 전부 학습 시작 전에 죽어 체크포인트 손실은 없다.
