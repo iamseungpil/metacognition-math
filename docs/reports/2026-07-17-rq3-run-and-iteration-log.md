@@ -1746,3 +1746,38 @@ rvseg lineage의 정점은 gs200이었음. **판정하기엔 이르다.**
 **0731 23:56 상태**: b0p 재제출(gs65) · b2p **retry_005**(5번째 자동 retry, 초기화 중) ·
 b3p **67**/300 정상. durable: b0p gs65 · b2p gs60 · b3p gs65.
 발사 8.7시간, 누적 중단 10회.
+
+---
+
+## E-161 (0801 05:07 UTC) — b0p 4번째 중단은 **자동 복구되는 종류**였다(retry_003)
+
+**관측**: 04:37 step 81(정상) → 05:07 `amlt status=queued`, wandb `state=crashed`, HB 24분 경과.
+b0p이 step **83**에서 끊겼다. 발사 이후 b0p 단독 4번째 중단, 전체 13번째.
+
+**직전 3회와 다른 점**: `log list`에 `system_logs/lifecycler/retry_003/`과
+`snapshot_capability/retry_003/`이 **새로 생겼다**. 즉 amlt가 스스로 재스케줄 중이다.
+E-160 판정 기준 4번("새 `retry_NNN`이 생겼으면 amlt 자동 복구 중 → 개입 금지")에 정확히
+해당하므로 **수동 재제출을 하지 않는다**. 직전 3회는 retry가 생기지 않아 사람이 재제출해야
+했던 반면, 이번은 선점(preemption) → 자동 재큐 경로다.
+
+**손실 계산**: durable 최신이 `gs80`이고 wandb는 83에서 끊겼으므로 **손실 3스텝**.
+
+**HF durable 건강검진**(같은 시각, `iamseungpil/metacot-h200-triobj-dcpo-v3`):
+
+| arm | 최신 durable | model / optim / extra | 판정 |
+|---|---|---|---|
+| rq3v2f_b0p | gs80 | 4 / 4 / 4 | 완전 |
+| rq3v2f_b2p | gs120 | 4 / 4 / 4 | 완전 |
+| rq3v2f_b3p | gs115 | 4 / 4 / 4 | 완전 |
+
+세 arm 모두 샤드가 빠짐없이 올라가 있고 `keep=1` 프루닝도 의도대로 동작한다.
+**체크포인트 릴레이 자체에는 결함이 없다** — 중단은 전부 인프라 선점이지 파이프라인 결함이 아니다.
+
+**부수 기록(도구)**: `amlt log view`의 파일 지정은 위치인자가 아니라 `-F <path>`이며
+`<exp> :<job>`은 그 뒤에 온다. 위치인자로 주면 "Expected no further arguments"로 죽는다.
+또 이 명령은 페이저를 꺼도(`-P`) 10분 안에 반환하지 않는 경우가 있어, 생사 판정은
+`status` + `log list`의 `retry_NNN` 유무 + wandb로 끝내는 편이 빠르다.
+
+**0801 05:07 상태**: b0p **83**/300에서 선점 → retry_003 자동 재큐(val지점 1) ·
+b2p **119**/300(val 2) · b3p **114**/300(val 2). 발사 14시간, 누적 중단 13회.
+gs100 3-arm 비교는 b0p 복귀 후로 미룬다.
