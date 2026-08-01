@@ -1839,3 +1839,40 @@ gs100은 사전등록 300스텝의 33% 지점 · rvseg 선행 실험의 정점�
 
 **0801 08:06 상태**: b0p **103**/300(val 2) · b2p **139**/300(val 2) · b3p retry_002 재초기화 중
 (wandb 132/HB 35분은 잔재, val 2). 발사 17.3시간, 누적 중단 16회.
+
+---
+
+## E-163 (0801 08:40 UTC) — b3p **retry 소진 → `failed`**, 수동 재제출(`pure-stag`)
+
+**관측**: 08:06까지 `running`이던 b3p(`fleet-ray`)가 08:40에 `failed`로 전환됐다.
+`log list`의 최신 retry는 `retry_003`에서 멈춰 있고 더 늘지 않는다.
+E-161에서 정한 자동복구 경로("새 `retry_NNN`이 생기면 개입 금지")가 **끝난 상태**다 —
+amlt의 재시도 한도를 소진했고, 이제부터는 사람이 다시 넣어야 한다.
+0801에 관측된 세 가지 중단 양상이 이로써 다 나왔다: ①retry 생성 후 자동복귀(b0p·b2p),
+②retry 없이 좀비(E-160), ③**retry 소진 후 terminal `failed`(이번)**.
+
+**손실**: durable `rq3v2f_b3p` gs130이 완전(model/optim/extra = 4/4/4)하고 wandb는 132에서
+끊겼으므로 **2스텝**.
+
+**발사 전 게이트(전부 통과)**:
+
+| 항목 | 결과 |
+|---|---|
+| `GH_TOKEN` | HTTP 200 |
+| `HF_TOKEN` | HTTP 200 |
+| `WANDB_API_KEY` | 40자 존재 |
+| 코드 asset `490407111` | HTTP 200 |
+| durable `rq3v2f_b3p` | gs130 완전 |
+
+**재제출**: `h100std_rq3v2f_b3p.yaml -t msrresrchbasicvc` → 실험명 **`pure-stag`**
+(이전 `fleet-ray`는 종료). b3p의 네 번째 윈도.
+
+**부수 관측 — durable 프론티어에 '쓰는 중' 스텝이 보인다**: 같은 시각 LIST에서
+b0p은 gs105(완전)와 gs110(model 4 / **optim 1** / extra 4), b2p은 gs140(완전)과
+gs145(model 4 / **optim 2** / extra 4)가 함께 보였다. 최신 스텝이 불완전한 것은 결함이 아니라
+**푸셔가 업로드 중**이라는 뜻이며, `pull_resume_ckpt.py`가 3종 완비(≥4샤드) 스텝만 고르므로
+재개 지점은 자동으로 직전 완전 스텝이 된다. 불완전 스텝을 보고 릴레이가 깨졌다고 판단하면 안 된다.
+
+**0801 08:40 상태**: b0p **110**/300(val 2, durable gs105) · b2p **145**/300(val 2, durable gs140) ·
+b3p 재제출 `pure-stag` 준비 중(durable gs130, val 2). 발사 17.9시간, 누적 중단 17회.
+gs150 3-지점 비교는 세 arm이 모두 세 번째 평가를 찍은 뒤로 미룬다.
