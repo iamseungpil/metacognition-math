@@ -157,6 +157,8 @@ jobs:
         python -m pip install --quiet --upgrade hf_xet 2>&1 | tail -2 || echo "[YAML] hf_xet install failed (non-fatal)"
         python -c "import hf_xet" && echo "[YAML] hf_xet ready" || echo "[YAML] hf_xet import FAILED"
         nohup env -u HF_HUB_DISABLE_XET python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rq3v2f_b3p --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --interval 90 --keep 1 --config_name rq3v2f_b3p > /scratch/logs/push_rq3v2f_b3p.log 2>&1 &
+        PUSH_PID=$$!
+        echo "[YAML] pusher pid=$${PUSH_PID}"
 
         export PYTHONPATH=/scratch/metacognition
         cd /scratch/metacognition
@@ -292,8 +294,14 @@ jobs:
         # checkpoint reliably reaches HF for the held-out eval. Stop the background pusher first
         # (its per-file commits + super_squash_history racing this upload_folder can drop the
         # final commit). ──
-        pkill -f push_ckpts_to_hf 2>/dev/null || true
+        # PID-ONLY STOP 0802: "pkill -f push_ckpts_to_hf" matched THIS bash -c command line
+        # (the launch line above contains that string), so it SIGTERMed its own shell and the
+        # FINAL SYNC PUSH below never ran — that is how b2p lost its gs300 weights. Kill by PID.
+        kill $${PUSH_PID} 2>/dev/null || true
         sleep 5
+        kill -9 $${PUSH_PID} 2>/dev/null || true
+        sleep 2
+        kill -0 $${PUSH_PID} 2>/dev/null && echo "[YAML] WARN pusher $${PUSH_PID} still alive" || echo "[YAML] pusher $${PUSH_PID} stopped"
         FINAL=$$(ls -d /scratch/checkpoints/rq3v2f_b3p/global_step_* 2>/dev/null | sort -V | tail -1)
         FN=$$(basename "$${FINAL}")
         echo "[YAML] final sync push target: $${FINAL}"
