@@ -45,7 +45,7 @@ jobs:
         WANDB_PROJECT: metacot-dcpo-v4
         WANDB_RUN_GROUP: rq3_matched_ladder
         WANDB_NAME: rq3v2f_b2p
-        WANDB_RUN_ID: rq3v2f-b2p-1
+        WANDB_RUN_ID: rq3v2f-b2p-2
         WANDB_RESUME: allow
         WANDB_INIT_TIMEOUT: "300"
         WANDB_TAGS: RQ3,B2,MATCHED,VANILLA_GRPO,correctness_only,meta_mix,from-b23-rv-meta-sft,recipe-v2,collapse-fixed
@@ -180,7 +180,7 @@ jobs:
         # bash -c block per amlt wordsplit rule.)
         python -m pip install --quiet --upgrade hf_xet 2>&1 | tail -2 || echo "[YAML] hf_xet install failed (non-fatal)"
         python -c "import hf_xet" && echo "[YAML] hf_xet ready" || echo "[YAML] hf_xet import FAILED"
-        nohup env -u HF_HUB_DISABLE_XET python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rq3v2f_b2p --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --interval 90 --keep 1 --config_name rq3v2f_b2p > /scratch/logs/push_rq3v2f_b2p.log 2>&1 &
+        nohup env -u HF_HUB_DISABLE_XET python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rq3v2f_b2p --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --interval 90 --keep 1 --squash_every 3 --config_name rq3v2f_b2p > /scratch/logs/push_rq3v2f_b2p.log 2>&1 &
         PUSH_PID=$$!
         echo "[YAML] pusher pid=$${PUSH_PID}"
 
