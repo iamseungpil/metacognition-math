@@ -36,7 +36,7 @@ PMI_AGG_METHODS = ("sum_clip", "topk_mean", "mean", "max", "mean_min")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# §2 aggregation + sign gate (review M3)
+# §2 aggregation
 # ─────────────────────────────────────────────────────────────────────────────
 def pmi_aggregate(delta_per_token, method: str, topk_frac: float = 0.25,
                   clip_c: float = 2.0, alpha: float = 0.0) -> float:

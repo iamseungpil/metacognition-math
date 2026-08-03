@@ -159,23 +159,23 @@ algorithm:
   # w_meta (M4) via dcpo_w_meta_scale. 0.0 disables (stage-1/v4-off identity).
   dcpo_len_cost: 0.08      # s2b 0.03 -> 0.08: stage-C length containment (spec
                            # 2026-06-15; stops the s2b length ratchet).
-  # ── v4 R_meta source: GROUP-BRANCH COUNTERFACTUAL (design 2026-06-21) ──────
-  # cf_group FULLY REPLACES PMI (user decision, no combined dense term). Each
-  # GRPO group of n=8 is split into 4 with-meta + 4 without-meta sub-arms
-  # (meta-open+close banned on the without-arm via per-row logit_bias, IN the
-  # main rollout — no second decode). The counterfactual answer-delta
-  #   delta_i = correct_with[i] - mean(correct_without over the group)
-  # is the new R_meta; it + the SCoRe transition head R_trans = delta route onto
-  # the ANSWER region (outcome locus, user decision) — NOT META_CONTENT. The
-  # legacy meta_region_utility / META_CONTENT channel is HARD-ZEROED. AdaCoT
-  # over-trigger penalty (dcpo_w_over) folds onto R_corr's answer routing when
-  # meta fires on an already-correct (without-arm) problem; AdaptThink floor
-  # clamps positive deltas on groups where meta is net-harmful. The PMI knobs
-  # below (dcpo_pmi_*) are now DORMANT (kept, harmless).
+  # ── v4 R_meta source: PMI-SHIFT-ACROSS-META (design 2026-06-25) ────────────
+  # Two-position teacher-forcing: the gold and decoy answer strings are scored
+  # on the frozen ref worker at meta-OPEN and at meta-CLOSE, and R_meta is the
+  # asymmetric sign-reversal between the two positions (decoy->gold = +save,
+  # gold->decoy = -derail). It routes onto META_CONTENT as an independent head,
+  # centered over the shift-scored rows only.
+  #
+  # This config previously defaulted to cf_group and carried the knobs of four
+  # other retired sources. The 2026-08-03 cleanup removed those generations from
+  # the tree and flipped this default to the value the only launcher already set
+  # (h100std_rq3v2f_b3p.yaml overrides it to pmi_shift), so config and launcher
+  # now agree. The surviving sources are cf, none and pmi_shift; provenance for
+  # the removed ones is in archive/reward_lineages_retired_0803/README.md.
   dcpo_rmeta_source: pmi_shift
-  # I4 conf carve-out: dense delta routes onto META_CONTENT \ CONF (the conf
-  # token stays Brier-only — dense PMI there rewards "stating a confidence the
-  # continuation echoes", fighting R_cal).
+  # I4 conf carve-out: the meta head routes onto META_CONTENT \ CONF (the conf
+  # token stays Brier-only — rewarding the meta head there would credit "stating
+  # a confidence the continuation echoes", fighting R_cal).
   dcpo_meta_excl_conf: true
   # CF regeneration machinery DORMANT (spec §4: gated off, not deleted).
   sdc_counterfactual: false

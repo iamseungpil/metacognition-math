@@ -30,12 +30,12 @@ def test_clean_config_passes_and_returns_live_knobs():
 def test_setting_a_dead_lineage_knob_is_rejected():
     """Reaching a retired reward generation must fail loudly."""
     with pytest.raises(KnobRegistryError, match="retired reward"):
-        validate(_ok_cfg(dcpo_asymcf_alpha=0.5))
+        validate(_ok_cfg(dcpo_over_threshold=0.5))
 
 
 def test_dead_lineage_knob_at_its_default_is_tolerated():
     """Presence alone is not activation; only deviation is."""
-    validate(_ok_cfg(dcpo_asymcf_alpha=1.0))
+    validate(_ok_cfg(dcpo_over_threshold=1.0))
 
 
 def test_unacknowledged_load_bearing_knob_is_rejected():

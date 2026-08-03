@@ -95,15 +95,15 @@ from src.training.dcpo_region import (
     signature_suppression_ids,
 )
 from src.training._decoy_utils import _rule_based_decoy
-# TRIOBJ_DCPO_V4 (ADDITIVE): the dense likelihood-delta (PMI) R_meta core is a
-# pure numpy module (zero verl deps, shared with the offline probe). Referenced
-# ONLY by the V4 populator block + _compute_dcpo_v4_pmi_rmeta below.
+# split_first_meta — the ONE prefix/meta/continuation splitter, shared by the
+# live pmi_shift scorer and the always-on epistemic wandb block. (The dense-PMI
+# generation this module was built for was removed 2026-08-03.)
 from src.training.dcpo_pmi import (
     split_first_meta,
 )
-# DIRECTIONAL self-distillation (gm-contrast) R_meta core — pure numpy sibling of
-# dcpo_pmi (spec 2026-06-24-directional-self-distill-meta-rl-design.md). Used ONLY
-# by the new decoy_did_gm / decoy_did_rlsd branches + _compute_dcpo_v4_gm_rmeta.
+# Answer-string + divergent-token machinery — pure numpy. Built for the gm /
+# RLSD generations (removed 2026-08-03); these two functions survive because the
+# live pmi_shift scorer and src/eval/pmi_shift_signal.py both call them.
 from src.training.dcpo_directional import (
     boxed_answer_string,
     divergent_token_mask,
@@ -415,13 +415,16 @@ def _populate_dcpo_region_keys(data) -> None:
             _heads.get("trunc_open_member", [0.0] * bs), dtype=np.float32)
 
     # ── TRIOBJ_DCPO_V4 R_meta SOURCE (ADDITIVE, mode+knob gated) ──────────────
-    # dcpo_rmeta_source: 'cf' (EXPLICIT opt-in only — leave the
-    # dcpo_region_rewards value, byte-identical to the v3 path) | 'pmi'
-    # (overwrite meta_region_utility with the dense likelihood-delta head) |
-    # 'none' (stage 1: hard-zero the head so the logged scalar cannot leak a
+    # dcpo_rmeta_source: 'pmi_shift' (THE live source — two-position teacher-
+    # forcing, routed onto META) | 'cf' (EXPLICIT opt-in only — leave the
+    # dcpo_region_rewards value, byte-identical to the v3 path) | 'none'
+    # (stage 1: hard-zero the head so the logged scalar cannot leak a
     # text-fallback CF signal at w_meta=0). Round 2 M-A: a MISSING/unreadable
     # knob RAISES — the old silent 'cf' default fell open onto the deprecated
     # regeneration path with plausible nonzero values, invisibly.
+    # Five further sources (pmi, cf_group, asym_cf, decoy_did_gm,
+    # decoy_did_rlsd) were removed 2026-08-03; see
+    # archive/reward_lineages_retired_0803/README.md.
     # The overwrite happens HERE — after the authoritative head write above,
     # before compute_sdc_gdpo_advantage reads the key — so the FIVE-WAY SYNC
     # key/weight lists are untouched (same key, different source).
@@ -1069,12 +1072,11 @@ REWARD_CONFIGS = {
     # routing, same FIVE-WAY SYNC rule as documented on the V3 entry). The ONLY
     # change is the SOURCE of R_meta: instead of the CF-regeneration delta
     # (sdc_counterfactual=false in the v4 yamls — machinery dormant, NOT
-    # deleted), the populator overwrites `meta_region_utility` with the dense
-    # likelihood-delta (PMI) head when algorithm.dcpo_rmeta_source == 'pmi'
-    # (sign-gated agg of logP_ref(C|prefix+meta) - logP_ref(C|prefix) over the
-    # model's OWN post-meta continuation, frozen ref worker at T=1.0).
+    # deleted), the populator overwrites `meta_region_utility` with the
+    # PMI-SHIFT head when algorithm.dcpo_rmeta_source == 'pmi_shift' (two-
+    # position teacher-forcing at meta-OPEN and meta-CLOSE; decoy->gold
+    # reversal = +save, gold->decoy = -derail, frozen ref worker at T=1.0).
     # Stage 1 (format-only) sets dcpo_rmeta_source: none + dcpo_w_meta: 0.
-    # See docs/superpowers/specs/2026-06-11-dcpo-v4-likelihood-rmeta-design.md.
     "TRIOBJ_DCPO_V4": {
         "funcs": [correctness_region_reward, meta_region_utility_reward, cal_region_reward,
                   meta_emission_reward, format_penalty_reward],
@@ -1397,7 +1399,7 @@ def _build_teacher_logprob_batch(
     )
 
 
-# ── TRIOBJ_DCPO_V4 dense likelihood-delta (PMI) R_meta scoring ───────────────
+# ── TRIOBJ_DCPO_V4 ref-logprob batching, shared by the pmi_shift scorer ──────
 # Modeled on _build_teacher_logprob_batch (the ref-scoring custom-batch
 # precedent) but with the verl-STANDARD tensor layout: the precedent writes
 # input_ids LEFT-ALIGNED (prompt at cols [0,p_len), response at p_len) while

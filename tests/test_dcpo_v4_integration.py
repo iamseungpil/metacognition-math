@@ -1,4 +1,4 @@
-"""Integration tests for TRIOBJ_DCPO_V4 — dense likelihood (PMI) R_meta wiring.
+"""Integration tests for TRIOBJ_DCPO_V4 — pmi_shift R_meta wiring.
 
 PURE PYTHON (runs under /home/v-seungplee/miniconda3/envs/metaprobe/bin/python).
 verl / ray / omegaconf / tensordict are NOT installed in this env; importing
@@ -13,8 +13,8 @@ Covers (task spec, all review-traced):
   - conf carve-out routing through compose via the call site (I4).
   - dcpo_rmeta_member centering (I2) at the compose level.
   - w_meta warmup schedule (M4) + its non_tensor threading.
-  - _compute_dcpo_v4_pmi_rmeta end-to-end with a fake tokenizer + monkeypatched
-    ref scorer (selection / alignment-failure / answer-leak guard / membership).
+  - _compute_dcpo_v4_pmi_shift_rmeta end-to-end with a fake tokenizer +
+    monkeypatched ref scorer (selection / membership / two-position scoring).
 """
 import os
 import types
@@ -347,7 +347,7 @@ def test_rmeta_member_mask_none_is_byte_identical():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# _compute_dcpo_v4_pmi_rmeta end-to-end (fake tokenizer + patched ref scorer)
+# pmi_shift scorer end-to-end (fake tokenizer + patched ref scorer)
 # ═══════════════════════════════════════════════════════════════════════════
 def test_v4_rmeta_source_must_be_explicit():
     # Round 2 M-A: missing/unreadable knob RAISES — the old silent 'cf' default
@@ -702,6 +702,6 @@ def test_pmi_shift_production_parity_non_inert():
 
 def test_pmi_shift_existing_arms_byte_identical():
     # Adding pmi_shift to the source set must not alter the other sources'
-    # validation (cf/pmi/none still pass; gm/asym_cf unchanged).
+    # validation (the surviving cf/none still pass).
     for src in ("cf", "none"):
         assert _v4_rmeta_source_strict(lambda n, d, s=src: s) == src
