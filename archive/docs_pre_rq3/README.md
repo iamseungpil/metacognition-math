@@ -59,7 +59,7 @@ frozen directory. It is backticked prose, not a link.
 `PLAN.md`'s section numbers are cited from frozen code and configs and cannot be repaired
 either: `src/training/meta_inject.py:1` ("PLAN.md §3 H2"), `experiments/probes/a3_inject_causal.py:3`,
 `configs/CTSD_NODE_INDEX.md:1`, `configs/archive/verl_ctsd_inject_C_h200_4x4k.yaml:1`,
-`runs/archive/h200_ctsd_inject_C_smoke.yaml:1`. All are docstring/comment prose — nothing
+`archive/runs_archive/h200_ctsd_inject_C_smoke.yaml:1`. All are docstring/comment prose — nothing
 executes them.
 
 Likewise `plans/plan_ctsd_E4_selfdistill_rl_2026_06_03.md` and `plans/plan_meta_rod_v53_2026_05_07.md`

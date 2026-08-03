@@ -3,7 +3,7 @@
 > **START HERE.** This file maps the one live method, its exact file spine, and
 > where the superseded variants and archived reward modes now live. Everything
 > that is not on the spine below is history, kept for reproducibility under
-> `runs/archive/` and `configs/archive/`.
+> `archive/runs_archive/` and `configs/archive/`.
 
 ## The one path that matters
 
@@ -18,7 +18,7 @@ failed pmi-only strip), and B3-noPMI (identical to B3pkg except
 effect), RQ2 = B3pkg−B2 (meta reward package effect; the pure pmi isolation is
 B3pkg−B3-noPMI). Everything else in the
 tree is history — superseded variants and probes, kept for reproducibility under
-`runs/archive/` and `configs/archive/`.
+`archive/runs_archive/` and `configs/archive/`.
 
 > **0727: the block below is the retired RQ3 think-off generation.** The current
 > generation is RQ3v2 think-on — a two-stage SFT stack (SFT1 → SFT2 on the RV
@@ -110,7 +110,7 @@ root yamls are the actual historical launch scripts.
 
 ## Archived, not deleted
 
-`runs/archive/` = old amlt launchers (ROD/OPD/RLSD/GDPO/e4-e9 lines, metacognition
+`archive/runs_archive/` = old amlt launchers (ROD/OPD/RLSD/GDPO/e4-e9 lines, metacognition
 A100 launchers, triobj v2-v3 and intermediate v4 stages, decoy/asymcf/weight-soup
 probes, superseded eval one-offs). `configs/archive/` = their hydra configs.
 Nothing was removed — `git log --follow <archived-file>` for its history, and any
