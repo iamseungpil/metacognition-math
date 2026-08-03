@@ -4575,6 +4575,18 @@ def main_task(config):
     pprint(OmegaConf.to_container(config, resolve=True))
     OmegaConf.resolve(config)
 
+    # KNOB REGISTRY GATE 0803. A retired-lineage knob must not be reachable, and no
+    # load-bearing knob may be inherited invisibly. Both failed once: dcpo_meta_floor
+    # went 0.05 -> 0.0 on 2026-06-22 for cf_group, a pmi_shift run inherited it six
+    # weeks later, and meta emission fell 1.00 -> 0.018 with every declared launch gate
+    # still green. Opt out only for a mode that has no dcpo_* surface at all.
+    if str(getattr(config, "mode", "")).upper().startswith("TRIOBJ"):
+        from src.training.knob_registry import validate as _validate_knobs
+        _resolved = _validate_knobs(getattr(config, "algorithm", None))
+        print("[SDC] knob registry OK — %d live knobs resolved:" % len(_resolved))
+        for _name, _value in _resolved:
+            print("[SDC]   %-40s = %r" % (_name, _value))
+
     # Migrate any legacy reward_model.* keys into the new reward.* layout so that
     # RayPPOTrainer internals (need_reward_model, reward_loop_manager) see a
     # consistent config tree.
