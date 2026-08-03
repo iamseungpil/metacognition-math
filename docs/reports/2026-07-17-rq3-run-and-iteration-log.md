@@ -2573,3 +2573,31 @@ rmeta 창 평균은 **0 바로 아래에서 0 쪽으로 올라오는 중**(−0.
 
 HF 실측: b0p gs215 · b2p gs175(정체) · b3p gs300 · b3s gs40/45/50/55 — `--keep 3` 정상 작동.
 **b0p** gs215, 443 s/step, ETA 10.5h.
+
+### E-1xx 2026-08-03 15:52 UTC — **b0p 재시작(콜드)** · b2p gs180 도달·wandb 회복 · b3s gs62
+
+- ⚠**b0p (`solid-gibbon`) 가 gs219 에서 죽고 콜드 재시작 중.** 로그가 190줄, 단계는
+  `[bootstrap] fast-path: pulling conda-pack env from HF` — conda env·코드·init 모델·98GB 체크포인트를
+  전부 새로 받아야 한다. wandb `rq3v2f-b0p-1` = crashed @ gs219 (b0p 런은 이것 하나뿐이라
+  재개 시 같은 런에 붙고, gs220 전까지 몇 스텝이 폐기될 것이다).
+  ★**HF 의 gs220 은 18/23 파일 24.6GB 로 부분 업로드다.** `pull_resume_ckpt.py` 가 model·optim·extra
+  각 4/4 를 요구하므로 **gs215 로 재개된다** — 5스텝 손실. 부분 체크포인트 가드가 의도대로 작동한 사례다.
+- ✅**b2p (`musical-ant`) gs180 도달.** 로그에
+  `local_global_step_folder: /scratch/checkpoints/rq3v2f_b2p/global_step_180` +
+  `Saved model to .../global_step_180/actor/model_world_size_4_rank_1.pt`. wandb 도 gs179 까지 올라와
+  **폐기 구간을 벗어났다**(gs176~179 는 영구 결측). 370 s/step, ETA 12.4h.
+- **b3s (`musical-wombat`) gs62**, 321 s/step, ETA 21.2h. 창 평균:
+
+| 지표 | 최근10 | 최근20 |
+|---|---|---|
+| `meta_emit_rate` | **0.9990** | **0.9982** |
+| `rmeta_mean_scored` | −0.1183 | −0.0779 |
+| `pos_rate` / `neg_rate` | 0.2031 / 0.2529 | 0.2114 / 0.2463 |
+| `entropy` | 0.2578 | 0.2416 |
+| `correctness` | 0.4390 | 0.4772 |
+
+발화는 여전히 침식 0. rmeta 는 **0 아래에서 진동하며 음수율이 양수율보다 꾸준히 높다**
+(10/20 창 모두). 건전 밴드 +1.0~+1.2 와는 자릿수가 다르다.
+
+- **HF 푸시 상태**: 마지막 체크포인트 커밋 15:41(b0p gs220 부분) · `prune global_step_45 (keep latest 3)`
+  15:39 정상. b3s gs50·55·60 완결 23/23 98.3GB. b2p gs175 완결. b3p gs300 보존.
