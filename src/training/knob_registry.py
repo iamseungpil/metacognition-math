@@ -22,9 +22,24 @@ CONTRACT
 
   1. a ``dead_lineage`` knob deviates from its registered default
      (that is the only way to reach retired reward generations),
-  2. ``dcpo_ack_load_bearing`` does not name exactly the load-bearing set
+  2. a ``removed`` knob is PRESENT AT ALL, at any value,
+  3. ``dcpo_ack_load_bearing`` does not name exactly the load-bearing set
      (forces whoever launches to type the names, so the values get printed), or
-  3. ``dcpo_rmeta_source`` is absent or outside the registry's legal values.
+  4. ``dcpo_rmeta_source`` is absent or outside the registry's legal values.
+
+WHY (1) AND (2) HAVE DIFFERENT RULES
+------------------------------------
+A dead_lineage knob still has a reader, so presence at its registered default is a knob
+that is off, and only deviation reaches the retired code. A ``removed`` knob has no reader
+left: the 0803 pass deleted the code with the name. Setting it is therefore a silent no-op
+in the strongest sense — the operator believes a lever is set, and no run, log, dashboard or
+config diff will contradict them, because there is no longer any code that could disagree.
+"At its old default" is not a safe state, it is the same no-op; the default was deleted too.
+This is the E-171 shape with the sign flipped: there we missed a knob that mattered, here we
+would count one that cannot matter. Four archived configs currently set seven removed
+dcpo_pmi_* keys (core/KNOBS.yaml, removed.pmi_dense.still_set_in_archived_configs) under
+comments that read as though they are still load-bearing; a deviation-only rule cannot see
+them at all, since a removed knob has no registered default to deviate from.
 
 On success it returns the resolved value of every live knob so the caller can log
 them; provenance then lives in the run log instead of in nobody's head.
@@ -42,7 +57,7 @@ _REGISTRY_PATH = os.path.join(
 )
 
 # Sections of core/KNOBS.yaml that carry per-knob entries.
-_ENTRY_SECTIONS = ("load_bearing", "live", "default_only", "dead_lineage")
+_ENTRY_SECTIONS = ("load_bearing", "live", "default_only", "dead_lineage", "removed")
 
 _ACK_KEY = "dcpo_ack_load_bearing"
 
@@ -124,7 +139,25 @@ def validate(algorithm_cfg: Any, registry_path: str | None = None) -> List[Tuple
                 f"generation and setting it reaches dead code"
             )
 
-    # (2) every load-bearing knob must be named in the acknowledgement list, so the
+    # (2) removed lineages must not be PRESENT AT ALL — no default to fall back to.
+    #     Unlike (1) this is not a deviation check: the reader is gone, so every value is
+    #     equally inert and "set to the old default" is the same silent no-op as any other.
+    for name, entry in sorted(entries.items()):
+        if str(entry.get("status", "")) != "removed":
+            continue
+        if not _present(algorithm_cfg, name):
+            continue
+        value = _read(algorithm_cfg, name)
+        sha = entry.get("removed_in") or "the 2026-08-03 dead-lineage pass"
+        when = entry.get("removed_on")
+        problems.append(
+            f"{name}={value!r} is set, but the code that read it was removed in {sha}"
+            + (f" ({when})" if when else "")
+            + "; setting it now changes nothing and no log or dashboard will say so. "
+            "Delete the key — do not set it to its old default, which is equally inert"
+        )
+
+    # (3) every load-bearing knob must be named in the acknowledgement list, so the
     #     launcher cannot inherit one invisibly.
     load_bearing = {
         name for name, entry in entries.items()
@@ -143,7 +176,7 @@ def validate(algorithm_cfg: Any, registry_path: str | None = None) -> List[Tuple
         if extra:
             problems.append(f"{_ACK_KEY} names unknown knob(s) {extra}")
 
-    # (3) the source selector must be present and legal.
+    # (4) the source selector must be present and legal.
     src_entry = entries.get("dcpo_rmeta_source")
     if src_entry is not None:
         if not _present(algorithm_cfg, "dcpo_rmeta_source"):

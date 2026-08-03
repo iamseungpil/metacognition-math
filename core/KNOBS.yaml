@@ -29,7 +29,11 @@
 #   default-only  — reached on a currently-running arm, but NO config or launcher sets
 #                   it; the code default is the operating value. This is the most
 #                   dangerous class: the value is load-bearing and invisible.
-#   dead-lineage  — belongs to a retired generation; not reached on any running arm.
+#   dead-lineage  — belongs to a retired generation; not reached on any running arm. The
+#                   READER STILL EXISTS, so setting it off-default reaches dead code.
+#                   validate() tolerates presence at the registered default.
+#   removed       — the reader is GONE (section 5B). Setting it reaches nothing; validate()
+#                   rejects it at ANY value, because there is no default left to be safe at.
 #
 # WHAT "RUNNING" MEANS HERE (verified 2026-08-03)
 #   solid-gibbon = h100std_rq3v2f_b0p.yaml  -> --config-name=base_matched_grpo_h100_4x4k  (:268)
@@ -651,6 +655,36 @@ dead_lineage:
       rmeta_source to pmi_shift.
     count: 4
     phase2: adjudicate
+    why_these_four_survived_the_0803_removal: |
+      Every knob removed on 0803 is in section 5B with the sha that took it. These four are
+      the ones that did NOT go, and they survived for four different reasons — the list is
+      here so that "still in dead_lineage" is never read as "nobody looked at it".
+
+        dcpo_cf_suppress_signature — WRONG LINEAGE. sdc_counterfactual / v3-regeneration
+          machinery, not cf_group. Never mapped in the 0803 pass, so nothing established it
+          was unreachable. A name-prefix delete of cf_* would have swept it up; that is the
+          failure this line is here to prevent.
+        dcpo_cf_with_meta — reachable-but-inert. Its writer went with the cf_group
+          generate_sequences wrap, but it is STILL READ on the live rollout-table `arm`
+          column, where it is now permanently None. Proved harmless, not proved unreachable,
+          and the discipline rule licenses removing only the latter.
+        dcpo_w_over — zero readers in src/ as of bfbf89c, so by the removed-section's own
+          test it qualifies. It stays in dead_lineage anyway because
+          h100std_rq3v2f_b3p.yaml:252 STILL SETS IT and amlt reads that launcher from the
+          working tree (unlike src/ and configs/, which come from pinned tar 490407111).
+          Moving it to `removed` would make the gate reject the live b3p launcher — arguably
+          the right answer, since the override is a silent no-op, but that blocks a
+          resubmission and is a live-affecting decision that needs its own approval. Keeping
+          it registered as dead-lineage is the conservative position: still inside the gate's
+          coverage, not yet blocking. ★ RESOLVE THIS with the Stage-6 launcher-line removal;
+          the two belong in one decision.
+        dcpo_over_threshold — also lost its last reader at bfbf89c, but no removal commit
+          ever claimed the name and nothing anywhere sets it. Reclassifying it as `removed`
+          would assert a retirement no commit performed, so it stays. Consequence to know:
+          a config setting it to 1.0 still passes the gate.
+
+      The honest summary is that the dead/removed boundary is not drawn on "has a reader" —
+      w_over and over_threshold have none. It is drawn on what a removal commit actually did.
     why_adjudicate: |
       Two of the original six (dcpo_cf_branch_frac, dcpo_cf_without_mode) were removed from the
       tree on 2026-08-03 with the cf_group branch. The four below stay, for three different
@@ -689,7 +723,10 @@ dead_lineage:
          note: "ZERO readers in src/ as of 0803. Kept registered so the launcher line stays inside
                 the gate's coverage until the line itself is removed."}
       dcpo_over_threshold:
-        {kind: knob, status: dead-lineage, set_at: "no setter and, as of 0803, no reader", default: 1.0}
+        {kind: knob, status: dead-lineage, set_at: "no setter and, as of bfbf89c, no reader", default: 1.0,
+         note: "Survived the 0803 removal because no removal commit claimed the name — see
+                why_these_four_survived_the_0803_removal. Also the exemplar the registry's own
+                tests use for the dead-lineage deviation rule (tests/test_knob_registry.py)."}
 
   v2_canary_sandbag:
     generation: "TRIOBJ_DCPO_V2 canary / sandbag diagnostics"
@@ -698,6 +735,10 @@ dead_lineage:
       canary_pass1_acc / sandbag_clamp stubs (kept so the existing ... contract holds)'."
     count: 2
     phase2: adjudicate
+    survived_the_0803_removal_because: "both are EXECUTING on the live b3p hot path every step
+      (verl_sdc.py:876-879), which makes them reachable-but-inert rather than unreachable. The
+      0803 pass removed only what it proved unreachable, so neither was touched and neither is
+      in section 5B."
     why_adjudicate: |
       These two are the odd case: dead lineage riding a LIVE code path. They are written
       unconditionally into every b3p batch (verl_sdc.py:876-879), always 1.0, always have
@@ -715,30 +756,182 @@ dead_lineage:
          default: 1.0, note: "no consumer found outside the write sites"}
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 5B — REMOVED
+#
+# The knobs whose READER no longer exists. Section 5 (dead_lineage) and this section
+# describe two different hazards and the guard treats them differently:
+#
+#   dead_lineage — the code is still there. Setting the knob to a non-default value
+#                  REACHES a retired generation. Presence at the registered default is
+#                  tolerated, because presence alone is not activation.
+#   removed      — the code is gone. Setting the knob reaches nothing at all. Presence
+#                  is rejected UNCONDITIONALLY, at any value including the old default,
+#                  because a config that still sets one is a silent no-op: the operator
+#                  believes a lever is set and no run, log or dashboard will contradict
+#                  them. That is the E-171 failure shape with the sign flipped — there we
+#                  missed a knob that mattered, here we would count one that cannot.
+#
+# There is no "removed at its default is fine" case. The default is gone too.
+#
+# METHOD (each sha below was verified, not taken from the removal report's prose)
+#   For every name, `git grep -c -w <name> <sha> -- src` was evaluated across all seven
+#   0803 commits. `removed_in` is the commit at which that count first reached 0 and
+#   stayed 0 through HEAD. `kind` and `former_default` were read back from the
+#   pre-removal registry (git show 8b51f85:core/KNOBS.yaml), not reconstructed.
+#   ★ One correction this produced: tally.removed_2026_08_03 below groups the removals as
+#     "decoy_did_gm 6 + decoy_did_rlsd 3 + cf_group_answer_route 7". By last-reader that is
+#     wrong for dcpo_rlsd_meta_factor — bfbf89c left 2 of its 3 references standing and
+#     4eefaf6 took the last one. The per-knob shas here are the authority; that prose is a
+#     generation-level summary and is one name off.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+removed:
+
+  asym_cf:
+    generation: "asym_cf — asymmetric counterfactual meta-reward"
+    removed_in: a6c05a5
+    removed_on: 2026-08-03
+    commit_subject: "remove(dead-lineage): the asym_cf meta-reward generation (9 knobs)"
+    count: 9
+    knobs:
+      dcpo_asymcf_conf_w:  {kind: knob, status: removed, removed_in: a6c05a5, removed_on: 2026-08-03, former_default: 0.0}
+      dcpo_asymcf_alpha:   {kind: knob, status: removed, removed_in: a6c05a5, removed_on: 2026-08-03, former_default: 1.0}
+      dcpo_asymcf_beta:    {kind: knob, status: removed, removed_in: a6c05a5, removed_on: 2026-08-03, former_default: 2.5}
+      dcpo_asymcf_gamma:   {kind: knob, status: removed, removed_in: a6c05a5, removed_on: 2026-08-03, former_default: 0.5}
+      dcpo_asymcf_t:       {kind: knob, status: removed, removed_in: a6c05a5, removed_on: 2026-08-03, former_default: 0.99}
+      dcpo_asymcf_margin:  {kind: knob, status: removed, removed_in: a6c05a5, removed_on: 2026-08-03, former_default: 0.1}
+      dcpo_asymcf_beta_clip:  {kind: knob, status: removed, removed_in: a6c05a5, removed_on: 2026-08-03, former_default: 1.0e9}
+      dcpo_asymcf_emit_floor: {kind: knob, status: removed, removed_in: a6c05a5, removed_on: 2026-08-03, former_default: 0.0}
+      dcpo_asymcf_content:    {kind: knob, status: removed, removed_in: a6c05a5, removed_on: 2026-08-03, former_default: false}
+
+  pmi_dense:
+    generation: "pmi — the dense per-token PMI meta-reward (distinct from the LIVE pmi_shift)"
+    removed_in: 8ddae40
+    removed_on: 2026-08-03
+    commit_subject: "remove(dead-lineage): the dense 'pmi' meta-reward generation (8 knobs)"
+    count: 8
+    name_collision_warning: |
+      dcpo_pmi_* is the REMOVED dense generation. dcpo_pmishift_* is the LIVE scorer
+      (section 3, all seven default-only). The two prefixes differ by four characters and
+      the retired one is the one the live config used to spend eight lines setting. Do not
+      let a prefix match reintroduce either family into the other's section.
+    provenance: "archive/reward_lineages_retired_0803/README.md (written in dbd25b2, before
+      the keys were removed, precisely so the offline probe's provenance outlived the code)"
+    knobs:
+      dcpo_pmi_agg:        {kind: knob, status: removed, removed_in: 8ddae40, removed_on: 2026-08-03, former_default: sum_clip}
+      dcpo_pmi_topk_frac:  {kind: knob, status: removed, removed_in: 8ddae40, removed_on: 2026-08-03, former_default: 0.25}
+      dcpo_pmi_clip_token: {kind: knob, status: removed, removed_in: 8ddae40, removed_on: 2026-08-03, former_default: 2.0}
+      dcpo_pmi_clip_gate:  {kind: knob, status: removed, removed_in: 8ddae40, removed_on: 2026-08-03, former_default: 2.0}
+      dcpo_pmi_alpha:      {kind: knob, status: removed, removed_in: 8ddae40, removed_on: 2026-08-03, former_default: 0.0}
+      dcpo_pmi_ngram_n:    {kind: knob, status: removed, removed_in: 8ddae40, removed_on: 2026-08-03, former_default: 8}
+      dcpo_pmi_ngram_threshold: {kind: knob, status: removed, removed_in: 8ddae40, removed_on: 2026-08-03, former_default: 0.25}
+      dcpo_pmi_placebo_correct: {kind: knob, status: removed, removed_in: 8ddae40, removed_on: 2026-08-03, former_default: false}
+    still_set_in_archived_configs: |
+      ★ THE GUARD HAS LIVE PREY. Four archived configs still set seven of these eight:
+        configs/archive/triobj_dcpo_v4_stage2_h100_4x4k.yaml:115-130
+        configs/archive/triobj_dcpo_v4_stage2b_h100_4x4k.yaml:138-153
+        configs/archive/triobj_dcpo_v4_stage2c_h100_4x4k.yaml:138-153
+        configs/archive/triobj_dcpo_v4_stage3_h100_4x4k.yaml:162-177
+      None is loaded by a live arm — the three launchers name only
+      base_matched_grpo_h100_4x4k (b0p:268, b2p:262) and
+      triobj_dcpo_v4_stage3b_h100_4x4k (b3p:246), verified 2026-08-03 — so the b3p gate is
+      unchanged at one problem. But anyone who revives a stage2/stage3 config inherits seven
+      keys that now do nothing, with comments ("probe-frozen (AUC winner all splits)") that
+      read as though they still do. Under the old deviation-only rule those seven would pass
+      the gate, because a removed knob has no registered default to deviate from. That is the
+      case this section's unconditional rejection exists to catch.
+
+  cf_group:
+    generation: "cf_group — counterfactual group-branch meta-reward"
+    removed_in: b70316e
+    removed_on: 2026-08-03
+    commit_subject: "remove(dead-lineage): the cf_group meta-reward generation (4 knobs) and its agents"
+    count: 2
+    note: "The commit subject says 4 knobs; two of those (dcpo_ans_meta, dcpo_ans_member) kept
+      readers until 4eefaf6 and are listed there. Only these two lost their last reader here."
+    knobs:
+      dcpo_cf_branch_frac:  {kind: knob, status: removed, removed_in: b70316e, removed_on: 2026-08-03, former_default: 0.5}
+      dcpo_cf_without_mode: {kind: knob, status: removed, removed_in: b70316e, removed_on: 2026-08-03, former_default: ban}
+
+  decoy_did:
+    generation: "decoy_did_gm + decoy_did_rlsd — decoy difference-in-differences scorers"
+    removed_in: bfbf89c
+    removed_on: 2026-08-03
+    commit_subject: "remove(dead-lineage): the decoy_did_gm + decoy_did_rlsd generations (9 names)"
+    count: 8
+    knobs:
+      dcpo_gm_agg:        {kind: knob, status: removed, removed_in: bfbf89c, removed_on: 2026-08-03, former_default: mean_min}
+      dcpo_gm_clip_token: {kind: knob, status: removed, removed_in: bfbf89c, removed_on: 2026-08-03, former_default: 2.0}
+      dcpo_gm_clip_gate:  {kind: knob, status: removed, removed_in: bfbf89c, removed_on: 2026-08-03, former_default: 2.0}
+      dcpo_gm_alpha:      {kind: knob, status: removed, removed_in: bfbf89c, removed_on: 2026-08-03, former_default: 1.0}
+      dcpo_gm_decoy_seed: {kind: knob, status: removed, removed_in: bfbf89c, removed_on: 2026-08-03, former_default: 42}
+      dcpo_gm_sign_gate:  {kind: knob, status: removed, removed_in: bfbf89c, removed_on: 2026-08-03, former_default: true}
+      dcpo_rlsd_lambda:   {kind: knob, status: removed, removed_in: bfbf89c, removed_on: 2026-08-03, former_default: 1.0}
+      dcpo_rlsd_clip_w:   {kind: knob, status: removed, removed_in: bfbf89c, removed_on: 2026-08-03, former_default: 2.0}
+
+  answer_route:
+    generation: "cf_group answer-route + rlsd multiply — the compose-time plumbing the
+      retired scorers fed; removed once every producer above was gone"
+    removed_in: 4eefaf6
+    removed_on: 2026-08-03
+    commit_subject: "remove(dead-lineage): dcpo_region compose surgery + the answer-route / rlsd plumbing"
+    count: 8
+    numeric_gate: "compose_dcpo_region_advantage was checked for bit-identity across this
+      commit on a fixed-seed batch: torch.equal(before, after) == True, sum 0.349999606609 on
+      both sides. The plumbing was inert, not merely unused."
+    knobs:
+      dcpo_rlsd_meta_factor: {kind: channel, status: removed, removed_in: 4eefaf6, removed_on: 2026-08-03}
+      dcpo_ans_meta:         {kind: channel, status: removed, removed_in: 4eefaf6, removed_on: 2026-08-03}
+      dcpo_ans_member:       {kind: channel, status: removed, removed_in: 4eefaf6, removed_on: 2026-08-03}
+      dcpo_ans_meta_whole_group_center: {kind: channel, status: removed, removed_in: 4eefaf6, removed_on: 2026-08-03}
+      dcpo_r_trans:          {kind: channel, status: removed, removed_in: 4eefaf6, removed_on: 2026-08-03}
+      dcpo_trans_member:     {kind: channel, status: removed, removed_in: 4eefaf6, removed_on: 2026-08-03}
+      dcpo_w_ans_meta:       {kind: knob, status: removed, removed_in: 4eefaf6, removed_on: 2026-08-03, former_default: "fell back to dcpo_w_meta"}
+      dcpo_w_score_alpha:    {kind: knob, status: removed, removed_in: 4eefaf6, removed_on: 2026-08-03, former_default: 0.0}
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 6 — TALLY AND PHASE-2 SUMMARY
 # ═══════════════════════════════════════════════════════════════════════════════
 
 tally:
-  total_names: 50
-  recomputed: "2026-08-03, after the dead-lineage removal. Was 85."
+  # TWO different totals, and conflating them is how a tally goes stale. The SURFACE is what
+  # the code can still read. The REGISTERED count includes section 5B, which exists precisely
+  # so that names with no code left behind them stay inside the gate's coverage.
+  current_surface: 50
+  registered_names: 85    # 50 surface + 35 removed
+  recomputed: "2026-08-03, after adding section 5B. Surface was 85 before the 0803 removals."
   by_status:
     live: 37          # 2 in load_bearing + 35 in live; of these 21 are knobs, 16 are channels
     default-only: 7   # every dcpo_pmishift_* — the live scorer's whole parameterisation
     dead-lineage: 6   # 4 cf_counterfactual + 2 v2_canary_sandbag
+    removed: 35       # section 5B: 9 asym_cf + 8 pmi_dense + 2 cf_group + 8 decoy_did + 8 answer_route
   by_kind:
-    knob: 31          # 21 live + 7 default-only + 3 dead-lineage
-    channel: 19       # 16 live + 3 dead-lineage
-  cross_check: "37 + 7 + 6 = 50. 31 + 19 = 50. Recompute both before editing this block: parse
-    this file, collect every dcpo_* key carrying a `status`, and diff against
-    `grep -rhoE '\"dcpo_[a-z_0-9]+\"' src/training/*.py | sort -u`. That diff is currently THREE
-    names wide and every one is explained: dcpo_ack_load_bearing is in the code but is the
-    acknowledgement list itself, not a knob; dcpo_w_over and dcpo_over_threshold are in the
-    registry with NO code reader left — w_over because a live launcher still sets it (keeping it
-    registered is what keeps it inside the gate), over_threshold because nothing sets it either."
+    knob: 60          # 21 live + 7 default-only + 3 dead-lineage + 29 removed
+    channel: 25       # 16 live + 3 dead-lineage + 6 removed
+  cross_check: "SURFACE: 37 + 7 + 6 = 50. REGISTERED: 50 + 35 = 85; 60 + 25 = 85 — which is the
+    same 85 the original enumeration found, because section 5B gives every retired name a home
+    instead of dropping it. Recompute before editing this block: parse this file, collect every
+    key carrying a `status`, and diff against
+    `grep -rhoE '\"dcpo_[a-z_0-9]+\"' src/training/*.py | sort -u`. The diff runs BOTH ways and
+    both sides are fully accounted for (measured 2026-08-03, 86 registered entries vs 49 code
+    names, 48 in common):
+      registry-only, 38 = 35 (section 5B, registered with no code reader BY CONSTRUCTION —
+        that is what the section is for)
+        + 2 (dcpo_w_over, dcpo_over_threshold — no reader either, but they stay in
+             dead_lineage; see dead_lineage.cf_counterfactual.why_these_four_survived_the_0803_removal)
+        + 1 (trainer.val_before_train — load-bearing, deliberately registered, not a dcpo_*
+             name, hence excluded from the counts above; see excluded_from_counts)
+      code-only, 1 = dcpo_ack_load_bearing, which is the acknowledgement list itself, not a knob.
+    Note the entry count is 86 while dcpo_* registered_names is 85: the extra one is
+    trainer.val_before_train. Earlier revisions of this block called the registry-only diff
+    'THREE names wide' and then listed dcpo_ack_load_bearing as one of the three, which mixed
+    the two directions together. Keep them separate."
   removed_2026_08_03:
     count: 35
-    generations: "asym_cf 9 + decoy_did_gm 6 + decoy_did_rlsd 3 + cf_group_answer_route 7 +
-      pmi_dense 8 + 2 of cf_counterfactual (dcpo_cf_branch_frac, dcpo_cf_without_mode)"
+    per_knob_shas: "section 5B — `removed:`. Each name carries the commit that took its last
+      reader, verified by git grep across all seven commits, not by reading commit subjects."
+    generations: "asym_cf 9 (a6c05a5) + pmi_dense 8 (8ddae40) + cf_group 2 (b70316e) +
+      decoy_did 8 (bfbf89c) + answer_route 8 (4eefaf6)"
     provenance: "archive/reward_lineages_retired_0803/README.md"
   excluded_from_counts:
     - "trainer.val_before_train — load-bearing and recorded in section 1, but not a dcpo_* name"
@@ -785,6 +978,12 @@ phase2_disposition:
     were SIX problems; five were config keys that deviated from their registered defaults and
     were cleared as a side effect of removing them with their readers. This last one needs a
     launcher ADDITION, which is not a removal.
+    Re-measured after section 5B and the unconditional removed-knob rule were added: STILL
+    exactly one problem, unchanged. The resolved b3p config sets 23 dcpo_* keys and none of
+    them is a removed name, so the tightening costs the live arm nothing. The same check
+    against configs/archive/triobj_dcpo_v4_stage3_h100_4x4k.yaml raises EIGHT problems, seven
+    of them removed dcpo_pmi_* keys — that config is loaded by no launcher, and the seven are
+    the guard's first real catch.
   promote_not_remove:
     - "the 7 dcpo_pmishift_* knobs: write them into
        configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml at their current default values so the
