@@ -189,30 +189,6 @@ algorithm:
   # token stays Brier-only — dense PMI there rewards "stating a confidence the
   # continuation echoes", fighting R_cal).
   dcpo_meta_excl_conf: true
-  # PMI knobs — frozen from the offline probe (2026-06-11, n=7877 guard-filt):
-  # method=mean won (AUC 0.779 overall / 0.696 entangled; placebo t=17.9).
-  # clip_gate = p95 of the T=1 mean-delta distribution = 0.342.
-  # CAVEAT (cross-shuffle probe): raw mean-delta retains 52% under
-  # cross-problem shuffle and placebo retains 86% — most of the raw signal is
-  # generic text-presence. Stage 2 MUST ship the placebo-corrected delta
-  # (delta' = delta - delta_placebo per row) before launch; these values are
-  # the agg/clip baseline that correction builds on.
-  dcpo_pmi_agg: mean                # probe-frozen (AUC winner all splits)
-  dcpo_pmi_topk_frac: 0.25          # only read for topk_mean (unused)
-  dcpo_pmi_clip_token: 2.0          # per-token clip, sum_clip only (unused)
-  dcpo_pmi_clip_gate: 0.1085        # probe-frozen p95|delta'| (CORRECTED dist;
-                                    # raw was 0.342). E-corr verdict PASS
-                                    # 2026-06-12 under the signed shuffle
-                                    # criterion: mean_gt0 t=17.9 / signed
-                                    # retention -2.43 / corrected AUC_ent
-                                    # 0.714. Still RE-FREEZE at the gs50 probe
-                                    # (scorer lineage) before stage-2 launch.
-  # Cross-shuffle amendment (report 2026-06-11 §4.1): subtract the placebo
-  # aggregate per row (third scored arm, ref cost x1.5) so only the CONTENT
-  # increment is rewarded. Gated on the corrected probe verdict (E-corr).
-  dcpo_pmi_placebo_correct: true
-  dcpo_pmi_ngram_n: 8               # C2 overlap guard: word n-gram order
-  dcpo_pmi_ngram_threshold: 0.25    # C2 overlap guard: invalidation ratio
   # CF regeneration machinery DORMANT (spec §4: gated off, not deleted).
   sdc_counterfactual: false
   dcpo_cf_suppress_signature: true   # inert while sdc_counterfactual=false

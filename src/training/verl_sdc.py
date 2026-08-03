@@ -104,9 +104,6 @@ from src.training._decoy_utils import _rule_based_decoy
 # ONLY by the V4 populator block + _compute_dcpo_v4_pmi_rmeta below.
 from src.training.dcpo_pmi import (
     PLACEBO_META,
-    SpliceAlignmentError,
-    compute_pmi_rows,
-    splice_and_align,
     split_first_meta,
 )
 # DIRECTIONAL self-distillation (gm-contrast) R_meta core — pure numpy sibling of
@@ -192,7 +189,7 @@ def _compute_dcpo_heads_stash(
 # open onto the deprecated CF-regeneration path (plausible nonzero values, no
 # log line) whenever the knob was missing OR the algorithm config was
 # unreadable (the reader swallows exceptions into its default).
-_V4_RMETA_SOURCES = ("cf", "pmi", "none", "cf_group", "decoy_did_gm", "decoy_did_rlsd",
+_V4_RMETA_SOURCES = ("cf", "none", "cf_group", "decoy_did_gm", "decoy_did_rlsd",
                      "pmi_shift")
 _V4_RMETA_MISSING = object()
 
@@ -449,33 +446,7 @@ def _populate_dcpo_region_keys(data) -> None:
                 return default
 
         _rmeta_src = _v4_rmeta_source_strict(_v4_read)
-        if _rmeta_src == "pmi":
-            _v4_prompt_texts = [
-                _decode_prompt_only(
-                    tokenizer,
-                    data[i].batch["prompts"],
-                    data[i].batch["attention_mask"],
-                    prompt_length,
-                )
-                for i in range(bs)
-            ]
-            _r_meta_pmi, _rmeta_member = _compute_dcpo_v4_pmi_rmeta(
-                tokenizer=tokenizer,
-                trainer=trainer,
-                prompt_texts=_v4_prompt_texts,
-                response_texts=decoded_responses,
-                fmt_classes=_fmt_classes,
-                heads=_heads,
-                read_knob=_v4_read,
-                step=_step,
-            )
-            data.non_tensor_batch["meta_region_utility"] = _r_meta_pmi
-            # R_meta-ONLY centering membership (review I2): 1.0 only for rows
-            # whose PMI was actually computed (meta-emitting, splice-aligned,
-            # guard-passed). NOT a gdpo_reward_key (diagnostic-style batch key
-            # like dcpo_head_member) — FIVE-WAY SYNC lists untouched.
-            data.non_tensor_batch["dcpo_rmeta_member"] = _rmeta_member
-        elif _rmeta_src in ("decoy_did_gm", "decoy_did_rlsd"):
+        if _rmeta_src in ("decoy_did_gm", "decoy_did_rlsd"):
             # DIRECTIONAL self-distillation (gm-contrast) R_meta (spec 2026-06-24
             # FINAL 2-ARM). BOTH arms use the SAME gm contrast scalar (scored after
             # <|/meta|>, token-level mean_min over divergent answer tokens); they
@@ -671,7 +642,7 @@ def _populate_dcpo_region_keys(data) -> None:
                 print(f"[DCPO-CFGROUP] scalar-summary skipped: {_e}", flush=True)
         # 'cf' (explicit opt-in): no-op — the dcpo_region_rewards value stands.
         # Invalid values already raised inside _v4_rmeta_source_strict.
-        if _rmeta_src in ("pmi", "none", "cf_group", "decoy_did_gm", "decoy_did_rlsd",
+        if _rmeta_src in ("none", "cf_group", "decoy_did_gm", "decoy_did_rlsd",
                           "pmi_shift"):
             # Observability truth: the rollout table + trend scalars below must
             # chart the R_meta that actually ROUTES, not the stale CF/text-
@@ -1699,246 +1670,6 @@ def _dcpo_v4_ref_logprobs(trainer, tensors):
     out = trainer._compute_ref_log_prob(batch)
     # [i, t] = logP_ref(responses[i, t] | prompt + responses[i, :t]).
     return out.batch["ref_log_prob"]
-
-
-def _log_pmi_wandb_scalars(step: int, *, attempted_rate: float, aligned_rate: float,
-                           guard_hit_rate: float, member_rate: float,
-                           nonfinite_rate: float,
-                           placebo_fail_rate: float = 0.0) -> None:
-    """One wandb point for the dcpo/pmi_* scalars (observability never kills
-    training). Round 2 M-C: the early returns in _compute_dcpo_v4_pmi_rmeta call
-    this too, so a no-aligned/ref-failure step charts as a ZERO, not a GAP —
-    gaps are indistinguishable from logging outages."""
-    try:
-        import wandb
-        if wandb.run is not None:
-            wandb.log({
-                "dcpo/pmi_attempted_rate": float(attempted_rate),
-                "dcpo/pmi_aligned_rate": float(aligned_rate),
-                "dcpo/pmi_guard_hit_rate": float(guard_hit_rate),
-                "dcpo/pmi_member_rate": float(member_rate),
-                "dcpo/pmi_nonfinite_rate": float(nonfinite_rate),
-                "dcpo/pmi_placebo_fail_rate": float(placebo_fail_rate),
-            }, step=int(step))
-    except Exception:
-        pass
-
-
-def _compute_dcpo_v4_pmi_rmeta(
-    *,
-    tokenizer,
-    trainer,
-    prompt_texts: list,
-    response_texts: list,
-    fmt_classes: list,
-    heads: dict,
-    read_knob,
-    step: int = 0,
-):
-    """TRIOBJ_DCPO_V4 dense R_meta (spec §2): per trusted meta-bearing row,
-    Delta_t = logP_ref(C_t | prefix+meta+C_<t) - logP_ref(C_t | prefix+C_<t)
-    over the model's OWN post-meta continuation C, aggregated + overlap-guarded
-    + sign-gated by dcpo_pmi (the pure core shared with the offline probe).
-
-    Row eligibility: fmt class TRUSTED (region routing reliable) AND a CLOSED
-    first meta block in the text — drift rows (no <|/meta|>; the de-facto closer
-    is </think>) are excluded rather than guessing a splice boundary, scoring 0
-    with member 0 (conservative under-credit, never misalignment).
-
-    CRASH-SAFE on the engine call (mirror of _dcpo_cf_generate_texts): a ref
-    failure prints LOUDLY and returns all-zero R_meta + all-zero membership —
-    training continues, and the dcpo/pmi_* scalars are still LOGGED as zeros
-    on every early return (round 2 M-C: a zero-flatline is visible on the
-    chart; a logging GAP is not).
-
-    Returns (r_meta float32 [B], rmeta_member float32 [B]) — member 1.0 only
-    for rows whose PMI was actually computed (aligned + guard-passed), the
-    review-I2 centering population.
-    """
-    B = len(response_texts)
-    r_meta = np.zeros(B, dtype=np.float32)
-    member = np.zeros(B, dtype=np.float32)
-
-    method = str(read_knob("dcpo_pmi_agg", "sum_clip"))
-    topk_frac = float(read_knob("dcpo_pmi_topk_frac", 0.25))
-    clip_c_token = float(read_knob("dcpo_pmi_clip_token", 2.0))
-    clip_c_gate = float(read_knob("dcpo_pmi_clip_gate", 2.0))
-    # RLT (2506.08388) worst-token coefficient for method='mean_min': agg =
-    # mean(clip(delta)) + alpha*min(clip(delta)). 0.0 => clipped mean (no-op for
-    # other methods). Default OFF so non-mean_min runs stay byte-identical.
-    pmi_alpha = float(read_knob("dcpo_pmi_alpha", 0.0))
-    ngram_n = int(read_knob("dcpo_pmi_ngram_n", 8))
-    ngram_threshold = float(read_knob("dcpo_pmi_ngram_threshold", 0.25))
-    # Cross-shuffle amendment (report 2026-06-11 §4.1): subtract the placebo
-    # aggregate per row so the generic text-presence component (86% of raw
-    # delta) cancels and only the CONTENT increment is rewarded. Third scored
-    # arm (prefix + PLACEBO_META + continuation) => ref cost x1.5.
-    placebo_correct = bool(read_knob("dcpo_pmi_placebo_correct", False))
-
-    # 1) Select + splice. attempted = (batch_idx, row_dict, splice|None,
-    #    placebo_splice|None); rows with splice=None are alignment failures
-    #    (scored 0, counted in diag). A row whose PLACEBO splice fails (or
-    #    whose placebo without-span diverges from the real one — boundary-drop
-    #    divergence) FAILS CLOSED downstream via placebo_alignment_failed.
-    attempted: list = []
-    for i in range(B):
-        if fmt_classes[i] not in TRUSTED_META_CLASSES:
-            continue
-        # Round 2 M-D: ONE split definition shared with the offline probe
-        # (dcpo_pmi.split_first_meta) — None covers no-meta, drift (no
-        # <|/meta|>) AND whitespace-only continuations (the stricter probe
-        # semantics: nothing to score) — not attempted.
-        parts = split_first_meta(response_texts[i])
-        if parts is None:
-            continue
-        response_prefix, meta_text, continuation_text = parts
-        prefix_text = (prompt_texts[i] or "") + response_prefix
-        row = {
-            "meta_text": meta_text,
-            "continuation_text": continuation_text,
-            "correct": bool(float(heads["c_with"][i]) > 0.5),
-            "boxed_answer": (heads["answer"][i] or None),
-        }
-        try:
-            sp = splice_and_align(tokenizer, prefix_text, meta_text, continuation_text)
-        except SpliceAlignmentError:
-            row["alignment_failed"] = True
-            sp = None
-        psp = None
-        if sp is not None and placebo_correct:
-            try:
-                psp = splice_and_align(tokenizer, prefix_text, PLACEBO_META,
-                                       continuation_text)
-                # The placebo arm reuses the REAL without-arm logprobs, which
-                # is only valid when both splices located the continuation at
-                # the same without-span.
-                if psp["c_span_without"] != sp["c_span_without"]:
-                    psp = None
-            except SpliceAlignmentError:
-                psp = None
-            if psp is None:
-                row["placebo_alignment_failed"] = True
-        attempted.append((i, row, sp, psp))
-    aligned = [t for t in attempted if t[2] is not None]
-    if not aligned:
-        if attempted and os.environ.get("DCPO_DEBUG", "1") == "1":
-            print(f"[DCPO-V4] pmi step={step}: {len(attempted)} attempted, 0 aligned "
-                  f"— all R_meta 0 this batch.", flush=True)
-        _log_pmi_wandb_scalars(step, attempted_rate=len(attempted) / max(1, B),
-                               aligned_rate=0.0, guard_hit_rate=0.0,
-                               member_rate=0.0, nonfinite_rate=0.0)
-        return r_meta, member
-
-    # 2) Score both arms on the frozen ref worker (with-arms rows [0, n),
-    #    without-arms rows [n, 2n)). Same dispatch-divisibility padding as the
-    #    position-teacher batch (dp_size x ref micro-batch, duplicate row 0).
-    try:
-        nnodes = int(trainer.config.trainer.nnodes)
-    except Exception:
-        nnodes = 1
-    try:
-        n_gpus_per_node = int(trainer.config.trainer.n_gpus_per_node)
-    except Exception:
-        n_gpus_per_node = 4
-    try:
-        micro_bs = int(trainer.config.actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu)
-    except Exception:
-        micro_bs = 4
-    pad_unit = nnodes * n_gpus_per_node * micro_bs
-    arm_prompts, arm_resps = [], []
-    for (_i, _row, sp, _psp) in aligned:
-        cs_w, _ = sp["c_span_with"]
-        arm_prompts.append(sp["with_ids"][:cs_w])
-        arm_resps.append(sp["with_ids"][cs_w:])
-    for (_i, _row, sp, _psp) in aligned:
-        cs_wo, _ = sp["c_span_without"]
-        arm_prompts.append(sp["without_ids"][:cs_wo])
-        arm_resps.append(sp["without_ids"][cs_wo:])
-    # third arm (placebo_correct only): rows [2n, 2n + n_placebo) — only rows
-    # whose placebo splice succeeded; the rest fail closed in compute_pmi_rows.
-    placebo_idx: list = []
-    if placebo_correct:
-        for k, (_i, _row, _sp, psp) in enumerate(aligned):
-            if psp is not None:
-                placebo_idx.append(k)
-                cs_p, _ = psp["c_span_with"]
-                arm_prompts.append(psp["with_ids"][:cs_p])
-                arm_resps.append(psp["with_ids"][cs_p:])
-    tensors, real_n = _build_pmi_score_batches(arm_prompts, arm_resps, pad_unit)
-    # bookkeeping invariant (review 2b83bf3 minor-1): the read ranges below
-    # assume exactly 2 full arms + the placebo partial arm, in that order.
-    assert real_n == 2 * len(aligned) + len(placebo_idx), (
-        f"PMI arm bookkeeping broken: {real_n} scored rows != "
-        f"2*{len(aligned)} + {len(placebo_idx)}")
-    try:
-        ref_lp = _dcpo_v4_ref_logprobs(trainer, tensors)
-    except AssertionError:
-        raise  # M1 config guard: deterministic misconfig must CRASH, not flatline
-    except Exception as e:
-        print(f"[DCPO-V4] PMI ref scoring FAILED ({type(e).__name__}: {e}) — "
-              f"R_meta all-zero this batch (member 0; dcpo/pmi_* charts a zero).",
-              flush=True)
-        if os.environ.get("DCPO_DEBUG", "1") == "1":
-            traceback.print_exc()
-        _log_pmi_wandb_scalars(step, attempted_rate=len(attempted) / max(1, B),
-                               aligned_rate=len(aligned) / max(1, B),
-                               guard_hit_rate=0.0, member_rate=0.0,
-                               nonfinite_rate=0.0)
-        return r_meta, member
-    n_al = len(aligned)
-    for k, (_i, row, sp, _psp) in enumerate(aligned):
-        L = len(arm_resps[k])  # == both arms' span length (token-id-identical)
-        row["logp_with"] = ref_lp[k, :L].float().cpu().numpy()
-        row["logp_without"] = ref_lp[n_al + k, :L].float().cpu().numpy()
-    for j, k in enumerate(placebo_idx):
-        row = aligned[k][1]
-        Lp = len(arm_resps[2 * n_al + j])  # == without-span length (equality-checked)
-        row["logp_placebo"] = ref_lp[2 * n_al + j, :Lp].float().cpu().numpy()
-        # logp_placebo_without intentionally absent: compute_pmi_rows defaults
-        # it to logp_without (valid — without-span equality enforced above).
-
-    # 3) Aggregate + guard + sign-gate via the pure core; scatter back to B.
-    rows = [row for (_i, row, _sp, _psp) in attempted]
-    scored, diag = compute_pmi_rows(
-        rows, method=method, topk_frac=topk_frac, clip_c_token=clip_c_token,
-        clip_c_gate=clip_c_gate, ngram_n=ngram_n, ngram_threshold=ngram_threshold,
-        placebo_correct=placebo_correct, alpha=pmi_alpha,
-    )
-    for j, (i, _row, _sp, _psp) in enumerate(attempted):
-        r_meta[i] = scored[j]
-        # IMPORTANT-3 (round 2): nonfinite rows are failed rows — R 0, member 0
-        # — a NaN r_meta with member=1 would NaN every sibling's centered A_meta
-        # in group_mean_subtract. Placebo-failed rows fail closed the same way
-        # (no raw-delta fallback inside a centering group).
-        member[i] = (
-            0.0
-            if (diag["alignment_failures"][j] or diag["nonfinite"][j]
-                or diag["guard_hits"][j] or diag["placebo_failures"][j])
-            else 1.0
-        )
-
-    n_guard = int(sum(bool(g) for g in diag["guard_hits"]))
-    n_nonfinite = int(sum(bool(x) for x in diag["nonfinite"]))
-    n_placebo_fail = int(sum(bool(x) for x in diag["placebo_failures"]))
-    if n_nonfinite:
-        print(f"[DCPO-V4] pmi step={step}: NON-FINITE arm logprobs on "
-              f"{n_nonfinite}/{len(attempted)} attempted row(s) — those rows "
-              f"score R_meta 0 / member 0 (poisoning guard, review round 2).",
-              flush=True)
-    if os.environ.get("DCPO_DEBUG", "1") == "1":
-        _scored_vals = [float(r_meta[i]) for (i, _r, _s, _p) in attempted if member[i] > 0.5]
-        print(f"[DCPO-V4] pmi step={step}: B={B} attempted={len(attempted)} "
-              f"aligned={n_al} guard_hits={n_guard} nonfinite={n_nonfinite} "
-              f"placebo_correct={placebo_correct} placebo_fails={n_placebo_fail} "
-              f"rmeta_mean_scored={np.mean(_scored_vals) if _scored_vals else 0.0:.4f}",
-              flush=True)
-    _log_pmi_wandb_scalars(step, attempted_rate=len(attempted) / max(1, B),
-                           aligned_rate=n_al / max(1, B),
-                           guard_hit_rate=n_guard / max(1, B),
-                           member_rate=float(member.mean()),
-                           nonfinite_rate=n_nonfinite / max(1, B),
-                           placebo_fail_rate=n_placebo_fail / max(1, B))
-    return r_meta, member
 
 
 def _log_gm_wandb_scalars(step: int, *, attempted_rate: float, member_rate: float,

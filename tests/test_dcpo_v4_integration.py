@@ -30,7 +30,6 @@ from src.training.verl_sdc import (
     _REGION_ROUTED_MODES,
     _DCPO_V3_FMT_MODES,
     _build_pmi_score_batches,
-    _compute_dcpo_v4_pmi_rmeta,
     _compute_dcpo_v4_pmi_shift_rmeta,
     _dcpo_v4_ref_logprobs,
     _populate_dcpo_region_keys,
@@ -43,7 +42,43 @@ from src.training.verl_sdc_utils import (
     dcpo_w_meta_warmup_scale,
 )
 from src.training.dcpo_region import compose_dcpo_region_advantage
-from tests.test_dcpo_v4_pmi import FakeMergeTokenizer
+
+# ── fake tokenizer: char-level with greedy 2-char merges ─────────────────────
+# MOVED here 2026-08-03 from tests/test_dcpo_v4_pmi.py, which was deleted with
+# the dense-PMI reward generation. This file is now its only consumer.
+class FakeMergeTokenizer:
+    """Greedy longest-match over MERGES (2-char strings) else single chars.
+
+    Mimics byte-level BPE's C3 footgun: deleting the meta block can create a NEW
+    merge across the prefix|continuation boundary, so token indices do NOT
+    correspond between the with/without arms.
+    """
+
+    def __init__(self, merges=("ab",)):
+        self.merges = tuple(merges)
+        self._tokens = []
+        self._ids = {}
+
+    def _intern(self, piece):
+        if piece not in self._ids:
+            self._ids[piece] = len(self._tokens)
+            self._tokens.append(piece)
+        return self._ids[piece]
+
+    def encode(self, text, add_special_tokens=False):
+        ids, i = [], 0
+        while i < len(text):
+            if text[i:i + 2] in self.merges:
+                ids.append(self._intern(text[i:i + 2]))
+                i += 2
+            else:
+                ids.append(self._intern(text[i]))
+                i += 1
+        return ids
+
+    def decode(self, ids):
+        return "".join(self._tokens[i] for i in ids)
+
 
 _CFG_DIR = os.path.join(os.path.dirname(__file__), "..", "configs")
 
@@ -314,76 +349,6 @@ def test_rmeta_member_mask_none_is_byte_identical():
 # ═══════════════════════════════════════════════════════════════════════════
 # _compute_dcpo_v4_pmi_rmeta end-to-end (fake tokenizer + patched ref scorer)
 # ═══════════════════════════════════════════════════════════════════════════
-def test_compute_pmi_rmeta_selection_guard_membership(monkeypatch):
-    tok = FakeMergeTokenizer(merges=())  # char-level, no boundary merges
-    # row0: trusted, closed meta, correct -> scored, positive (delta +1/token).
-    # row1: no meta emitted -> not attempted.
-    # row2: trusted but the meta states the boxed answer "7" -> C2 guard, 0.
-    # row3: trusted, closed meta, EMPTY continuation -> SpliceAlignmentError.
-    response_texts = [
-        "work<|meta|>check the sum<|/meta|>so it is 42.",
-        "plain answer 9.",
-        "x<|meta|>answer 7 surely<|/meta|>boxed 7.",
-        "y<|meta|>hm<|/meta|>",
-    ]
-    fmt_classes = ["wellformed", "no_meta", "wellformed", "wellformed"]
-    heads = {
-        "c_with": [1.0, 1.0, 1.0, 1.0],
-        "answer": ["42", "9", "7", ""],
-    }
-
-    # with-arms are rows [0, n_al), without-arms rows [n_al, 2*n_al); padding
-    # duplicates row 0. Give with-arms -1.0 and everything else -2.0 so
-    # delta = +1.0 per C token for every aligned row.
-    def _fake_ref2(trainer, tensors):
-        n, r_max = tensors["responses"].shape
-        out = torch.full((n, r_max), -2.0)
-        out[:2] = -1.0  # n_al == 2 (rows 0 and 2 align; row 3 fails alignment)
-        return out
-
-    monkeypatch.setattr(V, "_dcpo_v4_ref_logprobs", _fake_ref2)
-    r_meta, member = _compute_dcpo_v4_pmi_rmeta(
-        tokenizer=tok,
-        trainer=object(),  # config reads fall back to defaults (try/except)
-        prompt_texts=["P0 ", "P1 ", "P2 ", "P3 "],
-        response_texts=response_texts,
-        fmt_classes=fmt_classes,
-        heads=heads,
-        read_knob=lambda name, default: default,
-        step=3,
-    )
-    assert r_meta.shape == (4,) and member.shape == (4,)
-    assert r_meta[0] > 0.0 and member[0] == 1.0      # scored, correct, +delta
-    assert r_meta[1] == 0.0 and member[1] == 0.0     # no meta -> not attempted
-    assert r_meta[2] == 0.0 and member[2] == 0.0     # answer-leak guard (C2/M3 gate)
-    assert r_meta[3] == 0.0 and member[3] == 0.0     # alignment failure (C3)
-
-
-def test_compute_pmi_rmeta_wrong_row_gets_nonpositive(monkeypatch):
-    tok = FakeMergeTokenizer(merges=())
-    # one WRONG row whose meta still RAISES the continuation likelihood:
-    # sign gate (M3) must flip the clipped-positive delta to <= 0.
-    def _fake_ref(trainer, tensors):
-        n, r_max = tensors["responses"].shape
-        out = torch.full((n, r_max), -2.0)
-        out[:1] = -1.0
-        return out
-
-    monkeypatch.setattr(V, "_dcpo_v4_ref_logprobs", _fake_ref)
-    r_meta, member = _compute_dcpo_v4_pmi_rmeta(
-        tokenizer=tok,
-        trainer=object(),
-        prompt_texts=["P "],
-        response_texts=["w<|meta|>try again<|/meta|>it equals 5."],
-        fmt_classes=["wellformed"],
-        heads={"c_with": [0.0], "answer": ["5"]},
-        read_knob=lambda name, default: default,
-        step=1,
-    )
-    assert r_meta[0] < 0.0          # (+|delta| under a wrong outcome) -> negative
-    assert member[0] == 1.0         # still a scored row (centering population)
-
-
 def test_v4_rmeta_source_must_be_explicit():
     # Round 2 M-A: missing/unreadable knob RAISES — the old silent 'cf' default
     # fell open onto the deprecated CF path with plausible nonzero values.
@@ -394,7 +359,7 @@ def test_v4_rmeta_source_must_be_explicit():
     with pytest.raises(ValueError, match="not in"):
         _v4_rmeta_source_strict(lambda name, default: "bogus")   # invalid value
     # the three explicit values pass through ('cf' allowed as OPT-IN only)
-    for src in ("cf", "pmi", "none"):
+    for src in ("cf", "none"):
         assert _v4_rmeta_source_strict(lambda n, d, s=src: s) == src
     # source-level: the populator uses the strict reader, not a 'cf'-defaulted
     # read (the fail-open line this fix removes).
@@ -402,60 +367,6 @@ def test_v4_rmeta_source_must_be_explicit():
     pop = inspect.getsource(_populate_dcpo_region_keys)
     assert "_v4_rmeta_source_strict" in pop
     assert '_v4_read("dcpo_rmeta_source", "cf")' not in pop
-
-
-def test_compute_pmi_rmeta_nonfinite_logprob_zeroes_row_and_member(monkeypatch):
-    # Round 2 IMPORTANT-3 at the verl_sdc layer: NaN in one arm's ref logprobs
-    # -> that row R_meta 0 AND member 0 (out of the centering population);
-    # healthy sibling rows in the same batch keep scoring.
-    tok = FakeMergeTokenizer(merges=())
-
-    def _fake_ref(trainer, tensors):
-        n, r_max = tensors["responses"].shape
-        out = torch.full((n, r_max), -2.0)
-        out[:2] = -1.0                     # n_al == 2 with-arms
-        out[0, 1] = float("nan")           # poison row 0's with-arm
-        return out
-
-    monkeypatch.setattr(V, "_dcpo_v4_ref_logprobs", _fake_ref)
-    r_meta, member = _compute_dcpo_v4_pmi_rmeta(
-        tokenizer=tok,
-        trainer=object(),
-        prompt_texts=["P0 ", "P1 "],
-        response_texts=[
-            "a<|meta|>check once<|/meta|>so it is 42.",
-            "b<|meta|>check twice<|/meta|>so it is 43.",
-        ],
-        fmt_classes=["wellformed", "wellformed"],
-        heads={"c_with": [1.0, 1.0], "answer": ["", ""]},
-        read_knob=lambda name, default: default,
-        step=2,
-    )
-    assert r_meta[0] == 0.0 and member[0] == 0.0      # poisoned: fail-closed
-    assert np.isfinite(r_meta).all()                  # never NaN out of here
-    assert r_meta[1] > 0.0 and member[1] == 1.0       # sibling unaffected
-
-
-def test_compute_pmi_rmeta_whitespace_continuation_not_attempted():
-    # Round 2 M-D: split_first_meta's STRICTER probe semantics — a whitespace-
-    # only continuation is not attempted, so the ref scorer is never called
-    # (a call would raise here) and the row scores 0 with member 0.
-    r_meta, member = _compute_dcpo_v4_pmi_rmeta(
-        tokenizer=FakeMergeTokenizer(merges=()),
-        trainer=object(),
-        prompt_texts=["P "],
-        response_texts=["w<|meta|>hm<|/meta|>   \n"],
-        fmt_classes=["wellformed"],
-        heads={"c_with": [1.0], "answer": ["5"]},
-        read_knob=lambda name, default: default,
-        step=1,
-    )
-    assert r_meta[0] == 0.0 and member[0] == 0.0
-    # source-level lock: BOTH consumers route through the shared splitter.
-    import inspect
-    assert "split_first_meta" in inspect.getsource(_compute_dcpo_v4_pmi_rmeta)
-    import scripts.probe_pmi_offline as probe
-    assert "split_first_meta" in inspect.getsource(probe.parse_rollout)
 
 
 class _FakeWandb(types.ModuleType):
@@ -466,81 +377,6 @@ class _FakeWandb(types.ModuleType):
 
     def log(self, payload, step=None):
         self.logged.append((dict(payload), step))
-
-
-def test_compute_pmi_rmeta_ref_failure_logs_zero_scalars(monkeypatch):
-    # Round 2 M-C: the early returns must chart ZEROS, not wandb gaps.
-    import sys
-    fake_wandb = _FakeWandb()
-    monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
-
-    def _boom(trainer, tensors):
-        raise RuntimeError("ref worker down")
-
-    monkeypatch.setattr(V, "_dcpo_v4_ref_logprobs", _boom)
-    _compute_dcpo_v4_pmi_rmeta(
-        tokenizer=FakeMergeTokenizer(merges=()),
-        trainer=object(),
-        prompt_texts=["P "],
-        response_texts=["w<|meta|>try<|/meta|>it equals 5."],
-        fmt_classes=["wellformed"],
-        heads={"c_with": [1.0], "answer": [""]},
-        read_knob=lambda name, default: default,
-        step=7,
-    )
-    assert len(fake_wandb.logged) == 1
-    payload, step = fake_wandb.logged[0]
-    assert step == 7
-    assert payload["dcpo/pmi_member_rate"] == 0.0
-    assert payload["dcpo/pmi_guard_hit_rate"] == 0.0
-    assert payload["dcpo/pmi_nonfinite_rate"] == 0.0
-    assert payload["dcpo/pmi_attempted_rate"] == 1.0   # the row WAS attempted
-    assert payload["dcpo/pmi_aligned_rate"] == 1.0     # and aligned pre-failure
-
-
-def test_compute_pmi_rmeta_no_aligned_logs_zero_scalars(monkeypatch):
-    # the other early return: attempted > 0 but every splice fails to align
-    # (whole continuation merges across the boundary on the merge tokenizer).
-    import sys
-    fake_wandb = _FakeWandb()
-    monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
-    r_meta, member = _compute_dcpo_v4_pmi_rmeta(
-        tokenizer=FakeMergeTokenizer(merges=("ab",)),
-        trainer=object(),
-        prompt_texts=["a"],
-        response_texts=["<|meta|>m<|/meta|>b"],   # prefix 'a' + C 'b' -> 'ab' merge
-        fmt_classes=["wellformed"],
-        heads={"c_with": [1.0], "answer": [""]},
-        read_knob=lambda name, default: default,
-        step=9,
-    )
-    assert float(member.sum()) == 0.0
-    assert len(fake_wandb.logged) == 1
-    payload, step = fake_wandb.logged[0]
-    assert step == 9
-    assert payload["dcpo/pmi_attempted_rate"] == 1.0
-    assert payload["dcpo/pmi_aligned_rate"] == 0.0
-    assert payload["dcpo/pmi_member_rate"] == 0.0
-
-
-def test_compute_pmi_rmeta_ref_failure_is_crash_safe(monkeypatch):
-    tok = FakeMergeTokenizer(merges=())
-
-    def _boom(trainer, tensors):
-        raise RuntimeError("ref worker down")
-
-    monkeypatch.setattr(V, "_dcpo_v4_ref_logprobs", _boom)
-    r_meta, member = _compute_dcpo_v4_pmi_rmeta(
-        tokenizer=tok,
-        trainer=object(),
-        prompt_texts=["P "],
-        response_texts=["w<|meta|>try<|/meta|>it equals 5."],
-        fmt_classes=["wellformed"],
-        heads={"c_with": [1.0], "answer": ["5"]},
-        read_knob=lambda name, default: default,
-        step=1,
-    )
-    assert float(np.abs(r_meta).sum()) == 0.0 and float(member.sum()) == 0.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -556,20 +392,12 @@ def _guard_trainer(legacy):
 
 
 def test_pmi_ref_guard_rejects_legacy_worker_path():
-    # legacy path enabled -> the scorer must CRASH (AssertionError), and the
-    # crash-safe wrapper must RE-RAISE it (deterministic misconfig), never
-    # swallow it into an all-zero flatline.
+    # legacy path enabled -> the ref scorer must CRASH (AssertionError) rather
+    # than train on 1/T-compressed deltas. Asserted directly on
+    # _dcpo_v4_ref_logprobs (the dense-PMI scorer that used to route here is
+    # gone; the guard it exercised is live and shared with pmi_shift).
     with pytest.raises(AssertionError, match="legacy fsdp worker"):
-        _compute_dcpo_v4_pmi_rmeta(
-            tokenizer=FakeMergeTokenizer(merges=()),
-            trainer=_guard_trainer("enable"),
-            prompt_texts=["P "],
-            response_texts=["w<|meta|>try<|/meta|>it equals 5."],
-            fmt_classes=["wellformed"],
-            heads={"c_with": [1.0], "answer": ["5"]},
-            read_knob=lambda name, default: default,
-            step=1,
-        )
+        _dcpo_v4_ref_logprobs(_guard_trainer("enable"), {})
 
 
 def test_pmi_ref_guard_unreadable_config_fails_closed():
@@ -606,43 +434,6 @@ def test_pmi_ref_guard_engine_path_passes_and_sets_temperature_one(monkeypatch):
     out = _dcpo_v4_ref_logprobs(trainer, tensors)
     assert captured["temperature"] == 1.0
     assert real_n == 1 and out.shape == (1, 2)
-
-
-def test_compute_pmi_rmeta_placebo_corrected_three_arm_wiring(monkeypatch):
-    # verl-layer lock for the placebo-corrected path (review 2b83bf3 minor-4):
-    # arm layout [0,n)=with, [n,2n)=without, [2n,2n+p)=placebo; the gated value
-    # must be agg(d_real) - agg(d_placebo), and a row is member only when its
-    # placebo arm scored.
-    tok = FakeMergeTokenizer(merges=())
-    response_texts = [
-        "work<|meta|>check the sum<|/meta|>so it is 42.",   # scored + corrected
-        "plain answer 9.",                                   # not attempted
-    ]
-    heads = {"c_with": [1.0, 1.0], "answer": ["42", "9"]}
-
-    def _fake_ref3(trainer, tensors):
-        n, r_max = tensors["responses"].shape
-        out = torch.full((n, r_max), -2.0)   # without-arm + padding
-        out[0] = -1.0                        # with-arm (n_al == 1)
-        out[2] = -1.5                        # placebo arm [2n, 2n+1)
-        return out
-
-    knobs = {"dcpo_pmi_placebo_correct": True, "dcpo_pmi_agg": "mean"}
-    monkeypatch.setattr(V, "_dcpo_v4_ref_logprobs", _fake_ref3)
-    r_meta, member = _compute_dcpo_v4_pmi_rmeta(
-        tokenizer=tok,
-        trainer=object(),
-        prompt_texts=["P0 ", "P1 "],
-        response_texts=response_texts,
-        fmt_classes=["wellformed", "no_meta"],
-        heads=heads,
-        read_knob=lambda name, default: knobs.get(name, default),
-        step=7,
-    )
-    # real delta +1.0/tok, placebo delta +0.5/tok -> corrected +0.5
-    assert r_meta[0] == pytest.approx(0.5)
-    assert member[0] == 1.0
-    assert r_meta[1] == 0.0 and member[1] == 0.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -912,6 +703,6 @@ def test_pmi_shift_production_parity_non_inert():
 def test_pmi_shift_existing_arms_byte_identical():
     # Adding pmi_shift to the source set must not alter the other sources'
     # validation (cf/pmi/none still pass; gm/asym_cf unchanged).
-    for src in ("cf", "pmi", "none", "cf_group", "decoy_did_gm",
+    for src in ("cf", "none", "cf_group", "decoy_did_gm",
                 "decoy_did_rlsd"):
         assert _v4_rmeta_source_strict(lambda n, d, s=src: s) == src
