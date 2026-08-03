@@ -1,3 +1,12 @@
+> ⚠️ **RETRACTED — archived 2026-08-03.** The benchmark numbers below were produced by
+> the grader that `docs/reports/2026-08-03-independent-regrade-instruct-arms.md` found
+> defective, and that regrade declares them "전부 무효". Corrected headline figures:
+> MATH500 16k `pmishift−base` is **+14.00pp**, not +18.8; base_matched 54.40→**55.17**,
+> pmishift 66.00→**69.17**, gandhi 68.08→**60.02**; net-reward `shiftonly−gandhi` is
+> **+4.38pp**, not +5.6~5.9. The "gains concentrate in the hardest quartile (+34.8pp)"
+> claim is judged "회귀-평균 인공물일 가능성이 높다". Kept as the record of what was
+> believed at the time. **Do not cite these numbers.**
+
 # RQ2 (instruct) — Isolated PMI-shift net effect: shiftonly vs gandhi
 
 **Date**: 2026-07-08. **Status**: instruct substrate (secondary/appendix in the base redesign), single seed, format-fair robust re-grade.

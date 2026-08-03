@@ -130,7 +130,7 @@ package 비교이고, `B3pkg−B3-noPMI`만이 현재 설계에서 PMI head를 �
    `shiftonly−gandhi`는 MATH500에서 +5.6~+5.9pp로 유의한 양수였고, GSM8K는
    거의 0, AIME는 −5.8~−7.1pp였다. 따라서 shift는 “모든 도메인에서 최고”가
    아니라, solvable-hard MATH에서 가장 강한 양의 효과를 보인 방법으로 기술해야
-   한다. 출처: `docs/reports/2026-07-08-RQ2-isolated-pmishift-net-shiftonly-vs-gandhi.md`.
+   한다. 출처: `archive/reports_pre_regrade_0803/2026-07-08-RQ2-isolated-pmishift-net-shiftonly-vs-gandhi.md`.
 3. **Historical 594-set held-out Δ ranking**: CF +0.040, PMI-shift +0.019,
    PMI +0.010, gm-additive −0.003, gm-multiplicative −0.029였다. 이 표의
    “최고”는 CF이며, PMI-shift는 2위다. 단, step·substrate·평가군이 완전히

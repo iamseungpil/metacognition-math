@@ -1,3 +1,7 @@
+> ⚠️ **ARCHIVED 2026-08-03 — resolved incident.** The submission block described here is
+> over: the RQ3v2-F arms are running on msrresrchbasicvc. Kept as the evidence log for the
+> escalation, not as an open issue.
+
 # Singularity `msrresrchbasicvc` rejects all new job submissions — escalation report
 
 **Filed:** 2026-07-26 · **Symptom start:** ~05:49 UTC 2026-07-26 · **Still failing at:** 18:04 UTC (14 consecutive probes)

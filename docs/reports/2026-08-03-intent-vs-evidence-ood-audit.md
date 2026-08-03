@@ -75,7 +75,7 @@ meta_floor=float(config.get("dcpo_meta_floor", 0.0))
 `README.md`는 의도를 정확히 말하지만 **상태를 말하지 않는다**:
 - *"2026-07-16 기준"* — **18일 stale**
 - *"다음 실험"·"현재 상태"* 언급 **0회**
-- 링크한 `docs/CLUSTER_SUPPORT_REQUEST.md`는 해결된 사건 문서(아카이브 대상)
+- 링크한 `archive/incidents_pre_rq3/CLUSTER_SUPPORT_REQUEST.md`는 해결된 사건 문서(아카이브 대상)
 - *"어떤 실험이 진행됐고 무엇이 죽었나"* 를 답하는 문서가 없다
 
 ⇒ 처음 보는 사람이 **"이 프로젝트가 뭔지"는 알 수 있으나 "지금 어디인지"는 알 수 없다.**

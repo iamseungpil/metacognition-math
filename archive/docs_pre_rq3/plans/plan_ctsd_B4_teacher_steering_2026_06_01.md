@@ -1,3 +1,8 @@
+> ⚠️ **ARCHIVED 2026-08-03 — superseded plan.** The PT-RLSD / CTSD / meta-ROD plan chain
+> terminates at `plan_pt_rlsd_v517_2026_05_09_FINAL.md` ("plan iteration 종료") and the whole
+> generation is superseded by `docs/redesign/`, `docs/CONSTITUTION.md` and
+> `docs/EXPERIMENT_PLAN.md`. Kept as a historical record, not as current guidance.
+
 # PLAN — B.4 Teacher-Steering Causal Gate (pre-registered, 2026-06-01)
 
 > **Why this replaces the B.1/B.2/B.3 framing.** An adversarial alignment audit

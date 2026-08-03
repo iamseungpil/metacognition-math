@@ -105,7 +105,7 @@ RQ3 smoke:
 - `results/rq3_pipeline_smoke.json`, `results/mcts_lite_smoke.json`
 
 Compute notes:
-- `NODE_POLICY.md` — node assignment rules
+- `NODE_POLICY.md` (repo root — did NOT move) — node assignment rules
 - `node_recovery_0415.yaml` — AMLT recovery config
 - `metacognition_*.yaml` — AMLT submission configs
 

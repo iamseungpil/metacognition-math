@@ -1,3 +1,8 @@
+> ⚠️ **ARCHIVED 2026-08-03 — superseded generation.** This belongs to the CTSD / DCPO /
+> confidence-RV instruct generation, superseded by the RQ3 matched-base ladder
+> (`docs/PREREGISTRATION_rq3v2_base_replication.md`, `docs/EXPERIMENT_PLAN.md`). Kept as
+> a historical record, not as current guidance.
+
 # Directional Self-Distillation for Useful Metacognition — Experiment Report
 
 **Author**: confidence-rv autoresearch  **Date**: 2026-06-24  **Project**: metacognition-math (confidence-rv)

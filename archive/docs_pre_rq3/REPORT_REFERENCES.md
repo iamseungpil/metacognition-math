@@ -1,3 +1,8 @@
+> ⚠️ **ARCHIVED 2026-08-03 — superseded index.** This is the cross-reference index for the
+> V8/H200-generation report `results/study_2026_04_16_metacot_v8_final_report.md`. The
+> current navigation entry points are `README.md`, `docs/CODE_MAP.md` and
+> `docs/EXPERIMENT_PLAN.md`. Kept as a historical record.
+
 # Report References — 어디에 뭐가 있는지
 
 Last updated: 2026-04-16

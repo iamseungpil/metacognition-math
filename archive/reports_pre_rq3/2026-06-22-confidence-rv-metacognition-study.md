@@ -1,3 +1,8 @@
+> ⚠️ **ARCHIVED 2026-08-03 — superseded generation.** This belongs to the CTSD / DCPO /
+> confidence-RV instruct generation, superseded by the RQ3 matched-base ladder
+> (`docs/PREREGISTRATION_rq3v2_base_replication.md`, `docs/EXPERIMENT_PLAN.md`). Kept as
+> a historical record, not as current guidance.
+
 # Useful Metacognition for Math Reasoning — Why It Hasn't Worked Yet, and the Fix We Are Testing
 
 **Author**: Seungpil Lee (+ Claude)  **Date**: 2026-06-22  **Project**: metacognition-math (confidence-rv)

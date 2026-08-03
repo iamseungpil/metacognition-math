@@ -1,3 +1,8 @@
+> ⚠️ **ARCHIVED 2026-08-03 — superseded generation.** This belongs to the CTSD / DCPO /
+> confidence-RV instruct generation, superseded by the RQ3 matched-base ladder
+> (`docs/PREREGISTRATION_rq3v2_base_replication.md`, `docs/EXPERIMENT_PLAN.md`). Kept as
+> a historical record, not as current guidance.
+
 # Redirect-Priming v2 — 진행 결론 보고서 (2026-06-18)
 
 **프로젝트**: metacognition-math (ctsd-phase-c). **북극성**: 유용한 메타인지(redirect)를 강화해

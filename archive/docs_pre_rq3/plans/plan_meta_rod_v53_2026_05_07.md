@@ -1,3 +1,8 @@
+> ⚠️ **ARCHIVED 2026-08-03 — superseded plan.** The PT-RLSD / CTSD / meta-ROD plan chain
+> terminates at `plan_pt_rlsd_v517_2026_05_09_FINAL.md` ("plan iteration 종료") and the whole
+> generation is superseded by `docs/redesign/`, `docs/CONSTITUTION.md` and
+> `docs/EXPERIMENT_PLAN.md`. Kept as a historical record, not as current guidance.
+
 # Plan v5.3 — Meta-CoT × On-Demand RLSD (ROD-RLSD)
 
 **Date**: 2026-05-07 · **Author**: iamseungpil@gmail.com · **Predecessors**: `plan_meta_opd_2026_05_03.md` (v5.2)

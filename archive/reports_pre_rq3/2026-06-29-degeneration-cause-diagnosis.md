@@ -1,3 +1,8 @@
+> ⚠️ **ARCHIVED 2026-08-03 — superseded generation.** This belongs to the CTSD / DCPO /
+> confidence-RV instruct generation, superseded by the RQ3 matched-base ladder
+> (`docs/PREREGISTRATION_rq3v2_base_replication.md`, `docs/EXPERIMENT_PLAN.md`). Kept as
+> a historical record, not as current guidance.
+
 # Why Meta-RL Models Degenerate / Fail to Terminate on Long Reasoning
 
 Date: 2026-06-29

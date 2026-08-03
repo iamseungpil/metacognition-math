@@ -1,3 +1,8 @@
+> ⚠️ **ARCHIVED 2026-08-03 — superseded plan.** The PT-RLSD / CTSD / meta-ROD plan chain
+> terminates at `plan_pt_rlsd_v517_2026_05_09_FINAL.md` ("plan iteration 종료") and the whole
+> generation is superseded by `docs/redesign/`, `docs/CONSTITUTION.md` and
+> `docs/EXPERIMENT_PLAN.md`. Kept as a historical record, not as current guidance.
+
 # TRIOBJ_DCPO_V3 — 설계·상태 보고서 (2026-06-10)
 
 > 이 문서는 "왜 이렇게 설계했는지"를 잊지 않기 위한 단일 참조점이다.

@@ -1,3 +1,8 @@
+> ⚠️ **ARCHIVED 2026-08-03 — superseded plan.** The PT-RLSD / CTSD / meta-ROD plan chain
+> terminates at `plan_pt_rlsd_v517_2026_05_09_FINAL.md` ("plan iteration 종료") and the whole
+> generation is superseded by `docs/redesign/`, `docs/CONSTITUTION.md` and
+> `docs/EXPERIMENT_PLAN.md`. Kept as a historical record, not as current guidance.
+
 # [DEPRECATED] Research Plan: Learning Models That Know What They Don't Know
 
 > **이 문서는 deprecated입니다.** Active plan은 `results/plan_metacot_v8_active_2026_04_09.md`를 참조하세요.

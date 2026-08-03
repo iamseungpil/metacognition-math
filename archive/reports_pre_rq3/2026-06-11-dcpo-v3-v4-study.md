@@ -1,7 +1,12 @@
+> ⚠️ **ARCHIVED 2026-08-03 — superseded generation.** This belongs to the CTSD / DCPO /
+> confidence-RV instruct generation, superseded by the RQ3 matched-base ladder
+> (`docs/PREREGISTRATION_rq3v2_base_replication.md`, `docs/EXPERIMENT_PLAN.md`). Kept as
+> a historical record, not as current guidance.
+
 # Region-Routed Metacognition RL (DCPO v2→v4): Hypothesis–Verification Study
 
 **Author**: autoresearch loop (Claude) **Date**: 2026-06-11 **Project**: metacognition-math, branch `ctsd-phase-c`
-**Reviewed sources**: wandb group `triobj_dcpo_v3*` (runs `adf1a0fc` v3l, `daa6d35a` v3m), `/tmp/probe_pmi_report.json`, `/tmp/probe_pmi_cross_report.json`, `docs/dcpo_v3_design_and_status.md`, spec `docs/superpowers/specs/2026-06-11-dcpo-v4-likelihood-rmeta-design.md`
+**Reviewed sources**: wandb group `triobj_dcpo_v3*` (runs `adf1a0fc` v3l, `daa6d35a` v3m), `/tmp/probe_pmi_report.json`, `/tmp/probe_pmi_cross_report.json`, `archive/docs_pre_rq3/plans/dcpo_v3_design_and_status.md`, spec `docs/superpowers/specs/2026-06-11-dcpo-v4-likelihood-rmeta-design.md`
 
 ## Executive Summary
 

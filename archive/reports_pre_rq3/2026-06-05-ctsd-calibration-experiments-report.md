@@ -1,3 +1,8 @@
+> ⚠️ **ARCHIVED 2026-08-03 — superseded generation.** This belongs to the CTSD / DCPO /
+> confidence-RV instruct generation, superseded by the RQ3 matched-base ladder
+> (`docs/PREREGISTRATION_rq3v2_base_replication.md`, `docs/EXPERIMENT_PLAN.md`). Kept as
+> a historical record, not as current guidance.
+
 # CTSD Calibration Experiments — Status Report (2026-06-05)
 
 ## North-star
@@ -134,7 +139,7 @@ ECE 0.557.
 ### Intent 재정렬
 North-star를 명문화: **"메타인지 행동을 강화해 정확도를 올린다 — 언제/무엇이 좋은 메타인지인지
 규정한 metacot를 정의하고 이를 강화하는 RL을 개발한다."** calibration은 부분 목표(=유용한
-메타인지의 한 신호)임을 명확히 함. `CLAUDE.md` Goal + `docs/intent_and_plan_2026_06_07.md`에 반영.
+메타인지의 한 신호)임을 명확히 함. `CLAUDE.md` Goal + `archive/docs_pre_rq3/plans/intent_and_plan_2026_06_07.md`에 반영.
 
 ### E.9 inject — 진짜 binned-injection 학습 완료 ✅
 - agent-loop-native 재구현(BCIConfAgentLoop)으로 **진짜 주입** 버전이 **gs300 완주**,

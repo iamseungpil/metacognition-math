@@ -40,7 +40,7 @@ enabling self-assessment, error correction, and calibrated confidence.
 11.16.0 세 버전 모두** 동일한 서버 에러(클라이언트·yaml·SKU 별칭 배제), 제출하는 VC ARM id는
 정상 잡과 바이트 동일, ARM 읽기(쿼터 GET)는 지금도 성공. 유력 가설(미확인)은 0716 GCR 재할당 때
 우리 신원이 새 allocation으로 이관되지 않았고 구 경로가 0726 05:49에 폐기됐다는 것.
-요청서 = `docs/reports/2026-07-26-basicvc-submission-block-escalation.md`(correlation ID 포함).
+요청서 = `archive/incidents_pre_rq3/2026-07-26-basicvc-submission-block-escalation.md`(correlation ID 포함).
 차단 이전에 진입한 잡은 영향 없이 계속 돈다. 이 VC에는 **Premium SLA가 없다**(Standard/Basic만).
 Standard 티어라 선점이 잦으므로 ckpt 릴레이/resume 배선은 여전히 필수다.
 

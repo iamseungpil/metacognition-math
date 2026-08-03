@@ -1,3 +1,7 @@
+> ⚠️ **ARCHIVED 2026-08-03 — resolved incident.** The submission block described here is
+> over: the RQ3v2-F arms are running on msrresrchbasicvc. Kept as the evidence log for the
+> escalation, not as an open issue.
+
 # CLUSTER_SUPPORT_REQUEST — msrresrchbasicvc 제출 차단 지원 요청 (2026-07-17)
 
 7/16 GCR 전체 유지보수·재할당 이후 우리 워크스페이스의 msrresrchbasicvc 제출만
