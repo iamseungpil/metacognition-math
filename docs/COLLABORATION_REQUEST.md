@@ -150,12 +150,19 @@ python -m accelerate.commands.launch --config_file configs/accelerate_sft.yaml \
 ```
 
 산출물은 `checkpoints/v8_{meta_inside,base_matched}_strict_sft/checkpoint-{254,508,762}` 이고
-**epoch 3(=checkpoint-762)** 을 쓴다.
+**`checkpoint-254`(epoch 1)** 를 SFT2 의 init 으로 쓴다 — 아래 ★ 참조.
 
-⚠ **3 epoch 을 지킬 것.** 우리 아카이브의 `h100std_base_matched_pipeline.yaml:128` 은
-선점 회피용으로 `sed` 로 SFT1 을 **1 epoch 으로 깎는다.** 그 파일을 참고 삼아 복사하면 무메타 팔만
-1 epoch 이 되어 **쌍둥이가 깨진다.** 우리도 그 변형을 남겨둔 탓에 어느 쪽이 헤드라인을 냈는지
-지금 단정하지 못하고 있다 — 당신은 **양쪽 3 epoch** 으로 통일해달라.
+★**`num_train_epochs: 3` 으로 돌리되, 다음 단계로 넘길 것은 `checkpoint-254`(= epoch 1)다.**
+우리 성공 세팅이 그렇다 — `h100std_rv_functional_sft.yaml:75` 가
+`models/v8_meta_inside_strict_sft/**checkpoint-254**/*` 를 스테이징해 SFT2 의 init 으로 쓴다.
+HF 에도 메타 SFT1 은 **checkpoint-254 만 16.4GB 로** 있고 508·762 는 없다.
+
+⚠ 이것은 "1 epoch 만 학습"과 **다르다.** `sft.py:515` 가 `lr_scheduler_type="cosine"` 이고 HF Trainer 는
+총 스텝을 `num_train_epochs` 에서 계산하므로, 3 epoch 런의 step 254 는 **LR 이 아직 높고**
+1 epoch 런의 step 254 는 **LR 이 0 까지 감쇠**해 있다. 우리 아카이브의
+`h100std_base_matched_pipeline.yaml:128` 이 `sed` 로 SFT1 을 1 epoch 으로 깎는데 **그 파일을
+복사하지 말 것** — 무메타 쪽이 어느 방식이었는지 우리도 확정하지 못했고, 그 모호함을 물려주지
+않으려는 것이다. **양쪽 다 `epochs 3` + `checkpoint-254`** 로 통일해달라.
 
 **SFT1 검산 두 가지** (RL 로 넘어가기 전 반드시):
 - 무메타 산출물이 `<|meta|>` 를 **한 번도 내지 않아야 한다.** 내면 쌍둥이가 오염돼 대조가 무의미하다
@@ -167,8 +174,8 @@ python -m accelerate.commands.launch --config_file configs/accelerate_sft.yaml \
 
 | 팔 | config | init | 데이터 | 행 |
 |---|---|---|---|---|
-| 메타 | `configs/archive/sft_rv_functional.yaml` | B-1 **메타** checkpoint-762 | **`metacot-rv`** `data/rv_redirect_verify_functional.parquet` | 1,763 |
-| 무메타 | `configs/archive/sft_base_rv.yaml` | B-1 **무메타** checkpoint-762 | **`metacot`** `data/v8_base_rv_sft.parquet` | 1,763 |
+| 메타 | `configs/archive/sft_rv_functional.yaml` | B-1 **메타** checkpoint-254 | **`metacot-rv`** `data/rv_redirect_verify_functional.parquet` | 1,763 |
+| 무메타 | `configs/archive/sft_base_rv.yaml` | B-1 **무메타** checkpoint-254 | **`metacot`** `data/v8_base_rv_sft.parquet` | 1,763 |
 
 **3 epoch · lr 1.0e-5 · bs 1 × ga 4 · max_length 4096.** 두 config 는 `model_name_or_path` ·
 `dataset_path` · `output_dir` 세 줄만 다르다.
@@ -259,6 +266,22 @@ avg@8 (AIME 는 avg@16). 산출 parquet 에 `completion` 전문이 남아야 재
 |---|---|---|---|
 | **주** | MATH500 전체 `acc(meta) − acc(base_matched)` | **+14.00pp** (p<.001) | CI 하한 > 0 이면 재현 성공 |
 | 보조 | 난이도 기울기 `Δacc(L4–5) − Δacc(L1–2)` | **+7.17pp** (p=.009) | north-star: 분포 밖에서 더 커야 한다 |
+
+**난이도 축은 MATH500 `level` 로 잰다 — 사전 처리된 난이도 라벨이 있는 유일한 벤치**다.
+GSM8K 는 라벨이 없고 AIME 는 30문항이라 한 문제가 3.3pp 다.
+
+다만 **결합 사다리를 보조로 함께 보고해달라** — 세 벤치를 난이도 순으로 늘어놓은 것이다:
+
+| 층 | 무엇 | n | 우리 실측 |
+|---|---|---|---|
+| 쉬움 | GSM8K | 500 | (보조) |
+| 중간 | MATH500 **L1–2** | 상세는 `level` 필드 | **+10.53pp** |
+| 어려움 | MATH500 **L4–5** | 262 | **+17.70pp** |
+| 최난 | AIME | 30 | **+8.75pp** (p=.008) |
+
+⚠ **주 지표는 MATH500 level 기울기 하나로 고정한다.** 결합 사다리는 벤치마다 형식·정답 타입이
+달라(AIME 는 정수 정답) 난이도와 데이터셋 차이가 섞이고, 우리 **잡음바닥 ±3.08pp 도 MATH500
+level 기울기에서만 쟀다.** AIME 단독으로는 판정하지 않는다 — 방향 확인용이다.
 
 난이도 기울기의 해상도: 바닥 0.00 · 천장 +29.97 · **잡음바닥 ±3.08pp**
 (같은 모델의 8샘플을 4/4 로 쪼갠 A-vs-A 실측). L1–2 +10.53 → L4–5 **+17.70**.
