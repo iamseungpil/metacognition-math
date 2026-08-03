@@ -1,0 +1,893 @@
+# core/KNOBS.yaml — the load-bearing knob registry
+#
+# WHY THIS FILE EXISTS
+#   E-171 (docs/reports/2026-07-17-rq3-run-and-iteration-log.md:2339) established the
+#   failure shape: a switch turned off on 2026-06-22 for one experiment (cf_group)
+#   silently invalidated the back half of a different experiment (pmi_shift) six weeks
+#   later. The matched-arm audit compared the three launchers byte-for-byte and could
+#   not see it, because the knob lives in an INHERITED config. Quoting E-171 §5:
+#   "런처만 비교하면 상속된 노브는 영원히 안 보인다" — comparing launchers only, an
+#   inherited knob is never visible.
+#   This registry is the resolved layer. Every dcpo_* name the training code reads is
+#   listed here with where it is actually set, what it defaults to, and whether any
+#   currently-running arm reaches it.
+#
+# SCOPE / METHOD
+#   Enumerated by: grep -rhoE '"dcpo_[a-z_0-9]+"' src/training/*.py | sort -u
+#   -> 85 unique names. Every file:line below was opened and verified, not inferred.
+#   The grep catches two different things and conflating them is itself a hazard, so
+#   each entry carries `kind`:
+#     kind: knob     — read from algorithm config (config.get / _v4_read / read_knob /
+#                      getattr(config.algorithm, ...)). Operator-settable.
+#     kind: channel  — a non_tensor_batch / batch key written and read inside one
+#                      training step. NOT operator-settable; listed because the grep
+#                      returns it and because a Phase-2 reader will otherwise mistake
+#                      it for a knob.
+#
+# STATUS VOCABULARY
+#   live          — reached on a currently-running arm.
+#   default-only  — reached on a currently-running arm, but NO config or launcher sets
+#                   it; the code default is the operating value. This is the most
+#                   dangerous class: the value is load-bearing and invisible.
+#   dead-lineage  — belongs to a retired generation; not reached on any running arm.
+#
+# WHAT "RUNNING" MEANS HERE (verified 2026-08-03)
+#   solid-gibbon = h100std_rq3v2f_b0p.yaml  -> --config-name=base_matched_grpo_h100_4x4k  (:268)
+#   hip-hound    = h100std_rq3v2f_b2p.yaml  -> --config-name=base_matched_grpo_h100_4x4k  (:262)
+#   pure-stag    = h100std_rq3v2f_b3p.yaml  -> --config-name=triobj_dcpo_v4_stage3b_h100_4x4k (:246)
+#
+#   ★ b0p and b2p run algorithm.sdc_mode: VANILLA_GRPO
+#     (configs/base_matched_grpo_h100_4x4k.yaml:66). The whole DCPO region-routing
+#     block is gated on _REGION_ROUTED_MODES = {TRIOBJ_DCPO_V2, V3, V4}
+#     (src/training/verl_sdc.py:1458). VANILLA_GRPO is not in that set, so
+#     TWO OF THE THREE RUNNING ARMS READ ZERO dcpo_* KNOBS.
+#     "live" in this file therefore means "reached by pure-stag (b3p)" unless noted.
+#
+#   ★ b3p overrides dcpo_rmeta_source=pmi_shift (h100std_rq3v2f_b3p.yaml:251), while the
+#     config it inherits declares dcpo_rmeta_source: cf_group
+#     (configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:175). Every knob the config sets
+#     FOR cf_group and FOR pmi is therefore set-but-never-read on the live arm. Reading
+#     the config alone gives the wrong answer about what is on. That is the second
+#     instance of the same class of error as E-171.
+#
+# CONFIG INHERITANCE CHAIN (verified)
+#   base_matched_grpo_h100_4x4k.yaml:29  defaults: [verl_e4_selfdistill_h200_4x4k, _self_]
+#   triobj_dcpo_v4_stage3b_h100_4x4k.yaml:47 defaults: [verl_e4_selfdistill_h200_4x4k, _self_]
+#   verl_e4_selfdistill_h200_4x4k.yaml:21   defaults: [verl_sdc_e21r_shared, _self_]
+#   -> anything not named in the leaf config comes from two files up.
+
+version: 1
+authored: 2026-08-03
+authored_by: Phase-1 registry pass (no code moved; core/ contains this file only)
+enumeration:
+  command: "grep -rhoE '\"dcpo_[a-z_0-9]+\"' src/training/*.py | sort -u"
+  unique_names: 85
+  of_which_config_knobs: 60
+  of_which_batch_channels: 25
+  coverage: "all 85 names appear exactly once below; verified by parsing this file and
+    diffing its dcpo_* keys against the grep output — 0 missing, 0 invented"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 1 — LOAD-BEARING
+# Entries here carry the two mandatory fields. A knob is load-bearing when turning it
+# off changes a headline number and we have the measurement that says so.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+load_bearing:
+
+  dcpo_meta_floor:
+    kind: knob
+    status: live
+    reached_by: [b3p]
+    set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:154  (value 0.0)"
+    code_default: "0.0 at src/training/verl_sdc_utils.py:481  (config.get(\"dcpo_meta_floor\", 0.0))"
+    default: 0.0
+    # ★ THE DEFECT THAT MAKES THIS THE FIRST ENTRY
+    indistinguishable_states: |
+      The code default equals the disabled value. Deleting the key from the config and
+      explicitly disabling the guard produce the SAME observable state: no log line, no
+      warning, no diff in any dashboard panel. There is no way to tell "nobody set this"
+      from "somebody decided to turn it off" by looking at a run. Every other guard in
+      this repo should be audited for the same property.
+    history:
+      - "1eae74e (2026-06-15) meta_floor 0.05 — guard ON"
+      - "f1f6cec (2026-06-22 00:08 UTC) meta_floor 0.05 -> 0.0 — guard OFF, as a side effect
+         of cf_group work. The commit message says 'All new knobs default-OFF => pre-existing
+         configs byte-identical'; that claim is true of the NEW knobs and false of this one,
+         which is pre-existing and was changed in the same commit."
+      - "6537775 (2026-06-22 03:10 UTC) same value, cf_group placebo follow-up"
+      - "6a12ae4 (2026-07-12) unchanged at 0.0 through the rq3 ladder build"
+    the_config_predicted_this:
+      # The justification for 0.0 is written in the file and does not hold for this run.
+      comment_above_it: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:151-153 — 'FLOOR STAYS
+        (review I1), reduced 0.1 -> 0.05: ... hold the channel open under the length/format
+        pressure while the centered delta grades content.'"
+      value_on_the_next_line: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:154 — 0.0"
+      stated_reason: "'cf_group (2026-06-21) 0.05 -> 0.0: the counterfactual answer-delta is
+        the emit-when-useful gradient'"
+      why_the_reason_fails_here: "b3p does not run cf_group. h100std_rq3v2f_b3p.yaml:251
+        overrides dcpo_rmeta_source=pmi_shift. The counterfactual answer-delta that was
+        supposed to replace the floor is never computed on this arm."
+      review_I1_named_the_outcome_in_advance: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:35-36
+        — 'centered delta is mean-zero => no standing emission pull; removing the floor
+        reopens the v3l collapse'. The collapse reopened."
+    disabling_failure: |
+      With meta_floor=0.0 there is no unconditional standing pull on meta emission, and
+      every force that survives is either conditional or centered to zero, while every
+      force against emission is unconditional (E-170, log:2256, force-direction table):
+        pmi_shift w_meta 0.8  -> centered over PMI-scored rows only => mean 0, no emit pull
+        w_format 0.35         -> only paid IF you emit; silence scores 0, not negative
+        w_emit 0.1            -> group-centered; when all 8 rollouts emit it is a group
+                                 constant => advantage 0
+        meta_floor 0.0        -> OFF; this was the only unconditional pull
+        len_cost 0.08         -> against, unconditional, every token
+        trunc_open 0.3        -> against
+        R_corr 1.0            -> against: a truncated response scores -1, and the meta block
+                                 pushes b3p toward the 8192 cap
+      Measured collapse on the live arm (pure-stag / rq3v2f_b3p):
+        dcpo/meta_emit_rate  1.00 (gs<=100) -> 0.897 (gs150) -> 0.197 (gs200) -> 0.041 (gs290)
+                             -> 0.0137 (gs298)
+                             [log:2242 for the 1.00 -> 0.0137 endpoint; log:2256 §3 table for
+                              the gs100/150/200/290 trajectory]
+        clip_ratio b3p vs its matched twin b2p: 3.0x / 3.0x / 1.7x / 2.8x at gs100/150/200/290
+                             — the meta block amplifies a drift both arms have; it is an
+                             amplifier, not the sole cause (E-170 §3 caveat).
+      Consequence for the science, not just the metric: from gs150 the treatment is
+      absent, so that interval is not a test of the mechanism. Pre-registration A1
+      (docs/PREREGISTRATION_rq3v2_base_replication.md:58, meta_emit_rate >= 0.80 sustained)
+      broke at gs135; A2 (:59, attempted >= 0.30) broke at gs190. The run is
+      pre-registration Outcome C (invalid run), not Outcome B (substrate-specific)
+      — E-170 §4 explicitly corrects the earlier reading. Reporting "no effect on the base
+      substrate" from this run would be attributing to the substrate a self-destruction
+      caused by a disabled guard.
+      Scope note (E-171 §1-2): T1 (the instruct win) ran the SAME config with the SAME
+      meta_floor=0.0 and w_emit=0.1. The guard was off in both runs. T1 survived because on
+      the instruct substrate the block REDUCED truncation (MATH500 ~6% vs 19%; AIME ~50% vs
+      73%), so the weight-1.0 correctness head did the floor's job by accident. The T1 win
+      therefore rests on an uncontrolled coupling (block <-> truncation) whose sign happened
+      to be favourable, not on a reproducible design.
+    guard_metric:
+      name: dcpo/meta_emit_rate
+      healthy: ">= 0.80 sustained, flat, not eroding by gs80"
+      healthy_source: "docs/CONSTITUTION.md:185 (Part VI gate) and
+        docs/PREREGISTRATION_rq3v2_base_replication.md:58 / :125"
+      dashboard_band: "0.98-0.99 healthy vs 0.40-0.52 broken — docs/CONSTITUTION.md:118"
+      broken_observed: "0.0137 at gs298 on rq3v2f_b3p (log:2242)"
+      leading_indicator: "clip_ratio. Emission held at 1.00 while clip_ratio ~ 0; erosion
+        began at gs110-120 as clip crossed 1% and resp_len went 462 -> 746; collapse at gs200
+        as clip crossed 4% (E-170 §3). Watch clip_ratio to see this coming ~90 steps early."
+    open_question_do_not_treat_as_fixed: |
+      Turning the floor back to 0.05 is NOT established as the fix. The floor is an
+      unconditional pull, so it holds up useless emission too — which is exactly why it was
+      lowered (boilerplate suppression). E-170 §5 leaves this unmeasured, and this project
+      has met the selectivity-vs-always-on tradeoff before. E-171 §5's prescription is not
+      "turn the floor on" but "freeze and record the resolved config per run, and diff
+      matched pairs at the resolved layer." This registry is step one of that.
+
+  dcpo_rmeta_source:
+    kind: knob
+    status: live
+    reached_by: [b3p]
+    set_at: |
+      h100std_rq3v2f_b3p.yaml:251  ++algorithm.dcpo_rmeta_source=pmi_shift   (WINS)
+      configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:175  dcpo_rmeta_source: cf_group  (overridden)
+    code_default: "NONE — deliberately. src/training/verl_sdc.py:206 reads it with a sentinel
+      (_V4_RMETA_MISSING) and _v4_rmeta_source_strict raises on absent/unreadable/invalid
+      (verl_sdc.py:204-217). The comment at :195-198 records why: the old
+      read(\"dcpo_rmeta_source\", \"cf\") fell open onto the deprecated CF path silently
+      whenever the knob was missing OR the config was unreadable."
+    default: null
+    legal_values: "cf, pmi, none, cf_group, decoy_did_gm, decoy_did_rlsd, asym_cf, pmi_shift
+      (src/training/verl_sdc.py:199-200)"
+    why_load_bearing: |
+      This one knob selects which of eight mutually exclusive meta-reward generations runs,
+      and therefore which of the other 54 knobs are read at all. It is the reason a config
+      diff is not a specification of a run: configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml
+      sets 12 knobs for cf_group and pmi that the live arm never reads, and sets ZERO of the
+      7 knobs the live arm's actual scorer reads (see dcpo_pmishift_* below).
+    disabling_failure: |
+      Cannot be disabled — it fails loudly by design, and that design is the fix for a real
+      past defect (verl_sdc.py:195-198, "review round 2 M-A"). This is the correct pattern
+      and the contrast that makes dcpo_meta_floor's silent 0.0 indefensible: the same file
+      proves the authors know how to make a missing knob crash.
+      What CAN still go wrong is silent MISDIRECTION: setting it to a valid value whose
+      supporting knobs are unset, which is the live state today.
+    guard_metric:
+      name: "the per-source engagement pair — dcpo/pmishift_attempted_rate and dcpo/pmishift_n_save"
+      healthy: ">= 0.30 and > 0 respectively (docs/CONSTITUTION.md:186)"
+      broken_observed: "attempted 0.711 (warmup) -> 0.634 (mid) -> 0.151 (late) on rq3v2f_b3p
+        (log:2414 table). Crosses the 0.30 gate downward at ~gs190."
+      note: "A source selected but starved reads identical to a source not selected. There is
+        no metric that says WHICH source is running — that comes only from the resolved config."
+
+  trainer.val_before_train:
+    kind: knob
+    status: live
+    reached_by: [b0p, b2p, b3p]
+    not_a_dcpo_knob: true
+    note: "Included because it is load-bearing on the same headline numbers the dcpo_* knobs
+      feed, and because it exhibits the identical config-vs-launcher inversion."
+    set_at: |
+      configs/base_matched_grpo_h100_4x4k.yaml:84         val_before_train: true
+      configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:249   val_before_train: true
+      configs/verl_sdc_e21r_shared.yaml:298 (2 levels up)  val_before_train: false
+      h100std_rq3v2f_b0p.yaml:289  ++trainer.val_before_train=False   (WINS)
+      h100std_rq3v2f_b2p.yaml:283  ++trainer.val_before_train=False   (WINS)
+      h100std_rq3v2f_b3p.yaml:269  ++trainer.val_before_train=False   (WINS)
+    default: "false (inherited from verl_sdc_e21r_shared.yaml:298)"
+    effective_value: "False on all three arms"
+    the_inversion: |
+      BOTH live leaf configs deliberately set true — they override the inherited false to
+      get the step-0 pass — and ALL THREE launchers override it back to False. The
+      operator-facing file (the launcher) silently reverses the decision recorded in the
+      science-facing file (the config). Nothing logs the reversal.
+    disabling_failure: |
+      With val_before_train=False and trainer.test_freq=50 (h100std_rq3v2f_b0p.yaml:288,
+      b2p:282, b3p:268), the first validation row on every arm is gs50. NO ARM HAS A gs0 ROW.
+      That is not a cosmetic gap, because the arms do not start from the same model:
+        b0p init = models/b0p2_rvfull_eb16_sft  (meta-REMOVED twin; h100std_rq3v2f_b0p.yaml:118)
+        b2p init = models/b2p2_rvfull_eb16_sft  (h100std_rq3v2f_b2p.yaml:118)
+        b3p init = models/b2p2_rvfull_eb16_sft  (same as b2p; h100std_rq3v2f_b3p.yaml:100)
+      So the pre-registered replication axis A3 (b3p - b0p >= +10pp,
+      docs/PREREGISTRATION_rq3v2_base_replication.md:60) and RQ1 (b2p - b0p) both cross an
+      SFT-init boundary. Without a gs0 row the SFT-stage head start and the RL-stage effect
+      are summed into a single number and cannot be separated. The earliest evidence we have
+      is gs50, where the axis already reads +0.0246 (log:2233 table) — and we cannot say how
+      much of that was already there before the first gradient step.
+      Only RQ2 (b3p - b2p) is unaffected, because b2p and b3p share an init by construction.
+      Cost of the fix: one validation pass (594 problems, greedy — docs/CONSTITUTION.md:145)
+      per arm, once. That is a rounding error against a ~30h/arm run.
+    guard_metric:
+      name: "presence of a global_step=0 row in val/* for every arm"
+      healthy: "one gs0 row per arm, logged before the first optimizer step"
+      broken_observed: "zero gs0 rows across b0p / b2p / b3p; the 9-bench table in the run log
+        (log:2233-2241) starts at gs50 for all arms"
+      why_this_metric: "It is a presence check, not a threshold — it can be evaluated before
+        launch from the resolved config, which is the whole point."
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 2 — REQUIRED GATE ADDITION
+# Not a knob. A dashboard metric whose healthy band the constitution already records and
+# whose launch gate the constitution does not check.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+required_gate_additions:
+
+  - metric: dcpo/pmishift_rmeta_mean_scored
+    kind: guard_metric
+    status: REQUIRED GATE ADDITION
+    band_declared_at: "docs/CONSTITUTION.md:128"
+    healthy: "+1.0 .. +1.2"
+    broken: "~ -0.2  (constitution's own 'Broken (base B3)' column)"
+    reads: "mean scored meta reward. Near-0 => no signal."
+    measured_on_live_arm:
+      value: -0.141
+      window: "warmup, gs <= 80"
+      source: "docs/reports/2026-07-17-rq3-run-and-iteration-log.md:2414"
+      corroborating: "rmeta_neg_rate 0.261 > rmeta_pos_rate 0.207 in the same window (log:2414).
+        During the first 80 steps — exactly when the convention has to set — the average
+        scored meta reward was NEGATIVE."
+      also_seen: "+0.136 (mid, gs81-150), -0.022 (late, gs>150) — same table. The sign is not
+        stable, and the warmup window is the one that matters."
+    the_defect: |
+      -0.141 sits in the constitution's own BROKEN column. Every declared launch gate passed
+      anyway, because Part VI (docs/CONSTITUTION.md:182-190) lists only four conditions and
+      this metric is not among them:
+        dcpo/meta_emit_rate >= 0.8              PASS  (:185)
+        dcpo/pmishift_attempted_rate >= 0.3
+          and dcpo/pmishift_n_save > 0          PASS  (:186)
+        actor/entropy > 0.1 and clip < 0.2      PASS  (:187)
+        matched arms differ only on their axis   PASS  (:188)
+      Part IV knew the number's healthy range. Part VI never looked at it.
+      Independently confirmed by the G2 firing check (E-172, log:2404): the head is WIRED and
+      DOES fire — gdpo/meta_region_utility/std = 1.038 in warmup — so this is not an inert
+      lever. It is a lever pulling the wrong way, which no existing gate can express.
+      The four current gates all ask "is the reward FIRING?". None asks "is the reward
+      pointing the RIGHT WAY?". That is the category the addition closes.
+    proposed_gate_text: |
+      Add to docs/CONSTITUTION.md Part VI, after the pmishift_attempted line:
+        - `dcpo/pmishift_rmeta_mean_scored` > 0 over the warmup window, and >= +0.5 by gs80
+          (else the meta reward is firing with the wrong sign — the convention cannot set
+          against a negative mean). Cross-check `dcpo/rmeta_pos_rate > dcpo/rmeta_neg_rate`.
+      Rationale, in the words of stacked-research §7 as quoted at log:2432:
+        "게이트를 통과했는데 실패가 났으면 게이트를 추가한다."
+        (if it passed the gate and still failed, add a gate.)
+    also_add_the_direction_check: |
+      Same class, same run: dcpo/meta_emit_rate PASSED the >=0.8 gate at gs25 and then decayed
+      monotonically to 0.0137. Part VI's wording already says "sustained, not eroding below
+      0.80 by gs80" in the PRE-REGISTRATION (:58) but the CONSTITUTION's Part VI (:185) states
+      it as a bare threshold with no trajectory clause. Align them: a gate evaluated once at
+      gs25 cannot catch a slow guard failure.
+    blocker_for_automation: |
+      There is no script to add this check to. Part VI is prose only — verified by
+      `grep -rln "meta_emit_rate|pmishift_attempted_rate" scripts/ experiments/` returning
+      nothing. Phase 3 should give the constitution an executable twin; until then the gate
+      addition is a documentation change that a human must run.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 3 — DEFAULT-ONLY ON THE LIVE PATH
+# Reached by pure-stag (b3p) every step. Set by nothing. The code default IS the recipe.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+default_only:
+
+  _summary: |
+    ★ These seven knobs parameterise _compute_dcpo_v4_pmi_shift_rmeta — the scorer that
+    produces b3p's ENTIRE meta reward. Not one of them appears in
+    configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml, in any launcher, or in any ancestor
+    config. Verified: `grep -n dcpo_pmishift configs/*.yaml h100std_rq3v2f_*.yaml` -> no hits.
+    Meanwhile the same config spends 8 lines setting dcpo_pmi_* knobs the run never reads.
+    The recipe the paper will describe is stored in argument defaults at
+    src/training/verl_sdc.py:2378-2388, six weeks of git history away from the config a
+    reader would open. This is the E-171 lesson repeating one layer deeper: not merely
+    inherited, but never written down at all.
+    Phase-2 action: PROMOTE all seven into the live config at their current values in a
+    single no-op-by-value commit, so the recipe becomes diffable. Do not change any value in
+    that commit — b3p resubmits from the working tree and a value change would fork the run.
+
+  dcpo_pmishift_scale:
+    kind: knob
+    status: default-only
+    reached_by: [b3p]
+    set_at: "code default at src/training/verl_sdc.py:2378"
+    default: 1.0
+    role: "global multiplier on the shift head"
+
+  dcpo_pmishift_reversal_save:
+    kind: knob
+    status: default-only
+    reached_by: [b3p]
+    set_at: "code default at src/training/verl_sdc.py:2379"
+    default: 1.0
+    role: "bonus magnitude for a decoy->gold reversal (the reward's core positive event)"
+
+  dcpo_pmishift_reversal_derail:
+    kind: knob
+    status: default-only
+    reached_by: [b3p]
+    set_at: "code default at src/training/verl_sdc.py:2380"
+    default: 2.0
+    role: "penalty magnitude for a gold->decoy reversal"
+    note: "The save/derail asymmetry (1.0 vs 2.0) is a live scientific choice sitting in an
+      argument default. E-168 initially proposed it as the cause of the emission collapse;
+      the run log corrects that (log:2250) — SAVE/DERAIL events touch only ~3% of attempted
+      blocks (5-6 events against 512 rollouts/step = train_batch 64 x rollout.n 8), too few to
+      drive collapse. It is still an unrecorded parameter of the headline recipe."
+
+  dcpo_pmishift_clip:
+    kind: knob
+    status: default-only
+    reached_by: [b3p]
+    set_at: "code default at src/training/verl_sdc.py:2381"
+    default: 2.0
+
+  dcpo_pmishift_decoy_seed:
+    kind: knob
+    status: default-only
+    reached_by: [b3p]
+    set_at: "code default at src/training/verl_sdc.py:2382"
+    default: 42
+    note: "Reproducibility-critical and unrecorded. A decoy-selection seed belongs in the
+      frozen run manifest (scripts/freeze_run_manifest.py), not in a default."
+
+  dcpo_pmishift_reversal_min_magnitude:
+    kind: knob
+    status: default-only
+    reached_by: [b3p]
+    set_at: "code default at src/training/verl_sdc.py:2383"
+    default: 0.0
+    note: "0.0 = no minimum; every sign flip counts however small. Same
+      disabled-equals-unset hazard as dcpo_meta_floor."
+
+  dcpo_pmishift_meta_body_dup_thresh:
+    kind: knob
+    status: default-only
+    reached_by: [b3p]
+    set_at: "code default at src/training/verl_sdc.py:2388"
+    default: 1.0
+    role: "token-Jaccard threshold; a meta block that near-duplicates the body earns no shift
+      credit (presence-as-confidence confound guard)"
+    note: "★ SECOND DISABLED GUARD, SAME SIGNATURE AS dcpo_meta_floor. The code comment at
+      verl_sdc.py:2384-2387 states 'dup_thresh>=1.0 disables'. The default is exactly 1.0.
+      So the confound guard against 'meta that just restates the body' has never been on, on
+      any run, and nothing in any config or dashboard says so. Unlike meta_floor there is no
+      measurement of what it costs — that is a gap, not a clearance."
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 4 — LIVE (reached by b3p, explicitly set)
+# Not load-bearing in the strict sense (no measured disabling failure on record), but on
+# the live path. NONE of these may be touched in Phase 2: b3p resubmits from the working
+# tree, so configs/ and src/ must stay byte-identical.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+live:
+
+  # ── reward head weights (compose_dcpo_region_advantage) ──
+  dcpo_w_corr:
+    kind: knob
+    status: live
+    set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:112"
+    code_default: "1.0 at src/training/verl_sdc_utils.py:478"
+    default: 1.0
+    note: "The unconditional force AGAINST emission on this arm (truncated response -> -1).
+      See dcpo_meta_floor.disabling_failure."
+  dcpo_w_meta:
+    kind: knob
+    status: live
+    set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:113 (value 0.8; s2 0.5 -> 0.8)"
+    code_default: "0.5 at src/training/verl_sdc_utils.py:349"
+    default: 0.5
+    note: "Multiplied by the per-batch warmup scale from dcpo_w_meta_warmup_steps
+      (verl_sdc_utils.py:348-351). Centered over PMI-scored rows only => mean-zero => exerts
+      NO standing emission pull, which is precisely what review I1 warned about."
+  dcpo_w_cal:
+    kind: knob
+    status: live
+    set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:116"
+    code_default: "0.3 at src/training/verl_sdc_utils.py:480"
+    default: 0.3
+  dcpo_w_format:
+    kind: knob
+    status: live
+    set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:117 (value 0.35; s2 0.1 -> 0.35)"
+    code_default: "0.1 at src/training/verl_sdc_utils.py:300"
+    default: 0.1
+    note: "Conditional on emitting; silence scores 0, not negative => silence is a safe escape
+      (E-170 force table)."
+  dcpo_w_emit:
+    kind: knob
+    status: live
+    set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:137 (value 0.1; cf_group 0.15 -> 0.1
+      on 2026-06-22, the same commit pair that zeroed meta_floor — E-171 §1 table)"
+    code_default: "0.0 at src/training/verl_sdc_utils.py:360"
+    default: 0.0
+    note: "Group-centered: when all 8 rollouts emit it is a group constant => advantage 0.
+      Inert exactly when emission is healthy, which is when you would not miss it."
+  dcpo_format_neg:
+    kind: knob
+    status: live
+    set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:136 (value 0.2)"
+    code_default: "1.0 at src/training/verl_sdc.py:185"
+    default: 1.0
+    note: "Default 1.0 is the HARSH pre-fix behaviour (silence beats malformed emission
+      pointwise -> abstention escape); the config's own comment at :124-126 documents that the
+      unset default was the bug. A knob whose default is the known-bad value."
+
+  # ── length / truncation ──
+  dcpo_len_cost:
+    kind: knob
+    status: live
+    set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:160 (value 0.08; s2b 0.03 -> 0.08)"
+    code_default: "0.0 at src/training/verl_sdc.py:856"
+    default: 0.0
+    note: "Unconditional force against emission. ★ Also a citation hazard: the cleanest
+      instruct evidence (shiftonly, MATH500 +5.6..+5.9pp) ran with len_cost=0 and no emit head
+      (E-171 §3) — that number must not be cited as the effect of pmi_shift inside this
+      7-head package."
+  dcpo_meta_len_cap:
+    kind: knob
+    status: live
+    set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:237 (value 96)"
+    code_default: "0 at src/training/verl_sdc_utils.py:380"
+    default: 0
+  dcpo_trunc_open_penalty:
+    kind: knob
+    status: live
+    set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:239 (value 0.3)"
+    code_default: "0.0 at src/training/verl_sdc_utils.py:390 and src/training/verl_sdc.py:189"
+    default: 0.0
+    note: "Read at TWO sites with the same default; a divergence between them would be silent."
+
+  # ── warmup / anchoring ──
+  dcpo_w_meta_warmup_steps:
+    kind: knob
+    status: live
+    set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:146 (value 80; s2 50 -> 80)"
+    code_default: "0 at src/training/verl_sdc.py:847"
+    default: 0
+    note: "80 steps is the same window in which rmeta_mean_scored measured -0.141."
+  dcpo_anchor_norm:
+    kind: knob
+    status: live
+    set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:228 (true)"
+    code_default: "False at src/training/verl_sdc_utils.py:367"
+    default: false
+    note: "docs/CONSTITUTION.md:177-178 (Part V failure mode 5): beneficial only when PMI
+      fires; with an inert PMI it injects noise, and prescribes gating its use on
+      pmishift_attempted_rate > ~0.3. On this arm attempted fell to 0.151 late (log:2414)
+      while anchor_norm stayed true. Candidate second gate addition."
+  dcpo_anchor_ema:
+    kind: knob
+    status: live
+    set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:229"
+    code_default: "0.9 at src/training/verl_sdc_utils.py:371"
+    default: 0.9
+  dcpo_anchor_warmup_steps:
+    kind: knob
+    status: live
+    set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:230 (value 20)"
+    code_default: "0 at src/training/verl_sdc_utils.py:372"
+    default: 0
+
+  # ── emission routing ──
+  dcpo_emit_route:
+    kind: knob
+    status: live
+    set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:233 (first_token)"
+    code_default: "\"global\" at src/training/verl_sdc_utils.py:375"
+    default: global
+  dcpo_emit_first_n:
+    kind: knob
+    status: live
+    set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:234"
+    code_default: "1 at src/training/verl_sdc_utils.py:378"
+    default: 1
+
+  # ── region carve-outs / format machinery ──
+  dcpo_meta_excl_conf:
+    kind: knob
+    status: live
+    set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:191 (true)"
+    code_default: "False at src/training/verl_sdc_utils.py:340"
+    default: false
+  dcpo_meta_open:
+    kind: knob
+    status: live
+    set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:219 (151669)"
+    code_default: "151669 at src/training/verl_sdc.py:3597 and :3676"
+    default: 151669
+    note: "A tokenizer-specific magic id hard-coded as a default at two sites. Silently wrong
+      against any other tokenizer; nothing validates it against the loaded vocab."
+  dcpo_format_replace:
+    kind: knob
+    status: live
+    set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:221 (true)"
+    code_default: "True at src/training/verl_sdc.py:3337"
+    default: true
+  dcpo_recover_first_pair:
+    kind: knob
+    status: live
+    set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:224 (true)"
+    code_default: "False at src/training/verl_sdc.py:3679"
+    default: false
+
+  # ── live batch channels (written and read within a step; not operator-settable) ──
+  dcpo_answer_mask:
+    kind: channel
+    status: live
+    set_at: "written src/training/verl_sdc.py:325 (also :2990, :3169); read verl_sdc_utils.py:475"
+  dcpo_meta_content_mask:
+    kind: channel
+    status: live
+    set_at: "written src/training/verl_sdc.py:326 (also :2991, :3170); read verl_sdc_utils.py:339"
+  dcpo_conf_mask:
+    kind: channel
+    status: live
+    set_at: "written src/training/verl_sdc.py:327 (also :2992); read verl_sdc_utils.py:342, :477"
+  dcpo_format_violation_mask:
+    kind: channel
+    status: live
+    set_at: "read src/training/verl_sdc_utils.py:294 (gates the optional 4th format head)"
+  dcpo_format_ok_mask:
+    kind: channel
+    status: live
+    set_at: "read src/training/verl_sdc_utils.py:307"
+  dcpo_head_member:
+    kind: channel
+    status: live
+    set_at: "written src/training/verl_sdc.py:413; read verl_sdc_utils.py:317"
+  dcpo_meta_floor_member:
+    kind: channel
+    status: live
+    set_at: "written src/training/verl_sdc.py:422; read verl_sdc_utils.py:323"
+    note: "The floor's per-row mask. Computed and threaded every step; multiplied by
+      meta_floor=0.0 at the end, so the whole path is live and inert. A wiring check
+      (constitution R19/R20 pattern) passes on it."
+  dcpo_rmeta_member:
+    kind: channel
+    status: live
+    set_at: "written src/training/verl_sdc.py:481 and :599 (the pmi_shift branch);
+      read verl_sdc_utils.py:330"
+  dcpo_trunc_open_mask:
+    kind: channel
+    status: live
+    set_at: "read src/training/verl_sdc_utils.py:391"
+  dcpo_trunc_open_member:
+    kind: channel
+    status: live
+    set_at: "written src/training/verl_sdc.py:430; read verl_sdc_utils.py:392"
+  dcpo_w_meta_scale:
+    kind: channel
+    status: live
+    set_at: "written src/training/verl_sdc.py:848; read verl_sdc_utils.py:348"
+  dcpo_fmt_class:
+    kind: channel
+    status: live
+    set_at: "written src/training/verl_sdc.py:3728; read :265, :2948, :3128, :3798"
+  dcpo_fmt_replaced:
+    kind: channel
+    status: live
+    set_at: "written src/training/verl_sdc.py:3729; read :266, :2949, :3129, :3799"
+  dcpo_fmt_replace_plan:
+    kind: channel
+    status: live
+    set_at: "written src/training/verl_sdc.py:3730; read :919"
+  dcpo_phat:
+    kind: channel
+    status: live
+    set_at: "written src/training/verl_sdc.py:874 (diagnostic only)"
+  dcpo_group_acc:
+    kind: channel
+    status: live
+    set_at: "written src/training/verl_sdc.py:875 (diagnostic only)"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 5 — DEAD LINEAGE, GROUPED BY RETIRED GENERATION
+#
+# Phase-2 disposition vocabulary:
+#   archive_with_branch — not set anywhere, not reachable without editing a launcher.
+#                         Removable ONLY as one archive commit that takes the knob, its
+#                         dcpo_rmeta_source branch, and its entry in _V4_RMETA_SOURCES
+#                         (src/training/verl_sdc.py:199-200) together. Deleting the knob
+#                         alone leaves the branch selectable and reading silent defaults —
+#                         the exact defect verl_sdc.py:195-198 was written to prevent.
+#                         Per stacked-research §5.6 these are ARCHIVED, not deleted, and the
+#                         archive dir gets a README saying why each is there.
+#   adjudicate          — set in a config a live arm loads, or read on a live path. Cannot be
+#                         removed without a per-knob decision. b3p resubmits from the working
+#                         tree: any edit to configs/ or src/ is a live-run hazard, so NONE of
+#                         these may be touched while pure-stag is running.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+dead_lineage:
+
+  asym_cf:
+    generation: "asym_cf — asymmetric counterfactual gate (2026-06-25)"
+    retired_because: "superseded by pmi_shift; dcpo_rmeta_source is pmi_shift on the only
+      running V4 arm"
+    count: 9
+    phase2: archive_with_branch
+    branch_to_archive_with: "src/training/verl_sdc.py:676-828 (elif _rmeta_src == 'asym_cf')"
+    set_in_any_live_config: false
+    knobs:
+      dcpo_asymcf_conf_w:     {kind: knob, status: dead-lineage, set_at: "code default at src/training/verl_sdc.py:714", default: 0.0}
+      dcpo_asymcf_alpha:      {kind: knob, status: dead-lineage, set_at: "code default at src/training/verl_sdc.py:719", default: 1.0}
+      dcpo_asymcf_beta:       {kind: knob, status: dead-lineage, set_at: "code default at src/training/verl_sdc.py:720", default: 2.5}
+      dcpo_asymcf_gamma:      {kind: knob, status: dead-lineage, set_at: "code default at src/training/verl_sdc.py:721", default: 0.5}
+      dcpo_asymcf_t:          {kind: knob, status: dead-lineage, set_at: "code default at src/training/verl_sdc.py:722", default: 0.99}
+      dcpo_asymcf_margin:     {kind: knob, status: dead-lineage, set_at: "code default at src/training/verl_sdc.py:723", default: 0.1}
+      dcpo_asymcf_beta_clip:  {kind: knob, status: dead-lineage, set_at: "code default at src/training/verl_sdc.py:724", default: 1.0e9}
+      dcpo_asymcf_emit_floor: {kind: knob, status: dead-lineage, set_at: "code default at src/training/verl_sdc.py:742", default: 0.0}
+      dcpo_asymcf_content:    {kind: knob, status: dead-lineage, set_at: "code default at src/training/verl_sdc.py:802", default: false}
+
+  decoy_did_gm:
+    generation: "decoy_did_gm — decoy difference-in-differences, geometric-mean head (2026-06-24)"
+    retired_because: "the decoy-DiD battery landed at answer-identity confound; superseded by
+      pmi_shift"
+    count: 6
+    phase2: archive_with_branch
+    branch_to_archive_with: "src/training/verl_sdc.py:482-571 (elif _rmeta_src in
+      ('decoy_did_gm','decoy_did_rlsd')) and the scorer at :2159-2166"
+    set_in_any_live_config: false
+    knobs:
+      dcpo_gm_agg:        {kind: knob, status: dead-lineage, set_at: "code default at src/training/verl_sdc.py:2159", default: mean_min}
+      dcpo_gm_clip_token: {kind: knob, status: dead-lineage, set_at: "code default at src/training/verl_sdc.py:2160", default: 2.0}
+      dcpo_gm_clip_gate:  {kind: knob, status: dead-lineage, set_at: "code default at src/training/verl_sdc.py:2161", default: 2.0}
+      dcpo_gm_alpha:      {kind: knob, status: dead-lineage, set_at: "code default at src/training/verl_sdc.py:2164", default: 1.0}
+      dcpo_gm_decoy_seed: {kind: knob, status: dead-lineage, set_at: "code default at src/training/verl_sdc.py:2165", default: 42}
+      dcpo_gm_sign_gate:  {kind: knob, status: dead-lineage, set_at: "code default at src/training/verl_sdc.py:2166", default: true}
+
+  decoy_did_rlsd:
+    generation: "decoy_did_rlsd — RLSD multiplicative ablation (spec 2026-06-24 FINAL 2-ARM)"
+    retired_because: "additive beat multiplicative; the arm was an ablation, not a recipe"
+    count: 3
+    phase2: archive_with_branch
+    branch_to_archive_with: "src/training/verl_sdc.py:482-571, shares the gm branch head"
+    set_in_any_live_config: false
+    knobs:
+      dcpo_rlsd_lambda:      {kind: knob,    status: dead-lineage, set_at: "code default at src/training/verl_sdc.py:527", default: 1.0}
+      dcpo_rlsd_clip_w:      {kind: knob,    status: dead-lineage, set_at: "code default at src/training/verl_sdc.py:528", default: 2.0}
+      dcpo_rlsd_meta_factor: {kind: channel, status: dead-lineage, set_at: "written src/training/verl_sdc.py:545; read verl_sdc_utils.py:460",
+                              note: "presence-gated in compose; absent on every non-rlsd path => compose byte-identical"}
+
+  cf_group_answer_route:
+    generation: "cf_group / asym_cf ANSWER-region route — R_ans_meta + SCoRe R_trans (2026-06-21/22)"
+    retired_because: "b3p overrides dcpo_rmeta_source to pmi_shift, which routes onto META, not
+      ANSWER. The whole answer-route is presence-gated on the dcpo_ans_meta channel
+      (verl_sdc_utils.py:412-413) which pmi_shift never writes."
+    count: 7
+    phase2: adjudicate
+    why_adjudicate: |
+      dcpo_w_score_alpha is SET to 1.5 in the config a live arm loads
+      (configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:184). Anyone diffing that config reads it
+      as an active SCoRe weight. It is not — the _cfgroup_kwargs dict it lives in stays empty
+      under pmi_shift. Removing the knob is correct; doing it while pure-stag can resubmit
+      from this tree is not.
+    knobs:
+      dcpo_ans_meta:
+        {kind: channel, status: dead-lineage, set_at: "written src/training/verl_sdc.py:646; read verl_sdc_utils.py:412",
+         note: "THE GATE. Its absence is what makes the entire answer-route inert under pmi_shift."}
+      dcpo_ans_member:                   {kind: channel, status: dead-lineage, set_at: "written src/training/verl_sdc.py:648; read verl_sdc_utils.py:415"}
+      dcpo_ans_meta_whole_group_center:  {kind: channel, status: dead-lineage, set_at: "written src/training/verl_sdc.py:790 (asym_cf only); read verl_sdc_utils.py:429",
+                                          note: "exists to fix the rmeta_neg_rate=0 annihilation bug in asym_cf gate centering"}
+      dcpo_r_trans:                      {kind: channel, status: dead-lineage, set_at: "written src/training/verl_sdc.py:650; read verl_sdc_utils.py:414, :441"}
+      dcpo_trans_member:                 {kind: channel, status: dead-lineage, set_at: "written src/training/verl_sdc.py:652; read verl_sdc_utils.py:416"}
+      dcpo_w_ans_meta:
+        {kind: knob, status: dead-lineage, set_at: "code default at src/training/verl_sdc_utils.py:432",
+         default: "falls back to dcpo_w_meta",
+         note: "decoupled from w_meta so asym_cf could zero content without zeroing the gate"}
+      dcpo_w_score_alpha:
+        {kind: knob, status: dead-lineage, set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:184 (value 1.5) — SET BUT NEVER READ on b3p",
+         code_default: "0.0 at src/training/verl_sdc_utils.py:442", default: 0.0}
+
+  cf_counterfactual:
+    generation: "cf / cf_group — counterfactual regeneration + group-branch + AdaCoT over-penalty (2026-06-21/22)"
+    retired_because: |
+      Three separate reasons stack: (a) sdc_counterfactual: false in the live config disables
+      the regeneration machinery (spec §4: gated off, not deleted); (b) the whole
+      agent_loop_config_path block was removed on 0711, and the live launchers actively ABORT
+      if it reappears (h100std_rq3v2f_b0p.yaml:178, b2p:173, b3p:154); (c) b3p overrides
+      rmeta_source to pmi_shift.
+    count: 6
+    phase2: adjudicate
+    why_adjudicate: |
+      Four of the six are SET in the live config, and one is SET BY THE LIVE LAUNCHER.
+      ★ h100std_rq3v2f_b3p.yaml:252 spends a line on ++algorithm.dcpo_w_over=0.0 — a knob read
+      only inside the gm branch (verl_sdc.py:554) and the cf_group branch (:633), neither of
+      which b3p executes. The override is decorative. It is also load-bearing on our BELIEF:
+      the b3p description (h100std_rq3v2f_b3p.yaml:1) cites "w_over=0" as evidence that the
+      reward setup is identical to the T1-winning launcher, and the matched-arm audit
+      (docs/CONSTITUTION.md:196-197) enumerates launcher overrides to prove arms differ only on
+      their declared axis. An override that changes nothing makes that audit read as thorough
+      while telling you nothing. Same disease as E-171, opposite symptom: there we missed a
+      knob that mattered; here we counted one that does not.
+    knobs:
+      dcpo_cf_branch_frac:
+        {kind: knob, status: dead-lineage, set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:176 (0.5) — SET, NOT READ on b3p",
+         code_default: "0.5 at src/training/verl_sdc.py:3351 (also :618, :699)", default: 0.5}
+      dcpo_cf_without_mode:
+        {kind: knob, status: dead-lineage, set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:183 (placebo) — SET, NOT READ on b3p",
+         code_default: "\"ban\" at src/training/verl_sdc.py:3360", default: ban,
+         note: "'ban' degenerated on the SFT init (acc_without ~ 0); 'placebo' was the 0622 fix"}
+      dcpo_cf_suppress_signature:
+        {kind: knob, status: dead-lineage, set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:218 (true) — SET, NOT READ",
+         code_default: "True at src/training/verl_sdc.py:3929", default: true,
+         note: "the config's own comment says 'inert while sdc_counterfactual=false'"}
+      dcpo_cf_with_meta:
+        {kind: channel, status: dead-lineage, set_at: "written src/training/verl_sdc.py:3538; read :612, :693, :888"}
+      dcpo_w_over:
+        {kind: knob, status: dead-lineage, set_at: "h100std_rq3v2f_b3p.yaml:252 (0.0, DECORATIVE) overriding configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:186 (0.1)",
+         code_default: "0.0 at src/training/verl_sdc.py:554 and :633", default: 0.0}
+      dcpo_over_threshold:
+        {kind: knob, status: dead-lineage, set_at: "code default at src/training/verl_sdc.py:561", default: 1.0}
+
+  pmi_dense:
+    generation: "pmi — dense likelihood-delta head, probe-frozen 2026-06-11 (n=7877)"
+    retired_because: "superseded by pmi_shift (two-position teacher-forcing) on 2026-06-25.
+      The live config says so itself at :174 — 'The PMI knobs below (dcpo_pmi_*) are now
+      DORMANT (kept, harmless).'"
+    count: 8
+    phase2: adjudicate
+    why_adjudicate: |
+      ALL EIGHT are set in the live config (lines 200-215), with 16 lines of probe-provenance
+      commentary — AUC figures, placebo t-statistics, cross-shuffle retention. A reader
+      auditing this run's reward will spend more time on eight dormant knobs than exists
+      anywhere for the seven knobs that actually score it (see default_only above). "Kept,
+      harmless" is accurate about the arithmetic and wrong about the reader. The provenance
+      commentary is genuinely valuable and must be preserved in the archive README, not
+      discarded with the keys.
+    knobs:
+      dcpo_pmi_agg:              {kind: knob, status: dead-lineage, set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:200 (mean)", code_default: "\"sum_clip\" at src/training/verl_sdc.py:1917", default: sum_clip}
+      dcpo_pmi_topk_frac:        {kind: knob, status: dead-lineage, set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:201 (0.25)", code_default: "0.25 at src/training/verl_sdc.py:1918", default: 0.25}
+      dcpo_pmi_clip_token:       {kind: knob, status: dead-lineage, set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:202 (2.0)", code_default: "2.0 at src/training/verl_sdc.py:1919", default: 2.0}
+      dcpo_pmi_clip_gate:        {kind: knob, status: dead-lineage, set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:203 (0.1085, probe-frozen p95|delta'|)", code_default: "2.0 at src/training/verl_sdc.py:1920", default: 2.0}
+      dcpo_pmi_alpha:            {kind: knob, status: dead-lineage, set_at: "code default at src/training/verl_sdc.py:1924", default: 0.0}
+      dcpo_pmi_ngram_n:          {kind: knob, status: dead-lineage, set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:214 (8)", code_default: "8 at src/training/verl_sdc.py:1925", default: 8}
+      dcpo_pmi_ngram_threshold:  {kind: knob, status: dead-lineage, set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:215 (0.25)", code_default: "0.25 at src/training/verl_sdc.py:1926", default: 0.25}
+      dcpo_pmi_placebo_correct:  {kind: knob, status: dead-lineage, set_at: "configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:213 (true)", code_default: "False at src/training/verl_sdc.py:1931", default: false}
+
+  v2_canary_sandbag:
+    generation: "TRIOBJ_DCPO_V2 canary / sandbag diagnostics"
+    retired_because: "the v2 producers are gone. src/training/dcpo_region.py:1049-1050 returns
+      constant [1.0]*B stubs, and the docstring at :812 says so: 'plus constant
+      canary_pass1_acc / sandbag_clamp stubs (kept so the existing ... contract holds)'."
+    count: 2
+    phase2: adjudicate
+    why_adjudicate: |
+      These two are the odd case: dead lineage riding a LIVE code path. They are written
+      unconditionally into every b3p batch (verl_sdc.py:876-879), always 1.0, always have
+      been. They are not reachable-if-selected like the branch knobs — they are executing
+      right now and carrying no information. Removing them touches a hot path
+      (verl_sdc.py, dcpo_region.py) that b3p resubmits from, and the module-level template at
+      verl_sdc.py:155 pre-seeds both keys to None, so a partial removal changes what
+      `.get(name, [1.0]*bs)` returns. Adjudicate individually, after pure-stag lands.
+    knobs:
+      dcpo_canary_pass1_acc:
+        {kind: channel, status: dead-lineage, set_at: "written src/training/verl_sdc.py:876 (also :3017, :3196) from the constant stub at dcpo_region.py:1049",
+         default: 1.0, note: "no consumer found outside the write sites"}
+      dcpo_sandbag_clamp:
+        {kind: channel, status: dead-lineage, set_at: "written src/training/verl_sdc.py:878 (also :3019, :3198) from the constant stub at dcpo_region.py:1050",
+         default: 1.0, note: "no consumer found outside the write sites"}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 6 — TALLY AND PHASE-2 SUMMARY
+# ═══════════════════════════════════════════════════════════════════════════════
+
+tally:
+  total_names: 85
+  by_status:
+    live: 37          # 2 in load_bearing + 35 in live; of these 21 are knobs, 16 are channels
+    default-only: 7   # every dcpo_pmishift_* — the live scorer's whole parameterisation
+    dead-lineage: 41  # 9 asym_cf + 6 gm + 3 rlsd + 7 answer-route + 6 cf + 8 pmi + 2 v2
+  by_kind:
+    knob: 60          # 21 live + 7 default-only + 32 dead-lineage
+    channel: 25       # 16 live + 9 dead-lineage
+  cross_check: "37 + 7 + 41 = 85 = the grep count. 60 + 25 = 85. Recompute both before editing
+    this block: parse this file, collect every dcpo_* key carrying a `status`, and diff against
+    `grep -rhoE '\"dcpo_[a-z_0-9]+\"' src/training/*.py | sort -u`."
+  excluded_from_counts:
+    - "trainer.val_before_train — load-bearing and recorded in section 1, but not a dcpo_* name"
+    - "dcpo/pmishift_rmeta_mean_scored — a dashboard metric, not a knob; section 2"
+  load_bearing_dcpo: [dcpo_meta_floor, dcpo_rmeta_source]
+  arms_reading_zero_dcpo_knobs: [b0p, b2p]
+
+phase2_disposition:
+  safe_to_remove_now: []
+  rationale: |
+    NOTHING is safe to remove while solid-gibbon, hip-hound and pure-stag can resubmit. A
+    preempted arm resubmits from the working tree, so src/ and configs/ must stay
+    byte-identical. Every dead-lineage knob above is either (a) inside src/training/*.py,
+    (b) inside a config a live arm loads, or (c) both. The empty list is the finding, not an
+    omission.
+  when_pure_stag_lands:
+    archive_with_branch:
+      total_names: 18
+      constraint: "one archive commit per generation; knob + branch + source-enum entry move
+        together, or _v4_rmeta_source_strict starts accepting a value whose knobs are gone"
+      generations:
+        - "asym_cf: 9 knobs + branch verl_sdc.py:676-828 + the 'asym_cf' entry in _V4_RMETA_SOURCES"
+        - "decoy_did_gm: 6 knobs + scorer verl_sdc.py:2159-2166 + its _V4_RMETA_SOURCES entry"
+        - "decoy_did_rlsd: 3 names + its _V4_RMETA_SOURCES entry"
+    adjudicate_individually:
+      total_names: 23
+      generations:
+        - "cf_group_answer_route: 7 (dcpo_w_score_alpha is set in a live config)"
+        - "cf_counterfactual: 6 (dcpo_w_over is set by a live LAUNCHER and cited as audit evidence)"
+        - "pmi_dense: 8 (all set in a live config, with the probe provenance worth preserving)"
+        - "v2_canary_sandbag: 2 (dead lineage on a live hot path)"
+  promote_not_remove:
+    - "the 7 dcpo_pmishift_* knobs: write them into
+       configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml at their current default values so the
+       live recipe becomes diffable. Values unchanged — this must be a no-op by value."
+  fix_the_class_not_the_instance:
+    - "Audit every guard whose disabled value equals its code default. Two are already known:
+       dcpo_meta_floor (0.0 = off, verl_sdc_utils.py:481) and dcpo_pmishift_meta_body_dup_thresh
+       (1.0 = disabled, verl_sdc.py:2388). In that state 'nobody set it' and 'someone turned it
+       off' are the same observable. Either give guards a sentinel default that raises — the
+       pattern dcpo_rmeta_source already uses at verl_sdc.py:206 — or log the resolved value of
+       every guard at step 0."
+    - "Freeze and record the RESOLVED config per run, and diff matched pairs at the resolved
+       layer, not the launcher layer (E-171 §5). scripts/freeze_run_manifest.py is the
+       existing hook."
+
+references:
+  claims_ledger: "docs/CLAIMS.md (L2) — C-012 :225 names dcpo_meta_floor: 0.0 as the proximate
+    cause of the b3p emission collapse; C-013 :251 records that the guard was off in T1 too, and
+    its 여는 것 (:262-263) states the prescription — freeze and record the resolved config per
+    run, diff matched pairs at the resolved layer — followed by '이 배선이 아직 없다' (this
+    wiring does not yet exist). THIS FILE IS THE FIRST INSTALMENT OF THAT WIRING: the static
+    half, resolved by hand and verified line by line. The dynamic half — emitting a resolved
+    config per run and diffing matched pairs automatically — is still missing, and the empty
+    phase2_disposition.safe_to_remove_now list should not be read as progress on it.
+    Division of labour: CLAIMS.md holds what is true and gets overwritten on correction;
+    this file holds which switches are load-bearing and what they are actually set to."
+  constitution: "docs/CONSTITUTION.md — Part IV dashboard :110-150, Part V failure modes :152-180,
+    Part VI gates :182-190, Part VII verification :194+"
+  preregistration: "docs/PREREGISTRATION_rq3v2_base_replication.md — A1 :58, A2 :59, A3 :60,
+    A4 :61, Outcome C :72-79, dashboard :125"
+  run_log: "docs/reports/2026-07-17-rq3-run-and-iteration-log.md — E-169 :2176 (9-bench table
+    :2233), E-170 :2256 (floor off, force table, emission trajectory), E-171 :2339 (git history
+    of the guard, T1 ran with it off too, resolved-config prescription), E-172 :2404 (G2 firing
+    check, the gate that was never checked)"
+  commits: "1eae74e 2026-06-15 (floor 0.05 ON) · f1f6cec 2026-06-22 00:08 (floor -> 0.0, OFF) ·
+    6537775 2026-06-22 03:10 · 6a12ae4 2026-07-12 (unchanged through the rq3 ladder)"
