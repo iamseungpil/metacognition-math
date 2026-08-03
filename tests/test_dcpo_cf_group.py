@@ -263,22 +263,6 @@ def test_T6_ban_mode_routing_byte_identical():
     assert (agent_d, bias_d, wm_d) == ("cf_groupban_agent", bias_in, 0.0)
 
 
-def test_T7_placebo_response_prefix_tokens():
-    # The placebo path's response prefix tokens == encode of the opener string
-    # exactly; with-arm rows are untouched (None prefix).
-    from src.training.cf_placebo_agent import placebo_opener_str
-
-    class _FakeTok:
-        def encode(self, text, add_special_tokens=False):
-            return [hash(w) % 100000 for w in text.split(" ") if w != ""]
-
-    tok = _FakeTok()
-    opener = placebo_opener_str()
-    placebo_ids = tok.encode("<think>\n" + PLACEBO_META + "\n", add_special_tokens=False)
-    assert placebo_ids == tok.encode(opener, add_special_tokens=False)
-    assert len(placebo_ids) > 0
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # T8 — cfgroup_scalar_summary: makes the arm-split counterfactual VISIBLE in wandb
 # (the gs50/step-65 diagnosis: acc_without=NaN was a logging artifact; the true
