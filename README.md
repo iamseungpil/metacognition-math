@@ -114,6 +114,10 @@ amlt run h100std_rq3v2f_b3p.yaml rq3v2f-b3p-<날짜>
 3. **CLAIMS 갱신 없이 판정문 금지** — 닫는 것 / 여는 것 / 재확인 계수기.
 4. **이동 커밋과 수정 커밋을 절대 섞지 않고, 매 이동 후 회귀 벤치(G5).**
 
+## 협업
+
+협업자 온보딩과 실험 요청: [`docs/COLLABORATION_REQUEST.md`](docs/COLLABORATION_REQUEST.md)
+
 ## 더 보기
 
 - [`CLAUDE.md`](CLAUDE.md) — 에이전트·데이터 레지스트리
