@@ -2463,3 +2463,19 @@ b0p(메타 제거 쌍둥이+vanilla)·b2p(메타 SFT2+vanilla)로 **"메타 있�
 Part VII: *"Matched-arm isolation: ... **Same config path**, same len_cost, same recipe."*
 현행은 b0p/b2p = `base_matched_grpo_h100_4x4k`, b3p = `triobj_dcpo_v4_stage3b_h100_4x4k`로
 **config path가 다르다.** 상속 노브(`meta_floor`·`len_cost`)가 비교 대상 밖에 놓인 구조적 이유다.
+
+### E-1xx 2026-08-03 — b2p 재개가 1시간째 큐 대기 · b0p 5.7시간 정지 구간
+
+- **b2p `musical-ant` = `queued`**(제출 후 1h). 노드를 아직 못 잡았다. wandb `rq3v2f_b2p` 는
+  이전 런(`hip-hound`)이 `crashed` @ gs178 로 남아 있고 **gs176+ 행이 없다** — 재개가
+  아직 시작조차 안 됐다는 뜻. Standard 티어 큐 대기이므로 개입하지 않는다(중단 4양상 ①).
+- **b0p `solid-gibbon` gs195, running.** 스텝 간격에 **20,509s(5.7h) 한 칸**이 있다
+  (≈gs180 부근). 이 한 칸 때문에 끝점 기반 s/step 이 1,226s 로 부풀었다 —
+  **중앙값은 최근 30스텝 365s / 최근 100스텝 298s**. 실제 ETA ≈ **10.6h**.
+  단 298→365 로 **완만히 느려지는 중**.
+- **b3s `musical-wombat` gs22, 290 s/step, ETA 22.4h.** gs25 게이트 4종 사전 확인:
+  `meta_emit_rate 0.9961` ✅ · `pmishift_attempted_rate 0.7832` ✅ · `actor/entropy 0.2286` ✅ ·
+  `rmeta_mean_scored` **−0.3599(gs20) → +0.0189(gs22)** 로 부호 복귀
+  (`pos_rate 0.2441` vs `neg_rate 0.2383` 로 균형). 헌법 건전 밴드 +1.0~+1.2 에는 아직 멀지만
+  워밍업 구간이라 절대값은 판정하지 않는다. **판정 지점은 gs50 kill 게이트.**
+- 조치 없음. 다음 틱에서 (1) b2p 가 `running` 으로 바뀌었는지 (2) b3s gs25 게이트 확정.
