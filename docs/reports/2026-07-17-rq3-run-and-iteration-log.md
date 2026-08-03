@@ -2333,3 +2333,68 @@ E-169와 직전 보고에서 나는 이 런이 **Outcome B(기질 특이적)**�
 **발화를 붙잡되 쓸모없는 발화까지 붙잡는다** — 그게 0.0으로 내린 원래 이유(boilerplate 억제)다.
 즉 floor 복원은 붕괴를 고치면서 **"always-on 메타"라는 반대편 실패**를 부를 수 있다.
 이 트레이드오프는 이 프로젝트가 이미 여러 번 만난 자리다(사이트 메커니즘 1번 selectivity vs 2번 always-on).
+
+---
+
+## E-171 (0803 07:00 UTC) — 가드는 **양쪽 다** 꺼져 있었다. git 이력으로 확정 + 재현성 점검
+
+E-170을 검증하려고 "T1도 floor가 꺼져 있었나"를 물었고, 답이 나왔다.
+
+### 1. 보상 설정 이력 (`configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml`)
+
+| 커밋 | 날짜 | `w_emit` | `meta_floor` |
+|---|---|---|---|
+| `1eae74e` | 2026-06-15 | 0.15 | **0.05** ← 가드 ON |
+| `f1f6cec`/`6537775` | **2026-06-22** | 0.1 | **0.0** ← **가드 OFF**(cf_group 작업의 부수효과) |
+| `6a12ae4` | 2026-07-12 | 0.1 | 0.0 |
+
+T1의 런처 `archive/launchers_pre_rq3/h100std_pmishift.yaml`은 **같은 config**를 쓰고
+(`--config-name=triobj_dcpo_v4_stage3b_h100_4x4k`) override는 `rmeta_source=pmi_shift`,
+`w_over=0.0` **두 개뿐**이다. 런처 이력상 T1 RL은 06-23 이후 ~07-08에 돌았다
+(`docs/reports/2026-07-08-RQ2-...md`).
+
+⇒ **T1도 `meta_floor=0.0`·`w_emit=0.1`로 돌았다. 가드는 양쪽 다 꺼져 있었다.**
+
+### 2. 그래서 E-170의 결론은 유지되고, 더 날카로워진다
+
+설정 차이가 아니다. **처치의 생존이 통제되지 않은 결합(블록↔절단)의 부호에 의존했고,
+그 결합을 막아줄 가드는 두 런 모두에서 꺼져 있었다.** instruct는 부호가 유리해서 살아남았고
+(블록이 절단을 줄임: 6% vs 19%), base는 부호가 불리해서 죽었다(b3p 절단이 쌍둥이의 2~3배).
+
+**즉 T1의 성공은 재현 가능한 설계가 아니라 기질에 우연히 유리했던 조건 위에 서 있었다.**
+그리고 우리는 **그 조건이 하중을 받고 있다는 사실 자체를 몰랐다** — 매치드 감사는 런처를
+바이트 단위로 비교했지만, `meta_floor`는 상속된 config에 있어 비교 대상이 아니었다.
+
+### 3. ⚠️추가 발견 — instruct의 "가장 깨끗한 증거"도 다른 보상이었다
+
+`docs/reports/2026-07-08-RQ2-isolated-pmishift-net-shiftonly-vs-gandhi.md`의 shiftonly arm은
+*"all other heads zeroed: cal/format/emit/len_cost/over = 0"*이다. 즉 MATH500 **+5.6~+5.9pp**
+(p<.001)를 낸 구성은 **len_cost도 emit 헤드도 없는** 보상이다. 지금 b3p가 쓰는 7-헤드 패키지와
+다르다. 이 수치를 "패키지 안에서의 PMI-shift 효과"로 인용하면 안 된다.
+
+### 4. 재현성 점검 결과
+
+| | base 사다리(rq3v2f) | instruct(T1) |
+|---|---|---|
+| 코드 스냅샷 | asset `490407111` ✅ | **어느 asset인지 기록 없음** ⚠ (릴리스 72개) |
+| RL config | `configs/` ✅ | `configs/triobj_dcpo_v4_stage3b` ✅ (동일 파일) |
+| 런처 | 루트 3개 ✅ | `archive/launchers_pre_rq3/` ✅ |
+| SFT2 코퍼스 | `rv_redirect_verify_functional`·`v8_base_rv_sft` ✅ | `rv_redirect_verify_functional` ✅ |
+| SFT init | HF `metacot`(dataset) `models/b0p2_rvfull_sft`·`b2p2_rvfull_sft` ✅ | HF `metacot-rv` `v8_rv_functional_sft` ✅ |
+| RL 체크포인트 | b0p gs125·b2p gs150·b3p gs295 ✅ | **전삭제** ❌ |
+| 평가 산출물 | 없음(아직) | `eval/{base_matched,pmishift,shiftonly,gandhi}_1030_v2` ✅ |
+
+⇒ **base는 완전 재현 가능. instruct는 "가중치만" 없다** — SFT init·코퍼스·config가 남아 있어
+RL 재주행(≈30h/arm)으로 복원 가능하고, 기존 수치는 저장된 생성물로 재채점 가능하다.
+**단 코드 asset 매핑이 산문에만 있다**(런→asset 표가 없음). 이게 가장 큰 재현성 구멍이다.
+
+### 5. 구조적 교훈
+
+이 사고의 형태는 **"06-22에 다른 실험(cf_group) 때문에 끈 스위치가, 6주 뒤 다른 실험(pmi_shift)의
+후반부를 무효화했다"**이다. 외부 연구가 이 실패를 이렇게 부른다:
+*"a bad assumption at step 3 can quietly contaminate step 50"*(agentic AI failure modes, ICML 2026 워크숍).
+우리 사례에서 step 3과 step 50 사이는 **6주**였다.
+
+**처방은 floor를 켜는 게 아니라(그건 always-on 메타라는 반대편 실패를 부른다),
+런마다 `resolved config`를 동결·기록하고 매치드 쌍은 resolved 층에서 diff하는 것이다.**
+런처만 비교하면 상속된 노브는 영원히 안 보인다.
