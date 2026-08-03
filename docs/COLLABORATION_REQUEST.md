@@ -115,6 +115,34 @@ safetensors 0개, tokenizer·config·rng 상태뿐이다. 즉 무메타 팔은 �
 교란된다.** 그 대비가 바로 재현 대상이므로 이 교란은 실험을 통째로 무의미하게 만든다.
 ⇒ **양쪽 SFT 를 모두 당신 쪽에서 돌린다.** 우리 체크포인트는 중간 점검용 대조로만 쓴다.
 
+### B-(-1). 환경 (~1h) — GPU 수는 그쪽에 맞추되 **유효 배치는 맞춰야 한다**
+
+```bash
+# 설치 순서가 중요하다 (vllm 0.10.2 가 torch 를 2.8.0 으로 올린다). requirements.txt 머리말과 동일.
+python3 -m venv venv && source venv/bin/activate
+pip install --upgrade pip wheel setuptools
+pip install torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu126
+pip install vllm==0.10.2
+pip install transformers==4.57.6
+pip install --no-deps verl==0.7.1
+pip install -r requirements.txt
+python scripts/check_runtime_env.py     # 버전 정합 확인
+```
+
+conda 를 쓰신다면 `scripts/install_verl.sh` 가 같은 스택을 `simplerl` env 로 만든다.
+
+★**GPU 수를 바꾸면 두 가지를 같이 고쳐야 한다.**
+
+| | 우리 값 (H100 × 4) | 규칙 |
+|---|---|---|
+| `configs/accelerate_sft.yaml` `num_processes` | **4** (DeepSpeed ZeRO-3) | 당신 GPU 수로 |
+| SFT 유효 배치 | GPU 4 × `per_device 1` × `grad_accum 4` = **16** | **16 을 유지**하도록 `gradient_accumulation_steps` 를 조정 |
+| RL | `train_batch_size 64` × `rollout.n 8` = 512 rollout/step | 런처 값 그대로. GPU 수와 무관 |
+
+⚠**이것 때문에 아래 "`checkpoint-254`" 라는 숫자가 달라진다.** 254 는 유효배치 16 에서
+4,264 행을 1 epoch 돈 스텝 수다. 유효배치가 달라지면 번호도 달라지므로
+**"checkpoint-254" 가 아니라 "epoch 1 = 첫 번째 checkpoint" 로 읽어달라.**
+
 ### B-0. 데이터 스테이징 (5분) — 이걸 안 하면 SFT 가 파일을 못 찾는다
 
 레포 `.gitignore:12` 가 `*.parquet` 를 제외하므로 코퍼스는 `share/data_parquets/` 에 **강제 커밋**돼
@@ -228,6 +256,37 @@ Dr.GRPO(`norm_adv_by_std=false`). 런처에 이미 들어 있으니 바꾸지 �
 
 학습·검증 데이터(`verl_{train,val}_meta_mix.parquet`)는 `scripts/pull_parquets.py` 가
 `iamseungpil/metacot-sdc-data` 에서 자동으로 당겨오므로 손댈 필요 없다.
+
+
+**amlt / Singularity 가 없다면** 런처 안의 명령을 그대로 쓰면 된다 (경로 두 개만 당신 것으로):
+
+```bash
+# 메타 팔
+WANDB_NAME=triobj_dcpo_v4_pmishift python -u -m src.training.verl_sdc \
+    --config-name=triobj_dcpo_v4_stage3b_h100_4x4k \
+    trainer.experiment_name=pmishift_repro \
+    trainer.default_local_dir=<당신_ckpt_dir> \
+    trainer.project_name=<당신_wandb_project> \
+    actor_rollout_ref.model.path=<당신_메타_SFT2> \
+    ++algorithm.dcpo_rmeta_source=pmi_shift \
+    ++algorithm.dcpo_w_over=0.0 \
+    trainer.resume_mode=auto \
+    ++trainer.val_before_train=True \
+    ++trainer.log_val_generations=8 \
+    ++hydra.searchpath=[pkg://verl/trainer/config]
+
+# 무메타 통제군 — config-name 이 다르고 보상 헤드가 없다
+WANDB_NAME=base_matched python -u -m src.training.verl_sdc \
+    --config-name=base_matched_grpo_h100_4x4k \
+    trainer.experiment_name=base_matched_repro \
+    trainer.default_local_dir=<당신_ckpt_dir> \
+    trainer.project_name=<당신_wandb_project> \
+    actor_rollout_ref.model.path=<당신_무메타_SFT2> \
+    trainer.resume_mode=auto \
+    ++trainer.val_before_train=True \
+    ++trainer.log_val_generations=8 \
+    ++hydra.searchpath=[pkg://verl/trainer/config]
+```
 
 **학습 중 게이트** — 메타 팔에만 해당(무메타 팔은 메타를 안 쓰므로 발화 지표가 없다):
 
