@@ -119,10 +119,6 @@ from src.training.dcpo_directional import (
     gm_over_emission_penalty,
     rlsd_meta_factor,
 )
-from src.training.dcpo_asymcf import (
-    apply_content_gate,
-    compute_asym_cf_gate,
-)
 # PMI-SHIFT-ACROSS-META (asymmetric sign-reversal) R_meta core — pure numpy
 # sibling of dcpo_pmi/dcpo_directional. Used ONLY by the new pmi_shift branch +
 # _compute_dcpo_v4_pmi_shift_rmeta below (default-OFF; existing arms unaffected).
@@ -197,7 +193,7 @@ def _compute_dcpo_heads_stash(
 # log line) whenever the knob was missing OR the algorithm config was
 # unreadable (the reader swallows exceptions into its default).
 _V4_RMETA_SOURCES = ("cf", "pmi", "none", "cf_group", "decoy_did_gm", "decoy_did_rlsd",
-                     "asym_cf", "pmi_shift")
+                     "pmi_shift")
 _V4_RMETA_MISSING = object()
 
 
@@ -673,161 +669,10 @@ def _populate_dcpo_region_keys(data) -> None:
                     _wb.log(_summ, step=int(_step))
             except Exception as _e:  # pragma: no cover — diagnostics never raise
                 print(f"[DCPO-CFGROUP] scalar-summary skipped: {_e}", flush=True)
-        elif _rmeta_src == "asym_cf":
-            # ASYMMETRIC COUNTERFACTUAL meta-RL (design 2026-06-25). TWO layers:
-            #   LAYER 1 (GATE/timing): per group c0=P(correct|meta-OFF) /
-            #     c1=P(correct|meta-ON) from the SAME with/without arm split
-            #     cf_group uses. R_gate = α·max(0,c1−c0) − β·max(0,c0−c1) −
-            #     γ·1[c0,c1≥t], β>α (DERAIL hurts more than SAVE helps), with the
-            #     §4.5 margin / β-clip / emit-floor / confidence-downweight
-            #     safeguards. Routed onto ANSWER via the SAME dcpo_ans_meta param
-            #     cf_group threads (the counterfactual-outcome locus). The Layer-1
-            #     GATE weight is INDEPENDENT from the Layer-2 CONTENT weight: the
-            #     gate routes via dcpo_w_ans_meta (verl_sdc_utils), which defaults
-            #     to dcpo_w_meta for backward compat but can be set so disabling
-            #     content (dcpo_w_meta=0) does NOT silently disable the gate head.
-            #   LAYER 2 (CONTENT/quality): the PMI/decoy independence R_meta the
-            #     dcpo_region_rewards fallback already left in meta_region_utility,
-            #     GATED by Layer 1's emit decision (wrong-to-emit ⇒ content 0) and
-            #     kept on the META channel.
-            _arm = data.non_tensor_batch.get("dcpo_cf_with_meta", None)
-            if _arm is None:
-                _n_roll = int(
-                    getattr(getattr(getattr(_config, "actor_rollout_ref", None),
-                                    "rollout", None), "n", 8) or 8
-                ) if _config is not None else 8
-                _frac = float(_v4_read("dcpo_cf_branch_frac", 0.5) or 0.5)
-                _arm, _ = cf_group_arm_split(bs, n=_n_roll, branch_frac=_frac)
-                _arm = np.asarray(_arm, dtype=np.float32)
-                print(
-                    "[DCPO-ASYMCF] WARN dcpo_cf_with_meta absent — falling back "
-                    f"to positional i%{_n_roll} arm split (frac={_frac}). The "
-                    "gen-wrap stash is missing; without-arm meta may NOT be banned.",
-                    flush=True,
-                )
-            else:
-                _arm = np.asarray(_arm, dtype=np.float32)
-            # Per-row student confidence (optional down-weight of the positive
-            # emit reward): the conf parsed by dcpo_region_rewards (heads["conf"],
-            # 0 when the row stated none). Absence-tolerant -> conf_w stays inert.
-            _conf_row = _heads.get("conf", None)
-            _conf_w = float(_v4_read("dcpo_asymcf_conf_w", 0.0) or 0.0)
-            _R_gate, _gate_member, _gate_diag = compute_asym_cf_gate(
-                c_with=_heads["c_with"],
-                with_meta_flag=_arm,
-                group_index=_uid,
-                alpha=float(_v4_read("dcpo_asymcf_alpha", 1.0) or 1.0),
-                beta=float(_v4_read("dcpo_asymcf_beta", 2.5) or 2.5),
-                gamma=float(_v4_read("dcpo_asymcf_gamma", 0.5) or 0.5),
-                t=float(_v4_read("dcpo_asymcf_t", 0.99) or 0.99),
-                margin=float(_v4_read("dcpo_asymcf_margin", 0.1) or 0.1),
-                beta_clip=float(_v4_read("dcpo_asymcf_beta_clip", 1e9) or 1e9),
-                # emit-floor: OVERRIDABLE knob, default 0.0 = OFF (2026-06-25 live
-                # fix). It is a group-CONSTANT additive term (same +emit_floor on
-                # every emitting member). The reason WASTE/DERAIL can still go
-                # negative is NOT that the floor "cancels" — under whole-group
-                # centering it does NOT fully cancel, because the without-arm rows
-                # carry zero values and shift the group mean. The REAL guarantee is
-                # the whole-group centering strategy (ans_meta_whole_group_center in
-                # compose): centering over the WHOLE group keeps the group-constant
-                # gate scalar present (the without-arm zeros dilute, not annihilate,
-                # the mean), so SAVE survives positive and WASTE/DERAIL survive
-                # negative AFTER centering. The emit_floor only lifts the pre-center
-                # level as an anti-total-abstention policy minimum; it does NOT by
-                # itself prevent WASTE/DERAIL from being negative before centering
-                # (the gs41 bug was emit_floor=0.01 making the PRE-center reward >=0
-                # under the OLD member-mask centering, which the whole-group fix
-                # replaces). Kept only as an opt-in minimum, OFF by default.
-                # asym_cf-only.
-                emit_floor=float(_v4_read("dcpo_asymcf_emit_floor", 0.0) or 0.0),
-                confidence=(
-                    np.asarray(_conf_row, dtype=np.float32)
-                    if (_conf_row is not None and _conf_w) else None
-                ),
-                conf_w=_conf_w,
-            )
-            # COLLAPSE-GUARD DATA PREREQUISITE (review 2026-06-26, critical). The
-            # whole-group centering only KEEPS the gate signal present; it cannot
-            # MANUFACTURE one. If the batch has NO SAVE groups (c1-c0 > margin), then
-            # mean(R_gate) over with-arm rows has no positive mass to survive
-            # centering -> meta emission collapses REGARDLESS of the centering fix
-            # (the §6 prerequisite: frontier-hard data must supply real SAVE cases).
-            # This is a DATA condition, not a code bug, so we do NOT raise — but we
-            # surface it LOUDLY (logger.warning level) so a run on easy data (model
-            # already correct -> SAVE=0) is caught instead of silently collapsing.
-            _n_save = int(_gate_diag.get("n_save", 0))
-            _n_member_groups = int(
-                _gate_diag.get("n_save", 0) + _gate_diag.get("n_derail", 0)
-                + _gate_diag.get("n_waste", 0) + _gate_diag.get("n_neutral", 0))
-            if _n_member_groups > 0 and _n_save < max(1, int(0.05 * _n_member_groups)):
-                print(
-                    "[DCPO-ASYMCF] CRITICAL: n_save="
-                    f"{_n_save}/{_n_member_groups} arm-split groups (<5%). The "
-                    "asym_cf gate has (almost) no SAVE signal — whole-group "
-                    "centering keeps the signal PRESENT but cannot create one. On "
-                    "easy data (model already correct) SAVE=0 -> meta emission will "
-                    "collapse regardless of the centering fix. Verify frontier-hard "
-                    "data is co-deployed (§6 prerequisite).",
-                    flush=True,
-                )
-            # LAYER 1 -> ANSWER region via the cf_group answer-delta param
-            # (dcpo_ans_meta). The head reaching compose via THIS write is the
-            # anti-inert (gs190) gate — it is an EXPLICIT compose param routed in
-            # verl_sdc_utils._cfgroup_kwargs, not a computed-but-unread key.
-            data.non_tensor_batch["dcpo_ans_meta"] = np.asarray(
-                _R_gate, dtype=np.float32)
-            data.non_tensor_batch["dcpo_ans_member"] = np.asarray(
-                _gate_member, dtype=np.float32)
-            # WHOLE-GROUP CENTERING marker (2026-06-25 live fix). The gate scalar is
-            # GROUP-CONSTANT (every with-arm member of a group shares the c0/c1-
-            # derived R_gate), so centering it over the WITH-ARM member mask (where
-            # it is the only value) annihilates it -> rmeta_neg_rate=0, gate cannot
-            # suppress. This marker tells compose (via verl_sdc_utils) to center the
-            # gate head over the WHOLE group instead (without-arm rows carry 0, so
-            # the with-arm value survives), then mask credit onto with-arm rows.
-            # asym_cf-only: cf_group never writes this key -> stays member-mask
-            # centered (its R_ans_meta is a per-row delta, byte-identical).
-            data.non_tensor_batch["dcpo_ans_meta_whole_group_center"] = np.ones(
-                bs, dtype=np.float32)
-            # LAYER 2 -> META, gated by Layer 1's emit decision. When content is
-            # ENABLED (dcpo_asymcf_content), the fallback meta_region_utility
-            # (PMI/decoy independence content) is zeroed wherever the gate says
-            # wrong-to-emit. When content is DISABLED (default, gate-only arm A1),
-            # meta_region_utility / dcpo_rmeta_member are LEFT UNCHANGED so the
-            # arm stays byte-identical to the non-asym_cf path (review fix: do NOT
-            # hard-zero — that destroyed any pre-existing Layer-2 content and broke
-            # the default-OFF byte-identity guarantee). Gate-only mode is then pure
-            # Layer-1: Layer 2 simply routes as-is, never gated. This is the design
-            # intent (§3 Layer 2 = apply_content_gate, NOT destroy).
-            if bool(_v4_read("dcpo_asymcf_content", False)):
-                _content = np.asarray(
-                    data.non_tensor_batch.get(
-                        "meta_region_utility", np.zeros(bs, dtype=np.float32)),
-                    dtype=np.float32)
-                _gated = apply_content_gate(_content, _gate_diag["emit_decision"])
-                data.non_tensor_batch["meta_region_utility"] = _gated
-                # member: only emitted-and-net-positive rows (gate emit==1).
-                data.non_tensor_batch["dcpo_rmeta_member"] = (
-                    np.asarray(_gate_diag["emit_decision"], dtype=np.float32)
-                )
-            try:
-                import wandb as _wb
-                if _wb.run is not None:
-                    _wb.log({
-                        "dcpo/asymcf/n_save": float(_gate_diag["n_save"]),
-                        "dcpo/asymcf/n_derail": float(_gate_diag["n_derail"]),
-                        "dcpo/asymcf/n_waste": float(_gate_diag["n_waste"]),
-                        "dcpo/asymcf/n_neutral": float(_gate_diag["n_neutral"]),
-                        "dcpo/asymcf/member_rate": float(np.mean(_gate_member)),
-                        "dcpo/asymcf/emit_rate": float(
-                            np.mean(_gate_diag["emit_decision"])),
-                    }, step=int(_step))
-            except Exception as _e:  # pragma: no cover — diagnostics never raise
-                print(f"[DCPO-ASYMCF] scalar-summary skipped: {_e}", flush=True)
         # 'cf' (explicit opt-in): no-op — the dcpo_region_rewards value stands.
         # Invalid values already raised inside _v4_rmeta_source_strict.
         if _rmeta_src in ("pmi", "none", "cf_group", "decoy_did_gm", "decoy_did_rlsd",
-                          "asym_cf", "pmi_shift"):
+                          "pmi_shift"):
             # Observability truth: the rollout table + trend scalars below must
             # chart the R_meta that actually ROUTES, not the stale CF/text-
             # fallback stash value. REASSIGN (not mutate): _DCPO_HEAD_STASH

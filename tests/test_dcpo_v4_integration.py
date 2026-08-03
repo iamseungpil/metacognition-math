@@ -913,5 +913,5 @@ def test_pmi_shift_existing_arms_byte_identical():
     # Adding pmi_shift to the source set must not alter the other sources'
     # validation (cf/pmi/none still pass; gm/asym_cf unchanged).
     for src in ("cf", "pmi", "none", "cf_group", "decoy_did_gm",
-                "decoy_did_rlsd", "asym_cf"):
+                "decoy_did_rlsd"):
         assert _v4_rmeta_source_strict(lambda n, d, s=src: s) == src
