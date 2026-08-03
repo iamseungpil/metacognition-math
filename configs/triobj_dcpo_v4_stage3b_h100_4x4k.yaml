@@ -172,7 +172,7 @@ algorithm:
   # meta fires on an already-correct (without-arm) problem; AdaptThink floor
   # clamps positive deltas on groups where meta is net-harmful. The PMI knobs
   # below (dcpo_pmi_*) are now DORMANT (kept, harmless).
-  dcpo_rmeta_source: cf_group
+  dcpo_rmeta_source: pmi_shift
   dcpo_cf_branch_frac: 0.5   # 4/4 split: tighter counterfactual baseline over
                              # more with-meta samples (n_with = round(8*0.5) = 4).
   # WITHOUT-ARM mechanism (design 2026-06-22): 'placebo' FORCES a contentless
