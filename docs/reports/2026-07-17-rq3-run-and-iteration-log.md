@@ -2601,3 +2601,44 @@ HF 실측: b0p gs215 · b2p gs175(정체) · b3p gs300 · b3s gs40/45/50/55 — 
 
 - **HF 푸시 상태**: 마지막 체크포인트 커밋 15:41(b0p gs220 부분) · `prune global_step_45 (keep latest 3)`
   15:39 정상. b3s gs50·55·60 완결 23/23 98.3GB. b2p gs175 완결. b3p gs300 보존.
+
+### E-1xx 2026-08-03 16:20 UTC — **b0p 선점 루프**(부트스트랩 완료 → 다운로드 시작 → SIGTERM) · b2p·b3s 순항
+
+⚠**b0p (`solid-gibbon`) 가 두 번째로 선점됐다. 이번엔 다운로드 시작 직후다.**
+
+```
+[bootstrap] env install complete → /scratch/simplerl_v4.done      ← 환경 재구축 성공
+[bootstrap] code at pinned revision 490407111
+[YAML] existing GRPO resume gs (model+extra+optim>=4) = 215 1      ← 부분 gs220 을 정확히 배제 ✅
++ python .../pull_resume_ckpt.py --config_name rq3v2f_b0p          ← 98GB 받기 시작
+amlt-code-runner - WARNING - Caught signal 15                      ← SIGTERM (선점)
+```
+
+**주기가 안 맞는다**: 재시작 ~15:52 → 부트스트랩 완료 ~16:19 → 선점 16:20. **약 28분**을 붙어 있었는데
+98GB 다운로드는 콜드에서 1~3시간이 걸린다. **선점 간격 < 준비 시간**이면 b0p 는 영원히 전진하지 못한다.
+이번 사이클에서 학습 스텝은 0.
+
+★잃은 것은 없다 — `gs215` 는 HF 에 23/23 98.3GB 완결로 있고, 부분 `gs220`(18/23)은
+`pull_resume_ckpt.py` 의 완결성 검사가 이번에도 정확히 걸러냈다(로그 `= 215`).
+
+**조치**: 없음. 중단 4양상 ① (자동 retry) 이므로 대기. 단 **같은 사이클이 2~3회 더 반복되면**
+선택지를 올린다 — (a) 계속 대기 (b) 취소·재제출로 다른 노드 추첨 (c) **체크포인트를 노드 로컬
+`/scratch` 대신 이미 마운트된 blob(`/scratch/AzureBlobStorage_CODE/...`, 6.5TB 여유)에 저장**해
+재다운로드 자체를 없앤다. (c) 는 런처 yaml 변경이라 승인 사항이고, blobfuse 쓰기 속도가 학습을
+막을 위험이 있어 작은 검증이 먼저다.
+
+**b2p gs183** (370 s/step, ETA 12.0h) · **b3s gs67** (334 s/step, ETA 21.6h) — 둘 다 순항.
+HF 푸시 정상: `prune global_step_50 (keep latest 3)` 16:12, b3s gs55·60·65 완결 23/23.
+
+b3s 창 평균 (gs67):
+
+| 지표 | 10평균 | 20평균 |
+|---|---|---|
+| `meta_emit_rate` | **0.9988** | **0.9987** |
+| `rmeta_mean_scored` | −0.1048 | −0.0768 |
+| `pos_rate` / `neg_rate` | 0.2105 / 0.2521 | 0.2139 / 0.2457 |
+| `entropy` | 0.2759 | 0.2547 |
+| `correctness` | 0.4392 | 0.4627 |
+
+발화 침식 0 유지. rmeta 는 gs45~67 내내 **0 아래에서 진동하고 음수율이 양수율보다 높다** —
+20스텝 창으로 봐도 반전되지 않는다.
