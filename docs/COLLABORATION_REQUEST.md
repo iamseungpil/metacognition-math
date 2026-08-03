@@ -79,31 +79,74 @@ safetensors 0개, tokenizer·config·rng 상태뿐이다. 즉 무메타 팔은 �
 교란된다.** 그 대비가 바로 재현 대상이므로 이 교란은 실험을 통째로 무의미하게 만든다.
 ⇒ **양쪽 SFT 를 모두 당신 쪽에서 돌린다.** 우리 체크포인트는 중간 점검용 대조로만 쓴다.
 
-### B-1. SFT1 (2팔, 각 ~3h) — init 은 둘 다 `Qwen/Qwen3-8B`
+### B-0. 데이터 스테이징 (5분) — 이걸 안 하면 SFT 가 파일을 못 찾는다
 
-| 팔 | config | 데이터 (HF `iamseungpil/metacot`) | 행 |
-|---|---|---|---|
-| 메타 | `configs/sft_v8_meta_inside_strict.yaml` | `data/v8_meta_inside_strict.parquet` | 4,264 |
-| 무메타 쌍둥이 | `configs/sft_v8_base_matched_strict.yaml` | `data/v8_base_matched_strict.parquet` | 4,264 |
+레포 `.gitignore:12` 가 `*.parquet` 를 제외하므로 코퍼스는 `share/data_parquets/` 에 **강제 커밋**돼
+있고, SFT config 들은 `data/` 를 읽는다. 클론 직후 한 번 복사한다.
 
-3 epoch · **lr 2.0e-6** · max_length 4096. (base 계보는 lr 1e-5 를 쓴다 — 헷갈리기 쉬우니 주의.)
+```bash
+git clone https://github.com/iamseungpil/metacognition-math && cd metacognition-math
+mkdir -p data && cp share/data_parquets/*.parquet data/
+ls data/   # v8_meta_inside_strict / v8_base_matched_strict / rv_redirect_verify_functional / v8_base_rv_sft ...
+```
 
-**중간 확인**: 무메타 산출물에서 `<|meta|>` 가 나오면 안 된다. 나오면 쌍둥이가 오염돼 대조가 깨진다.
-`v8_meta_inside_strict_sft` 로 같은 프롬프트를 돌려 발화율 1.00 / wellformed 1.0 이 나오는지,
-그리고 MATH500-100 에서 메타 팔 **58.0%** / 쌍둥이 **55.5%** 근처인지로 SFT1 을 검산한다.
+RL 학습셋(`verl_{train,val}_meta_mix.parquet`)은 `share/data_parquets/` 에도 있고
+`scripts/pull_parquets.py` 가 HF `iamseungpil/metacot-sdc-data` 에서 자동으로 당겨오기도 한다.
 
-### B-2. SFT2 (2팔, 각 ~4h)
+### B-1. SFT1 (2팔, 각 ~3h) — **`Qwen/Qwen3-8B` 에서 처음부터 학습한다**
+
+우리 성공 세팅 그대로다. config 두 개는 **이미 그 값으로 커밋돼 있으니 열어보기만 하고 바꾸지 말 것.**
 
 | 팔 | config | init | 데이터 | 행 |
 |---|---|---|---|---|
-| 메타 | `configs/archive/sft_rv_functional.yaml` | B-1 메타 산출물 | **`metacot-rv`** `data/rv_redirect_verify_functional.parquet` | 1,763 |
-| 무메타 | `configs/archive/sft_base_rv.yaml` | B-1 무메타 산출물 | **`metacot`** `data/v8_base_rv_sft.parquet` | 1,763 |
+| 메타 | `configs/sft_v8_meta_inside_strict.yaml` | `Qwen/Qwen3-8B` | `data/v8_meta_inside_strict.parquet` | 4,264 |
+| 무메타 쌍둥이 | `configs/sft_v8_base_matched_strict.yaml` | `Qwen/Qwen3-8B` | `data/v8_base_matched_strict.parquet` | 4,264 |
 
-⚠ **두 parquet 이 서로 다른 HF repo 에 있다.** 메타 쪽만 `metacot-rv` 다.
-3 epoch · lr 1.0e-5 · bs1 × ga4.
+두 config 는 `dataset_path` 와 `output_dir` 만 다르고 나머지가 바이트 동일하다 —
+**3 epoch · lr 2.0e-6 · bs 1 × grad_accum 4 · max_length 4096 · `save_strategy: epoch`.**
+(⚠ base 계보는 lr 1e-5 를 쓴다. 여기는 **2e-6** 이다.)
+
+```bash
+python -m accelerate.commands.launch --config_file configs/accelerate_sft.yaml \
+    src/training/sft.py --config configs/sft_v8_meta_inside_strict.yaml
+python -m accelerate.commands.launch --config_file configs/accelerate_sft.yaml \
+    src/training/sft.py --config configs/sft_v8_base_matched_strict.yaml
+```
+
+산출물은 `checkpoints/v8_{meta_inside,base_matched}_strict_sft/checkpoint-{254,508,762}` 이고
+**epoch 3(=checkpoint-762)** 을 쓴다.
+
+⚠ **3 epoch 을 지킬 것.** 우리 아카이브의 `h100std_base_matched_pipeline.yaml:128` 은
+선점 회피용으로 `sed` 로 SFT1 을 **1 epoch 으로 깎는다.** 그 파일을 참고 삼아 복사하면 무메타 팔만
+1 epoch 이 되어 **쌍둥이가 깨진다.** 우리도 그 변형을 남겨둔 탓에 어느 쪽이 헤드라인을 냈는지
+지금 단정하지 못하고 있다 — 당신은 **양쪽 3 epoch** 으로 통일해달라.
+
+**SFT1 검산 두 가지** (RL 로 넘어가기 전 반드시):
+- 무메타 산출물이 `<|meta|>` 를 **한 번도 내지 않아야 한다.** 내면 쌍둥이가 오염돼 대조가 무의미하다
+- MATH500 100문항 greedy 로 메타 **58.0%** / 쌍둥이 **55.5%**, 메타 발화율 1.00 · wellformed 1.0
+  근처가 나오는지. 우리 `v8_meta_inside_strict_sft`(HF `metacot` `models/`, 16.4GB)로 같은 프롬프트를
+  돌려 대조할 수 있다
+
+### B-2. SFT2 (2팔, 각 ~4h) — B-1 산출물 위에 습관을 심는다
+
+| 팔 | config | init | 데이터 | 행 |
+|---|---|---|---|---|
+| 메타 | `configs/archive/sft_rv_functional.yaml` | B-1 **메타** checkpoint-762 | **`metacot-rv`** `data/rv_redirect_verify_functional.parquet` | 1,763 |
+| 무메타 | `configs/archive/sft_base_rv.yaml` | B-1 **무메타** checkpoint-762 | **`metacot`** `data/v8_base_rv_sft.parquet` | 1,763 |
+
+**3 epoch · lr 1.0e-5 · bs 1 × ga 4 · max_length 4096.** 두 config 는 `model_name_or_path` ·
+`dataset_path` · `output_dir` 세 줄만 다르다.
+
+⚠ **고쳐야 할 한 줄**: 두 config 의 `model_name_or_path` 가 우리 클러스터 경로
+(`/scratch/models/v8_meta_inside_strict_sft`, `/scratch/models/v8_base_matched_strict_sft`)로
+박혀 있다. **당신 B-1 산출물 경로로 바꾼다.**
+
+⚠ `archive/launchers_pre_rq3/h100std_rv_functional_sft.yaml:98` 은 `configs/sft_rv_functional.yaml` 을
+가리키는데 그 파일은 지금 **`configs/archive/`** 로 옮겨졌다. 런처를 재사용하면 경로를 고칠 것.
 
 **두 코퍼스는 행 단위로 대응하고 메타 블록 유무만 다르다** — 둘 다 verify 1,209 / redirect 554,
-easy 870 / medium 893, **hard 0건**.
+easy 870 / medium 893, **hard 0건**. `sft.py` 가 prompt + wrong_prefix 를 loss-mask 하고
+meta + recovery 만 학습한다(`segment_loss_mask`). `teacher_kl` 은 두 팔 모두 **OFF**.
 
 ⚠ **이 hard 0건이 이 프로젝트의 "분포 밖" 축을 정의한다.** 습관을 심는 데이터에 어려운 문제가
 없으므로 **MATH500 level 4–5 (262문항)가 곧 분포 밖 표본**이다. 데이터셋 이름이 아니라 난이도다.
