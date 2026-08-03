@@ -1,135 +1,132 @@
 # metacognition-math
 
-> 로컬 master가 origin보다 앞서 있음 — 이 체크아웃이 진실원천(2026-07-16 기준).
+**메타인지 강화학습으로 수학 추론의 "분포 밖" 일반화를 얻는다.**
 
-- **전방 실험계획표**(claim×증거·보강실험 E1–E6·약점대응): [docs/EXPERIMENT_PLAN.md](docs/EXPERIMENT_PLAN.md)
-- **코드맵**(live vs legacy, 호출사슬, rmeta config-flip 함정): [docs/CODE_MAP.md](docs/CODE_MAP.md)
-- **로컬 서버 재현 가이드**(env·스테이징·학습/평가 커맨드·갭 목록): [docs/LOCAL_RUN.md](docs/LOCAL_RUN.md)
-- **클러스터 지원요청 문안**(0717 제출차단 사건·증거 로그): [archive/incidents_pre_rq3/CLUSTER_SUPPORT_REQUEST.md](archive/incidents_pre_rq3/CLUSTER_SUPPORT_REQUEST.md)
-- **HF 자산(전부 PUBLIC — 토큰 없이 연결)**: 데이터·init모델·env = [datasets/iamseungpil/metacot](https://huggingface.co/datasets/iamseungpil/metacot) · 체크포인트 = [iamseungpil/metacot-h200-triobj-dcpo-v3](https://huggingface.co/iamseungpil/metacot-h200-triobj-dcpo-v3)
+모델이 풀이 도중 `<|meta|>…<|/meta|>` 블록으로 자기 상태를 점검하게 만들고(**meta-CoT 형식**),
+그 블록을 **모델 자신의 gold-vs-decoy 증거를 얼마나 움직였는가**로 보상한다(**PMI-shift**).
+외부 교사는 없다 — 보상을 읽는 참조 모델은 정책의 **동결 사본**이다.
 
-**한 줄 요약**: Qwen3-8B-Base가 풀이 도중 `<|meta|>` 블록으로 메타인지를 외재화하도록
-학습하고, 그 메타 구간에 모델 자신의 gold/decoy 로그확률 신호를 증류하는
-**메타인지적 자기증류(metacognitive self-distillation)** 로 OOD(어려운 도메인,
-AIME)에 강건한 수학 추론을 만든다.
+**North-star**: 메타인지 습관은 **습관을 심은 분포 밖**에서 더 강건하게 일반화한다.
+습관을 심는 SFT2 코퍼스는 easy 870 · medium 893 · **hard 0건**이므로,
+**MATH500 level 4–5 (262문항)가 곧 그 "분포 밖" 축**이다.
 
-North-star 가설: 메타인지 행동(막힘 감지, 가정 점검, 접근 전환, 검산)은
-in-distribution 정답 암기보다 분포 밖 문제에서 더 강건하게 일반화한다. 목표
-지표는 정확도이고, calibration(ECE/Brier/과신율)은 보조 지표로 항상 함께
-측정한다.
+> **처음 오셨나요? 이 셋만 읽으면 됩니다.**
+> 1. 이 파일 — 무엇을 왜 하는가 · **지금 어디인가**
+> 2. [`docs/CLAIMS.md`](docs/CLAIMS.md) — **무엇이 참이고 무엇이 닫혔는가**
+> 3. [`docs/CONSTITUTION.md`](docs/CONSTITUTION.md) — 진단 원칙 · 지표 대시보드 · 발사 게이트
 
-현행 실험은 **RQ3 매치드 래더**(2026-07-11~)다. 진짜 `Qwen/Qwen3-8B-Base` 위에서
-선언된 축만 다른 매치드 RL을 돌린다:
+---
+
+## 지금 어디인가 (2026-08-03)
+
+| arm | 무엇 | 상태 | 판정 |
+|---|---|---|---|
+| **b0p** | 메타 제거 쌍둥이 SFT2 + vanilla GRPO (**통제군**) | 🟢 `solid-gibbon` 진행 중 | — |
+| **b2p** | 메타 SFT2 + vanilla GRPO (**프라이밍만**) | 🟢 `hip-hound` gs300 재생성 중 | ✅ 정상 — 메타 구조 300스텝 내내 평평 |
+| **b3p** | 메타 SFT2 + PMI-shift 7헤드 패키지 | 🔴 완주했으나 **무효** | ❌ **Outcome C** — gs150 이후 발화율 1.00→0.018, **처치 소멸** |
+
+**한 줄**: instruct 기질에서는 방법이 작동한다(검증 완료). **base 기질 복제는 처치가 스스로 사라져 아직 판정 불가.**
+
+## 검증된 것 — 보존 산출물 독립 재채점 (전체는 [`docs/CLAIMS.md`](docs/CLAIMS.md))
+
+| 주장 | 값 |
+|---|---|
+| **우리 방법 > base SFT+GRPO** | MATH500 **+14.00pp** (p<.001) · AIME +8.75pp · **모든 난이도 레벨에서 유의** |
+| **분포 밖에서 더 크다** (north-star) | L1–2 +10.53pp → **L4–5 +17.70pp** · 기울기 **+7.17pp** (p=.009, 잡음바닥 ±3.08) |
+| PMI-shift 보상 **단독** 기여 | **+4.38pp** (p=.0001) · 4k·16k 양쪽 · **종결 구제 아님**(종결자만 봐도 +4.46pp) |
+| 성분 분해 | 프라이밍 +4.85 · **PMI-shift +4.38** · 나머지 헤드 +4.77 = +14.00 |
+| ⚠ 일반화 기울기의 **출처** | **프라이밍**(+8.62, p=.003). RL 보상의 기울기는 0(−1.44, n.s.) |
+
+⚠ 전 arm **단일 학습 시드**. `seed43_*` 파일은 디코딩 시드다.
+
+## 다음 실험
+
+| 순위 | 실험 | 누가 | 상태 |
+|---|---|---|---|
+| 1 | **b3s** — base `shiftonly` 두 팔(`meta_floor` 0.0 vs 0.05), 통제군 b2p 공유 | 우리 | 승인 대기 |
+| 2 | **채점 격자 36셀** — 보존 산출물 독립 재채점 (**GPU 0**) | 협업자 | 착수 가능 |
+| 3 | b3p(구) gs300 + b2p gs300 **OOD eval** (L4–5 분할, 응답 로깅) | 우리 | b2p 완주 후 |
+| 4 | instruct `shiftonly + gandhi` 재학습 — 삭제된 체크포인트 복원 + **2번째 시드** | 협업자 | 2 이후 |
+| 5 | 스케일 축 (4B / 14B) | 협업자 | 1·4 이후 |
+
+## 판정 기준 (사전 선언)
+
+- **주 지표**: MATH500 **L4–5(n=262)**에서 `Δacc(L4–5) − Δacc(L1–2)`
+  바닥 0.00 · 천장 +29.97 · **잡음바닥 ±3.08pp** (같은 모델 8샘플 4/4 분할 A-vs-A 실측)
+- **개선 인정**: CI 하한 > +3.0pp **그리고** 판정 지점까지 `dcpo/meta_emit_rate ≥ 0.80`
+- **⛔ in-training val594는 판정에 쓰지 않는다** — 셀당 21~38문항이라 한 문제가 2.6~4.8pp
+- 채점은 **`math_verify`**. `check_correctness`는 버그 문서화됨, 사용 금지
+- 논문 eval: 16k tokens · avg@8 (AIME avg@16) · temp 0.7 · 두 arm을 같은 job·같은 seed로
+- 난이도 층화 **필수** — 집계만 보면 Simpson 함정
+
+## 저장소 배치
 
 ```
-B0:      Qwen3-8B-Base → no-meta gold SFT(models/b0_gold_sft)      → RL(VANILLA_GRPO, correctness-only)
-B2:      Qwen3-8B-Base → meta SFT(models/b23_rv_unmasked_sft)      → RL(VANILLA_GRPO, correctness-only)
-B3pkg:   Qwen3-8B-Base → 같은 meta SFT(models/b23_rv_unmasked_sft) → RL(TRIOBJ_DCPO_V4 풀 패키지: region-split,
-         w_meta 0.8(rmeta=pmi_shift)·w_format 0.35·w_emit 0.1·w_cal 0.3·len_cost 0.08, w_over=0)
-B3-noPMI: 같은 meta SFT → RL(풀 패키지에서 w_meta(pmi)=0 하나만 제거) — 4번째 arm, 보류(b3pkg 우선)
+core/KNOBS.yaml          하중 노브 등록부 — dcpo_* 85개 전수 (live 38 / default-only 7 / dead 40)
+src/                     라이브러리 (학습·보상·평가)
+configs/                 Hydra 상속 체인: verl_sdc_e21r_shared → verl_e4_selfdistill → arm leaf
+h100std_rq3v2f_*.yaml    라이브 RL 런처 3개
+h100std_sft_b*2_rvfull.yaml  그 init을 만든 SFT2 런처 2개
+docs/                    CLAIMS · CONSTITUTION · PREREGISTRATION · reports/
+archive/                 은퇴한 것 전부 — 각 디렉터리에 "왜 여기 있는지" README
+paper/                   논문
 ```
 
-⚠️ B3는 "pmi_shift만 활성·다른 head 전부 0"이 **아니다** — 그 스트립 설계는
-2026-07-12 실패로 판정돼(형식 비계 제거 → wellformed 붕괴, RQ2 +0.042 →
-−0.120 반전) **풀 패키지(b3pkg)** 로 정정됐다(EXPERIMENT_LOG §9–10).
+⚠ **`--keep 1`이 판정 지점 체크포인트를 프루닝합니다.** b3p의 처치 살아있던 gs100–150이
+그렇게 사라져 이제 평가할 수 없습니다. 새 런은 `--keep 3` + 판정 지점 명시 보존.
 
-과학 질문: **RQ1 = B2 − B0**(메타 SFT 효과), **RQ2 = B3pkg − B2**(메타 보상
-패키지 효과; 순수 pmi 격리는 B3-noPMI arm — 보류 중).
-
-## 현재 결과 (PRELIMINARY — 단일 시드·진행 중, 최종 판정 아님)
-
-- **RQ1(B2−B0)**: 매칭 val 3점 **+0.151(gs25) / +0.164(gs50) / +0.189(gs75)**,
-  9개 데이터셋 전부 양성.
-- **RQ2**: 초기 gs25 **+0.042**는 이후 **−0.120으로 반전**(pmi-only 스트립
-  설계의 wellformed 붕괴가 원인) — 풀 패키지 b3pkg로 정정됨. 게다가
-  2026-07-14 감사 후 **HF checkpoints/rq3_* 전삭제 + 전 arm fresh 재시작**이
-  있었으므로 위 RQ1 숫자 포함 구세대 예비치는 폐기, 새 숫자는 gs300에서 TBD.
-- 최종 판정은 gs300 held-out 1030문제 비교이며 아직 열려 있다. 이 시점의 모든
-  숫자는 PRELIMINARY로 취급할 것. 현행 상태원장은
-  `docs/redesign/EXPERIMENT_LOG.md` §11.
-
-### pre-rq3(instruct) 세대 결과 (보존)
-
-이전 세대는 instruct `Qwen/Qwen3-8B` 기반 2-arm(meta=pmishift vs
-base_matched)이었다. 당시 pmishift arm이 same-step 비교에서
-`val-aux/*/correctness/mean@1` 기준 8/8 도메인 리드였고, held-out T1에서
-matched-base 대비 6/6 셀 유의 승리(MATH500 +18.8pp 등, 단일 시드·패키지
-효과)를 기록했다. 이 숫자들은 instruct 세대에만 유효하며 현행 rq3 래더와
-섞지 않는다.
-
-## 5분 재현 가이드
+## 재현
 
 ```bash
 git clone https://github.com/iamseungpil/metacognition-math && cd metacognition-math
-cp .env.example .env                          # HF_TOKEN / GH_TOKEN / WANDB_API_KEY 채우기
-source experiments/common/load_secrets.sh     # .env 로드 + placeholder 검사
-
-# held-out 1030 eval (GSM8K 500 + MATH-500 500 + AIME 30), vLLM, 논문 프로토콜
-python scripts/eval_vllm_1030.py \
-    --model_path <merged_ckpt_dir> --model_name my_eval \
-    --output_dir results/eval_1030_my_eval/ \
-    --max_tokens 16384 --temperature 0.7 --num_samples 8 --seed 42
-
-# 학습 (MSR 클러스터, amlt) — 현행 세대는 RQ3v2 think-on 매치드 래더다.
-# 순서가 중요하다: SFT2 쌍이 HF에 착지해야 RL이 init을 스테이징할 수 있고,
-# RL 런처는 두 arm이 모두 있을 때만 스테이징하도록 fail-closed 되어 있다.
+cp .env.example .env                        # HF_TOKEN / GH_TOKEN / WANDB_API_KEY
 set -a; source .env; set +a
 
-# 1) SFT2 쌍 (각 ~2h). 컨트롤은 메타 제거 twin 코퍼스를 쓴다.
-amlt run h100std_sft_b0p2_rvfull.yaml sft2-b0p2-<날짜>   # 컨트롤
+# held-out eval (GSM8K 500 + MATH-500 500 + AIME 30) — 응답 텍스트를 parquet에 남긴다
+python scripts/eval_vllm_1030.py \
+    --model_path <ckpt_dir> --model_name my_eval --output_dir results/eval_1030_my_eval/ \
+    --max_tokens 16384 --temperature 0.7 --num_samples 8 --seed 42
+
+# 학습 (MSR amlt). 순서 필수: SFT2 쌍이 HF에 착지해야 RL이 init을 스테이징한다.
+amlt run h100std_sft_b0p2_rvfull.yaml sft2-b0p2-<날짜>   # 통제군
 amlt run h100std_sft_b2p2_rvfull.yaml sft2-b2p2-<날짜>   # 메타
-# 2) models/{b0p2,b2p2}_rvfull_sft 가 HF에 4샤드 착지한 뒤에만 RL
-amlt run h100std_rq3v2f_b0p.yaml rq3v2f-b0p-<날짜>   # 컨트롤 + VANILLA_GRPO
-amlt run h100std_rq3v2f_b2p.yaml rq3v2f-b2p-<날짜>   # 메타   + VANILLA_GRPO
-amlt run h100std_rq3v2f_b3p.yaml rq3v2f-b3p-<날짜>   # 메타   + triobj(pmi_shift) 풀패키지
-# A100 판(`a100_*`)은 동일 내용이며 target/sku만 다르다. 어느 쪽이 가능한지는
-# CLAUDE.md의 Compute 절 참조 — 두 VC 모두 현재 제약이 있다.
-#
-# ⛔ 루트의 `h100std_rq3_b0/b2/b3*.yaml`·`h100std_sft_b0_gold/b23_unmasked.yaml`은
-#    **은퇴한 think-off 세대**다. 실행하지 말 것. 발사 전 판정 기준은
-#    docs/PREREGISTRATION_rq3v2_base_replication.md 에 동결되어 있다.
+# models/{b0p2,b2p2}_rvfull_sft 가 4샤드 착지한 뒤에만:
+amlt run h100std_rq3v2f_b0p.yaml rq3v2f-b0p-<날짜>
+amlt run h100std_rq3v2f_b2p.yaml rq3v2f-b2p-<날짜>
+amlt run h100std_rq3v2f_b3p.yaml rq3v2f-b3p-<날짜>
 ```
 
-데이터 parquet은 HF dataset `iamseungpil/metacot`, RL 체크포인트는
-`iamseungpil/metacot-h200-triobj-dcpo-v3`를 경유해 릴레이된다. 자세한 배선은
-아래 experiments 가이드 참조.
+발사 전 판정 기준은 [`docs/PREREGISTRATION_rq3v2_base_replication.md`](docs/PREREGISTRATION_rq3v2_base_replication.md)에 동결돼 있다.
 
-## 실험 가이드 → [experiments/README.md](experiments/README.md)
+## HF 자산 (전부 PUBLIC)
 
-**현행 연구 질문(rq3 매치드 래더): RQ1 = B2 − B0(메타 SFT 효과), RQ2 = B3pkg −
-B2(메타 보상 6-head 패키지 효과 — pmi_shift 단독 귀속 금지).** 구세대(pre-rq3) RQ1–4 넘버링(효과/분해/층화/
-calibration, T1–T4)은 experiments/README.md 참조 — 같은 "RQ" 표기가 세대마다
-다른 뜻으로 쓰여 왔으니 혼동 주의. 폴더 구조(science/infra 분리), 실행 예시
-3종(SFT/eval/RL), 협업자 트랙 A(클러스터 학습)/B(분석, GPU 불필요)/C(SFT v2
-데이터)/D(집필·사이트) 온보딩이 전부 거기 있다. **새로 온 사람은 그 문서부터
-읽는다.**
+- 데이터·init 모델·env — [`datasets/iamseungpil/metacot`](https://huggingface.co/datasets/iamseungpil/metacot) · [`datasets/iamseungpil/metacot-rv`](https://huggingface.co/datasets/iamseungpil/metacot-rv)
+- RL 체크포인트 — [`iamseungpil/metacot-h200-triobj-dcpo-v3`](https://huggingface.co/iamseungpil/metacot-h200-triobj-dcpo-v3)
+- ⚠ **instruct 세대 RL 체크포인트는 삭제됨.** 생성 산출물(`eval/*_1030_v2`)만 보존 —
+  **재채점은 가능, 재실행은 불가.** 복원하려면 `models/v8_rv_functional_sft`에서 재학습.
 
-## 지표 규약 요약 (전문은 experiments/README.md 3절)
+## 규율
 
-1. 학습 중 정확도는 wandb `val-aux/<ds>/correctness/mean@1`만 — `val-core`/
-   `reward`는 메타 shaping 합성 지표라 arm 비교에 쓰면 가짜 격차가 생긴다.
-2. 최종 판정은 held-out 1030문제, 채점은 **math_verify** (`check_correctness`는
-   버그 문서화됨, 사용 금지).
-3. 논문 eval: 16k tokens, avg@8(AIME avg@16), temp 0.7, 두 arm을 같은 job·같은
-   seed로.
-4. 난이도 층화 정확도 필수 보고 (집계만 보면 Simpson 함정).
-5. 메타 방출은 닫힌 `<|meta|>...<|/meta|>` 블록만 센다.
+실험 설계·발사·판정은 `stacked-research` 스킬을 따른다. 요점 넷:
 
-## 설명 사이트
-
-프로젝트 해설 사이트: **https://metacog-explainer.pages.dev** (소스: `docs/site/`)
+1. **실험 = 디렉터리 + MANIFEST.** 새 실험은 새 파일이 아니라 **config 델타**다.
+2. **발사 전 게이트 G1~G6** 전부 기계 검사 (주장·발화·해상도·통제군·회귀·링크).
+3. **CLAIMS 갱신 없이 판정문 금지** — 닫는 것 / 여는 것 / 재확인 계수기.
+4. **이동 커밋과 수정 커밋을 절대 섞지 않고, 매 이동 후 회귀 벤치(G5).**
 
 ## 더 보기
 
-- `CLAUDE.md` — 에이전트/데이터 레지스트리
-- `NODE_POLICY.md` — AMLT 노드 소유권 규칙
-- `scripts/README.md`, `scripts/ANALYSIS_INDEX.md` — 스크립트·분석 산출물 색인
-- `docs/`, `archive/`, `legacy/` — 이전 세대 실험(SDC/RLSD/CTSD) 계획과 기록
+- [`CLAUDE.md`](CLAUDE.md) — 에이전트·데이터 레지스트리
+- [`NODE_POLICY.md`](NODE_POLICY.md) — AMLT 노드 소유권 규칙
+- [`docs/CODE_MAP.md`](docs/CODE_MAP.md) — live vs legacy, 호출 사슬, rmeta config-flip 함정
+- [`experiments/README.md`](experiments/README.md) — 폴더 구조·협업자 트랙
+- 설명 사이트 — https://metacog-explainer.pages.dev (소스 `docs/site/`)
+  ⚠ 사이트 수치는 인증 취소된 pre-rq3 세대다. 배너 참조.
 
 ## 보안
 
-토큰은 **.env에만** 둔다 (gitignore됨). 코드·yaml·문서에 실제 토큰을 절대
-커밋하지 않는다 — yaml은 `${HF_TOKEN}` 환경변수 치환만 쓴다.
+토큰은 **`.env`에만** 둔다(gitignore됨). 코드·yaml·문서에 실제 토큰을 절대 커밋하지 않는다 —
+yaml은 `${HF_TOKEN}` 환경변수 치환만 쓴다.
 
 ## 연락처
 
