@@ -1,0 +1,11 @@
+# steps: b0p=64 b2p=101 b3p=100
+benchmark	b0p_last	b0p_n	b2p_last	b2p_n	b3p_last	b3p_n
+algebra	0.4737	1	0.4737	2	0.5526	2
+counting_and_probability	0.7714	1	0.8857	2	0.7714	2
+geometry	0.0303	1	0.0909	2	0.1515	2
+gsm8k	0.8990	1	0.8788	2	0.8788	2
+intermediate_algebra	-0.0417	1	0.1250	2	0.0833	2
+number_theory	0.5238	1	0.5714	2	0.6190	2
+omni-math	-0.5556	1	-0.6508	2	-0.5238	2
+prealgebra	0.5806	1	0.7097	2	0.6129	2
+precalculus	-0.4595	1	-0.4595	2	-0.3514	2

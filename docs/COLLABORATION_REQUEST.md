@@ -1,4 +1,4 @@
-# 협업 요청 — base 기질에서 SFT → meta-GRPO → 평가 전체 재현
+# 협업 요청 — 채점 격자 + instruct 사다리 독립 재현
 
 작성 2026-08-03. 이 문서 하나로 착수할 수 있게 썼다. 막히는 지점이 있으면 그건 우리 문서의 결함이니 알려달라.
 
@@ -52,63 +52,77 @@
 
 ---
 
-## 2. 과제 B — base 사다리 전체 재현 (SFT → meta-GRPO → 평가)
+## 2. 과제 B — **instruct 사다리 전체 재현** (SFT → meta-GRPO → 평가)
 
 과제 A가 통과한 뒤. **네, SFT부터 성능 확인까지 전 구간이 맞다.** 중간만 재현하면 우리가 못 본
 설정 의존성이 어디서 들어왔는지 알 수 없다.
 
-### B-1. SFT1 (2팔, ~6h)
+### ★ 왜 base가 아니라 instruct인가
 
-| 팔 | config | init | 데이터 |
-|---|---|---|---|
-| 메타 | `configs/sft_b2p_v8meta.yaml` | `Qwen/Qwen3-8B-Base` | `b2on_v8meta_strict_sft.parquet` (4,245행) |
-| 무메타 쌍둥이 | `configs/sft_b0p_v8base.yaml` | 동일 | `b0on_v8base_strict_sft.parquet` (4,245행) |
+**첫 재현은 정답이 알려진 것으로 해야 한다.** base는 지금 **실패하는 중**이다 — 학습 도중 메타
+발화가 무너지고, 우리가 그 원인을 노브 단위로 좁히고 있다. 당신이 base를 돌려 실패하면 그것이
+**우리 실패의 충실한 재현인지 당신 쪽 설정 오류인지 구분할 수 없다.**
 
-3ep · lr 1e-5 · max_length 4096.
+instruct는 기대값이 **MATH500 +14.00pp**(`pmishift − base_matched`)로 확정돼 있다. 결과가 즉시
+해석된다 — 맞으면 파이프라인이 검증된 것이고, 어긋나면 그 자체가 발견이다.
 
-**중간 확인 앵커** — 이게 안 맞으면 그 아래는 볼 필요 없다:
+부수 효과 둘: instruct RL 체크포인트가 **전삭제**돼 논문 수치를 재현할 모델이 없는데 그게 복원되고,
+전 팔이 **단일 학습 시드**인 현 상태에 **두 번째 시드**가 생긴다.
 
-| | MATH500-100 | AIME | 메타 발화 | wellformed |
-|---|---|---|---|---|
-| 메타 SFT1 | **58.0%** | 10.0% | **100%** | **1.0** |
-| 무메타 쌍둥이 | 55.5% | 8.3% | **0.5% ≈ 0** | — |
+base 사다리는 우리가 노브 원인을 규명한 뒤 **과제 C**로 부탁드릴 예정이다.
 
-무메타 쪽 `meta_rate`가 오르면 **쌍둥이가 메타를 흘린 것**이고 대조가 깨진다.
+### B-1. SFT1 (2팔, ~6h) — `Qwen/Qwen3-8B`
+
+| 팔 | config | 데이터 |
+|---|---|---|
+| 메타 | `configs/sft_v8_meta_inside_strict.yaml` | `v8_meta_inside_strict.parquet` (4,264행) |
+| 무메타 쌍둥이 | `configs/sft_v8_base_matched_strict.yaml` | `v8_base_matched_strict.parquet` (4,264행) |
+
+3ep · **lr 2.0e-6** · max_length 4096. (base 계보는 lr 1e-5를 쓰지만 instruct는 2e-6이다 — 헷갈리기 쉽다.)
+
+**중간 확인**: 무메타 쪽에서 메타 블록이 나오면 안 된다. 나오면 쌍둥이가 오염된 것이고 대조가 깨진다.
 
 ### B-2. SFT2 (2팔, ~4h)
 
 | 팔 | config | init | 데이터 |
 |---|---|---|---|
-| 메타 | `configs/sft_b2p2_rvfull.yaml` | B-1 메타 산출물 | `rv_redirect_verify_functional.parquet` (1,763행) |
-| 무메타 | `configs/sft_b0p2_rvfull.yaml` | B-1 무메타 산출물 | `v8_base_rv_sft.parquet` (1,763행) |
+| 메타 | `configs/archive/sft_rv_functional.yaml` | B-1 메타 산출물 | `rv_redirect_verify_functional.parquet` (1,763행) |
+| 무메타 | `configs/archive/sft_base_rv.yaml` | B-1 무메타 산출물 | `v8_base_rv_sft.parquet` (1,763행) |
 
-3ep · lr 1e-5. **두 코퍼스는 행 단위로 대응하고 메타 블록 유무만 다르다**
+3ep · lr 1.0e-5 · bs1×ga4. **두 코퍼스는 행 단위로 대응하고 메타 블록 유무만 다르다**
 (둘 다 verify 1,209 / redirect 554, easy 870 / medium 893, **hard 0건**).
 
 ⚠ **이 hard 0건이 이 프로젝트의 "분포 밖" 축을 정의한다.** 습관을 심는 데이터에 어려운 문제가
 없으므로 **MATH500 level 4–5 (262문항)가 곧 분포 밖 표본**이다. 데이터셋 이름이 아니라 난이도다.
 
-### B-3. RL (3팔, 각 ~30h)
+★**시간을 아끼려면**: 메타 쪽 SFT2 산출물 `v8_rv_functional_sft`는 HF `metacot-rv`에 **가중치까지
+살아 있다**. B-1·B-2를 건너뛰고 그것으로 RL부터 가도 된다(~10h 절약). 다만 SFT부터 돌리면
+파이프라인 전체가 검증되므로, 시간이 허락하면 처음부터를 권한다. **무메타 쪽은 가중치가 없어
+어차피 B-1·B-2를 돌려야 한다.**
 
-| 팔 | 런처 | init | 보상 |
-|---|---|---|---|
-| b0p (통제군) | `h100std_rq3v2f_b0p.yaml` | 무메타 SFT2 | vanilla GRPO |
-| b2p (프라이밍) | `h100std_rq3v2f_b2p.yaml` | 메타 SFT2 | vanilla GRPO |
-| b3p (패키지) | `h100std_rq3v2f_b3p.yaml` | 메타 SFT2 | triobj + PMI-shift |
+### B-3. RL (각 ~30h) — 최소 2팔, 가능하면 4팔
 
-**⚠ 런처의 `models/...` 경로를 당신 SFT 산출물로 바꿔야 한다.** 안 바꾸면 우리 init을 스테이징한다.
+| 팔 | 런처 | init | 보상 | 기대 |
+|---|---|---|---|---|
+| `gandhi` | `archive/launchers_pre_rq3/h100std_gandhi.yaml` | 메타 SFT2 | vanilla GRPO | 대조군 |
+| `shiftonly` | `archive/launchers_pre_rq3/h100std_shiftonly.yaml` | 동일 | **PMI-shift만**(타 헤드 0) | `shiftonly − gandhi` = **+4.38pp** |
+| `base_matched` | `archive/launchers_pre_rq3/h100std_base_matched_rl.yaml` | 무메타 SFT2 | vanilla GRPO | 헤드라인 통제군 |
+| `pmishift` | `archive/launchers_pre_rq3/h100std_pmishift.yaml` | 메타 SFT2 | 7헤드 패키지 | `pmishift − base_matched` = **+14.00pp** |
 
-**발사 전 게이트**(`docs/CONSTITUTION.md` Part VI + 우리가 추가한 것):
+**우선순위**: `shiftonly` + `gandhi`가 먼저다 — **같은 init을 쓰므로 SFT를 한 번만 돌리면 되고**,
+우리 주장에서 가장 깨끗한 대조(보상만 다름)다. 여력이 되면 `pmishift` + `base_matched`로 헤드라인을 채운다.
+
+**발사 전 게이트**:
 
 | 시점 | 조건 |
 |---|---|
 | gs25 | `dcpo/meta_emit_rate` ≥ 0.80 · `pmishift_attempted_rate` ≥ 0.30 · `n_save` > 0 · `actor/entropy` > 0.1 |
-| **gs50** | **`meta_emit_rate` ≥ 0.80. 미달이면 중단** — 우리 b3p가 여기를 못 넘고 30시간을 버렸다 |
+| **gs50** | **`meta_emit_rate` ≥ 0.80. 미달이면 중단** — 우리 base 팔이 여기를 못 넘고 30시간을 버렸다 |
 | gs150 | `meta_emit_rate` ≥ 0.80 **유지** |
 
-**추가로 켤 것 3종**(학습 궤적 무영향, 우리가 b3p에서 놓쳐 손해 본 것들):
+**추가로 켤 것 3종**(학습 궤적 무영향, 우리가 놓쳐 손해 본 것들):
 - `++trainer.val_before_train=True` — gs0 기준선 행. 없으면 SFT 단계 출발선 차이를 뺄 수 없다
-- `++trainer.log_val_generations=8` — **응답 로깅.** 지금 base 학습은 응답을 하나도 안 남긴다
+- `++trainer.log_val_generations=8` — **응답 로깅.** 안 켜면 응답을 하나도 못 본다
 - `--keep 3` — `--keep 1`은 판정 지점 체크포인트를 프루닝한다. 우리는 그렇게 gs100–150을 잃었다
 
 ### B-4. 평가
@@ -117,7 +131,6 @@
 FSDP 병합 → `eval_vllm_1030.py` → HF 업로드가 자동이다.
 held-out 1030 = GSM8K 500 + MATH500 500 + AIME 30, 16k tokens, avg@8(AIME avg@16), temp 0.7.
 
----
 
 ## 3. 무엇을 보고하면 되는가
 
