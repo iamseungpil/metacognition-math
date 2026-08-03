@@ -6,6 +6,42 @@
 
 ---
 
+## 한눈에
+
+**무엇을 보려는 건가** — 메타 블록을 쓰도록 SFT 한 모델과 **메타만 뺀 쌍둥이**가 같은 GRPO 를 거친 뒤
+MATH500 에서 **+14.00pp** 갈린다. 이게 다른 손에서 다시 나오는가.
+
+**읽을 문서** — 이 파일 하나. §1 = 과제 A, §2 = 과제 B, §3 = 판정 기준.
+
+### 과제 A — 채점 격자 (**GPU 0**, 먼저, ~1일)
+
+| | |
+|---|---|
+| 무엇 | HF 에 보존된 응답 parquet 을 `math_verify` 로 **독립 재채점**, 결과 보기 전 선언한 **36셀 전수** |
+| 왜 | 같은 응답에서 **채점 규칙 하나가 결과를 10.2pp 움직이고 부호를 뒤집는다**. 여기가 무너지면 아래 GPU 작업은 전부 무의미 |
+| 보고 | 36셀 표 + `shiftonly − gandhi` 가 **전 셀에서 ≥ +2pp** 이고 CI 가 0 을 배제하는지 |
+
+### 과제 B — instruct 사다리 재현 (**H100 × 4**, ~4일)
+
+| 단계 | 실행 | 산출 |
+|---|---|---|
+| B-0 | `cp share/data_parquets/*.parquet data/` | 코퍼스 8종 (5분) |
+| B-1 | `accelerate ... src/training/sft.py --config configs/sft_v8_{meta_inside,base_matched}_strict.yaml` | SFT1 2팔 (~6h) |
+| B-2 | 같은 명령, `configs/archive/sft_{rv_functional,base_rv}.yaml` (**init 경로 1줄 수정**) | SFT2 2팔 (~8h) |
+| B-3 | `amlt run archive/launchers_pre_rq3/h100std_{pmishift,base_matched_rl}.yaml` (**model.path 1줄씩 수정**) | RL 2팔 (각 ~30h) |
+| B-4 | `python scripts/eval_vllm_1030.py --max_tokens 16384 --num_samples 8 --seed 42` | 두 팔을 **같은 job · 같은 seed** 로 |
+
+### 알려주실 것 — 네 개
+
+1. **MATH500 정확도 두 팔 + 그 차이** ← 주 지표, 기대 **+14.00pp**
+2. **난이도 분할** L1–2 / L4–5 (`level` 필드로 층화) ← 기대 +10.53 → **+17.70**
+3. **학습 중 `dcpo/meta_emit_rate` 곡선** (gs25 / 50 / 150) ← 0.80 아래로 떨어지면 **즉시 알려달라**
+4. **응답 parquet** (`completion` 전문 포함) ← 재채점과 실패 분석에 쓴다
+
+⚠ 막히는 지점이 있으면 그건 이 문서의 결함이니 알려달라.
+
+---
+
 ## 0. 무엇을 재현해달라는 것인가
 
 **재현 대상은 딱 하나다 — base 대비 meta 의 RL 차이.**
