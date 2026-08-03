@@ -173,8 +173,6 @@ algorithm:
   # clamps positive deltas on groups where meta is net-harmful. The PMI knobs
   # below (dcpo_pmi_*) are now DORMANT (kept, harmless).
   dcpo_rmeta_source: pmi_shift
-  dcpo_w_score_alpha: 1.5    # SCoRe transition weight; alpha>1 makes right->wrong
-                             # the most-penalized transition (breaks>saves cure).
   # I4 conf carve-out: dense delta routes onto META_CONTENT \ CONF (the conf
   # token stays Brier-only — dense PMI there rewards "stating a confidence the
   # continuation echoes", fighting R_cal).

@@ -398,71 +398,6 @@ def _compute_dcpo_region_advantage(
         ).view(-1, 1)
         _trunc_kwargs = dict(trunc_penalty=_trunc_pen, trunc_open_mask=_tm * _mem)
 
-    # GROUP-BRANCH COUNTERFACTUAL R_meta + SCoRe R_trans (design 2026-06-21,
-    # dcpo_rmeta_source: cf_group). The populator (only on the cf_group path)
-    # writes dcpo_ans_meta / dcpo_r_trans (the counterfactual answer-delta heads)
-    # + their with-arm member masks; we thread them onto the ANSWER region inside
-    # compose. Presence-gated on dcpo_ans_meta (mirror of _trunc_kwargs): when the
-    # cf_group populator did not write it (every pre-existing pmi/none/v2/v3
-    # config), the dict stays empty -> compose byte-identical. cf_group reuses the
-    # meta weight knob (dcpo_w_meta) for the answer-delta R_meta head; R_trans
-    # uses dcpo_w_score_alpha (default 1.5 in the cf_group yaml, 0.0 here ->
-    # off). The head reaching compose via THIS forward is the anti-inert gate.
-    _cfgroup_kwargs = {}
-    _r_ans_meta = non_tensor_batch.get("dcpo_ans_meta", None)
-    if _r_ans_meta is not None:
-        _r_trans = non_tensor_batch.get("dcpo_r_trans", None)
-        _ans_member = non_tensor_batch.get("dcpo_ans_member", None)
-        _trans_member = non_tensor_batch.get("dcpo_trans_member", None)
-        # GATE (Layer 1) weight is INDEPENDENT from CONTENT (Layer 2 = dcpo_w_meta):
-        # dcpo_w_ans_meta defaults to dcpo_w_meta for backward compat (cf_group),
-        # but lets asym_cf disable meta content (dcpo_w_meta=0) WITHOUT silently
-        # zeroing the gate head via the `w_ans_meta` falsy-check on compose
-        # (dcpo_region.py L1499). Review fix: decouple gate timing from content.
-        # asym_cf GATE whole-group centering (2026-06-25 live fix). The asym_cf
-        # populator writes dcpo_ans_meta_whole_group_center (a per-row 1.0 marker
-        # array); cf_group NEVER writes it, so this stays False there and cf_group
-        # is byte-identical (its R_ans_meta is a PER-ROW answer-delta, not a group
-        # constant, so member-mask centering is correct for it). For asym_cf the
-        # gate scalar is group-CONSTANT and member-mask centering annihilates it
-        # (rmeta_neg_rate=0 bug) -> center over the whole group instead.
-        _wg_center = non_tensor_batch.get("dcpo_ans_meta_whole_group_center", None)
-        _cfgroup_kwargs = dict(
-            R_ans_meta=_head("dcpo_ans_meta"),
-            w_ans_meta=float(config.get("dcpo_w_ans_meta", _w_meta)),
-            ans_meta_member_mask=(
-                np.asarray(_ans_member, dtype=np.float32)
-                if _ans_member is not None else None
-            ),
-            ans_meta_whole_group_center=bool(
-                _wg_center is not None
-                and float(np.asarray(_wg_center, dtype=np.float32).reshape(-1)[0]) > 0.5
-            ) if _wg_center is not None else False,
-            R_trans=(_head("dcpo_r_trans") if _r_trans is not None else None),
-            w_score_alpha=float(config.get("dcpo_w_score_alpha", 0.0)),
-            trans_member_mask=(
-                np.asarray(_trans_member, dtype=np.float32)
-                if _trans_member is not None else None
-            ),
-        )
-
-    # RLSD MULTIPLICATIVE ABLATION (spec 2026-06-24 FINAL 2-ARM Arm RLSD,
-    # dcpo_rmeta_source: decoy_did_rlsd). The populator (only on that path) writes
-    # the per-row factor dcpo_rlsd_meta_factor = ((1−λ)+λ·exp(sign(A_corr)·clip(gm)));
-    # we thread it onto the META_CONTENT region inside compose, where it MULTIPLIES
-    # the meta-routed advantage (the populator routes R_corr onto META via
-    # meta_region_utility, so the multiply lands on Â_corr·factor — the spec form).
-    # Presence-gated (mirror of _cfgroup_kwargs): when the populator did not write
-    # it (every additive / pmi / cf_group / v2 / v3 config), the dict stays empty
-    # -> compose byte-identical. The factor reaching compose via THIS forward is
-    # the anti-inert gate.
-    _rlsd_kwargs = {}
-    _rlsd_factor = non_tensor_batch.get("dcpo_rlsd_meta_factor", None)
-    if _rlsd_factor is not None:
-        _rlsd_kwargs = dict(
-            rlsd_meta_factor_per_row=np.asarray(_rlsd_factor, dtype=np.float32)
-        )
-
     return compose_dcpo_region_advantage(
         response_mask=response_mask.float(),
         index=index,
@@ -492,8 +427,6 @@ def _compute_dcpo_region_advantage(
         **_anchor_kwargs,
         **_emit_route_kwargs,
         **_trunc_kwargs,
-        **_cfgroup_kwargs,
-        **_rlsd_kwargs,
     )
 
 

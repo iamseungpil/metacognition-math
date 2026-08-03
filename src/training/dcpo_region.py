@@ -1114,226 +1114,6 @@ def group_mean_subtract(values, index, member=None):
     return out.unsqueeze(1)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# GROUP-BRANCH COUNTERFACTUAL R_meta + SCoRe/AdaCoT shaping (design 2026-06-21).
-# Pure-python/numpy (no torch dep) so it is importable + testable under the
-# minimal unit env. Computes the counterfactual answer-delta heads from the
-# rollout group split (with-meta vs without-meta sub-arms) — NO second decode.
-# ─────────────────────────────────────────────────────────────────────────────
-def cf_group_arm_split(
-    B: int,
-    *,
-    n: int,
-    branch_frac: float,
-    meta_open: int = META_OPEN_DEFAULT,
-    meta_close: int = META_CLOSE_DEFAULT,
-):
-    """Positional with/without-meta arm assignment for a gen_batch repeated n×.
-
-    fit() repeats gen_batch n× with interleave=True, so row r belongs to GRPO
-    replica (r % n). A row is WITHOUT-META iff (r % n) >= n_with where
-    n_with = round(n*(1 - branch_frac)). For n=8, branch_frac=0.5 -> 4 with / 4
-    without per group. Returns:
-      arm  : list[float] length B — 1.0 = with-meta, 0.0 = without-meta.
-      bias : list[dict|None] length B — {meta_open:-100.0, meta_close:-100.0}
-             for without-meta rows (ban BOTH tags, matching the eval mechanism
-             eval_counterfactual_difficulty.py:93-95), None for with-meta rows.
-    """
-    n_with = int(round(n * (1.0 - float(branch_frac))))
-    arm = [0.0] * B
-    bias = [None] * B
-    for r in range(B):
-        if (r % n) < n_with:
-            arm[r] = 1.0
-        else:
-            arm[r] = 0.0
-            bias[r] = {int(meta_open): -100.0, int(meta_close): -100.0}
-    return arm, bias
-
-
-def cf_group_route_row(arm_i, bias_i, mode: str = "ban"):
-    """PURE per-row routing decision for the cf_group without-arm (design 2026-06-22).
-
-    Factored out of the gen-wrap so it is unit-testable without verl/DataProto.
-    Returns (agent_name, logit_bias_or_None, with_meta_flag) for one row given:
-      arm_i  : 1.0 = with-meta sub-arm, 0.0 = without-meta sub-arm (cf_group_arm_split).
-      bias_i : the {meta_open:-100, meta_close:-100} dict for without rows (or None).
-      mode   : 'ban'     (DEFAULT, byte-identical to today) — without-arm rows route
-                          to cf_groupban_agent carrying bias_i (BAN the meta tags).
-               'placebo' (the fix) — without-arm rows route to cf_placebo_agent with
-                          NO logit_bias (the loop forces a contentless placebo meta
-                          block as the trained response prefix and solves on-dist).
-
-    The with-arm (arm_i > 0.5) is UNCHANGED in BOTH modes: single_turn, no bias,
-    with_meta=1.0. So 'ban' is the exact current behaviour; only 'placebo' differs.
-    """
-    if arm_i > 0.5:
-        return "single_turn_agent", None, 1.0
-    if str(mode) == "placebo":
-        return "cf_placebo_agent", None, 0.0
-    return "cf_groupban_agent", bias_i, 0.0
-
-
-def compute_cf_group_heads(
-    *,
-    c_with,
-    with_meta_flag,
-    group_index,
-    w_over: float = 0.0,
-    over_threshold: float = 1.0,
-    adaptthink_floor: bool = True,
-):
-    """Group-branch counterfactual answer-delta heads (design 2026-06-21).
-
-    For each prompt group g (`group_index`), split rows by `with_meta_flag`
-    (1.0 = with-meta sub-arm, 0.0 = without-meta sub-arm). `c_with` is the
-    standard final-answer correctness (0/1) for EVERY row — the without-arm rows
-    are real GRPO group members graded for free, so c_with on a without-arm row
-    IS correct_without. Then:
-      acc_without(g) = mean(c_with over with_meta_flag==0 rows in g)
-      acc_with(g)    = mean(c_with over with_meta_flag==1 rows in g)
-      delta_i (with-meta rows) = c_with[i] - acc_without(g)   (the counterfactual
-            answer-delta; routes onto ANSWER, outcome locus — user decision)
-    R_ans_meta and R_trans both carry delta_i (alpha applied later via the
-    compose weight w_score_alpha, keeping the head a clean delta — mirror of how
-    w_corr scales R_corr). Without-meta rows get 0 / member 0.
-
-    over_penalty[i] = w_over for with-meta rows whose group acc_without >=
-    over_threshold (AdaCoT P_over: meta fired on an already-correct problem),
-    else 0. Folded onto R_corr's answer routing by the populator (no new key).
-
-    adaptthink_floor: for groups where acc_with(g) < acc_without(g) (meta net-
-    harmful), clamp that group's POSITIVE with-arm deltas to 0 — meta-emission
-    cannot be pushed up where it lowers the group's pre-measured accuracy
-    (guard, not a head). Groups with no without-arm sibling -> member 0 (delta
-    undefined; conservative no-gradient).
-
-    Returns dict of length-B lists: R_ans_meta, R_trans, ans_meta_member,
-    trans_member, over_penalty.
-    """
-    cw = np.asarray(c_with, dtype=np.float32).reshape(-1)
-    wm = np.asarray(with_meta_flag, dtype=np.float32).reshape(-1)
-    B = cw.shape[0]
-    gid = list(
-        group_index.tolist() if hasattr(group_index, "tolist") else group_index
-    )
-    gid = [str(g) for g in gid]
-
-    R_ans_meta = [0.0] * B
-    R_trans = [0.0] * B
-    member = [0.0] * B
-    over_penalty = [0.0] * B
-
-    groups: dict = {}
-    for i in range(B):
-        groups.setdefault(gid[i], []).append(i)
-
-    for members in groups.values():
-        with_rows = [i for i in members if wm[i] > 0.5]
-        without_rows = [i for i in members if wm[i] <= 0.5]
-        if not without_rows or not with_rows:
-            # no counterfactual sibling -> delta undefined, member 0 (skip)
-            continue
-        acc_without = float(np.mean([cw[i] for i in without_rows]))
-        acc_with = float(np.mean([cw[i] for i in with_rows]))
-        _harmful = adaptthink_floor and (acc_with < acc_without)
-        for i in with_rows:
-            delta = float(cw[i]) - acc_without
-            if _harmful and delta > 0.0:
-                delta = 0.0  # AdaptThink: never push up net-harmful meta
-            R_ans_meta[i] = delta
-            R_trans[i] = delta
-            member[i] = 1.0
-            if w_over and acc_without >= over_threshold:
-                over_penalty[i] = float(w_over)
-
-    return {
-        "R_ans_meta": R_ans_meta,
-        "R_trans": R_trans,
-        "ans_meta_member": member,
-        "trans_member": list(member),
-        "over_penalty": over_penalty,
-    }
-
-
-def cfgroup_scalar_summary(
-    *,
-    with_meta_flag,
-    c_with,
-    group_index,
-    R_ans_meta,
-    ans_meta_member,
-):
-    """PURE wandb-scalar summary of the cf_group counterfactual (no wandb dep).
-
-    The legacy `dcpo/acc_without` trend scalar reads `heads["c_without"]` — the
-    PMI/cf-path second-decode field that cf_group NEVER populates (cf_group's
-    without-arm rows are real GRPO group members; their correctness lives in
-    `c_with`). So under cf_group that scalar is structurally NaN and the true
-    counterfactual is INVISIBLE. This summarises the ARM-split signal directly:
-
-      dcpo/cfgroup/acc_with_arm     mean c_with over with-meta arm rows (true, unblended)
-      dcpo/cfgroup/acc_without_arm  mean c_with over without-meta arm rows
-      dcpo/cfgroup/delta            acc_with_arm - acc_without_arm (batch net meta effect)
-      dcpo/cfgroup/mixed_group_rate fraction of groups with within-group c_with
-                                    variance (RL-level headroom: 0<sum<n). delta is
-                                    structurally 0 for non-mixed groups, so this is
-                                    the ceiling on any counterfactual gradient.
-      dcpo/cfgroup/both_arm_group_rate  groups carrying BOTH arms (delta defined)
-      dcpo/cfgroup/ans_meta_pos_rate    with-arm member rows with R_ans_meta>0 (meta saved)
-      dcpo/cfgroup/ans_meta_neg_rate    with-arm member rows with R_ans_meta<0 (meta hurt)
-      dcpo/cfgroup/member_rate          fraction of rows that are with-arm members
-
-    Args mirror the populator's in-scope values (no recompute — production parity).
-    Returns a flat dict[str, float] (NaN where an arm/group is empty).
-    """
-    from collections import defaultdict
-
-    wm = np.asarray(with_meta_flag, dtype=np.float32).reshape(-1)
-    cw = np.asarray(c_with, dtype=np.float32).reshape(-1)
-    ram = np.asarray(R_ans_meta, dtype=np.float32).reshape(-1)
-    mem = np.asarray(ans_meta_member, dtype=np.float32).reshape(-1)
-    B = int(cw.shape[0])
-    gid = [
-        str(g)
-        for g in (group_index.tolist() if hasattr(group_index, "tolist") else group_index)
-    ]
-    with_mask = wm > 0.5
-    without_mask = ~with_mask
-    acc_with = float(cw[with_mask].mean()) if with_mask.any() else float("nan")
-    acc_without = float(cw[without_mask].mean()) if without_mask.any() else float("nan")
-    delta = (
-        acc_with - acc_without
-        if (with_mask.any() and without_mask.any())
-        else float("nan")
-    )
-    groups: dict = defaultdict(list)
-    for i in range(B):
-        groups[gid[i]].append(i)
-    n_groups = max(1, len(groups))
-    mixed = both = 0
-    for members in groups.values():
-        s = float(sum(cw[i] for i in members))
-        if 0.0 < s < len(members):
-            mixed += 1
-        has_w = any(wm[i] > 0.5 for i in members)
-        has_o = any(wm[i] <= 0.5 for i in members)
-        if has_w and has_o:
-            both += 1
-    memb = mem > 0.5
-    pos = int(((ram > 1e-6) & memb).sum())
-    neg = int(((ram < -1e-6) & memb).sum())
-    return {
-        "dcpo/cfgroup/acc_with_arm": acc_with,
-        "dcpo/cfgroup/acc_without_arm": acc_without,
-        "dcpo/cfgroup/delta": delta,
-        "dcpo/cfgroup/mixed_group_rate": mixed / n_groups,
-        "dcpo/cfgroup/both_arm_group_rate": both / n_groups,
-        "dcpo/cfgroup/ans_meta_pos_rate": pos / max(1, B),
-        "dcpo/cfgroup/ans_meta_neg_rate": neg / max(1, B),
-        "dcpo/cfgroup/member_rate": float(memb.mean()) if B else 0.0,
-    }
-
 
 def compose_dcpo_region_advantage(
     *,
@@ -1359,13 +1139,6 @@ def compose_dcpo_region_advantage(
     trunc_penalty: float = 0.0,
     trunc_open_mask=None,
     rmeta_member_mask=None,
-    R_ans_meta=None,
-    w_ans_meta: float = 0.0,
-    ans_meta_member_mask=None,
-    ans_meta_whole_group_center: bool = False,
-    R_trans=None,
-    w_score_alpha: float = 0.0,
-    trans_member_mask=None,
     R_emit=None,
     w_emit: float = 0.0,
     emit_route: str = "global",
@@ -1375,7 +1148,6 @@ def compose_dcpo_region_advantage(
     anchor_ema_decay: float = 0.9,
     anchor_warmup_steps: int = 0,
     global_step: int | None = None,
-    rlsd_meta_factor_per_row=None,
 ):
     """Independent per-head group-mean-subtract + per-region token routing (§2.3).
 
@@ -1492,90 +1264,13 @@ def compose_dcpo_region_advantage(
     meta_c = torch.as_tensor(meta_content_mask, dtype=torch.float32).to(device)
     conf = torch.as_tensor(conf_mask, dtype=torch.float32).to(device)
 
-    # RLSD MULTIPLICATIVE ABLATION (spec 2026-06-24 §23 / FINAL 2-ARM Arm RLSD,
-    # OPTIONAL). `rlsd_meta_factor_per_row` [B] = ((1−λ)+λ·w) with
-    # w = exp(sign(A_corr)·clip(gm)) (dcpo_directional.rlsd_meta_factor). It
-    # MULTIPLIES the META_CONTENT-region advantage per row, shackling the meta
-    # gradient to the correctness sign (the spec's `Â_t = Â_corr·((1−λ)+λ·w)`
-    # form — production routes Â_corr onto META via R_meta=R_corr / w_meta=1, so
-    # the multiply lands on Â_corr·factor). It is the ABLATION arm only; the
-    # PRIMARY (additive) arm leaves this None. None -> the meta term is its plain
-    # self, BYTE-IDENTICAL to every pre-existing config (no caller sets it).
-    _meta_term = w_meta * A_meta * meta_c
-    if rlsd_meta_factor_per_row is not None:
-        _rf = torch.as_tensor(
-            rlsd_meta_factor_per_row, dtype=torch.float32).to(device).view(-1, 1)  # [B,1]
-        _meta_term = _meta_term * _rf
 
     advantages = (
         w_corr * A_corr * ans
-        + _meta_term
+        + w_meta * A_meta * meta_c
         + w_cal * A_cal * conf
     ) * rm
 
-    # GROUP-BRANCH COUNTERFACTUAL R_meta + SCoRe R_trans (design 2026-06-21,
-    # OPTIONAL). cf_group routes the counterfactual answer-delta R_meta AND the
-    # SCoRe transition head onto the ANSWER region (the outcome locus — user
-    # decision: the answer-delta is an outcome signal, credit/blame the answer
-    # tokens, NOT the META_CONTENT channel which PMI used). Each head is
-    # group-mean-subtracted INDEPENDENTLY over its with-arm member mask (the
-    # delta is defined only for with-meta rows), then routed onto the SAME `ans`
-    # (ANSWER) and `rm` (response) tensors R_corr rides, added into the
-    # advantages accumulator HERE (not a sidecar) so the head physically reaches
-    # compose — the project's recurring inert trap is closed by this being an
-    # explicit compose param, not a key computed-but-unread. w_score_alpha>1
-    # (default config 1.5) makes right->wrong the most-penalized transition
-    # (SCoRe). R_ans_meta/R_trans=None or weight 0.0 -> term skipped ->
-    # byte-identical to every pre-existing config (cf_group never set).
-    if R_ans_meta is not None and not w_ans_meta:
-        # gs190 trap surfacing: the head was POPULATED but routes with weight 0,
-        # so it is silently inert. Warn (review) instead of failing silently.
-        print(
-            "[DCPO-COMPOSE] R_ans_meta populated but w_ans_meta=0 "
-            "(gate/ans_meta head NOT routed — check dcpo_w_ans_meta/dcpo_w_meta)",
-            flush=True,
-        )
-    if R_ans_meta is not None and w_ans_meta:
-        if ans_meta_whole_group_center:
-            # asym_cf GATE (2026-06-25 live fix). The gate scalar is GROUP-CONSTANT
-            # (every with-arm member of a group shares the same c0/c1-derived
-            # R_gate). Centering a constant over the WITH-ARM MEMBER mask (where it
-            # is the only value) yields ZERO — SAVE/DERAIL/WASTE all annihilated, so
-            # rmeta_neg_rate=0 and the gate cannot suppress (the observed bug). The
-            # FIX centers over the WHOLE group (member=None): the without-arm rows
-            # carry R_gate 0 (member 0 -> R_gate 0 by construction), so the with-arm
-            # rows' shared value survives as (R_gate - group_mean) != 0. We then
-            # MUST mask credit onto the with-arm member rows only (without-arm rows
-            # would otherwise get a spurious -group_mean on their ANSWER tokens).
-            # This mirrors cf_group's over_penalty, which rode R_corr's whole-group
-            # centering for exactly this reason.
-            # GUARD (review 2026-06-26): whole-group centering is ONLY sound if we
-            # then mask credit onto the with-arm member rows. Without the member
-            # mask the without-arm rows (R_gate 0) would receive a spurious
-            # -group_mean on their ANSWER tokens, corrupting the without-arm side of
-            # the counterfactual (the docstring above: "we MUST mask credit onto the
-            # with-arm member rows only"). In production asym_cf ALWAYS supplies the
-            # mask (verl_sdc writes dcpo_ans_member alongside the whole-group marker);
-            # this assert fails loudly if any future code path sets the flag without
-            # it, instead of silently skipping the mask and corrupting credit.
-            assert ans_meta_member_mask is not None, (
-                "ans_meta_whole_group_center=True requires ans_meta_member_mask "
-                "(whole-group centering MUST mask credit onto with-arm rows only; "
-                "without it the without-arm rows get a spurious -group_mean — "
-                "asym_cf always provides it via dcpo_ans_member)"
-            )
-            A_am = group_mean_subtract(R_ans_meta, index, member=None).to(device)  # [B,1]
-            _am_mem = torch.as_tensor(
-                ans_meta_member_mask, dtype=torch.float32).to(device).view(-1, 1)
-            A_am = A_am * _am_mem
-        else:
-            A_am = group_mean_subtract(
-                R_ans_meta, index, member=ans_meta_member_mask).to(device)  # [B,1]
-        advantages = advantages + float(w_ans_meta) * A_am * ans * rm
-    if R_trans is not None and w_score_alpha:
-        A_trans = group_mean_subtract(
-            R_trans, index, member=trans_member_mask).to(device)  # [B,1]
-        advantages = advantages + float(w_score_alpha) * A_trans * ans * rm
 
     if R_format is not None and format_violation_mask is not None:
         A_format = group_mean_subtract(R_format, index).to(device)  # [B,1]
