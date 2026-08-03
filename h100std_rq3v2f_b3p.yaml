@@ -156,7 +156,7 @@ jobs:
         grep -q "extra_state_world_size" /scratch/metacognition/scripts/pull_resume_ckpt.py || { echo "[YAML] puller 3-way completeness missing; ABORT window"; sleep 300; exit 1; }
         python -m pip install --quiet --upgrade hf_xet 2>&1 | tail -2 || echo "[YAML] hf_xet install failed (non-fatal)"
         python -c "import hf_xet" && echo "[YAML] hf_xet ready" || echo "[YAML] hf_xet import FAILED"
-        nohup env -u HF_HUB_DISABLE_XET python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rq3v2f_b3p --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --interval 90 --keep 1 --config_name rq3v2f_b3p > /scratch/logs/push_rq3v2f_b3p.log 2>&1 &
+        nohup env -u HF_HUB_DISABLE_XET python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rq3v2f_b3p --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --interval 90 --keep 1 --squash_every 3 --config_name rq3v2f_b3p > /scratch/logs/push_rq3v2f_b3p.log 2>&1 &
         PUSH_PID=$$!
         echo "[YAML] pusher pid=$${PUSH_PID}"
 
