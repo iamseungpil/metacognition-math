@@ -2398,3 +2398,68 @@ RL 재주행(≈30h/arm)으로 복원 가능하고, 기존 수치는 저장된 �
 **처방은 floor를 켜는 게 아니라(그건 always-on 메타라는 반대편 실패를 부른다),
 런마다 `resolved config`를 동결·기록하고 매치드 쌍은 resolved 층에서 diff하는 것이다.**
 런처만 비교하면 상속된 노브는 영원히 안 보인다.
+
+---
+
+## E-172 (0803 08:00 UTC) — G2 발화검사 통과, **그러나 헌법의 대시보드는 이 런을 "broken"으로 읽고 있었다**
+
+stacked-research 스킬의 G1~G4를 실제로 돌렸다.
+
+### G2 발화검사 — PMI-shift는 **배선돼 있고 발화한다**
+
+| 지표 | warmup(≤80) | mid(81–150) | late(>150) |
+|---|---|---|---|
+| `gdpo/meta_region_utility/std` | 1.038 | 1.042 | **0.441** |
+| `dcpo/pmishift_attempted_rate` | 0.711 | 0.634 | **0.151** |
+| `dcpo/pmishift_rmeta_mean_scored` | **−0.141** | +0.136 | −0.022 |
+| `dcpo/rmeta_pos_rate` / `neg_rate` | 0.207 / **0.261** | 0.248 / 0.196 | 0.074 / 0.038 |
+| `dcpo/eff_scale_meta` | 0.336 | 0.461 | 0.589 |
+
+meta 헤드의 advantage 표준편차가 1.04로 실재한다 ⇒ **무효 레버 아님. G2 PASS.**
+다만 `std`가 후반 0.44로 반토막 나고 `attempted`가 0.15로 떨어진다 — **발화가 죽으면 채점할 행이
+줄어 헤드가 스스로 흐려지는 양의 되먹임**이 돈다.
+
+★그리고 지난 틱에 "미측정"이라 했던 **연속 SHIFT 항의 평균 부호**가 여기 있다:
+warmup에서 `rmeta_mean_scored = −0.141`, `neg_rate(0.261) > pos_rate(0.207)`.
+**규약이 굳어야 할 첫 80스텝 동안 채점된 메타 보상의 평균이 음수였다.**
+
+### ★★ 헌법 Part IV가 이미 이 수치의 정상 범위를 적어놨다
+
+`docs/CONSTITUTION.md:128`:
+> `dcpo/pmishift_rmeta_mean_scored` | Healthy **+1.0–+1.2** | Broken **~−0.2** | *Near-0 ⇒ no signal.*
+
+**우리 값 −0.141은 Broken 열이다.** 그런데 Part VI의 발사 게이트 목록에는 이 지표가 없다:
+> emit ≥0.8 ✅ · attempted ≥0.3 ✅ · n_save>0 ✅ · entropy>0.1 ✅ · clip<0.2 ✅ — **전부 통과**
+
+⇒ **대시보드는 숫자를 알고 있었고, 게이트는 그 숫자를 안 봤다.**
+stacked-research §7: *"게이트를 통과했는데 실패가 났으면 게이트를 추가한다."*
+
+또한 Part V 실패모드 1번은 처방을 이렇게 적어놨다:
+> *"an RL-side meta-emission **floor** to resist erosion"*
+**헌법이 처방한 floor가 설정에서 0.0이다**(E-170/171).
+
+### G3 해상도 — **FAIL: 기준선 행이 없다**
+
+세 런처가 **전부** `++trainer.val_before_train=False`로 gs0 평가를 껐다
+(`b0p:289`, `b2p:283`, `b3p:269`). 두 config는 `val_before_train: true`인데 런처가 덮었다.
+⇒ **각 arm의 출발점이 val 세트에서 미측정**이고, arm별 RL 기여를 계산할 수 없다.
+SFT 단계 실측으로 b2p 58.0% vs b0p 55.5%(MATH500-100)의 **초기 격차가 존재**하는데,
+그 격차가 gs50 이후 모든 비교에 섞여 있고 빼낼 방법이 없다.
+[[number-needs-its-baseline-beside-it-0731]] 그대로다 — **네 번째 칸이 비었다.**
+
+### G4 통제군 — 부분 통과
+
+b0p(메타 제거 쌍둥이+vanilla)·b2p(메타 SFT2+vanilla)로 **"메타 있으나 보상 안 함"** 통제군은 있다.
+없는 것은 **학습 0 팔**(SFT2 init 그대로의 val 성능) — 이는 G3의 gs0 결손과 같은 구멍이다.
+
+### G1 CLAIMS — 대장이 없다
+
+`docs/CONSTITUTION.md`(224행)는 훌륭한 진단 문서지만 **주장 대장이 아니다**.
+"닫는 것 / 여는 것 / 재확인 계수기" 필드가 0건. 그래서 판정이 로그 2,300행 뒤에 묻히고,
+같은 결론을 다시 사게 된다(이번 세션만 floor 관련 재확인 2회).
+
+### 헌법 위반 1건 추가 발견
+
+Part VII: *"Matched-arm isolation: ... **Same config path**, same len_cost, same recipe."*
+현행은 b0p/b2p = `base_matched_grpo_h100_4x4k`, b3p = `triobj_dcpo_v4_stage3b_h100_4x4k`로
+**config path가 다르다.** 상속 노브(`meta_floor`·`len_cost`)가 비교 대상 밖에 놓인 구조적 이유다.
