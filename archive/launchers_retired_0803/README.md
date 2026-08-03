@@ -97,15 +97,24 @@ repo-wide grep excluding `.git` and `archive/`, run once restricted to
 non-Markdown files and again restricted to `*.yaml` (to catch one launcher
 invoking another), returned **zero** hits. Nothing in `scripts/`, `src/`,
 `configs/`, `experiments/`, or any protected path invokes these filenames.
-Neither protected doc (`docs/PREREGISTRATION_rq3v2_base_replication.md`,
-`docs/CONSTITUTION.md`) mentions them.
+`docs/PREREGISTRATION_rq3v2_base_replication.md` does not mention them at all.
+`docs/CONSTITUTION.md:19` does, but only in the *glob* form `a100_rq3v2f_*`, which
+is why a basename-exact grep missed it — see the note below.
 
-Every inbound reference is Markdown prose. The stale ones —
-`CLAUDE.md:61-62` and `docs/CODE_MAP.md:16,32,74,134,135,141`, which presented
-five of these nine as the *current* launcher set and would have pointed an
-operator straight at the three destructive files — are repaired in the edit
-commit that follows this one, along with the "What replaced them" pointer in
-`archive/launchers_retired_0727/README.md`.
+Every inbound reference is Markdown prose. The stale ones — `CLAUDE.md:61-62` and
+`docs/CODE_MAP.md:16,32,50,74,134,135,136,141,142`, which presented five of these
+nine as the *current* launcher set and would have pointed an operator straight at
+the three destructive files — were repaired in a follow-up edit commit, along with
+`ARCHITECTURE.md:25`, `docs/SUBMISSION_RUNBOOK.md:10`, `experiments/README.md:40`
+and the "What replaced them" pointer in `archive/launchers_retired_0727/README.md`.
+
+**One stale reference was deliberately left**: `docs/CONSTITUTION.md:19` still reads
+"(A100 판은 `a100_rq3v2f_*`)". The constitution is a protected document and was not
+edited. The line is merely stale, not dangerous — it notes that an A100 variant
+exists, it does not instruct anyone to submit one. Fix it the next time the
+constitution is legitimately revised. Two further mentions survive inside
+`archive/launchers_retired_0727/a100g2_sft_b{0,2}p2_rvfull.yaml` as code comments;
+those files are themselves archived history and were not touched.
 
 `docs/reports/2026-07-17-rq3-run-and-iteration-log.md` and its `-part1` are
 **deliberately left untouched**. Their ~25 references are a historical log of

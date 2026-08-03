@@ -21,8 +21,10 @@ running it would overwrite the real artifacts.
 
 ## What replaced them
 
-The live path is `a100_sft_{b0p2,b2p2}_rvfull.yaml` (SFT2 pair) and
-`a100_rq3v2f_{b0p,b2p,b3p}.yaml` (RL), listed in CLAUDE.md. Nothing here should
+The live path is `h100std_sft_{b0p2,b2p2}_rvfull.yaml` (SFT2 pair) and
+`h100std_rq3v2f_{b0p,b2p,b3p}.yaml` (RL), listed in CLAUDE.md. (Updated 2026-08-03:
+the a100 twins this section used to name were themselves retired into
+`archive/launchers_retired_0803/`.) Nothing here should
 be resubmitted; the compute assumptions they were built around no longer hold.
 
 ---

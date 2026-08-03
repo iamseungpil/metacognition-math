@@ -13,7 +13,7 @@ byte-동일 유지가 원칙이다.
 
 ## 1. 라이브 트레이너 모드 2개와 호출 사슬
 
-**Mode 1 — VANILLA_GRPO** (컨트롤 b0p = `a100_rq3v2f_b0p.yaml`, 메타 b2p = `a100_rq3v2f_b2p.yaml`;
+**Mode 1 — VANILLA_GRPO** (컨트롤 b0p = `h100std_rq3v2f_b0p.yaml`, 메타 b2p = `h100std_rq3v2f_b2p.yaml`;
 H100 판은 `h100std_rq3v2f_*`)
 
 ```
@@ -29,7 +29,7 @@ b0p vs b2p의 차이는 **init 하나뿐**이다. 현행 런처는 그 경로를
 `/scratch/models/sft2_init`으로 고정 스테이징하며, **두 arm의 SFT2 산출물이 같은 접미사로
 모두 존재할 때만** 스테이징한다(한쪽만 있으면 world-size가 어긋난 짝이 되므로 abort).
 
-**Mode 2 — TRIOBJ_DCPO_V4** (풀패키지 b3p = `a100_rq3v2f_b3p.yaml`; H100 판 `h100std_rq3v2f_b3p.yaml`)
+**Mode 2 — TRIOBJ_DCPO_V4** (풀패키지 b3p = `h100std_rq3v2f_b3p.yaml`)
 
 ```
 런처 yaml → --config-name=triobj_dcpo_v4_stage3b_h100_4x4k
@@ -47,7 +47,7 @@ b0p vs b2p의 차이는 **init 하나뿐**이다. 현행 런처는 그 경로를
 
 ## 2. config 상속 사슬 (우선순위 높은 것부터)
 
-1. **런처 CLI 오버라이드** — `a100_rq3v2f_*.yaml`/`h100std_rq3v2f_*.yaml`의 `++`/`key=`
+1. **런처 CLI 오버라이드** — `h100std_rq3v2f_*.yaml`의 `++`/`key=`
    (v2 레시피: temp 1.0, top_k −1, resp 8192, norm_adv_by_std=false,
    logprob micro_bs 2, save_freq, resume_mode=auto)
 2. **네임드 config**: `base_matched_grpo_h100_4x4k.yaml` 또는
@@ -71,7 +71,7 @@ rollout은 single_turn, 전 arm 매치드. **yaml만 읽으면 보상 소스를 
 
 | 부품 | 위치 | 역할 |
 |---|---|---|
-| RGS 완전성 규칙 | 런처 yaml 인라인 (예: `a100_rq3v2f_b3p.yaml`) | HF repo `iamseungpil/metacot-h200-triobj-dcpo-v3`에서 model+extra+optim 샤드 ≥4인 최고 `global_step_N` 탐색; fail-closed — RGS 빈/깨짐 → abort, RGS=−1(HF 3회 실패) → abort, 계보 존재하나 pull 결과 없음 → abort(gs0 콜드스타트 거부) |
+| RGS 완전성 규칙 | 런처 yaml 인라인 (예: `h100std_rq3v2f_b3p.yaml`) | HF repo `iamseungpil/metacot-h200-triobj-dcpo-v3`에서 model+extra+optim 샤드 ≥4인 최고 `global_step_N` 탐색; fail-closed — RGS 빈/깨짐 → abort, RGS=−1(HF 3회 실패) → abort, 계보 존재하나 pull 결과 없음 → abort(gs0 콜드스타트 거부) |
 | `scripts/pull_resume_ckpt.py` | yaml 인라인 호출, 3회 재시도 | 최신 완전 ckpt를 `/scratch/checkpoints/<arm>`으로 pull → `trainer.resume_mode=auto`가 재개 |
 | `scripts/push_ckpts_to_hf.py` | nohup 데몬 (`--interval 90 --keep 2`) | 학습 중 신규 global_step 디렉토리를 per-file 내구 push |
 | 최종 sync push | verl 종료 후 yaml 인라인 | `pkill push_ckpts_to_hf` 후 동기 `upload_folder` 최대 10회 재시도 + 샤드 수 검증 |
@@ -131,15 +131,21 @@ init을 스테이징한다:
 
 | 단계 | A100 판 | H100 판 |
 |---|---|---|
-| SFT2 컨트롤 | `a100_sft_b0p2_rvfull.yaml` | `h100std_sft_b0p2_rvfull.yaml` |
-| SFT2 메타 | `a100_sft_b2p2_rvfull.yaml` | `h100std_sft_b2p2_rvfull.yaml` |
-| RL 3-arm | `a100_rq3v2f_{b0p,b2p,b3p}.yaml` | `h100std_rq3v2f_{b0p,b2p,b3p}.yaml` |
+| SFT2 컨트롤 | (a100 판 은퇴 → `archive/launchers_retired_0803/`) | `h100std_sft_b0p2_rvfull.yaml` |
+| SFT2 메타 | (a100 판 은퇴 → `archive/launchers_retired_0803/`) | `h100std_sft_b2p2_rvfull.yaml` |
+| RL 3-arm | (a100 판 은퇴 → `archive/launchers_retired_0803/`, 제출 금지) | `h100std_rq3v2f_{b0p,b2p,b3p}.yaml` |
 
 A100/H100 판은 target·sku·tier만 다르고 내용은 같다. 어느 쪽이 실제로 제출 가능한지는
 CLAUDE.md의 Compute 절을 볼 것 — 두 VC 모두 현재 제약이 있다.
 
-그 밖에: `a100_rq3v2_b3p.yaml`은 **구 init**(`b2p2_rvseg_sft`)을 쓰는 RQ2 부록 전용이며
-복제 결과로 보고하면 안 된다. `h100std_env_builder.yaml`은 conda env 빌더(실험 아님).
+그 밖에: `archive/launchers_retired_0803/a100_rq3v2_b3p.yaml`은 **구 init**(`b2p2_rvseg_sft`)을
+쓰는 RQ2 부록 전용이며 복제 결과로 보고하면 안 된다.
+`archive/launchers_retired_0803/h100std_env_builder.yaml`은 conda env 빌더(실험 아님) —
+0803에 아카이브했고, `scripts/bootstrap_sdc_node.sh`가 매 노드 부트스트랩마다 받아가는
+env 팩(`env_snapshots/simplerl_v4.tar.gz`)의 **유일한 재생성 레시피**다.
+
+⛔ **0803 은퇴 런처 경고**: `archive/launchers_retired_0803/a100_rq3v2f_{b0p,b2p,b3p}.yaml`은
+살아있는 arm과 durable 출력 경로가 바이트 동일이라 제출하면 그 arm의 체크포인트를 지운다.
 구세대 런처 전량은 `archive/launchers_retired_0727/`와 `archive/launchers_pre_rq3/`.
 
 ## 8. experiments/ — §4 인과 프로브 워크스트림 (rq3 아님)

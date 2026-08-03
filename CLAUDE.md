@@ -58,8 +58,13 @@ Standard 티어라 선점이 잦으므로 ckpt 릴레이/resume 배선은 여전
 - Conda env: /scratch/conda_envs/simplerl (conda-pack)
 - AMLT project: skilldiscovery2
 - **현행 런처**(그 외 루트의 `h100std_rq3_*`, `h100std_sft_*`, `a100g1_*`, `a100g2_*`는 은퇴):
-  - SFT2 쌍: `a100_sft_b0p2_rvfull.yaml`(컨트롤) / `a100_sft_b2p2_rvfull.yaml`(메타)
-  - RL: `a100_rq3v2f_{b0p,b2p,b3p}.yaml`(신 lineage) / `a100_rq3v2_b3p.yaml`(구 init)
+  - SFT2 쌍: `h100std_sft_b0p2_rvfull.yaml`(컨트롤) / `h100std_sft_b2p2_rvfull.yaml`(메타)
+  - RL: `h100std_rq3v2f_{b0p,b2p,b3p}.yaml` — 이 3종이 현재 도는 arm
+    (solid-gibbon / hip-hound / pure-stag)
+  - ⛔ **a100 판은 0803에 `archive/launchers_retired_0803/`으로 은퇴**. `a100_rq3v2f_*`
+    3종은 ckpt_dir·HF repo_id·config_name·path_in_repo가 살아있는 arm과 바이트 동일이고
+    `push_ckpts_to_hf.py --keep 1`의 `delete_folder`가 **도는 arm의 유일한 재개 상태를
+    지운다**. 절대 제출 금지. 사유는 그 폴더의 README 참조.
   - **basicvc 복구 시 순서**: `h100std_sft_{b0p2,b2p2}_rvfull.yaml`(SFT2 쌍) → 두 산출물이
     HF에 착지한 뒤 `h100std_rq3v2f_{b0p,b2p,b3p}.yaml`(RL). 이 5종은 0727에 a100 판에서
     복제해 두었고 target/sku/tier만 다르다(`msrresrchbasicvc` / `80G4-H100` / Standard —

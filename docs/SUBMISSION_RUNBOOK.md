@@ -6,8 +6,9 @@ the token / setup failures we hit on 0714**. Read this before every submit.
 > **Generation note (0727).** The arm names and launcher filenames throughout
 > this file are the retired **RQ3 think-off** generation (`h100std_rq3_b0/b2/b3`,
 > inits `b0_gold_sft` / `b23_rv_unmasked_sft`). The current generation is
-> **RQ3v2 think-on**: launchers `h100std_rq3v2f_{b0p,b2p,b3p}.yaml` (A100 판
-> `a100_rq3v2f_*`), preceded by the SFT2 pair
+> **RQ3v2 think-on**: launchers `h100std_rq3v2f_{b0p,b2p,b3p}.yaml` (the A100 판
+> was retired 2026-08-03 into `archive/launchers_retired_0803/` — do NOT submit it,
+> it shares durable output paths with the live arms), preceded by the SFT2 pair
 > `h100std_sft_{b0p2,b2p2}_rvfull.yaml`. **The operational advice below — token
 > sourcing, submit-time substitution, the checks — still applies verbatim; only
 > the filenames moved.** Substitute accordingly, and see CLAUDE.md for which

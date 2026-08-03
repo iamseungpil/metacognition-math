@@ -37,7 +37,8 @@ description 필드에 이 매칭 조건이 명문화되어 있다.
 
 **(주의) 아래 RQ1–4는 pre-rq3 세대(instruct 기반) 넘버링이다.** 현행 실험은
 **매치드 래더**(진짜 Qwen3-8B-Base)이고 — 0727 현재 현행 세대는 **RQ3v2 think-on**
-(런처 `a100_rq3v2f_{b0p,b2p,b3p}.yaml`, H100 판 `h100std_rq3v2f_*`)이다. 아래에 남은
+(런처 `h100std_rq3v2f_{b0p,b2p,b3p}.yaml`; a100 판은 0803에
+`archive/launchers_retired_0803/`으로 은퇴)이다. 아래에 남은
 구세대 이름(B0/B2/B3, `h100std_rq3_*`)은 은퇴했고 `archive/launchers_retired_0727/`에 있다 —
 그 안의 과학 질문은 **RQ1 = B2−B0(메타 SFT 효과), RQ2 = B3−B2(pmi_shift 메타
 보상 효과)** 다 — `docs/redesign/base_rl_recipe.md`·`docs/CONSTITUTION.md` 참조.

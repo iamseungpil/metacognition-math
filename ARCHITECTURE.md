@@ -22,8 +22,8 @@ tree is history — superseded variants and probes, kept for reproducibility und
 
 > **0727: the block below is the retired RQ3 think-off generation.** The current
 > generation is RQ3v2 think-on — a two-stage SFT stack (SFT1 → SFT2 on the RV
-> corpus and its meta-removed twin) feeding `a100_rq3v2f_{b0p,b2p,b3p}.yaml`
-> (H100 판 `h100std_rq3v2f_*`). The data flow and trainer entry points below are
+> corpus and its meta-removed twin) feeding `h100std_rq3v2f_{b0p,b2p,b3p}.yaml`
+> (the A100 twins were retired 2026-08-03 into `archive/launchers_retired_0803/`). The data flow and trainer entry points below are
 > still accurate; the launcher names and the init checkpoints are not.
 
 ```
