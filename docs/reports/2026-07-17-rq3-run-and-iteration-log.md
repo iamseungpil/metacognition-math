@@ -2975,3 +2975,30 @@ ls: cannot access '/scratch/models/sft2_init/config.json': No such file or direc
 
 **나머지**: b2p **gs295**(HF gs290 완결 + gs295 업로드중, gs300 까지 5스텝 ~35분) ·
 b0p 는 07:26 `failed`(init 전송 끊김, 재제출 승인 대기 중).
+
+### ★ E-1xx 2026-08-04 08:42 UTC — **b2p gs300 가중치 확보** (지난번 잃었던 그 체크포인트) · b0p 재제출 정상 진행
+
+★★**HF `checkpoints/rq3v2f_b2p/global_step_300` = 23/23 98.3GB 완결.**
+지난 세대에서 b2p 는 gs300 을 완주하고도 `pkill -f push_ckpts_to_hf` 가 **자기 `bash -c` 명령줄에
+매칭돼** 푸셔를 SIGTERM 으로 죽이는 바람에 이 체크포인트를 잃었다. **이번엔 남았다.**
+
+⚠**단, 이것이 곧 "self-kill 수정 검증 완료"는 아니다.** 지금 올라간 gs300 은 **주기 푸셔**가
+올린 것이고, 잡은 아직 `running`(`Training Progress: 299/300`)이라 **FINAL SYNC 경로는 아직
+실행되지 않았다.** 로그에 `FINAL SYNC`·`pusher stopped`·`[YAML] WARN` 모두 0건이다.
+⇒ 확정된 것: **가중치는 안전하다**(평가에 필요한 것은 이미 확보). 미확정: PID-only stop 이
+FINAL SYNC 단계에서 의도대로 도는지 — 잡 종료 시 확인한다.
+
+부수 확인: `prune ... (keep latest 1)` 규칙대로 b2p gs295 가 gs300 착지 후 정리됐다.
+
+**✅ b0p 재제출(`rq3v2f-b0p-0804`) 정상 진행** — 37분째 `running`.
+```
+[init] resolved PAIR_sft -> /scratch/models/sft2_init (b0p2_rvfull_sft)   ← init 스테이징 성공
+[YAML] existing GRPO resume gs (model+extra+optim>=4) = 285               ← gs285 재개 인식
+```
+★**이번에 추가한 init 재시도는 발화하지 않았다**(`init staging attempt N landed no config.json`
+0건) — 첫 시도에 성공했다는 뜻이다. 방어책은 들어갔고 이번엔 쓸 일이 없었다.
+지금 98GB 다운로드 단계(로그 321줄). gs285→300 은 15스텝.
+
+**b3s gs153** — `emit 0.9991`(PASS 유지) · `rmeta −0.1255` · `neg−pos +0.0376` ·
+`corr 0.6063` · `ent 0.7526`. gs150 통과 이후에도 발화 침식 0. rmeta 는 계속 내려가
+gs78 저점(−0.144)에 근접 중.
