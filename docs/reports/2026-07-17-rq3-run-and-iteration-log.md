@@ -3002,3 +3002,40 @@ FINAL SYNC 단계에서 의도대로 도는지 — 잡 종료 시 확인한다.
 **b3s gs153** — `emit 0.9991`(PASS 유지) · `rmeta −0.1255` · `neg−pos +0.0376` ·
 `corr 0.6063` · `ent 0.7526`. gs150 통과 이후에도 발화 침식 0. rmeta 는 계속 내려가
 gs78 저점(−0.144)에 근접 중.
+
+## ★★ E-1xx 2026-08-04 09:15 UTC — **b2p 완주 + 최종 푸시 내구 확인. self-kill 수정이 작동했다**
+
+**b2p (`musical-ant`) 300/300 완주.** 로그 증거 체인:
+
+```
+Training Progress: 100%|██████████| 300/300 [3:52:26<00:00, 557.87s/it]
+[YAML] verl_sdc rq3v2f_b2p rc=0                       ← 학습 정상 종료
++ kill -9 4429                                        ← PID 로만 푸셔 종료
++ kill -0 4429                                        ← 종료 검증
+... SHARDS=8 / No files have been modified since last commit ...
+[YAML] FINAL PUSH DURABLE global_step_300             ← 최종 푸시 내구 확인
++ break
++ sleep 86400
+```
+
+★**지난 세대는 정확히 이 지점에서 `pkill -f push_ckpts_to_hf` 가 자기 `bash -c` 명령줄에 매칭돼
+푸셔를 죽였고 gs300 가중치를 잃었다. 이번엔 `kill -9 <PID>` → `kill -0 <PID>` 검증 경로로 지나갔고
+`FINAL PUSH DURABLE` 까지 도달했다.** ⇒ **PID-only stop 수정 검증 완료.** `[YAML] WARN` 0건.
+
+HF 실측: `checkpoints/rq3v2f_b2p/global_step_300` **23/23 98.3GB 완결**.
+"No files have been modified" 는 주기 푸셔가 이미 다 올려둬서 최종 푸시가 올릴 게 없었다는 뜻이다 —
+정상 경로다.
+
+⚠**모니터링 지시 정정**: 내가 매 틱 grep 하던 문자열 `FINAL SYNC` 는 **런처에 없다**. 실제 문자열은
+**`FINAL PUSH DURABLE`** 이다. 그래서 직전 두 틱에서 "FINAL=0" 으로 보였던 것이고, 완주 신호를
+놓칠 뻔했다. 이후 틱은 `FINAL PUSH DURABLE|pusher pid=|kill -9|SHARDS=` 로 grep 한다.
+
+★**b2p 잡은 `sleep 86400` 으로 노드를 붙들고 있다** — 취소 여부는 사용자 판단(b0p·b3s 가 이미
+각자 노드를 갖고 있어 급하지 않다).
+
+**✅ b0p (`rq3v2f-b0p-0804`) 재개 성공 — gs289 학습 중.** gs285 에서 이어붙었고 **11스텝(~1.4h)** 남았다.
+init 재시도는 이번에도 미발화(첫 시도 성공).
+
+**b3s gs157** — 발화 0.9991 유지, 계속 진행. gs300 까지 143스텝.
+
+**현재 gs300 확보**: b2p(정상 팔) · b3p(붕괴 팔). b0p 11스텝 · b3s 143스텝 남음.
