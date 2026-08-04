@@ -134,7 +134,12 @@ jobs:
         # downstream (tokenizer patch, gate, model.path) is name-independent.
         # The arms must still be paired within a path — a 1-GPU control against a
         # 4-GPU meta is an unvalidated world-size asymmetry.
-        python -c "
+        # INIT STAGING RETRY (0804): the resume path has `for rp in 1 2 3` but this one had
+        # none, so a single ChunkedEncodingError mid-download left sft2_init without
+        # config.json and the gate below aborted the whole window (E-1xx, 0804 07:26 —
+        # 4.8GB init died at 107MB). Same error class the resume retry already survives.
+        for ip in 1 2 3; do
+          python -c "
         import os, shutil, sys
         from huggingface_hub import HfApi, snapshot_download
         tok=os.environ[\"HF_TOKEN\"]
@@ -151,6 +156,10 @@ jobs:
                 print(\"[init] resolved PAIR%s -> %s (%s)\" % (sfx, dst, name)); sys.exit(0)
         print(\"[init] no suffix has BOTH b0p2_rvfull* and b2p2_rvfull* on HF - refusing to pair mismatched arms\"); sys.exit(1)
         "
+          ls /scratch/models/sft2_init/config.json > /dev/null 2>&1 && break
+          echo "[YAML] init staging attempt $${ip} landed no config.json; retry"
+          sleep 30
+        done
         python -c "
         import json, os; p=\"/scratch/models/sft2_init/tokenizer_config.json\"
         if os.path.exists(p):
