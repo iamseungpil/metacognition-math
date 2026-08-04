@@ -180,7 +180,12 @@ jobs:
         # bash -c block per amlt wordsplit rule.)
         python -m pip install --quiet --upgrade hf_xet 2>&1 | tail -2 || echo "[YAML] hf_xet install failed (non-fatal)"
         python -c "import hf_xet" && echo "[YAML] hf_xet ready" || echo "[YAML] hf_xet import FAILED"
-        nohup env -u HF_HUB_DISABLE_XET python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rq3v2f_b2p --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --interval 90 --keep 1 --squash_every 3 --config_name rq3v2f_b2p > /scratch/logs/push_rq3v2f_b2p.log 2>&1 &
+        # KEEP 3 (0804). This window CONTINUES an already-evaluated lineage: gs300 is the
+        # checkpoint eval/rq3v2f_b2p_1030 was produced from. With --keep 1 the pusher
+        # deletes every older step as soon as a newer one lands, so the first bank of
+        # this run would destroy the weights that eval refers to. keep 3 holds the tail
+        # (300/305/310) so the gs300 result stays reproducible.
+        nohup env -u HF_HUB_DISABLE_XET python /scratch/metacognition/scripts/push_ckpts_to_hf.py --ckpt_dir /scratch/checkpoints/rq3v2f_b2p --repo_id iamseungpil/metacot-h200-triobj-dcpo-v3 --interval 90 --keep 3 --squash_every 3 --config_name rq3v2f_b2p > /scratch/logs/push_rq3v2f_b2p.log 2>&1 &
         PUSH_PID=$$!
         echo "[YAML] pusher pid=$${PUSH_PID}"
 
@@ -278,6 +283,7 @@ jobs:
             ++actor_rollout_ref.model.enable_activation_offload=true \
             actor_rollout_ref.rollout.enforce_eager=true \
             trainer.resume_mode=auto \
+            trainer.total_training_steps=310 \
             trainer.save_freq=5 \
             trainer.test_freq=50 \
             ++trainer.val_before_train=False \
