@@ -2908,3 +2908,29 @@ correctness 는 0.5967 로 오히려 최고치, `entropy` 는 0.683 로 고원�
 ✅**b2p 재개 성공** — gs275 에서 재개해 **gs279** 학습 중(로그 2400줄). 손실 0.
 
 HF: b3s `gs135` 완결 + gs140 업로드중(21/23), b0p gs285·b2p gs275·b3p gs300 보존.
+
+### E-1xx 2026-08-04 07:26 UTC — **b0p 종료(`failed`)** — 선점이 아니라 init 다운로드 끊김 · 가드가 정상 작동
+
+`amlt status` = **`failed`**(자동 retry 없음). 로그 337줄의 마지막 구간이 원인을 그대로 보여준다:
+
+```
+requests.exceptions.ChunkedEncodingError: ('Connection broken:
+  IncompleteRead(107788604 bytes read, 4792298212 more expected)')
+ls: cannot access '/scratch/models/sft2_init/config.json': No such file or directory
+[YAML] FATAL init /scratch/models/sft2_init missing or incomplete; ABORT window
++ exit 1
+```
+
+★**이번 실패는 선점이 아니다.** 끊긴 것은 resume 체크포인트가 아니라 **init 모델**(`sft2_init`)이고,
+4.8GB 중 **107MB** 에서 연결이 끊겼다. 그 뒤 런처의 무결성 가드가 불완전한 init 을 잡아 **의도적으로
+중단**시켰다 — 깨진 init 으로 학습을 시작하는 것보다 죽는 편이 낫다는 설계대로다.
+(앞서 b3s 가 같은 `ChunkedEncodingError` 를 만났을 때는 resume 체크포인트였고 `for rp in 1 2 3`
+재시도가 잡아냈다. **init 스테이징 경로에는 그 재시도가 없다** — 이번에 드러난 비대칭이다.)
+
+**손실 없음** — HF `gs285` 23/23 98.3GB 완결 보존. 재제출하면 gs285 에서 **15스텝**(~1.6h)만 남는다.
+
+**b0p 최종 이력**: 선점 7회(gs219→227→부트스트랩중→248→258→288→05:35 사이클) 전부 자력 복구,
+마지막은 선점이 아닌 **init 전송 끊김으로 terminal failed**. 중단 4양상 ③ → **수동 재제출 필요**.
+사용자 확인 요청함.
+
+**나머지 두 팔 정상**: b2p gs291(완주 9스텝, ~1h) · b3s gs149(gs150 판정 1스텝 앞, 발화 0.9992).
