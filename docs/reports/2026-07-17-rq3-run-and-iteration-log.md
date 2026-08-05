@@ -3672,3 +3672,68 @@ b3sh 스텝별 `pmishift_rmeta_mean_scored`: −0.175 −0.177 −0.104 −0.319
 ### 매 틱 보고 항목 갱신
 
 앞으로 두 팔 모두 **`emit` · `entropy` · `save/derail`(최근 25스텝) · `eff_ratio_meta`** 를 낸다.
+
+---
+
+## E-142 (0805 15:10 UTC) · **codex 배선 감사** — 헤드라인 주장은 기각(내 전제 오류), 실질 지적 다섯
+
+`codex exec` 로 도는 두 팔의 배선 결함 후보 여섯을 코드 근거와 함께 감사시켰다.
+⚠1차 시도는 `--sandbox read-only` 에서 `bwrap: loopback: Failed RTM_NEWADDR` 로 파일을 못 읽어 실패.
+`--sandbox danger-full-access` 로 재시도하고 **전후 `git status`/`rev-parse` 로 무변경을 검증**했다
+(`M paper` 는 감사 전부터 있던 서브모듈 상태, HEAD 동일).
+
+### ⛔기각된 헤드라인 — 원인은 **내가 준 잘못된 전제**
+
+codex 결론은 *"`dcpo_meta_open: 151669` 가 vocab 밖이라 `META_CONTENT` 마스크가 비어 있고,
+PMI-shift 의 토큰 advantage 가 메타에 전혀 안 닿는다 ⇒ b3s·b3sh 무효"* 였다. **틀렸다.**
+
+내가 **스톡 `Qwen/Qwen3-8B` 토크나이저**로 `<|meta|>` 를 인코딩해 "5조각·151669 는 범위 밖"이라 보고했고
+codex 는 그 전제를 명시적으로 받아(*"Under the stated stock-tokenizer facts"*) 사슬을 세웠다.
+그러나 학습이 쓰는 건 **SFT 체크포인트의 확장 토크나이저**다:
+
+```
+models/b2p2_rvfull_sft/added_tokens.json:  '<|meta|>': 151669,  '<|/meta|>': 151670
+models/b2p2_rvfull_sft/config.json:        vocab_size: 151671
+```
+
+`src/training/meta_token_init.py` 가 이를 명시한다 — *"the **added** meta tokens … Call **AFTER**
+`resize_token_embeddings`"*. 스톡 151669개(0~151668)에 둘을 더하면 정확히 151669·151670 이고
+`META_OPEN_DEFAULT = 151669`(`dcpo_region.py:39`)와 일치한다.
+
+**독립 반증도 있다**: codex 자신이 Q5 에서 `dcpo/eff_ratio_meta = EMA(|A_meta|)/EMA(|A_corr|)`
+(`verl_sdc.py:691-699`)라고 밝혔다. 마스크가 비면 `A_meta ≡ 0` 이라 이 값이 0 이어야 하는데
+실측은 b3sh **0.55** / b3s **1.99** 다. ⇒ 마스크는 채워져 있다.
+
+★**교훈**: 외부 검토자에게 넘기는 전제도 계측 대상이다. 내 "스톡 토크나이저" 관측이 배선검사를
+통과하지 못한 채 전제로 들어갔고, 검토자는 그 위에 정확한 추론을 쌓아 틀린 결론에 도달했다.
+
+### ✅살아남는 지적 다섯 (전부 file:line 근거 있음)
+
+1. **`norm_adv_by_std_in_grpo=false` 는 죽은 플래그다.** `adv_estimator: gdpo`(`configs/triobj…:94`)라
+   패치 경로가 상류 GDPO 결과를 **버리고** `_compute_dcpo_region_advantage` 를 부른다
+   (`verl_sdc_utils.py:505-506`). 그 함수는 **그룹 평균만 빼고 std 로 안 나눈다**
+   (`dcpo_region.py:1225-1227`). ⇒ 플래그는 안 쓰이는 중간값에만 닿는다.
+   **결과적으로 우리가 의도한 동작(std 정규화 없음)이 실현돼 있다** — 승인대기 ① 닫힘.
+2. **`dcpo_w_over=0.0` 은 완전 사문**이다. 두 런처가 넘기지만 조성 경로에 소비처가 없다
+   (`verl_sdc_utils.py:413-427`). 무해하나 "노브를 껐다"고 적으면 안 된다.
+3. ⚠**앵커 EMA 가 체크포인트에 안 들어간다**(`verl_sdc_utils.py:30`, `dcpo_region.py:1242`).
+   모듈 전역이라 **선점·재개 이력이 다른 런은 재개 후 앵커 스케일이 달라진다.** b3s 는 선점 다회,
+   b3sh 는 1회 — 오늘 대비한 `eff_ratio_meta` 0.55 vs 1.99 에 이 교란이 섞인다.
+   헤드 수 차이가 지배적일 것으로 보이나 **교란으로 기록한다.**
+4. **b3s vs b3sh 는 한 노브 대비가 아니다**(오버라이드 5개 차이). `b3sh − b3p`(floor 맞춤)와
+   `b3s − b3p`(헤드 맞춤)로 읽는 설계는 유효하지만 **둘을 직접 대비하면 안 된다.**
+5. **instruct 승리 구성과는 코드 리비전·init·응답길이가 모두 다르다.** 특히
+   `data.max_response_length` **4096(아카이브) vs 8192(b3s·b3sh)** — 절단율과 발화 모집단이 달라진다.
+   ⇒ 승리 구성의 `eff_ratio_meta 0.91` 을 **b3sh 의 문턱으로 쓰면 안 된다**(기존 주의를 강화).
+
+### 덤 — `rmeta_pos/neg_rate` 의 나머지 53% (승인대기 ⑦ 닫힘)
+
+의도된 dead-zone 이 아니라 **로깅 분류 문턱**이다: 분모는 배치 전체 행이고, 양성은 `R_meta > 0.5`,
+음성은 `< -0.5` 로만 센다(`verl_sdc.py:650-660`). 나머지는 미시도 행(`verl_sdc.py:1620-1643`) +
+PMI/ref 스코어링 실패 행(`1689-1722`) + shift 가 ±0.5 사이인 행이 섞여 있다. **신호 손실이 아니다.**
+
+### 판정
+
+**두 팔 모두 계속 돌린다. 무효화 사유 없음.** 승인대기 일곱 → **넷**(①⑥⑦ 닫힘).
+남은 넷: ②CLAUDE.md SFT2 서술 정정 ③`acc_with`/`acc_without` 산술 모순 ④`pair_analyze.py` NFKC
+⑤메타 텍스트 perplexity base vs instruct.
