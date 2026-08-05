@@ -3531,3 +3531,61 @@ Monitor `b3gidwpus` 가 `Traceback` 을 잡아 원문을 확인했다. **잡 자
 대략 2%(924건 / 약 46,000 롤아웃)이고 이건 **하한**이다 — sympy `Number()` 까지 도달한 것만 세었다.
 
 잡은 계속 돌린다. 잔여 31스텝 ≈ 5시간.
+
+---
+
+## E-139 (0805 12:40 UTC) · **b3sh 발사** — C-019 가 9일간 지목해온 미실행 실험
+
+`rq3v2f-b3sh-0805` 제출 11분 만에 노드 확보, **running**. b3s 와 병렬(8 GPU 점유).
+
+C-019 는 *"효과가 검증된 구성을 base 에서 재현한 적이 없다 … base 에서 shiftonly 구성
+(6헤드 0)을 돌리는 것, **이것이 지금 사다리에서 가장 직접적인 미실행 실험**"* 이라 적어놓고
+9일간 열리지 않았다. 이 팔이 그것을 닫는다.
+
+`h100std_rq3v2f_b3s.yaml` 과 **바이트 동일**(같은 `CODE_TAR_REVISION 490407111`, 같은
+`b2p2_rvfull_eb16_sft` init, 같은 데이터, 같은 300스텝)이고 오버라이드 다섯만 다르다:
+
+| 노브 | b3s | **b3sh** | shiftonly(승리 구성) |
+|---|---|---|---|
+| `dcpo_w_cal` | 0.3 | **0.0** | 0.0 |
+| `dcpo_w_format` | 0.35 | **0.0** | 0.0 |
+| `dcpo_w_emit` | 0.1 | **0.0** | 0.0 |
+| `dcpo_len_cost` | 0.08 | **0.0** | 0.0 |
+| `dcpo_meta_floor` | 0.05 | **0.0** | 0.0 |
+| `dcpo_w_meta` (pmi) | 0.8 | 0.8 | 0.8 |
+
+⇒ 메타 구간이 **`pmi_shift` 하나만** 싣는다. 승리 구성의 `eff_ratio_meta` 는 0.91 이었고
+b3s 는 1.9~3.7 이다. 계보 `rq3v2f_b3sh` 로 분리해 b3p·b3s 를 덮지 않는다. 새 코드 0줄.
+
+### 읽는 법 — 같은 기준점 b3p 에 대해 두 요인이 분리된다
+
+- **`b3sh − b3p`** = **헤드 스택 효과** (floor 0.0 으로 맞춤)
+- **`b3s − b3p`** = **floor 효과** (헤드 7개로 맞춤)
+
+C-019 가 경고한 "len_cost 제거가 floor 실험과 교란된다"는 이 배치로 풀린다 — b3p 가 공통
+기준점이라 두 대비가 각각 한 요인만 바꾼다.
+
+### 정정 둘 (오늘 내가 틀렸던 것)
+
+1. **"region-split 이 두 실패모드의 공통 원인"은 틀렸다.** 승리 구성 `shiftonly` 도
+   region-split 을 썼다(*"pmi_shift routes onto META_CONTENT (meta_region_utility)"*) 그리고
+   entropy 0.27 로 멀쩡했다. 원인은 자르기가 아니라 **그 구간에 여섯 개를 쌓은 것**이다.
+2. **"`meta_region_utility` 가 0.0000 이라 배선 실패"는 틀렸다.** 그건 **val-aux** 값이고,
+   검증에는 ref-worker 2위치 teacher forcing 이 없어 pmi_shift 가 계산되지 않는다.
+   학습 쪽 `gdpo/meta_region_utility/max` 는 2.0~3.0 으로 발화한다.
+
+### 기질 축에서 확인된 사실
+
+instruct 세대의 기반 모델은 `configs/sft_v8_meta_inside_strict.yaml:2` 기준 **`Qwen/Qwen3-8B`**
+(후학습본)이고 base 사다리는 **`Qwen3-8B-Base`** 다. 같은 계열·크기·토크나이저, **후학습 유무만**
+다르다. Qwen3-8B 의 후학습에는 long-CoT cold start 와 reasoning RL 이 포함되므로,
+instruct 팔은 **이미 RL 로 강화된 자기점검 위에 형식을 씌운 것**이고 base 팔은 1,763행으로
+**없는 기능을 만드는 것**이다. 관측과 일치한다: instruct 는 발화 지지 장치가 **없는데도**
+gs300 발화 0.9219, base b3p 는 지지가 **있는데도** 0.0176.
+
+### 상태
+
+| 잡 | 상태 |
+|---|---|
+| b3sh | 🟢 running 8m · wandb 런 생성 전(부트스트랩) |
+| b3s | 🟢 gs272/300 · emit 1.000 · entropy 5.384 · HF `[260,265,270]` · 잔여 ~4.6h |
