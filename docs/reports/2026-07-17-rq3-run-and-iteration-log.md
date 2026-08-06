@@ -4323,3 +4323,99 @@ b3s gs150-199 len 1445 → 0.0141 = **0.71pp** · b3p gs250-299 len 1086 → 0.0
 ✅**b3sh vs b2p 비교는 둘 다 `len_cost=0` 이라 유효** — 최근 틱들의 비교는 문제없다.
 ⇒ **규율(재확인): 팔 간 비교 전에 그 지표가 팔마다 같은 계산을 거치는지 확인한다.**
 E-150 에서 `critic/score` 에 대해 이 실수를 잡고도 **바로 옆 지표에서 같은 실수를 했다.**
+
+---
+
+## E-152 (0806 12:0x UTC) — ★★E-151 판정 정정: **능력 붕괴가 아니라 형식·보상 라우팅 실패**
+
+### ① 응답을 직접 열어서 원인을 특정했다
+
+wandb `dcpo/rollouts` 테이블(스텝당 512행)을 gs100/120/140/155 로 받아 집계.
+
+| gs | wellformed | discard | 오프너 `<\|meta\|>` 2회+ | discard 중 **정답인데 0점** |
+|---|---|---|---|---|
+| gs100 | 91.4% | 8.2% | 18행(3.5%) | 16 |
+| gs120 | **94.1%** | 5.9% | 7행(1.4%) | 7 |
+| gs140 | 87.1% | 12.5% | 42행(8.2%) | 46 |
+| **gs155** | **53.3%** | **46.7%** | **178행(34.8%)** | **160(66.9%)** |
+
+실제 discard 응답(gs155) — **오프너가 두 번이고 답은 맞았다**:
+```
+<|meta|>
+<|meta|>
+confidence: 0.88
+The answer looks plausible but must not be committed without an independent check...
+decision: verify
+<|/meta|>
+Start by expanding: (8-x)^2=x^2 => 64-16x=0 => x=4
+\boxed{4}
+```
+
+### ② ★★능력은 거의 안 떨어졌다 — E-151 판정을 정정한다
+
+`fmt_class` 별 `R_corr` 평균:
+| gs | wellformed n / 평균 → acc | discard n / 평균 |
+|---|---|---|
+| gs120 | 482 / +0.6058 → **80.29%** | 30 / **0.0000** |
+| gs155 | 273 / +0.5458 → **77.29%** | 239 / **0.0000** |
+
+⇒ **형식이 맞는 행의 정확도는 80.3%→77.3%, 3pp 하락에 그친다.**
+내가 E-151 에 쓴 *"정확도 78.2→67.9%, 능력 붕괴"* 는 **`discard` 행 47% 가 `R_corr=0` 으로
+평균을 끌어내린 것**이 대부분이었다.
+
+★**정정된 판정문(codex 합의) — 이 문장 그대로 쓸 것**:
+> **b3sh 는 gs155 에서 discard/중복 오프너 급증으로 집계 정확도가 0점 행에 의해 크게 낮아졌지만,
+> wellformed 행의 정확도는 약 3pp 만 하락해 능력 붕괴가 아니라 형식 판정·보상 라우팅 실패를 보였다.**
+
+### ③ discard 행은 **보상도 벌점도 없다 — 완전한 zero-gradient**(codex, 코드 근거)
+
+- `R_corr`/`R_meta`/`R_cal` 을 **모두 0 으로 덮어씀**: `dcpo_region.py:944-966`
+  ⚠나는 `dcpo_region.py:916-927` 만 읽고 *"discard 도 ±1 을 받는다"* 고 판단했다 — **덮어쓰기 블록을
+  못 봤다.** 테이블이 정확히 0.0000 을 보여줘서 재확인했다.
+- ANSWER/META/CONF 마스크가 **모두 비고**, discard 의 유일한 토큰 신호는 delimiter 의 format mask:
+  `dcpo_region.py:597-600, 692-695`
+- PMI `R_meta` 는 `TRUSTED_META_CLASSES` 만 대상이라 discard 는 **애초에 채점 대상이 아님**:
+  `dcpo_region.py:106-113`, `verl_sdc.py:1623-1628`
+- correctness/meta/cal **그룹 평균에서도 제외**: `verl_sdc.py:387-399`, `dcpo_region.py:1091-1116`
+
+⇒ **b3sh 에서 discard 행은 `A_token ≈ 0`.** 정답 discard 가 +1 을 0 으로 바꿔 이득을 얻는 경로는 **없다.**
+⇒ ⛔**"GRPO 중심화로 −1 대신 0 을 노리는 해킹"이라는 내 가설은 코드상 성립하지 않는다.**
+⚠**그렇다면 왜 번지는가는 코드만으로 확정할 수 없다**(codex). 난이도 편향도 약하다
+(쉬움 41.2% · 어려움 47.3%). **미해결로 남긴다.**
+
+### ④ ★`w_format` 을 되살리면 되나 (codex, 코드 근거)
+
+**(a) 벌한다.** `w_format` 은 **unreplaced discard** 를 벌한다 — `format_penalty = -format_neg`
+(`dcpo_region.py:1002-1019`), 현 config `format_neg=0.2`
+(`configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:136`), discard delimiter mask 로 routing
+(`dcpo_region.py:1275-1289`).
+⚠**단 토큰 치환에 성공한 tier-1 `dup_open` 은 `R_format=0` 이고 mask 도 없어 벌하지 않는다**
+(`dcpo_region.py:568-579`). 우리 예시(`open, open, close`)는 tier-1 복구 대상이 **아니라**
+최종 discard 다(`dcpo_region.py:276-300` vs `:344-360`).
+★`recover_first_pair=true` 는 **pre-pass 에서만** 호출되고 consumer 재판정엔 전달되지 않는다
+(`verl_sdc.py:2796-2800` vs `:285`).
+
+**(b) 값은 0.35 그대로**가 b3s/b3p 와 matched 비교가 된다. ⚠단 그 순간 이 팔은
+**더 이상 순수 shiftonly 복제가 아니라 `shiftonly + format scaffold`** 라는 별도 팔이다.
+⚠`anchor_norm=true` 라 warmup 뒤 format advantage 가 재스케일되므로 **유효 강도를 0.35 로 읽지 말 것**
+(`dcpo_region.py:1283-1289`).
+
+**(c) 위험**: `w_format` 은 format delimiter 에만 sparse 하게 작용하고(`dcpo_region.py:1152-1173`)
+엔트로피를 직접 올리는 항이 아니다. b3s/b3p 의 발화 붕괴·엔트로피 폭주를 재현한다고 **말할 코드 근거는
+없다.** ⚠그러나 공유 모델에서 format 압력이 발화 패턴에 간접 영향을 줄 수 있어 **안전하다고 단정도 못 한다.**
+
+### ⑤ ★codex 권고 — 중단은 유지, **사유를 바꾼다**
+
+- **gs150·gs160 held-out 평가는 계속** — ★단 **wellformed/discard 를 분리 보고**할 것
+- **남은 학습은 중단 권고** — 능력 붕괴 때문이 **아니라**, gs155 이후 **상당수 행이
+  zero-gradient/discard 레짐이라 이 런의 후반 비교가 해석 불가능**해졌기 때문
+- **format 검증은 돌아가는 런을 중간에 바꾸지 말고** 별도 짧은 **`shiftonly + w_format=0.35` ablation**
+  으로 분리할 것
+⚠**중단·발사 권한은 내게 없다 — 사용자 승인 사항.**
+
+### ⑥ 내 오류 ⑰
+
+**코드 블록 하나만 읽고 "덮어쓰기 없음"을 단정했다**(`dcpo_region.py:916-927` 만 보고 `:944-966` 을 놓침).
+그리고 그 잘못된 독해로 **codex 의 옳은 지적을 "틀렸다"고 사용자에게 보고**했다.
+⇒ **규율: 값이 코드 예측과 다르면 코드가 아니라 내 독해를 먼저 의심하고, 같은 변수를 건드리는
+   블록을 전부 grep 한다.**
