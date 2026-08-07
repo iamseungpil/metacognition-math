@@ -4974,3 +4974,85 @@ m4/o4/e4 완전**, `eval/rq3v2f_b3s_1030/` parquet 5개(C-029 근거) 존재.
   ⚠정본 런처 변경 = 승인 사항. 지금 제안하지 않고 기록만 남긴다.
 - 노드-로컬 캐시가 아니라 **영속 스토리지**에서 init 을 스테이징할 수 있나.
 
+
+---
+
+## E-158 (0807 06:0x UTC) — ★★★**RQ2 에 미통제 옵티마이저 비대칭이 있다** · 내 감사 결론이 틀렸고 fable 이 잡았다 · PMI 노브 6종은 **한 번도 설정된 적 없다**
+
+★사용자 요청으로 **fable 적대검토**를 돌렸고, 그 검토가 **내가 몇 시간 전에 내린 감사 결론을 반증**했다.
+아래 코드 사실은 **내가 직접 file:line 을 열어 재확인**했다.
+
+### ① ⛔내 감사 결론 정정 — "C-1 정규화 비대칭은 이 세대에 해당 없다"는 **틀렸다**
+
+내가 본 것(맞음): 일곱 런처 전부 `++algorithm.norm_adv_by_std_in_grpo=false` 를 넘기고,
+처치 경로는 `dcpo_region.py:1113` 에서 **설계상 mean-only**(`"subtract group mean, NO /std"`).
+⇒ 그래서 "대칭이다" 라고 결론냈다.
+
+**내가 못 본 것**: **대조군과 처치군은 서로 다른 함수로 간다.**
+- 처치(b3*): `verl_sdc.py:3571` 게이트(`sdc_enabled or _adv_region`) 통과 →
+  `compute_sdc_gdpo_advantage` → `compose_dcpo_region_advantage`(mean-only, whiten 없음)
+- **대조(b0p/b2p)**: `sdc_enabled: false` + `VANILLA_GRPO`(`_REGION_ROUTED_MODES` 아님) ⇒
+  **게이트 통과 실패 → verl stock `compute_gdpo_outcome_advantage` 로 떨어진다.**
+
+그 stock 함수의 마지막 줄(verl 0.7.1 `core_algos.py:466`):
+```python
+advantages = verl_F.masked_whiten(new_advantage, response_mask) * response_mask
+```
+**무조건이다.** `norm_adv_by_std_in_grpo` 는 안쪽 `compute_grpo_outcome_advantage` 의 그룹 단계만
+제어하고, **마지막 배치 단위 whiten 은 플래그와 무관하게 실행된다.**
+
+⇒ **대조군의 어드밴티지는 배치 std=1 로 재정규화되고, 처치군의 correctness 어드밴티지는 whiten
+없이 원시 group-centered 값이다.** 같은 lr 에서 대조군이 correctness 방향으로 더 크게 움직인다.
+**이것은 보상 내용의 차이가 아니라 옵티마이저 기하의 차이다.**
+
+★**세 처치 팔이 보조 헤드 구성은 전부 다른데 적자가 −2.0~−2.6pp 로 거의 같다**는 관측과 정합한다.
+셋이 공유하는 것은 PMI 가 아니라 **region compose 경로(= whiten 부재)** 다.
+⚠**배율은 아직 미측정** — wandb `critic/advantages/*` 로 확인하는 작업이 진행 중이다(GPU 0).
+
+### ② ⚠C-029 · C-030 에 붙여야 할 단서 (문구 확정 전, 정량화 대기)
+
+두 판정은 **여전히 유효하다**(수치·부호·CI 그대로). 다만 인과 해석에 다음이 붙어야 한다:
+> **`b3p − b2p` 비교에는 보상 설계 차이 외에 어드밴티지 정규화 차이가 포함돼 있다 —
+> 대조군은 배치 whiten 을 받고 처치군은 받지 않는다(`core_algos.py:466` vs `dcpo_region.py:1113`).
+> 따라서 이 차분은 "메타 보상 패키지의 효과"가 아니라 "패키지 + 옵티마이저 기하"의 합효과다.**
+⚠**정량화 전에는 이 단서를 "가능성"으로만 쓴다** — 배율이 작으면 무시할 만할 수도 있다.
+
+### ③ ★PMI 노브 여섯 개가 **한 번도 설정된 적 없다**(grep 0건)
+
+`configs/` · 런처 전체에서 `dcpo_pmishift_*` 설정 **0건**. 전부 코드 기본값으로만 돈다
+(`verl_sdc.py:1587-1597`):
+| 노브 | 기본값 | 의미 |
+|---|---|---|
+| `reversal_save` | **1.0** | SAVE 보너스 |
+| `reversal_derail` | **2.0** | DERAIL 벌점 — **2배 비대칭** |
+| `reversal_min_magnitude` | **0.0** | **eps 가드 꺼짐**(0 근처 jitter 도 뒤집힘으로 셈) |
+| `meta_body_dup_thresh` | **1.0** | **내용-무결성 가드 꺼짐**(meta 가 body 복제여도 credit) |
+| `scale` | 1.0 | 연속항 배율 |
+| `clip` | 2.0 | 연속항 클립 |
+
+★**비대칭의 기질 의존성**(fable 계산, 내가 산술 확인): 뒤집힘 행의 기대 보너스
+= `P(save)·1 − P(derail)·2`
+- instruct(SAVE 67.3%): `0.673 − 0.654` = **+0.019** ≈ 중립
+- base(SAVE 49.4%): `0.494 − 1.012` = **−0.518** ⇒ **순벌금**
+
+⇒ **같은 상수가 instruct 기질에서는 중립이고 base 기질에서는 "믿음을 움직이는 meta" 에 대한
+순벌금이다.** E-156 ③이 "아무도 스윕하지 않았다"고 적은 것은 문자 그대로였고,
+**스윕 1순위 축이 어디인지에 대한 정량적 근거**가 이제 있다.
+★**코드 배선은 이미 있다** — `++algorithm.dcpo_pmishift_reversal_derail=1.0` 같은 오버라이드만으로
+가능하다. **정본 코드 변경 불필요.**
+
+### ④ 죽은 코드 · 미배선
+
+- **`dcpo_w_over`**: `src/` · `configs/` grep **0건**. 런처 CLI 에만 존재 ⇒ **죽은 노브**(codex 보고 재확인).
+- **`src/training/verl_gdpo_algos.py`**: 살아있는 경로가 아닌데(실제는 verl-native 함수)
+  **같은 이름을 갖고 있어 "GDPO 코드를 확인했다"는 사람이 틀린 구현을 읽게 된다**(fable 지적).
+  ⚠나도 이 함정에 걸릴 뻔했다.
+
+### ⑤ 방법론 — 내가 틀린 방식
+
+나는 **"런처가 같은 플래그를 넘긴다"** 를 확인하고 대칭이라 결론냈다. 빠진 것은
+**"두 팔이 같은 함수로 가는가"** 였다. `stacked-research` **G8(팔 정체 — 매니페스트 전 키 diff)**
+가 정확히 이것을 막으라고 있는 게이트인데, 나는 **플래그 한 개만 diff 했다.**
+⇒ **규율: 두 팔을 비교하기 전에 "같은 코드 경로로 가는가"를 먼저 확인한다.
+플래그가 같아도 경로가 다르면 그 플래그는 무의미할 수 있다.**
+
