@@ -5056,3 +5056,73 @@ advantages = verl_F.masked_whiten(new_advantage, response_mask) * response_mask
 ⇒ **규율: 두 팔을 비교하기 전에 "같은 코드 경로로 가는가"를 먼저 확인한다.
 플래그가 같아도 경로가 다르면 그 플래그는 무의미할 수 있다.**
 
+
+---
+
+## E-159 (0807) — 옵티마이저 기하 비대칭은 **instruct 승리에도 똑같이 있었다**. 그리고 E-158 의 게이트 조건은 내가 틀리게 적었다
+
+### ① E-158 정정 — 판별자는 `sdc_enabled` 가 아니라 `sdc_mode` 다
+
+E-158 에 나는 *"대조군(`sdc_enabled:false`+VANILLA_GRPO)은 게이트를 통과 못 한다"* 라고 썼다.
+**`sdc_enabled: false` 는 양쪽 팔 모두에 있다** —
+`configs/base_matched_grpo_h100_4x4k.yaml:67` 과 `configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:92`.
+`adv_estimator: gdpo` 도 양쪽 동일(`:69` / `:94`).
+
+실제 게이트(`verl_sdc.py:3571-3572`):
+```
+if _is_gdpo_estimator(adv_estimator) and config is not None and \
+   (config.get("sdc_enabled", False) or _adv_region):
+```
+`_adv_region = _adv_sdc_mode in _REGION_ROUTED_MODES`,
+`_REGION_ROUTED_MODES = {"TRIOBJ_DCPO_V2","TRIOBJ_DCPO_V3","TRIOBJ_DCPO_V4"}` (`verl_sdc.py:1097`).
+⇒ **갈라지는 유일한 키는 `sdc_mode`** — `VANILLA_GRPO`(`base_matched:66`) vs
+`TRIOBJ_DCPO_V4`(`triobj:91`). 코드 주석 자체가 이 설계를 명시한다(`verl_sdc.py:3559-3563`:
+*"region modes ... run teacher-FREE (sdc_enabled=false) ... Route region modes regardless of sdc_enabled"*).
+
+**E-158 의 결론(경로가 갈리고 whiten 이 한쪽에만 걸린다)은 유효하다. 틀린 것은 조건의 이름뿐이다.**
+그러나 이것은 G8 을 두 번째로 얕게 실행한 것이다 — 첫 번째는 플래그 한 개만 봤고,
+두 번째는 **내가 갈린다고 믿은 플래그가 실제로는 양쪽에 같은 값으로 있었다.**
+⇒ 규율 보강: **"어느 키가 갈리는가"를 답할 때 그 키의 값을 양쪽에서 실제로 출력한다.**
+
+### ② 그래서 무엇이 달라지나 — instruct 승리도 같은 기하 대조였다
+
+| 세대 | 처치팔 config | 대조군 config | `norm_adv_by_std_in_grpo` 오버라이드 |
+|---|---|---|---|
+| **instruct T1**(+18.8pp 승) | `triobj_dcpo_v4_stage3b_h100_4x4k` (V4, region, mean-only) | `base_matched_grpo_h100_4x4k` (VANILLA, stock, **whiten**) | **양쪽 0건** (grep -c = 0) |
+| **base rq3v2f**(−2pp 패) | 동일 (`h100std_rq3v2f_b3p.yaml:246`) | 동일 (`h100std_rq3v2f_b2p.yaml:267`) | **양쪽 0건** |
+
+**두 세대가 같은 두 config 를 쓴다.** 따라서:
+
+- ⛔**"기하 비대칭이 base 결손의 원인이다" 는 이것만으로 성립하지 않는다.** 같은 비대칭이
+  있는 상태에서 instruct 는 **이겼다.** 기하는 상수이고 결과는 부호가 뒤집혔으므로,
+  기하 단독 인과는 배제된다 — 남는 것은 **기질과의 상호작용**이거나 다른 원인이다.
+- ★그러나 **반대 방향의 손실이 확정된다**: `EXPERIMENT_PLAN.md` 가 이 대비를
+  *"메타 보상의 효과"* 로 읽어 왔는데, **처치와 대조가 옵티마이저 기하까지 함께 바꾼다.**
+  ⇒ **이 프로젝트 역사 전체에서 기하를 맞춘 메타-보상 비교는 한 번도 없었다.**
+  ⇒ **"PMI-shift 가 어디선가 작동했다"는 명제에 기하-통제된 지지 증거는 현재 0건이다.**
+  instruct +18.8pp 는 **패키지+기하 합효과**이지 PMI 귀속이 아니다.
+
+### ③ 이것을 닫는 팔은 이미 발사됐다 — **b3null**
+
+`h100std_rq3v2f_b3null.yaml`(커밋 `e42dd87`, 실험 `rq3v2f-b3null-0807`, 이 문서 기준 부트스트랩 중).
+b3p 와 바이트 동일하되 **보상 헤드 아홉 개를 전부 0** 으로 하고 `dcpo_rmeta_source=none`.
+⇒ **correctness-only 인데 region 경로**를 탄다.
+
+**판정 규칙(발사 전 등록):**
+- **b3null ≈ b2p** ⇒ 기하는 무해하다. −2pp 는 **보상 성분** 탓 ⇒ b3nopmi 가 PMI 를 분리한다.
+- **b3null < b2p** (b3p 와 비슷한 폭) ⇒ **−2pp 는 기하 탓**이고 보상은 거의 무관.
+  이 경우 **모든 기존 팔 비교가 재해석 대상**이 되고, instruct 승리도 재측정 대상이다.
+- **b3null > b2p** ⇒ 예상 밖. region 기하가 이롭다는 뜻이고 별도 조사.
+
+⚠**판독 함정**: b3null 은 `w_format=0` 이므로 형식 압력이 없다. 발화가 죽으면 carve-out
+(`dcpo_region.py:691` ANSWER=¬META)이 사실상 무효가 되어 **의도한 "기하만" 대조가 아니게 된다.**
+⇒ **판정 전에 b3null 의 `meta_emit_rate` 를 반드시 확인한다.** 0.9 아래로 떨어지면
+그 팔은 기하 대조가 아니라 "발화 붕괴" 팔이므로 판정에서 제외한다.
+
+### ④ 닫는 것 / 여는 것
+
+**닫는 것** — "instruct 에서 PMI-shift 가 작동했으므로 base 에서도 작동시키면 된다" 라는
+전제 위에 선 실험 설계 전부. 그 전제는 **기하-통제된 증거가 0건**이다.
+**여는 것** — (a) b3null 판정, (b) 기하를 맞춘 instruct 재실행(가장 비쌈, b3null 결과에 따라),
+(c) **PMI 하이퍼 스윕**(`++algorithm.dcpo_pmishift_*` 오버라이드만, 정본 변경 불필요 — 승인 ㉝).
+**재확인 계수기** — 0 (신규).
