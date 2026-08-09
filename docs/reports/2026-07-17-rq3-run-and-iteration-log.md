@@ -6282,3 +6282,46 @@ HF 완전성 전 팔 OK(불완전 0). **b3shf gs100 을 `preserved/mechanism_ali
 ### 상태(16:50)
 b3nopmi **gs226/300**(603s/it·판정점까지 74스텝) · b3shf **선점② 재개 중**(부트스트랩 27분째, `validation generation end`) · b3null **gs129/300**.
 b3shf gs120 은 53분째 `model 3/4` — **확정적으로 잘린 ckpt**(무해: gs115 온전, 프루너가 완전한 스텝만 센다).
+
+---
+
+## E-177 (0809 05:16 UTC) — b3nopmi gs300 **도달·보존 완료**, 판정 서식 **사전 확정**(결과 미열람)
+
+**사실만.** `checkpoints/rq3v2f_b3nopmi/global_step_300/actor/` 가 **m/o/e 각 4/4** 로 완전.
+`step=300`, HB `[HB Sun Aug  9 05:16:27 AM UTC 2026]`, 사망표식 0,
+`FINAL PUSH DURABLE` **미출현**(최종 val + 최종 푸시 진행 중으로 읽는다 — 단정 아님).
+
+**보존 완료** — `preserved/mechanism_alive/rq3v2f_b3nopmi_gs300/` 23파일, server-side
+`CommitOperationCopy`(바이트 전송 0). ckpt 신원 고정(actor model 샤드 `lfs.sha256` 앞 16자):
+`rank_0 b5b2aa91ade18eea` · `rank_1 d80d7b4e62786ad4` · `rank_2 d7360c79d2e1d197` · `rank_3 e548a8aed92b10aa`.
+
+⚠**gs300 도달 ≠ 판정 완료.** held-out eval 은 별도 GPU 잡이다. 이 항목은 **보존과 서식 확정까지**만이다.
+
+### 판정 서식 — **아래를 결과 보기 전에 확정한다**
+
+**주 지표(CONF)**: `b3p − b3nopmi`, gs300 held-out **1030 · 16k · avg@8 · MATH500**,
+채점기 `math_verify` + `$`-wrap **on**, 문제 단위 **paired bootstrap**, 유의 = 95% CI 가 0 을 포함하지 않음.
+**이름**: **"PMI 헤드의 end-to-end 순효과(하류 동역학 포함)"**. ⛔"메타인지 품질 효과"로 부르지 않는다.
+
+**기준선을 옆에 둔다**(재측정 금지·oid 고정):
+b3p `af5df50da404f0b8` **75.20** · b2p(대조군) `08faf5ae9fc4e404` **77.28** ·
+b0p `fbcd9864a64ba6ba` 76.12 · b3s `ce372c5b593c8f4c` 75.28.
+
+**분기표는 `docs/EXPERIMENT_PLAN.md:109-119` 를 그대로 따른다**(요약이 아니라 그 표가 정본):
+1. `B3pkg > B2` **이고** `B3pkg > B3-noPMI`(유의) ⇒ 패키지가 vanilla 를 이기고 **그 안에서 PMI 의 한계 기여가 관측됨**.
+   ⛔ 일반적 "메타인지"나 다중 시드 재현으로 확대 금지 — E3·placebo·독립 judge 필요.
+2. `B3pkg > B2` **이지만** `B3pkg ≈ B3-noPMI` ⇒ **PMI 순기여 미검출**. 주장을 **package-level 로 강등**.
+3. `B3pkg ≈ B2` **이고** `B3pkg ≈ B3-noPMI` ⇒ **정확도 향상 미재현**. null 을 그대로 보고한다(과거 arm 중 좋은 수 선택 금지).
+4. `B3pkg < B2` **또는** `B3-noPMI > B3pkg` ⇒ 현 recipe/substrate 에서 **PMI 가 무효 또는 해로운 방향**일 가능성.
+   ⛔ 과거 instruct 결과를 근거로 성공 주장 금지.
+
+★`EXPERIMENT_PLAN.md:116-119` 를 판정문에 그대로 옮긴다 — **`B3pkg−B2` 는 region routing·advantage
+정규화 차이를 포함한 패키지 비교**이고, **`B3pkg−B3noPMI` 만이 PMI 헤드를 한 변수로 뺀 내부 대조**다.
+따라서 **첫 비교가 양수여도 두 번째가 양수가 아니면 "PMI 가 이겼다"가 아니라 "패키지가 이겼다"로 적는다.**
+
+**판정 표 규칙**: 모든 행에 **파일 oid**(`api.get_paths_info` 의 `lfs.sha256`)를 단다.
+같은 경로가 하루에 네 번 덮인 실측이 있다([[pin-oid-telemetry-lags-0807]]) — 경로 인용 금지.
+⛔`eval` glob 금지. ⛔RQ2(−2.08 [−3.50,−0.70])와 재현축(−0.92 [−2.50,+0.62]) 은 **병기**한다.
+
+### 다른 두 팔(같은 틱 실측)
+b3shf 완전 ckpt **gs180**(gs185 업로드 중 optim 3/4) · b3null 완전 ckpt **gs215**(gs220 업로드 중).
