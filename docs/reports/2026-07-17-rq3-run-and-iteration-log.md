@@ -6325,3 +6325,26 @@ b0p `fbcd9864a64ba6ba` 76.12 · b3s `ce372c5b593c8f4c` 75.28.
 
 ### 다른 두 팔(같은 틱 실측)
 b3shf 완전 ckpt **gs180**(gs185 업로드 중 optim 3/4) · b3null 완전 ckpt **gs215**(gs220 업로드 중).
+
+---
+
+## E-178 (0809 09:16 UTC) — b3nopmi **완주 확인**(`FINAL PUSH DURABLE global_step_300`)
+
+로그 원문 그대로: `[YAML] FINAL PUSH DURABLE global_step_300`.
+**N=300 을 직접 읽었다** — 이 문자열은 완주와 사고사에 똑같이 찍히므로 N 확인이 판별의 전부다
+([[three-death-modes-basicvc-0807]]). 같은 tail 에서 사망표식(`ABORT window`/`FATAL init`/
+`IncompleteRead`/`failed due to oom`/`Total available GPUs 0`) **0건** ⇒ **완주**로 기록한다.
+잡 상태는 아직 `running`(최종 푸시·정리 구간).
+
+★모니터 에이전트가 먼저 "gs300 complete" 를 통보했으나 **그 보고를 그대로 쓰지 않고 로그에서
+N 을 직접 읽어 확인했다** — [[external-numbers-need-claims-grep-0807]] 의 방아쇠 ②.
+
+**보존본 재확인**: `preserved/mechanism_alive/rq3v2f_b3nopmi_gs300/` **23파일** 그대로.
+⚠`--keep 1` 프루닝이 `checkpoints/` 쪽 gs300 을 언젠가 지워도 보존본은 남는다.
+
+### 같은 틱 다른 두 팔(4시간 전 대비)
+b3shf 완전 ckpt **gs205**(gs180→205, 순항) · b3null 완전 ckpt **gs250**(gs215→250, 순항).
+
+### 미결 — 판정 eval 은 아직 발사하지 않았다
+E-177 이 확정한 서식대로 `b3p − b3nopmi`(gs300 held-out 1030·16k·avg@8·MATH500)를 재려면
+**별도 GPU 잡**이 필요하다. **발사는 사용자 확인 대기 중**이며, 이 항목은 확인 전 상태를 고정한다.
