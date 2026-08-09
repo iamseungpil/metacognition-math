@@ -6437,3 +6437,38 @@ b3shf 는 **살아있는 shiftonly + 형식 비계**이고 gs300 이 C-019 를 �
 
 ### 상태(14:21)
 b3nopmi **gs300 완주**(보존본 23파일, eval 승인 대기) · b3shf **gs225**(`step=226`, HB 14:21:14, 사망표식 0) · b3null **gs290**.
+
+---
+
+## E-181 (0809 15:17 UTC) — b3null **gs300 도달·보존 완료**, 최종 형식 상태 실측: **발화 7%**(discard 폭발이 아니라 발화 소멸로 끝났다)
+
+**사실.** `checkpoints/rq3v2f_b3null/global_step_300/actor/` **m/o/e 각 4/4**. `step=300`, HB
+`[HB Sun Aug 9 03:17:18 PM UTC 2026]`, 사망표식 0, **`FINAL PUSH DURABLE` 미출현**(최종 val·푸시 중).
+**보존 완료** — `preserved/mechanism_alive/rq3v2f_b3null_gs300/` **23파일**, server-side `CommitOperationCopy`.
+⚠**완주 확인은 다음 틱** — `FINAL PUSH DURABLE global_step_N` 의 **N 을 읽어야** 완주와 사고사가 갈린다.
+
+### gs300 최종 형식 상태(로그 원문, `fmt classify/replace` B=512, 연속 두 스텝)
+`{'no_meta': 474, 'discard': 9, 'truncation': 23, 'dup_open': 2, 'wellformed': 4}`
+`{'no_meta': 476, 'discard': 9, 'truncation': 21, 'wellformed': 5, 'dup_open': 1}`
+⇒ **발화율 7.0~7.4%** · **wellformed 0.8~1.0%** · discard **1.8%**.
+
+★**이 팔은 discard 폭발 상태로 끝나지 않았다.** E-172 가 gs103 에 **discard 88%** 를 기록했고
+같은 항목이 *"discard 가 0.88 → 0.38 로 내려가는 동안 학습정확도는 +0.24 → −0.54 로 떨어졌다"* 고
+적어 뒀다. **gs300 은 그 궤적의 종착지다** — discard 는 1.8% 까지 내려갔지만 그것은 형식이 좋아져서가
+아니라 **메타를 아예 내지 않게 되어서**다(no_meta 93%).
+⇒ ★**E-173 의 규율 *"한 지표 개선을 회복으로 읽지 마라"* 가 이 팔에서 정확히 실현됐다.**
+⚠**따라서 `w_format=0` 팔을 인용할 때 "discard 88%" 를 gs300 맥락에 쓰면 틀린다.** 구간을 밝혀라.
+
+### `w_format` 세 팔의 종착지가 갈린다(실측)
+| 팔 | `w_format` | 끝난 모양 |
+|---|---|---|
+| b3sh | 0.0 | **discard 폭발**(gs120→155 에 5.9%→46.7%) → gs175 중단 |
+| **b3null** | 0.0 | **발화 소멸**(gs300 에 no_meta 93%, wellformed 1%) → gs300 도달 |
+| b3shf | **0.35** | **발화 53~58% 유지**(E-180), discard 0.4~2.1% |
+⇒ ★**`w_format=0` 인 두 팔이 서로 다른 경로로 무너졌다** — 하나는 형식 오류 폭발, 하나는 발화 소멸.
+**E-172 의 판정(*"경찰 없는 region 기하는 자기 파괴한다"*, 2점 재현)은 유지되며, 이번 실측이 그
+자기파괴의 *두 번째 종착 형태*를 확정한다.** ⛔새 인과 주장은 만들지 않는다 — E-173 이 이 팔의 gs300
+해석을 이미 확정했다(*"`w_format=0` 이면 학습 불성립"*, **region 기하 귀속 금지**).
+
+### 같은 틱 b3shf
+`step=228`·완전 ckpt gs225·HB 15:18:10·사망표식 0. 판정점까지 72스텝.
