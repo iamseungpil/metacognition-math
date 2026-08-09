@@ -6348,3 +6348,59 @@ b3shf 완전 ckpt **gs205**(gs180→205, 순항) · b3null 완전 ckpt **gs250**
 ### 미결 — 판정 eval 은 아직 발사하지 않았다
 E-177 이 확정한 서식대로 `b3p − b3nopmi`(gs300 held-out 1030·16k·avg@8·MATH500)를 재려면
 **별도 GPU 잡**이 필요하다. **발사는 사용자 확인 대기 중**이며, 이 항목은 확인 전 상태를 고정한다.
+
+---
+
+## E-179 (0809 11:5x UTC) — 페이블 적대검토: **내 전제 두 개 철회**, 후보 순위 재편, 다음 수는 b3nopmi eval 하나
+
+사용자 질문(*"PMI-shift 는 이론적으로 말이 되는데 왜 base 에선 안 되나 / instruct 에선 왜 됐나"*)에
+답하려다 **내가 세운 전제 둘이 file:line 으로 반박됐다.** 페이블 보고를 그대로 쓰지 않고 직접 확인했다.
+
+### ⛔철회 ① — *"SFT2 코퍼스 378행 기아가 현행 손상의 후보"*
+`h100std_rq3v2f_b3p.yaml:1`: *"the ONLY change from the previous b3p arm is the INIT, now
+`models/b2p2_rvfull_eb16_sft` (SFT2 on the **RAW 1763-row** RV corpus) **instead of the 378-row
+filtered subset** that E-093/E-094 showed was a covert scenario filter"*. b3s·b3nopmi 도 `:100` 에 동일.
+E-067 의 gs1 wellformed 0.40 붕괴는 **구 계보 기록**이다. 현행 실측은 반대 — b3p gs25 emit 0.998,
+b3shf gs101~104 wellformed 93~96%.
+⚠**`CLAUDE.md:83-84` 가 낡았다** — 아직 `b2p2_rvseg_sft` 를 "RL init for BOTH b2p and b3p" 로 적고 있고
+내가 그것을 근거로 삼았다. **문서 수정은 승인 사항**이라 지적만 남긴다.
+
+### ⛔철회 ② — *"base 에서 shiftonly 를 돌린 적이 없다"*(C-019 를 그대로 인용한 것)
+`h100std_rq3v2f_b3sh.yaml:256` 에 `++algorithm.dcpo_len_cost=0.0` 이 실재하고, description 이
+*"exactly five override changes — w_cal→0, w_format→0, w_emit→0, len_cost→0, meta_floor→0"* 라고 적는다.
+instruct 원본 `archive/launchers_pre_rq3/h100std_shiftonly.yaml:152-157` 과 **같은 다섯 개**다.
+⇒ **b3sh 가 base 의 shiftonly 복제였고, `w_format=0` 때문에 자기파괴했다**(중복 `<|meta|>` opener →
+discard 5.9%→**46.7%** → 배치 절반 무gradient). ★**C-019 는 이 결과로 갱신돼야 한다.**
+★**내 명령 결함**: `grep -oE "dcpo_w_[a-z_]+=[0-9.]+"` 가 `dcpo_len_cost`(`w_` 접두 아님)를 구조적으로
+놓쳤다. **"빈 결과 = 내 명령부터 의심"** 규율이 걸렸어야 했다.
+⇒ 지금 도는 **b3shf 가 "살아있는 shiftonly + 형식 비계"**(discard 0.2~0.8%)이고 gs215 진행 중.
+⚠단 런처가 스스로 적는다: *"NOT a pure shiftonly replication any more but shiftonly + format scaffold,
+and `anchor_norm=true` means the effective strength is not literally 0.35."* — **순수 복제로 인용 금지.**
+
+### 페이블이 세운 것(확인함)
+★**세 팔의 처치가 극단적으로 다른데 손상이 같다** — b3p(메타 사멸) −2.08 / b3s(메타 생존·엔트로피 26배)
+−2.00 / b3sh(보조 5헤드 0) −2.58. **처치가 다른데 손상이 같으면 공통분모가 유죄 후보**다.
+공통분모 = `TRIOBJ` region 경로(mean-only advantage·비-whiten·discard 라우팅). 대조군 b2p 만 stock
+`masked_whiten`. ⚠**단 instruct 는 같은 기하로 이겼다** ⇒ 기하 단독으로 기질 반전은 설명 못 한다.
+
+★**(가) 긴장 해소**: b3s ≈ b3p (**Δ +0.07pp [−1.38,+1.50]**)가 죽이는 것은 정확히 하나 —
+*"처치 소멸(발화 붕괴)이 held-out 손상의 원인"*. 메타가 끝까지 살아도, 완전히 죽어도 같은 자리다.
+⇒ 손상은 **최종 정책이 메타를 하느냐가 아니라 300스텝 동안 무엇이 정책을 밀었느냐**에서 온다.
+⚠CI 폭 ±1.5pp ⇒ 정확한 진술은 "floor 무영향"이 아니라 **"회복 증거 없음"**.
+
+★**group-centering 확인**: `dcpo_region.py:1226` `A_meta = group_mean_subtract(R_meta, index, member=_rmeta_member)`
+⇒ **`rmeta` 평균 오프셋(−0.16)은 그룹 평균이 흡수한다.** 남는 유효 격차는 평균이 아니라
+**그룹 내 순위 품질**(SAVE 47% vs 67%, 커버리지 3% vs 6.5%)이다.
+
+★**G7 부호 검사가 개입 하나를 죽였다**: 발화율 → held-out **부호 ≈ 0**(b3p 0.018/75.20 vs b3s 0.99/75.28).
+⇒ ⛔**발화를 올리는 개입(floor 강화·`w_emit` 증대)은 설계하지 않는다.**
+
+### 다음 수 — 하나로 좁혀졌다
+**`b3nopmi` gs300 eval 하나가 후보 1위(region 기하)와 2위(PMI 헤드)를 동시에 가른다.**
+b3nopmi 가 b2p 수준 회복 ⇒ 기하 후보 사망·PMI 단독 유죄. 여전히 −1.5pp 이하 ⇒ 그 반대.
+ckpt 확보·보존 완료, 서식은 E-177 에 확정, 비용 ~20 GPU-h. **사용자 승인 대기.**
+GPU 0 병행 후보 = `placebo.py` 배선. ⚠단 범위가 좁다 — 메타 밖 텍스트·boxed 답이 byte-동일이라
+**SAVE/DERAIL 행 분류는 구성상 불변**이고, 갈리는 것은 *"내용 특징 조건 attribution 이 셔플에서
+살아남는가"* 뿐이다. 헌법 Part VII 의 `shift(real) ≫ shift(corrupted)` 는 **별도 소규모 GPU 채점**이 필요.
+
+⚠**이 항목은 codex-sol 게이트 전 단계다**(0805 지시). 판정문으로 승격하기 전 검사 필요.
