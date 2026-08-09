@@ -6571,3 +6571,184 @@ HF 산출물을 `f.split('/')[-1]` 로 **파일명만 출력**해서 실제 경�
 
 ### 상태(18:41)
 eval **재시작 후 부트스트랩 중**(산출물 12파일 보존됨) · b3shf 완전 ckpt **gs225**(재개 성공) · b3nopmi·b3null 학습 **완주 확정**, 보존본 각 23파일.
+
+---
+
+## E-185 (0809 20:33~21:0x UTC) — ★★★**판정 eval 완주 · 사전등록 주 지표 `b3p − b3nopmi` 는 비유의** · 분기표 ④ · **손상은 PMI 단독 원인이 아니다** (codex-sol 게이트 통과, 지적 5건 반영·1건 반증)
+
+`[YAML] rq3v2f_b3nopmi_1030_eval_v2 gs300 DONE` 직접 확인(20:33:51), 사망표식 0, HF 산출물 20파일.
+서식은 **결과를 보기 전에** E-177(`843bb8a`)에서 확정했고 그대로 따른다.
+
+### ① 주 지표 — **비유의**
+
+`b3p − b3nopmi`, gs300, held-out 1030 · **16k · avg@8 · MATH500**, 문항 paired bootstrap 10,000회,
+n_shared = **500 문항**(4,000 completion 이 아니라 500 클러스터).
+
+| 채점기 | b3p − b3nopmi | 95% CI | boot p | McNemar |
+|---|---|---|---|---|
+| `\boxed{}`-wrap robust (paired_eval `Grader`) | **−0.65pp** | [−1.9, +0.7] | 0.328 | 20/14 · p=0.392 |
+| strict_boxed (fallback 없음) | **−0.60pp** | [−1.85, +0.65] | 0.367 | — |
+
+★**두 채점기 모두 0 을 포함한다.** 채택 문구(codex 권고 그대로):
+> **주 비교는 통계적으로 비유의했다. 0 효과를 기각하지 못했으며, PMI 헤드의 end-to-end 순효과는
+> 검출되지 않았다. 이것은 실제 효과가 0 이라는 증거도, 등가성 판정도 아니다.**
+
+⚠**"널" 이라고 쓰지 않는다** — 등가성 마진을 사전등록한 적이 없다.
+**검정력**(관측 SE ≈ 0.66pp 기준, codex 계산): 진효과 1.0pp → **33%** · 1.5pp → 63% · 2.0pp → 86% ·
+2.5pp → 97%. **양측 α=.05, 80% power MDE ≈ 1.84pp** (90% ≈ 2.13pp).
+⇒ **1pp 안팎의 진효과는 이 설계로 못 본다.** CI 는 "PMI 가 최대 1.9pp 해롭다"와도 양립한다.
+
+### ② 수준과 보조 대비 (MATH500 16k, oid 고정)
+
+파일 oid(`lfs.sha256` 앞 16): b3nopmi parquet **`b5f0b6de86d3c047`** · json `87542728189eab39`
+(`eval/rq3v2f_b3nopmi_gs300/rq3v2f_b3nopmi_gs300_16k_n8_math500/`) ·
+b3p **`af5df50da404f0b8`**(`eval/rq3v2f_b3p_1030/`) · b2p **`08faf5ae9fc4e404`**(`eval/rq3v2f_b2p_1030/`).
+
+| arm | `\boxed{}`-wrap robust | strict_boxed | 원채점(runtime) | 절단% | 평균토큰 | 메타발화%(closed) | boxed율 |
+|---|---|---|---|---|---|---|---|
+| b2p (vanilla 대조군) | **77.325%** | 77.33% | 62.90% | 2.4% | 1075 | 100.0% | 97.62% |
+| b3nopmi | **75.825%** | 75.72% | 61.30% | 5.4% | 1474 | 9.9% | 94.85% |
+| b3p | **75.175%** | 75.12% | 60.75% | 5.1% | 1472 | 1.4% | 95.62% |
+
+| 대비 | robust | strict_boxed |
+|---|---|---|
+| **b3p − b3nopmi (주 지표)** | **−0.65pp** [−1.9,+0.7] p=0.328 | **−0.60pp** [−1.85,+0.65] p=0.367 |
+| b2p − b3nopmi | **+1.50pp** [+0.3,+2.7] p=0.017 · McNemar 15/12 p=0.701 | **+1.60pp** [+0.40,+2.80] p=0.009 |
+| b2p − b3p | (기존 RQ2 를 **부호 맞춰** 적으면 **+2.08pp** [+0.68,+3.50]) | +2.20pp [+0.83,+3.60] p=0.003 |
+
+⛔**정정(내 초안 오류)**: 초안이 `b2p − b3p` 행에 **−2.08pp** 를 적었다. −2.08 은 `b3p − b2p` 다.
+**행 이름을 유지하면 +2.08pp.** codex 가 잡았고 확인했다.
+
+보조 셀(b3nopmi − b3p): gsm8k 16k **+0.8pp** [−0.1,+1.6] p=0.082 · aime2024 16k avg@16(n=30)
+**+0.8pp** [−4.4,+5.4] p=0.732. ⚠**저검정력·다중 보조분석이므로 결론에 쓰지 않고 기술통계로만 남긴다.**
+
+### ③ ★채점기 provenance — codex 지적 **절반 채택, 결정적 부분은 반증**
+
+★**채택**: E-177 이 사전등록한 주 채점기는 원장 `:6302` 의 ***"`math_verify` + `$`-wrap on"*** 이고,
+기준선 **b3p 75.20 · b2p 77.28** 은 그 계열이다. 내가 이번에 쓴 것은 `paired_eval.py` 의 `Grader`
+= `experiments/common/grading.py:52 robust_grade`(**`\boxed{}` 로 감싸 parse**)다.
+두 값은 **b3p 75.175 vs 75.20 · b2p 77.325 vs 77.28** 로 0.03~0.05pp 안에서 만나지만
+**같은 채점기가 아니다** ⇒ ⛔**이번 수치를 "format_fair" 로 재명명하지 않는다.** 초안의 라벨을 고쳤다.
+⚠`freeze_run_manifest.py:66` 의 해시 목록에 `analysis_common.py` 는 있으나 **실구현 `grading.py` 와
+`math_verify` 버전이 빠져 있다** — 동결이 불완전하다(정본 코드 수정이 필요하므로 **승인 사항**으로 남긴다).
+
+★**반증**: codex 는 *"OID 고정 parquet 에 같은 `Grader` 를 돌렸더니 b2p 77.325 · b3p 74.975 ·
+b3nopmi 75.625 로 내 표와 불일치 ⇒ 표가 한 채점 구현으로 만들어지지 않았다는 반증"* 이라고 썼다.
+직접 확인한 결과 **원인은 내 표의 혼재가 아니라 `math_verify` 버전**이다 — codex 는 **0.6.0**,
+내 환경은 **0.9.0**(`gram` env). 그리고 결정적으로:
+- **b2p 는 두 버전이 77.325% 로 완전 일치**한다(codex 값 = 내 값).
+- 차이는 메타를 내는 두 팔에서만 **정확히 0.20pp = 500문항 중 1문항 값**으로 같은 크기다.
+- ⇒ **주 대비에서 상쇄된다: 0.6.0 으로도 `b3p − b3nopmi` = 74.975 − 75.625 = −0.65pp 로 동일.**
+
+★**따라서 주 지표는 `math_verify` 버전에 불변이다**(0.6.0 · 0.9.0 두 버전 모두 −0.65pp).
+단 `b2p − b3nopmi` 는 +1.50(0.9.0) vs +1.70(0.6.0) 로 갈리므로 **그 수는 버전을 밝혀 인용한다.**
+
+### ④ G8 (팔 정체) — 통과, 단 **정적 대비**임을 명시
+
+`git diff --stat --no-index h100std_rq3v2f_b3p.yaml h100std_rq3v2f_b3nopmi.yaml`
+= **17 insertions / 16 deletions**(초안의 "60줄"은 `diff | wc -l` 이라 단위가 다르다).
+학습 하이퍼파라미터 차분은 `h100std_rq3v2f_b3nopmi.yaml:253` 의 **`++algorithm.dcpo_w_meta=0.0` 한 줄**뿐,
+나머지는 전부 lineage 이름(experiment_name · default_local_dir · resume regex · WANDB_NAME).
+
+**`w_meta=0` 이 실제로 끄는 것**(codex 지적 → 직접 확인):
+- PMI-shift 점수는 **계속 계산된다** (`src/training/verl_sdc.py:443`)
+- region mask 도 **그대로 구성된다** (`verl_sdc.py:290`)
+- `w_meta` 는 읽힌 뒤 warmup scale 과 곱해진다 (`verl_sdc_utils.py:345`)
+- 사라지는 것은 정확히 **`w_meta * A_meta * meta_c` 한 항** (`dcpo_region.py:1268` 의
+  `advantages = w_corr*A_corr*ans + w_meta*A_meta*meta_c + w_cal*A_cal*conf`)
+- length cost · anchor · calibration · format · emission · truncation 경로는 **전부 살아 있다**
+
+⇒ ⛔*"META_CONTENT 영역이 비활성화된다"* **틀림** · ⛔*"PMI 계산을 제거했다"* **틀림**.
+★**정확한 이름: "PMI 유래 META_CONTENT advantage 항을 0 으로 만들었다."**
+"PMI 헤드 제거"는 **이 정의를 바로 붙일 때만** 허용되는 약칭이다.
+(⚠단 일반 meta-content 토큰에는 그 항이 **유일한 직접 advantage** 이므로, confidence·format·emission
+같은 특수 위치를 빼면 메타 내용 토큰의 직접 학습신호는 사실상 사라진다.)
+
+⚠**정적 런처 대비 ≠ 실현된 한 변수 대비.** init 은 런타임에 두 후보 중 하나를 고르고
+(`h100std_rq3v2f_b3p.yaml:119`), anchor EMA 는 **체크포인트되지 않는 module-global** 이다
+(`verl_sdc_utils.py:28`). 두 팔의 선점·재개 이력이 다르므로 **resolved init hash · resolved config ·
+선점 횟수를 G8 에 병기해야** 대비가 강해진다 — **미측정으로 남긴다.**
+
+### ⑤ 판정 — 분기표 ④ (`docs/EXPERIMENT_PLAN.md:114`)
+
+정본 행은 **`B3pkg < B2` 또는 `B3-noPMI > B3pkg`** 다. 첫 조건이 **두 채점기 모두에서 유의**하게
+성립하므로, 두 번째가 비유의여도 ④가 맞다. 허용 결론: ***"PMI-shift 가 현 recipe/substrate 에서
+무효 또는 해로운 방향일 가능성."*** ⛔**이보다 세게 쓰지 않는다** — ④는 PMI 가 해롭다는 **입증이 아니다.**
+
+`:116-119` 대로, 첫 비교가 양수가 아니고 두 번째도 양수가 아니므로
+⛔**"PMI-shift 가 이겼다"는 쓸 수 없다.**
+
+**채택 판정문(codex 권고 문안 채택)**:
+> 분기표 ④에 해당한다. B3pkg 는 B2 보다 유의하게 낮다. 사전등록 주 비교 `b3p−b3nopmi` 는
+> 음의 점추정이지만 95% CI 가 0 을 포함하여, **PMI 유래 META_CONTENT advantage 항의
+> end-to-end 순효과는 검출되지 않았다.** 이는 효과가 0 이라는 등가성 판정도, PMI 가 해롭다는
+> 입증도 아니다.
+>
+> b3nopmi 역시 B2 보다 유의하게 낮아 **PMI 항의 제거만으로 패키지 손상이 회복되지 않았다.**
+> 따라서 손상을 PMI 단독 원인으로 귀속할 수 없으며, 남은 원인은 region routing · discard 처리 ·
+> length/format/calibration/emission/truncation/anchor 를 포함한 **공통 TRIOBJ 번들** 안에 있다.
+> **이 대조만으로 region 기하를 특정하지 않는다.**
+
+### ⑥ E-179 가 건 판별 — **이분 판정은 보류**
+
+E-179 는 *"b3nopmi 가 b2p 쪽으로 회복 ⇒ region 기하 후보 사망·PMI 단독 유죄 / 여전히 −1.5pp 이하 ⇒
+손상이 PMI 특이적이 아님"* 으로 **결과 전에** 갈라 뒀다(사후 편의는 아니다. 단 b3p 결과를 본 뒤 만든
+**적응적 기준**이지 최초 설계시점 사전등록은 아니다).
+
+실측은 **정확히 그 절단점 위**다: `b2p − b3nopmi` = +1.50pp(robust 0.9.0) / +1.70pp(0.6.0) /
++1.60pp(strict). E-179 는 **어느 채점기로 경계를 판정할지 지정하지 않았고**, 세 값이 −1.5 절단점의
+양쪽으로 갈린다. ⇒ ★**그 이분 판정은 보류한다.**
+
+대신 확실한 것만 적는다:
+> **b3nopmi 는 세 채점 조건 모두에서 B2 보다 유의하게 낮다 — 완전 회복의 증거는 없다.**
+> PMI 를 껐을 때 좁혀진 몫은 2.08pp 중 0.65pp(약 31%)이고 **그 회복 자체가 비유의**하다.
+
+⇒ 후보 1위(TRIOBJ region 기하)는 **기각되지 않았을 뿐**이다. ⛔**"살아남았으니 유력"으로 승격 금지** —
+b3nopmi 에는 cal·format·emit·length·trunc·anchor·discard routing 이 **전부 남아 있어** region 을 특정하지 못한다.
+E-174 가 이미 지목한 **별도 `bfmt` 대비**가 그것을 가르는 실험이다(원장 `:6134`).
+
+### ⑦ 발화율 병기 (출처를 밝혀서)
+
+| 출처 | b2p | b3nopmi | b3p |
+|---|---|---|---|
+| eval `meta_emission_rate`(**closed** 블록, paired_eval) MATH500 16k | 100.0% | **9.9%** | **1.4%** |
+| eval json `overall_meta_emission_rate`(열린 블록 포함) MATH500 16k | — | 14.1% | — |
+| eval json, aime2024 16k | — | 76.7%(closed 41.2%) | — |
+| eval json, gsm8k 16k | — | 0.9%(closed 0.8%) | — |
+| eval json, 4k 전 벤치(E-184) | — | 8.68% | — |
+| **학습 로그** `meta_emit_rate` | — | — | **1.8%** |
+
+⚠**b3p 의 1.8% 와 1.4% 는 출처가 다르다**(학습 로그 vs eval). 섞어 쓰지 않는다.
+⚠**발화율은 처치 후 매개변수다.** b2p(100%)가 최상위·b3p(1.4%)가 최하위라는 배열을 **G7 을 뒤집는
+증거로 쓰지 않는다** — 세 팔이 통째로 다르다.
+
+### ⑧ ⛔E-184 에 대한 정정 — **채점기 provenance**
+
+E-184 가 적은 4k 수치(전체 74.59% · MATH500 61.18% · GSM8K 91.78% · AIME 11.67%)는
+**eval json 의 원채점(runtime grader)** 이다. 같은 계열 16k 가 원채점 **61.30%** / robust 재채점
+**75.825%** 로 갈린다. ⇒ **원채점을 기준선(75~77, 재채점 계열) 옆에 놓으면 14pp 짜리 가짜 격차가 생긴다.**
+E-184 는 *"예산이 달라 비교 금지"* 라고만 적었는데, **채점기가 다르다는 것이 더 강한 이유**다.
+
+### ⑨ 반드시 병기하는 대안설명 (codex ⑦ 전부 채택)
+
+- **단일 학습 시드**(C-021) — 문항 부트스트랩은 최적화 궤적 분산을 **포함하지 않는다.**
+- **eval 생성 잡음** — −0.65pp 는 동일 체크포인트 A-vs-A 변동과 **같은 크기대**다(E-154 실측 SD 0.35pp).
+- **선점/재개 이력** — anchor EMA 가 비영속이라 실제 최적화 경로가 갈릴 수 있다.
+- **동적 init 선택** — 코드가 같아도 실제 선택된 init artifact hash 가 필요하다(미측정).
+- **residual bundle** — noPMI 에도 length cost·format·cal·emit·truncation·discard routing 이 남는다.
+- **placebo 미실시**(C-020) — "내용 대 형태" 는 여전히 못 가른다.
+- 보조 GSM/AIME 셀은 **결론에 쓰지 않는다.**
+
+### ⑩ 산출물·다음
+
+- `experiments/analysis/paired_eval.py`(정본) · `$JOB/tmp/strict_boxed_probe.py`(**일회성 probe,
+  §5.3 대로 정본 승격하지 않는다**) · `$JOB/tmp/codex_e185.txt`(적대검토 전문) · `$JOB/tmp/pe/`(parquet 사본)
+- ⚠`analysis_common.py` 정규화 스키마의 문항 키는 **`qid`**(`problem_id` 아님).
+- **CLAIMS 갱신 의무**(§4): 이 축은 `docs/CLAIMS.md` 에 `b3nopmi` 가 **한 번도 없어** 새 증거가 맞다.
+  단 *"손상이 triobj 공통부에 있다"*(`CLAIMS.md:731`)와 *"region-split 은 여러 후보 중 하나"*(`:765`)는
+  **이미 산 결론**이므로 다시 사지 않는다. **C-019 는 E-179 에서 stale 판정을 받고도 아직 그대로다** —
+  같은 커밋에서 갱신한다.
+- **새로 열리는 것**: 공통 TRIOBJ 번들을 가르는 대비(E-174 의 `bfmt`). ⛔**사용자 승인 전 발사 금지.**
+
+### 상태(21:0x)
+판정 eval **완주**(20파일) · b3shf 학습만 활성(gs225~226) · b3nopmi·b3null 학습 완주·보존 각 23파일.
