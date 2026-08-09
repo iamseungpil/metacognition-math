@@ -6472,3 +6472,22 @@ b3nopmi **gs300 완주**(보존본 23파일, eval 승인 대기) · b3shf **gs22
 
 ### 같은 틱 b3shf
 `step=228`·완전 ckpt gs225·HB 15:18:10·사망표식 0. 판정점까지 72스텝.
+
+---
+
+## E-182 (0809 16:14 UTC) — b3null **완주 확인**(N=300) · b3shf **선점 재시작**(조치 불필요)
+
+**① b3null 완주.** 로그 원문 `[YAML] FINAL PUSH DURABLE global_step_300` — **N=300 을 직접 읽었다**.
+같은 tail 에 사망표식(`ABORT window`/`FATAL init`/`IncompleteRead`/`failed due to oom`/`Total available GPUs 0`) **0건**
+⇒ **완주**로 확정한다. HB `[HB Sun Aug 9 03:47:30 PM UTC 2026]`. 보존본 `preserved/mechanism_alive/rq3v2f_b3null_gs300/` **23파일** 유지.
+★E-181 이 *"완주 확인은 다음 틱"* 으로 미뤄 둔 항목을 이것으로 닫는다.
+⇒ **gs300 완주 팔이 둘**(b3nopmi·b3null), 둘 다 보존 완료.
+
+**② b3shf 선점 재시작.** `amlt log view` 가 빈 결과처럼 보여 **내 명령부터 의심**했고, 줄 수를 세니 **193줄**이었다.
+`User code starts running at Sun Aug 9 04:04:17 PM UTC 2026` + 깨끗한 `[bootstrap]` 시작(conda-pack 내려받는 중),
+사망표식 **0건** ⇒ **재시작 모드 ①(선점)** 이다. **조치하지 않는다.**
+마지막 완전 ckpt **gs225** 에서 재개한다(직전 관측 `step=229`, HB 15:46:33).
+★**"빈 결과 = 내 명령부터 의심, 다음 로그 줄 수"** 규율이 그대로 작동했다 — 190~320줄이면 재시작이다.
+
+### 상태(16:14)
+b3nopmi **gs300 완주**(보존 23, eval 승인 대기) · b3null **gs300 완주 확인**(보존 23) · b3shf **부트스트랩 중**(gs225 에서 재개).
