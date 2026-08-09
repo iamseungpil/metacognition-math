@@ -6491,3 +6491,41 @@ b3nopmi **gs300 완주**(보존본 23파일, eval 승인 대기) · b3shf **gs22
 
 ### 상태(16:14)
 b3nopmi **gs300 완주**(보존 23, eval 승인 대기) · b3null **gs300 완주 확인**(보존 23) · b3shf **부트스트랩 중**(gs225 에서 재개).
+
+---
+
+## E-183 (0809 17:0x UTC) — **판정 eval 발사**: `b3nopmi` gs300 (사용자 승인)
+
+사용자 지시(원문): *"판정 eval 돌려. 노드에서 진행해주면 돼."* ⇒ 발사.
+**실험** `rq3v2f-b3nopmi-eval-0809` · **잡** `:h100_rq3v2f_b3nopmi_eval` · 80G4-H100 Standard · msrresrchbasicvc.
+런처 `h100std_rq3v2f_b3nopmi_1030_eval.yaml`(커밋 `a139271`) — `h100std_rq3v2f_b3sh_1030_eval.yaml` 의 클론.
+
+### 발사 전 검사(전부 통과)
+1. **G8 팔 정체** — 기능 차분은 **SPEC 목록 하나뿐**: `rq3v2f_b3nopmi:eval/rq3v2f_b3nopmi_gs300:300`.
+   루프 기계·세 패스·다운로드/머지 경로는 원본과 동일.
+2. **채점 코드 동일성** — `CODE_TAR_REVISION: "467403206"`, **이전 모든 eval 과 같은 값**을 유지했다.
+   ⇒ 팔 간 비교에서 채점기 차이가 교란으로 들어올 수 없다.
+3. **덮어쓰기 방지(E-146 재발 차단)** — HF `eval/` prefix 를 **전부 열거**해 `rq3v2f_b3nopmi_gs300` 이 **부재**임을 확인한 뒤 파일을 썼다.
+   기존 prefix 12개: `base_matched_1030_v2` · `gandhi_1030_v2` · `pmishift_1030_v2` · `rq3v2f_b0p_1030` ·
+   `rq3v2f_b2p_1030` · `..._pair` · `..._rq2` · `rq3v2f_b3p_1030` · `rq3v2f_b3s_1030` · `rq3v2f_b3sh_gs165` ·
+   `rq3v2f_b3sh_gs175` · `shiftonly_1030_v2`.
+4. **클론 잔재 검사(두 표기)** — `b3sh|B3SH` 잔재 **1건**, 그것은 내가 새로 쓴 *"cloned from the b3sh mid-ckpt launcher"* 출처 표기다.
+   `gs165|gs175|:165|:175` 잔재 **0건**. ★0807 에 `sed` 가 하이픈 표기를 놓쳐 **살아있는 run 을 오염**시킨 적이 있어 두 표기로 검사했다.
+5. **체크포인트** — gs300 **m/o/e 4/4**, 보존본 `preserved/mechanism_alive/rq3v2f_b3nopmi_gs300/` **23파일**(E-177).
+   ⇒ `--keep 1` 프루너가 eval 도중 원본을 지워도 판정 자산은 남는다.
+6. **lint** — `yaml.safe_load` OK · `tests/test_launcher_yaml_lint.py` **48 passed**.
+
+### 세 패스(원본 그대로)
+a) 전 벤치 **4k · n=8 · seed 42** → b) aime 만 **16k · n=8 · seed 43** → c) 전 벤치 **16k · n=8 · seed 42**.
+각 패스 뒤 HF 업로드 ⇒ 창이 죽어도 끝난 것은 살아남는다. **주 지표는 (c) 의 16k MATH500.**
+
+### ⚠상속된 오해 소지 하나(동작 무관)
+마지막 줄 `echo "[YAML] PAIRED EVAL DONE both arms"` 가 원본에서 그대로 왔다 — **지금은 한 팔**이다.
+**echo 문자열일 뿐 동작에 영향 없다.** ⇒ **완료 판별은 `[YAML] rq3v2f_b3nopmi_1030_eval_v2 gs300 DONE` 으로 한다.**
+⛔`PAIRED EVAL DONE both arms` 를 완주 근거로 인용하지 말 것.
+
+### 판정은 E-177 서식대로만 읽는다(결과 보기 전 확정됨, `843bb8a`)
+주 지표 `b3p − b3nopmi`, gs300 held-out 1030·16k·avg@8·MATH500, `math_verify`+`$`-wrap on, 문제단위 paired bootstrap.
+분기표는 `docs/EXPERIMENT_PLAN.md:109-119` 정본. ★`:116-119` — **첫 비교가 양수여도 두 번째가 양수가 아니면 "패키지가 이겼다"로 적는다.**
+기준선 병기: b2p `08faf5ae9fc4e404` **77.28** · b0p `fbcd9864a64ba6ba` 76.12 · b3s `ce372c5b593c8f4c` 75.28 · b3p `af5df50da404f0b8` **75.20**.
+★**판정 표 모든 행에 oid**(`lfs.sha256`). ⛔eval glob 금지·경로만 인용 금지.
