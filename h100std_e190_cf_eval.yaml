@@ -25,7 +25,7 @@ jobs:
         HF_TOKEN: ${HF_TOKEN}
         HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
         GH_TOKEN: ${GH_TOKEN}
-        CODE_TAR_REVISION: "CODEASSET"
+        CODE_TAR_REVISION: "509098873"
         SIMPLERL_DIR: /scratch/conda_envs/simplerl
         VLLM_WORKER_MULTIPROC_METHOD: spawn
         HF_HUB_DISABLE_XET: "1"
@@ -34,7 +34,26 @@ jobs:
         GS: "300"
     command:
       - nvidia-smi
-      - bash -c 'set +e; mkdir -p /scratch/logs /scratch/checkpoints /scratch/eval_results; cd /scratch; source /opt/conda/etc/profile.d/conda.sh; conda activate ptca; pip install -q "huggingface_hub<1.0" 2>&1 | tail -1; curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}; tar -xzf /tmp/metacognition.tar.gz -C /scratch; nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 & bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh; export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"; export CONDA_PREFIX="$${SIMPLERL_DIR}"; pip uninstall -y hf_xet 2>&1 | tail -1; bash /scratch/metacognition/scripts/run_e190_cf_eval.sh; echo "[YAML] exit=$$?"; sleep 600'
+      - |
+        bash -c '
+        set +e
+        set -o pipefail
+        mkdir -p /scratch/logs /scratch/checkpoints /scratch/eval_results
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        pip uninstall -y hf_xet 2>&1 | tail -1 || true
+        bash /scratch/metacognition/scripts/run_e190_cf_eval.sh
+        echo "[YAML] run_e190 exit=$$?"
+        sleep 600
+        '
 
   - name: e190cf_b3s_gs303
     sku: 80G4-H100
@@ -48,7 +67,7 @@ jobs:
         HF_TOKEN: ${HF_TOKEN}
         HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
         GH_TOKEN: ${GH_TOKEN}
-        CODE_TAR_REVISION: "CODEASSET"
+        CODE_TAR_REVISION: "509098873"
         SIMPLERL_DIR: /scratch/conda_envs/simplerl
         VLLM_WORKER_MULTIPROC_METHOD: spawn
         HF_HUB_DISABLE_XET: "1"
@@ -57,7 +76,26 @@ jobs:
         GS: "303"
     command:
       - nvidia-smi
-      - bash -c 'set +e; mkdir -p /scratch/logs /scratch/checkpoints /scratch/eval_results; cd /scratch; source /opt/conda/etc/profile.d/conda.sh; conda activate ptca; pip install -q "huggingface_hub<1.0" 2>&1 | tail -1; curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}; tar -xzf /tmp/metacognition.tar.gz -C /scratch; nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 & bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh; export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"; export CONDA_PREFIX="$${SIMPLERL_DIR}"; pip uninstall -y hf_xet 2>&1 | tail -1; bash /scratch/metacognition/scripts/run_e190_cf_eval.sh; echo "[YAML] exit=$$?"; sleep 600'
+      - |
+        bash -c '
+        set +e
+        set -o pipefail
+        mkdir -p /scratch/logs /scratch/checkpoints /scratch/eval_results
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        pip uninstall -y hf_xet 2>&1 | tail -1 || true
+        bash /scratch/metacognition/scripts/run_e190_cf_eval.sh
+        echo "[YAML] run_e190 exit=$$?"
+        sleep 600
+        '
 
   - name: e190cf_b3sh_gs175
     sku: 80G4-H100
@@ -71,7 +109,7 @@ jobs:
         HF_TOKEN: ${HF_TOKEN}
         HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
         GH_TOKEN: ${GH_TOKEN}
-        CODE_TAR_REVISION: "CODEASSET"
+        CODE_TAR_REVISION: "509098873"
         SIMPLERL_DIR: /scratch/conda_envs/simplerl
         VLLM_WORKER_MULTIPROC_METHOD: spawn
         HF_HUB_DISABLE_XET: "1"
@@ -80,4 +118,23 @@ jobs:
         GS: "175"
     command:
       - nvidia-smi
-      - bash -c 'set +e; mkdir -p /scratch/logs /scratch/checkpoints /scratch/eval_results; cd /scratch; source /opt/conda/etc/profile.d/conda.sh; conda activate ptca; pip install -q "huggingface_hub<1.0" 2>&1 | tail -1; curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}; tar -xzf /tmp/metacognition.tar.gz -C /scratch; nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 & bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh; export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"; export CONDA_PREFIX="$${SIMPLERL_DIR}"; pip uninstall -y hf_xet 2>&1 | tail -1; bash /scratch/metacognition/scripts/run_e190_cf_eval.sh; echo "[YAML] exit=$$?"; sleep 600'
+      - |
+        bash -c '
+        set +e
+        set -o pipefail
+        mkdir -p /scratch/logs /scratch/checkpoints /scratch/eval_results
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        pip uninstall -y hf_xet 2>&1 | tail -1 || true
+        bash /scratch/metacognition/scripts/run_e190_cf_eval.sh
+        echo "[YAML] run_e190 exit=$$?"
+        sleep 600
+        '
