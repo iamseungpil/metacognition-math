@@ -6801,3 +6801,12 @@ b3shf 는 *"b3sh + `w_format 0→0.35`"* 로 기술돼 왔다. 그런데 `val_be
 ### 상태(23:45)
 b3shf `running` · 재개 검증 68분째 진행 · 학습 스텝 0 · 완전 ckpt gs225 · 사망표식 0.
 판정 eval 완주(E-185) · b3nopmi·b3null 학습 완주 · 보존본 여섯 개 각 23파일.
+
+### E-186 후속 (0810 00:0x UTC) — 사용자 결정: **플래그 고쳐 재발사**
+
+`h100std_rq3v2f_b3shf.yaml:275` **`val_before_train=True → False`**(커밋 `6cb7403`, 한 줄 차분).
+LIST → `amlt cancel rq3v2f-b3shf-0808` → `killed` 확인 → **`amlt run h100std_rq3v2f_b3shf.yaml rq3v2f-b3shf-0810`**.
+체크포인트 계보 `rq3v2f_b3shf` 동일이므로 **gs225 에서 재개**. 이제 다섯 팔 전부 `val_before_train=False`.
+⚠**감시 대상 실험명이 `rq3v2f-b3shf-0810` 으로 바뀌었다**(구 `-0808` 은 killed).
+⚠검증은 가중치를 바꾸지 않으므로 학습 목적함수 변경이 아니다. 재개 시 RNG 소비 경로는 달라지나
+**이미 재시작마다 달라지고 있었다** — 새 교란이 아니다.
