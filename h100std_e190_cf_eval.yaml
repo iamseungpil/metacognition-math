@@ -1,0 +1,83 @@
+description: "E-190 offline counterfactual eval on the RQ3v2F BASE generation (prereg in ledger E-190, bands fixed before results). For each checkpoint: pull the verl FSDP actor, merge FSDP->HF, decode the 594-problem held-out meta-mix TWICE under identical weights/prompt/greedy decoding, differing only in whether the <|meta|> OPEN token is allowed (arm B drives it to -100 logit bias). THREE THINGS ARE NEW versus the nine runs already sitting on metacot-rv: (1) arm-B PROSE leak is measured with _has_meta_signature - the prior runs report 0/5346 but that is a TAG substring test, and our own signature_suppression_ids docstring records that v3l discarded ~3/4 of CFs because meta leaked as plain text, so that threat has never been checked and cannot be checked post hoc because those runs saved eight scalar keys and no text; (2) generations are saved, so leak rate and grader version stay re-checkable; (3) --repeat_arm_a decodes arm A twice for an A-vs-A noise floor, because the paired delta this eval reports (prior |d| median 0.0118) is the same size as plausible vLLM jitter. Arms b2p gs300 / b3s gs303 / b3sh gs175 chosen because eval-regime meta emission is ~100 percent there; b3p (1.85 percent) and b3nopmi (10.25 percent) are excluded as unjudgeable by design, not by result. One node each so a preemption costs one arm not three. Node body is scripts/run_e190_cf_eval.sh, NOT inline yaml (nested quoting in an amlt command string parses at submit and breaks at runtime, 0717). set -x is deliberately absent: the code-asset curl carries GH_TOKEN. Tokens via env only."
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  registry: mcr.microsoft.com
+  image: aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x:latest
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: e190cf_b2p_gs300
+    sku: 80G4-H100
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 43200
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        CODE_TAR_REVISION: "CODEASSET"
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        VLLM_WORKER_MULTIPROC_METHOD: spawn
+        HF_HUB_DISABLE_XET: "1"
+        REPO: iamseungpil/metacot-h200-triobj-dcpo-v3
+        ARM: "b2p"
+        GS: "300"
+    command:
+      - nvidia-smi
+      - bash -c 'set +e; mkdir -p /scratch/logs /scratch/checkpoints /scratch/eval_results; cd /scratch; source /opt/conda/etc/profile.d/conda.sh; conda activate ptca; pip install -q "huggingface_hub<1.0" 2>&1 | tail -1; curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}; tar -xzf /tmp/metacognition.tar.gz -C /scratch; nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 & bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh; export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"; export CONDA_PREFIX="$${SIMPLERL_DIR}"; pip uninstall -y hf_xet 2>&1 | tail -1; bash /scratch/metacognition/scripts/run_e190_cf_eval.sh; echo "[YAML] exit=$$?"; sleep 600'
+
+  - name: e190cf_b3s_gs303
+    sku: 80G4-H100
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 43200
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        CODE_TAR_REVISION: "CODEASSET"
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        VLLM_WORKER_MULTIPROC_METHOD: spawn
+        HF_HUB_DISABLE_XET: "1"
+        REPO: iamseungpil/metacot-h200-triobj-dcpo-v3
+        ARM: "b3s"
+        GS: "303"
+    command:
+      - nvidia-smi
+      - bash -c 'set +e; mkdir -p /scratch/logs /scratch/checkpoints /scratch/eval_results; cd /scratch; source /opt/conda/etc/profile.d/conda.sh; conda activate ptca; pip install -q "huggingface_hub<1.0" 2>&1 | tail -1; curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}; tar -xzf /tmp/metacognition.tar.gz -C /scratch; nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 & bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh; export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"; export CONDA_PREFIX="$${SIMPLERL_DIR}"; pip uninstall -y hf_xet 2>&1 | tail -1; bash /scratch/metacognition/scripts/run_e190_cf_eval.sh; echo "[YAML] exit=$$?"; sleep 600'
+
+  - name: e190cf_b3sh_gs175
+    sku: 80G4-H100
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 43200
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        CODE_TAR_REVISION: "CODEASSET"
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        VLLM_WORKER_MULTIPROC_METHOD: spawn
+        HF_HUB_DISABLE_XET: "1"
+        REPO: iamseungpil/metacot-h200-triobj-dcpo-v3
+        ARM: "b3sh"
+        GS: "175"
+    command:
+      - nvidia-smi
+      - bash -c 'set +e; mkdir -p /scratch/logs /scratch/checkpoints /scratch/eval_results; cd /scratch; source /opt/conda/etc/profile.d/conda.sh; conda activate ptca; pip install -q "huggingface_hub<1.0" 2>&1 | tail -1; curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}; tar -xzf /tmp/metacognition.tar.gz -C /scratch; nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 & bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh; export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"; export CONDA_PREFIX="$${SIMPLERL_DIR}"; pip uninstall -y hf_xet 2>&1 | tail -1; bash /scratch/metacognition/scripts/run_e190_cf_eval.sh; echo "[YAML] exit=$$?"; sleep 600'
