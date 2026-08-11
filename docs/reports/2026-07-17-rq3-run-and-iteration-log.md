@@ -7755,3 +7755,33 @@ w_format 을 되살린 것은 붕괴를 **gs157→gs228 로 71스텝 늦췄을 �
 ★**여는 것**: ⑴ **b3null·b3shf 의 홀드아웃 생성문 첫 줄**을 봐야 낮은 발화율이 *안 여는 것*인지 *다른 토큰으로 여는 것*인지 갈린다 — 그런데 **둘 다 eval parquet 이 없다**(승인 대기 ⑧·⑨). ⇒ ★**⑧⑨ 는 정확도 판정만이 아니라 이 구분을 위해서도 필요하다.**
 ⑵ floor 가 막는 기전 — 상수 보상이 advantage 를 0 으로 만들어 그 구간의 정책 기울기를 얇게 한다는 기존 서술(CLAIMS:639)과 이 순서가 맞는가.
 ★**규율(오늘 여섯 번째)**: ★**"왜 떨어졌나"를 묻기 전에 "무엇이 붙들고 있었나"를 물어라** — 통제군을 겹치자 한 팔에서 못 찾던 답이 나왔다. **한 팔의 시계열은 통제군 없이는 이야기가 안 된다.**
+
+## EXP-0811m (탐색 · ⛔판정 아님 · ★codex 게이트 전 CLAIMS 수정 금지) — **floor 기제: 코드는 기록된 설명을 반박하고, 0811l 의 순서를 예측한다**
+
+0811l 이 *"floor 만이 발화 붕괴를 막는다"* 를 다섯 팔로 보였다. **왜 막는지**를 정본 코드에서 확인했다.
+
+**① 구현 — floor 는 보상이 아니라 *중심화 이후* 의 advantage 편향이다.**
+`src/training/dcpo_region.py:1182-1192`(docstring, 원문):
+> *"a small POSITIVE, **UN-CENTERED** advantage bias added onto the META_CONTENT tokens of TRUSTED-meta rows … It is added **AFTER** the Dr.GRPO group-mean-subtract **on purpose**: a constant folded into R_meta **BEFORE** centering **cancels** (the group mean absorbs any term common to all rows), **silently doing nothing**. Routed post-centering it **survives**, giving 'emit a trusted wellformed meta' a fixed +meta_floor pull that offsets the FORMAT-penalty collapse pressure (v3l: meta_emit 0.5→0 by step 60). The CENTERED Â_meta still rides on top, so R_meta keeps deciding useful-vs-harmful meta — **the floor only keeps the channel OPEN, it does not grade content**."*
+`:1323-1330` 주석과 `:1348` `advantages = advantages + float(meta_floor) * fl * (meta_in_resp / row_n)` 이 그대로 그 설계다.
+
+**② 그래서 `CLAIMS.md:639` 의 기제 문장이 어긋난다.**
+> *"floor 가 매 스텝 상수 보상을 보장 → **그 성분의 그룹 정규화 advantage 가 0** → 메타 구간의 정책 기울기가 얇아지고, KL 앵커가 0인 상태에서 엔트로피 보너스가 무저항으로 이긴다."*
+★**"그룹 정규화되어 0 이 된다"는 것은 코드가 명시적으로 피한 실패다.** floor 를 *보상*으로 보면 그 결론이 나오지만, 구현은 floor 를 *advantage* 에 후단 주입한다.
+⇒ b3s 의 엔트로피 폭주는 **실측 사실**(최대 6.442)이지만, **그 설명은 구현과 맞지 않는다.** ⛔"floor 가 기울기를 얇게 했다"를 계속 인용하지 말 것.
+
+**③ 반대로, 코드가 말하는 것은 0811l 이 잰 것과 정확히 맞는다.**
+docstring 의 목적어가 *"FORMAT-penalty collapse pressure 를 상쇄해 채널을 열어 둔다"* 이고, 실측 순서가 그대로다 —
+**floor 있는 b3s 만 1.000 유지**, floor 없는 넷은 전부 붕괴(b3null gs125 · b3nopmi gs152 · b3p gs157 · b3shf gs228).
+그리고 docstring 이 인용한 선례(v3l: `meta_emit 0.5→0 by step 60`)까지 같은 모양이다.
+⇒ ★**구현의 선언된 의도와 다섯 팔의 용량-반응이 일치한다.** 이건 오늘 처음으로 **기록과 코드와 실측이 서로를 지지한 자리**다.
+
+**④ 그래서 열려 있는 것은 다른 질문이다.** floor 가 "기울기를 얇게 해서" 엔트로피를 풀어준 게 아니라면,
+**b3s 의 엔트로피는 왜 6.442 로 갔나** — 여전히 미설명. 후보: 발화가 유지된 채 메타 내용에 대한 압력만 남아 그 구간의 탐색이 커졌나,
+아니면 엔트로피 폭주가 floor 와 무관한 별개 경로인가(⚠`entropy_coeff` 는 두 팔 동일).
+
+**⚠경계** · docstring 은 **의도의 선언**이지 발화 검사가 아니다 — `meta_floor` 가 b3s 런에서 실제로 0.05 로 들어갔는지는 런처 매니페스트로 따로 봐야 한다(G8) ·
+b3s 는 floor 외에도 shiftonly 설정이 함께 다르다 ⇒ **단일 변수 아님** · **EXP 트랙**.
+
+★**여는 것**: ⑴ b3s 런처의 실제 `dcpo_meta_floor` 값을 매니페스트에서 확인(G8) ⑵ b3s 의 `actor/entropy` 상승 시점과 `meta_emit_rate`·`rmeta_*` 를 겹쳐 **엔트로피 경로**를 다시 후보화 ⑶ `CLAIMS:639` 정정문 초안(⛔codex-sol 게이트 후).
+★**규율(오늘 일곱 번째)**: ★**기제 문장은 코드 docstring 한 줄로 죽거나 산다.** 오늘 네 개의 기제 서술을 검사했고 — 내 것 둘(0811k), 기록된 것 둘(`:641` 약화·`:639` 반박) — **셋이 틀렸다.** 기제를 쓰기 전에 **그 성분의 구현 주석을 먼저 읽어라.**
