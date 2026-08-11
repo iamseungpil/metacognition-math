@@ -7785,3 +7785,9 @@ b3s 는 floor 외에도 shiftonly 설정이 함께 다르다 ⇒ **단일 변수
 
 ★**여는 것**: ⑴ b3s 런처의 실제 `dcpo_meta_floor` 값을 매니페스트에서 확인(G8) ⑵ b3s 의 `actor/entropy` 상승 시점과 `meta_emit_rate`·`rmeta_*` 를 겹쳐 **엔트로피 경로**를 다시 후보화 ⑶ `CLAIMS:639` 정정문 초안(⛔codex-sol 게이트 후).
 ★**규율(오늘 일곱 번째)**: ★**기제 문장은 코드 docstring 한 줄로 죽거나 산다.** 오늘 네 개의 기제 서술을 검사했고 — 내 것 둘(0811k), 기록된 것 둘(`:641` 약화·`:639` 반박) — **셋이 틀렸다.** 기제를 쓰기 전에 **그 성분의 구현 주석을 먼저 읽어라.**
+
+**★0811m 후속 — G8(팔 정체) 통과, 경계 ⑴ 닫힘.** 런처 실측:
+`h100std_rq3v2f_b3s.yaml` **`dcpo_meta_floor=0.05`** · `b3sh`/`b3shf`/`b3null` **명시 0.0** ·
+`b3p`/`b3nopmi` **미지정 → config 기본** `configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:154` **`dcpo_meta_floor: 0.0`**.
+⇒ **여섯 팔 중 floor 가 켜진 것은 b3s 하나뿐**이고, 그것이 발화를 유지한 유일한 팔이다. 0811l 의 순서는 이 축에서 깨끗이 갈린다.
+⚠남는 경계: b3s 는 shiftonly 설정도 함께 다르므로 **단일 변수는 아니다**(floor 만 다른 팔은 없다).
