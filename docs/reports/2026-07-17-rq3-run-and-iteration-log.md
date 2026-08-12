@@ -8487,3 +8487,19 @@ N2(`rq3v2f-b3null-eval-0812b`)는 사망표식 0, 진행 중. 취소 시도 2건
 **수리(커밋 8d5274a, 777 passed)**: ⓐknob_registry.py — 비문자열 iterable 전부 수용(str/None 은 여전히 거부, no-ack 음성 대조로 fail-closed 보존 확인) ⓑ`dcpo_cal_mode` KNOBS.yaml 등록(1차 사망의 잠재 2차 원인 예방) ⓒ런처에 공백-무 hydra 리스트로 ack 3종 명시. **A18 은 "차분 승인 대기"였으나 발사의 선행조건으로 승격되어 실전 수리** — 근거: 게이트가 이 버그와 결합하면 모든 신규 tarball 팔이 발사 불능.
 
 **재배포**: tarball `rcal-infogain-0812b` 자산 **512126325**(스캔 clean·A18 수리+KNOBS 등록 실림을 자산 실사로 확인) → 1차 잡 취소(sleep 86400 헛점유) → **`rq3v2f-b3p3-0812b` 제출**(22:40Z 경, f43d5fa).
+
+## 0812 — **b3p3 step 1: R_cal 수리 G2(발화) 실전 확정** (23:20Z 관측)
+
+| step 1 | b3p3(수리) | b3p2(고장 대조) |
+|---|---|---|
+| **cal_positive_rate** | **0.420** | 0 (구조상 불가) |
+| cal_region_reward max | **+0.926** (= 이론 최대 log2(0.95/0.5)) | 0.000 |
+| cal_region_reward mean | −0.031 (상벌 혼합) | −0.17 (벌점만) |
+| conf_parse_rate (메타행) | 0.986 | — (지표 자체가 신설) |
+| conf_gap_mean | 0.377 (**학습이 내릴 목표 수치**) | — |
+| meta_first / think | **0.000 / 0.996** (습관 보존) | — |
+| emission / entropy / reward | 0.973 / 0.168 / 0.475 | 0.945 / 0.165 / 0.328(24) |
+
+★G2 완결: "confidence 를 잘 맞추면 상을 받는다"가 42%의 롤아웃에서 실제 지급됐고, 최대치가 이론값과 일치(배선 정밀 검증). 파싱 98.6%. 습관 파수꾼 정상. **이제 R_cal 은 처음으로 calibration 을 가르칠 수 있는 보상이다.** 관전점: conf_gap_mean 하강 여부·cal_positive_rate 추세·(eval 시) AUROC 가 동전(0.55)에서 이륙하는가.
+
+b3p2 는 step24 후 하트비트 단절(선점 추정) — 재개 감시.
