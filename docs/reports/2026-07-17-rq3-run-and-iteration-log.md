@@ -8195,3 +8195,40 @@ H100×4 노드를 **각각 하나씩** 점유하고 있다.
 ★**규율(신설)**: **`FINAL PUSH DURABLE`·`rc=0`·`+ break` 는 "그 시점에 끝났다"이지 "지금도 끝나 있다"가 아니다.**
 Standard 티어에서는 **완주 뒤에도 재큐될 수 있으므로, 완주 기록에는 관측 시각을 박고 재점검한다.**
 그리고 ★**완주 즉시 보존본을 뜬다** — b3nopmi 는 보존이 있어 살았고 b3shf 는 없어서 위험하다.
+
+## EXP-0812a (탐색 · ⛔판정 아님 · ★★핵심) — **T1 승자는 DCPO 였고, GDPO 스칼라 판은 만들어졌으나 안 돌았다. 그리고 두 세대의 차이는 "두-패스 보존"이다**
+
+**① 사용자 제안(GDPO 에 메타 유틸리티를 스칼라로)은 이미 구현돼 있다 — `TRIOBJ_META_V1`.**
+`archive/runs_archive/h200_triobj_meta_v1.yaml`: *"**Env-reward-only GDPO multi-head**: correctness(1.0) + meta_revision_utility(0.5) + meta_commit_shape(0.3). `TRIOBJ_META_V1` in `_VANILLA_MODES` → teacher OFF, **directly comparable to base GRPO**. **NO verl-internal advantage/token-mask surgery.** **Two-pass output: preliminary boxed → `<|meta|>` verify/confidence → final boxed (LAST boxed graded)**"*
+★**네 곳 다 확인했다**: `CLAIMS` **0건** · 원장 **0건** · HF `metacot-h200-triobj-meta-v1` **404** · wandb 100런 중 **0건**.
+⇒ **만들어졌지만 결과가 없다.** (⚠h200 세대가 다른 wandb 프로젝트일 가능성은 남는다.)
+
+**② ⚠그런데 그 헤드도 지금 켜면 조용히 0 이 된다.**
+`src/training/meta_revision_rewards.py:97` — `boxed=[b for b in _all_boxed(text) if b]` · **`if len(boxed) < 2: scores.append(0.0); continue`**.
+`\boxed` **2개 이상** 비율 실측:
+
+| | ≥2 비율 |
+|---|---|
+| **b2p gs300**(base, RL 후) | **0.0065** |
+| b3s gs300 | 0.0185 |
+| **pmishift**(instruct, T1 승자) | **0.2352** |
+| raw1763 = 현재 init 데이터 | 0.2008 |
+| SFT1 | 0.0292 |
+
+⇒ ★**base 팔에서는 99.35% 가 0 점**이 된다. **pmi_shift 와 정확히 같은 침묵 실패**다.
+
+**③ ★★그리고 T1 승자는 GDPO 가 아니라 DCPO 였다.** wandb 런 이름이 authority:
+`triobj_dcpo_v4_pmishift_h100_4x4k` = **pmishift(T1 승자) = TRIOBJ_DCPO_V4 + pmi_shift** ·
+`gandhi_metasft_vanilla_h100_4x4k` = gandhi 는 vanilla · `shiftonly_pmishift_h100_4x4k` = shiftonly.
+⇒ ★**"DCPO 가 범인"은 성립하기 어렵다 — 같은 DCPO+pmi_shift 레시피가 instruct 에서 이기고 base 에서 졌다.**
+
+**④ ★★★그럼 두 세대의 차이는 무엇인가 — 두-패스 보존**
+init 데이터의 두-패스 비율은 **20.08%**(raw1763)로 같은데, **instruct 는 23.5% 로 지켰고 base 는 0.65% 로 파괴**했다.
+그리고 **pmi_shift 도 `meta_revision_utility` 도 둘 다 "메타 앞에 작업이 있어야" 작동한다**(전자는 `response_prefix`, 후자는 첫 `\boxed`).
+⇒ ★**주가설 재정렬: 범인은 SFT2·DCPO·pmi_shift·메타내용 중 하나가 아니라, "RL 이 보상이 참조하는 구조를 파괴했다" 이다.**
+그리고 그 파괴는 **정답·길이 압력만으로 일어난다**(b2p 는 메타 보상이 0인데도 그랬다).
+
+**⚠경계** · TRIOBJ_META_V1 의 wandb 부재는 **다른 프로젝트일 가능성** 미배제 · instruct vs base 는 **기질도 다르다**(교란) ·
+`\boxed`≥2 는 두-패스의 **대리 지표**이지 정의가 아니다 · **EXP 트랙**.
+★**여는 것**: ⑴**두-패스를 강제**했을 때 base 에서도 두 헤드가 살아나는가(하니스 강제 or 형식 보상) ⑵ pmishift(instruct) 의 학습 중 두-패스 궤적 — 언제부터 23.5% 인가 ⑶ TRIOBJ_META_V1 이 정말 미실행인지 h200 프로젝트 확인.
+★**규율**: ★**보상 헤드를 고르기 전에 "그 헤드가 요구하는 구조가 롤아웃에 남아 있나"를 세라.** 오늘 두 헤드가 같은 이유로 0 이었다.
