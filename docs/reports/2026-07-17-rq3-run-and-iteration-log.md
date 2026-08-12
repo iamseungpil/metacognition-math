@@ -8390,3 +8390,13 @@ N2(`rq3v2f-b3null-eval-0812b`)는 사망표식 0, 진행 중. 취소 시도 2건
 1. **0812c 인과 승격 조건 = 지금 돌고 있는 재빌드.** 게이트가 요구한 "동일 init·코퍼스에서 verify-mask on/off 만 바꾼 SFT 대조"가 정확히 `sft-b2p3-vunmask`(데이터 단일변수 수술)다. b2p3 gs0 사진의 meta-first 가 ≪1.0 이면 인과 확정, 1.0 그대로면 기전은 SFT1/직렬화 쪽.
 2. **0812d FAIL 사유**: 전 헤드 0 ≠ "메타 보상만 제거" — 경로·whitening·수집 궤적이 함께 달라 귀속 불가. 관측(2체크포인트 2.45pp 차이)만 유효. 귀속하려면 2×2(경로 × 보상 on/off)·복수 seed·`\tiVar` 채점 감사. **"기하 기소·보상 면책" 서술은 원장 EXP-0812d 에서 헤드라인으로 쓰지 않는다.**
 3. **0812e 는 "전 팔의 진짜 원점" → "동일 분기·동일 하니스 팔의 공통 기준선"으로 강등** + eval manifest 미작성이 결손으로 지적됨(여는 것에 등재).
+
+## 0812 운영 — 재빌드 3차(-0812c) 사인 확정 + 4차(-0812d) 발사
+
+**3차 사인(로그 검시)**: ①**sed 인용 파열 확정** — 명령 전체가 `bash -c '...'` 단일따옴표 래퍼인데, 내가 넣은 `sed -i 's|dataset_path: …|…|'` 의 **안쪽 단일따옴표가 바깥 래퍼를 조기 종료** → `dataset_path:` 가 명령으로 실행됨(`amlt_run.sh: line 77: dataset_path:: command not found` ×2 = 파이프 세그먼트 2개). 0718 amlt-bashc 함정의 재발형. ②스테이징 5연패("FATAL init missing")는 stage_init.log 가 노드와 함께 소실돼 미확정 — 단 자산 실재는 로컬 실사로 확인(`models/b2p_v8meta_strict_sft/config.json` present=True, 이름 문제 아님).
+
+**4차 수리 3종**: ⑴스테이징 python 을 **b2p2 베이크에서 실제 통과한 원형으로 회귀**(cache+copytree, 파일 리다이렉트·local_dir 제거) + 셸 레벨 `HF_HUB_DISABLE_PROGRESS_BARS/XET/TQDM_DISABLE` export ⑵sed 를 **무따옴표·무공백** `s/rv_redirect_verify_functional/rvfull_verify_unmasked/` 로(치환 대상은 config 내 1곳뿐임을 grep 확인) ⑶스테이징·코퍼스·config 스왑 실패를 전부 `exit 1` 즉사로. **기계검증**: 본문 내 단일따옴표 수 = 래퍼 2개뿐(작동 원본과 동일), yaml 파스 OK.
+
+★**규율 신설**: amlt 런처의 명령 본문에 **단일따옴표를 절대 넣지 않는다**(본문이 `bash -c '…'` 로 싸인다). 발사 전 기계검사: `script.count("'") == 2`.
+
+`sft-b2p3-vunmask-0812d` 제출 성공(06:58Z 경). 참고: `amlt list` 의 preparing 은 낡은 캐시일 수 있다 — **failed 판정은 `amlt status` 로**.

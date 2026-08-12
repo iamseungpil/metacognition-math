@@ -83,32 +83,31 @@ jobs:
         python -c "import deepspeed" 2>/dev/null || pip install -q deepspeed 2>&1 | tail -1
 
         # stage the SFT1 init from HF (retry + verify)
+        export HF_HUB_DISABLE_PROGRESS_BARS=1
+        export HF_HUB_DISABLE_XET=1
+        export TQDM_DISABLE=1
         python -c "
-        import os, sys, time, shutil
-        sys.stdout = sys.stderr = open(\"/scratch/stage_init.log\", \"w\", buffering=1)
-        os.environ[\"HF_HUB_DISABLE_PROGRESS_BARS\"]=\"1\"
-        os.environ[\"HF_HUB_DISABLE_XET\"]=\"1\"
+        import os, time, shutil
         from huggingface_hub import snapshot_download
-        # 0812b fix: the cache+copytree path died mid-copy on a tqdm BrokenPipe under the
-        # amlt runner (waitstatus 127, ls FATAL). Progress bars OFF + direct local_dir
-        # download removes both the tqdm thread and the copy step.
+        dst = \"/scratch/models/b2p_v8meta_strict_sft\"
         for attempt in range(5):
             try:
-                snapshot_download(\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"], allow_patterns=[\"models/b2p_v8meta_strict_sft/*\"], local_dir=\"/scratch\")
-                assert os.path.exists(\"/scratch/models/b2p_v8meta_strict_sft/config.json\"), \"config.json missing\"
+                p = snapshot_download(\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"], allow_patterns=[\"models/b2p_v8meta_strict_sft/*\"])
+                src = os.path.join(p, \"models\", \"b2p_v8meta_strict_sft\")
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+                assert os.path.exists(os.path.join(dst, \"config.json\")), \"config.json missing\"
                 print(\"staged SFT1 init OK\")
                 break
             except Exception as e:
                 print(\"stage attempt\", attempt, \"failed:\", repr(e)[:120])
                 time.sleep(20 * (attempt + 1))
         "
-        tail -3 /scratch/stage_init.log
-        ls -l /scratch/models/b2p_v8meta_strict_sft/config.json || echo "[YAML][stage] FATAL init missing"
+        ls -l /scratch/models/b2p_v8meta_strict_sft/config.json || { echo "[YAML][stage] FATAL init missing"; exit 1; }
         python -c "import os,shutil;from huggingface_hub import hf_hub_download;p=hf_hub_download(\"iamseungpil/metacot-rv\",\"data/rvfull_verify_unmasked.parquet\",repo_type=\"dataset\",token=os.environ[\"HF_TOKEN\"]);shutil.copy(p,\"/scratch/metacognition/data/rvfull_verify_unmasked.parquet\");print(\"[corpus] fixed parquet staged\")"
-        ls -l /scratch/metacognition/data/rvfull_verify_unmasked.parquet || echo "[YAML][corpus] MISSING rvfull_verify_unmasked.parquet"
+        ls -l /scratch/metacognition/data/rvfull_verify_unmasked.parquet || { echo "[YAML][corpus] MISSING rvfull_verify_unmasked.parquet"; exit 1; }
         cp /scratch/metacognition/configs/sft_b2p2_rvfull.yaml /scratch/metacognition/configs/sft_b2p3_vunmask.yaml
-        sed -i 's|dataset_path: data/rv_redirect_verify_functional.parquet|dataset_path: data/rvfull_verify_unmasked.parquet|' /scratch/metacognition/configs/sft_b2p3_vunmask.yaml
-        grep -q rvfull_verify_unmasked /scratch/metacognition/configs/sft_b2p3_vunmask.yaml || echo "[YAML] config swap FAILED"
+        sed -i s/rv_redirect_verify_functional/rvfull_verify_unmasked/ /scratch/metacognition/configs/sft_b2p3_vunmask.yaml
+        grep -q rvfull_verify_unmasked /scratch/metacognition/configs/sft_b2p3_vunmask.yaml || { echo "[YAML] config swap FAILED"; exit 1; }
 
         nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
 
