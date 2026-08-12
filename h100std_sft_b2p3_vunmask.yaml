@@ -84,7 +84,8 @@ jobs:
 
         # stage the SFT1 init from HF (retry + verify)
         python -c "
-        import os, time, shutil
+        import os, sys, time, shutil
+        sys.stdout = sys.stderr = open(\"/scratch/stage_init.log\", \"w\", buffering=1)
         os.environ[\"HF_HUB_DISABLE_PROGRESS_BARS\"]=\"1\"
         os.environ[\"HF_HUB_DISABLE_XET\"]=\"1\"
         from huggingface_hub import snapshot_download
@@ -101,6 +102,7 @@ jobs:
                 print(\"stage attempt\", attempt, \"failed:\", repr(e)[:120])
                 time.sleep(20 * (attempt + 1))
         "
+        tail -3 /scratch/stage_init.log
         ls -l /scratch/models/b2p_v8meta_strict_sft/config.json || echo "[YAML][stage] FATAL init missing"
         python -c "import os,shutil;from huggingface_hub import hf_hub_download;p=hf_hub_download(\"iamseungpil/metacot-rv\",\"data/rvfull_verify_unmasked.parquet\",repo_type=\"dataset\",token=os.environ[\"HF_TOKEN\"]);shutil.copy(p,\"/scratch/metacognition/data/rvfull_verify_unmasked.parquet\");print(\"[corpus] fixed parquet staged\")"
         ls -l /scratch/metacognition/data/rvfull_verify_unmasked.parquet || echo "[YAML][corpus] MISSING rvfull_verify_unmasked.parquet"
