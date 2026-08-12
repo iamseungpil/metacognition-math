@@ -8408,3 +8408,11 @@ N2(`rq3v2f-b3null-eval-0812b`)는 사망표식 0, 진행 중. 취소 시도 2건
 **5차 수리**: sed 3키(dataset_path + `b2p2_rvfull_sft→b2p3_vunmask_sft` + run_name) + 가드 3중(교재 grep·output_dir grep·**잔존 b2p2 문자열 0 확인**). 발사 전 로컬 시뮬레이션으로 파생 config 4키 전부 검증, 단일따옴표 count==2 통과. `sft-b2p3-vunmask-0812e` 제출, 4차는 취소(푸시 재시도+12h sleep 로 H100×4 헛점유).
 
 ★**규율 보강(G8-스테이징의 따름정리)**: 런처가 config 를 노드에서 파생할 때, **파생 후 config 의 "정체성 키 전부"(dataset·output_dir·run_name)를 grep 가드**하고 **원본 이름의 잔존 0** 을 함께 확인한다 — "one-key" 라는 설계 자체가 이름을 믿은 것.
+
+## 0812 운영 — **재빌드 5차 완주·`models/b2p3_vunmask_sft` HF 착지(4/4샤드+config, 14파일)** → 수술 후 사진 발사
+
+`sft-b2p3-vunmask-0812e`: 3키 스왑 가드 통과, 3 epoch 완주(loss 곡선 4차와 일치=재현성), **push attempt 1 에서 4/4 durable**(08:55Z 관측, HfApi 실사로 교차확인). ⚠**게이트 eval 은 또 죽었으나 이번 사인은 나 자신** — 4차 스테이징 수리 때 넣은 `TQDM_DISABLE=1` 이 vLLM `llm.generate` 의 진행바-경과시간 나눗셈을 0 으로 만듦(`_run_engine: total_in_toks / pbar.format_dict["elapsed"]` ZeroDivisionError). ⇒ gate json 은 이번 판에도 없음. **판정은 어차피 수술 후 사진이 담당**(같은 하니스 전/후 쌍)이라 베이크 재실행은 불필요; 다만 ★규율: **vLLM 이 도는 잡에 TQDM_DISABLE 을 export 하지 말 것**(HF_HUB_DISABLE_PROGRESS_BARS 만).
+
+**수술 후 사진 발사**: `h100std_b2p3init_1030_eval.yaml`(sft2init eval 복제, 이름해소→`("b2p3_vunmask_sft",)` 고정, SPEC=`b2p3init:eval/b2p3init_gs0:0`) — 발사 전 4중 검사(잔존 b2p2=0·yaml 파스·따옴표 2·HF 프리픽스 충돌 0) 통과, `b2p3init-eval-0812` 제출(09:00Z 경).
+
+★**판정선(재확인)**: eval/b2p3init_gs0 착지 후 — 첫줄 `<|meta|>` ≪1.0(이상적 `<think>` 복귀) AND 정확도 ≥0.658 근방 ⇒ **수리 성공 + C-034 의 마스크 인과 승격**. meta-first 1.0 그대로면 기전은 SFT1/직렬화(C-034 유지·수리 무효).
