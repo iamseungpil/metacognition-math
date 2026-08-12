@@ -8296,3 +8296,12 @@ E0(메타 위치 붕괴 시점)를 wandb rollouts 표(`media/table/dcpo/rollouts
 **② ⛔N0 실기.** 04:00 확인 시 `checkpoints/rq3v2f_b3shf/global_step_300·301` 은 **이미 프루닝**(재개 잡이 gs303·304 저장 → keep-3). **오늘 아침 세운 규율("완주 즉시 보존본을 떠라")이 몇 시간 만에 실현된 실패다.**
 조치: **gs302(최근접 생존 스텝) 를 `preserved/mechanism_alive/rq3v2f_b3shf_gs302/` 로 서버측 복사(23파일) 완료.**
 피해 평가: ⑧/N3 은 gs300 대신 **gs302(+2스텝, 같은 붕괴 레짐)** 로 대체 — 과학적 손실 경미(발화 .059 팔), 단 "gs300" 표기는 전부 gs302 로 정정 필요.
+
+## 0812 04:10 — **웨이브 0/1 개시**: E5·E6 완료 + N2·N4 발사
+
+**E5(len_cost 직독)**: 승자 계보 config(`stage2c:122`→현행 `stage3b:160`) = **0.08** · b3s 앵커 팔 = **0.0**(런처 오버라이드). ⇒ T2 는 b3s 패리티대로 **len_cost 0** — 계획 문구("패리티 원칙이지 −2pp 주범 제거 기대 아님") 그대로.
+**E6(앵커 재현)**: b2p 앵커 77.325 vs `robust_grade` 재채점 **0.7732**(0811q) — 일치 ✅. 채점기 동일성 전제 성립.
+**N2 발사**: `rq3v2f-b3null-eval-0812` — b3null gs303(m4/o4/e4 확인) → `eval/rq3v2f_b3null_gs303`(부재 확인 후 신규). 런처 `h100std_rq3v2f_b3null_1030_eval.yaml` — 템플릿(b3nopmi eval) 대비 **SPEC 한 줄 + description 만 차이**(G8 diff 확인).
+**N4 발사**: `sft2init-eval-0812` — `models/b2p2_rvfull_eb16_sft` 를 **머지 없이 그대로**(SFT 저장은 HF 형식) → `eval/sft2init_gs0`(부재 확인). C-017/C-018 의 네 번째 칸이자 EXP-0812c 의 eval-측 교차검증(gs0 에서 meta-first 인가). 게이트+머지 블록만 직다운로드로 교체(diff 61줄).
+⚠경미: 두 런처의 **잡 이름 필드가 템플릿 그대로**(`h100_rq3v2f_b3nopmi_eval`) — 실험 이름이 갈라 주므로 기능 무해, 다음 판부터 정정.
+쿼터: 재개 잡 2개(8GPU) + 이 둘(8GPU) = **16/16 만석**. N1 은 A14 승인 대기 · 재개 잡 취소는 사용자 결정 대기.
