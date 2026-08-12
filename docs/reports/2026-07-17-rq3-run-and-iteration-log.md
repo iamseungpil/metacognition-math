@@ -8320,3 +8320,14 @@ eval(N2·N4)은 수리를 막지 않는 병렬 작업이며, 특히 **N4 = 수�
 - `messages` 전행 바이트 불변 · redirect 행 바이트 불변 검증 완료. **단일 변수 수술**(퇴화 5.5% 등 다른 결함은 의도적으로 불변 — 대조 가능성 유지).
 
 **③ 재정렬된 임계 경로**: 수리 SFT2 굽기(레시피 = `h100std_sft_b2p2_rvfull.yaml` 그대로: SFT1 init·3ep·lr 1e-5·max_len 4096, 데이터만 교체, 출력명 신규 `models/b2p3_vunmask_sft`) → **gs0 eval(N4 하니스)로 수리 확인** → RL(b2p 레시피). ⚠쿼터 16/16 만석 — **발사는 노드 확보 대기**(유휴 재개 잡 취소 승인 또는 eval 1개 종료).
+
+## 0812 05:05 — **승인 실행 일괄**: 401 재발사 · 옛 잡 2개 정지 · sft.py 수리 push · 재빌드 발사
+
+**① 웨이브1 eval 401 정정**: 최초 발사(04:05) 시 **발사 셸에서 `.env` 를 source 하지 않아 `${GH_TOKEN}` 이 빈 값**으로 치환 → 노드에서 code tar `curl 401`. 실패 잡은 재시도 무의미(빈 토큰 고정)라 취소 불요 판정 후 **`.env` 소스된 셸에서 재발사**: `rq3v2f-b3null-eval-0812b` · `sft2init-eval-0812b`. ★규율: **`amlt run` 은 반드시 `.env` 소스된 셸에서** — 치환은 제출 시점이다.
+**② 승인된 정지**(사용자: "불필요한 실험은 멈추면 돼"): `rq3v2f-b3nopmi-0807`(재완주 후 유휴)·`rq3v2f-b3shf-0810b`(붕괴 구간 재학습) 취소 → **8 GPU 확보**.
+**③ 승인된 코드 수리 push**(`b360348`, GitHub master 반영):
+- `src/training/sft.py`: `_should_mask_prefix(wrong_prefix, scenario)` — **redirect(와 scenario 무필드 레거시)만 마스크**, verify 는 전응답 학습. 레거시 코퍼스는 바이트 동일 학습(하위호환).
+- `tests/test_sft_prefix_mask_scenario.py`: 계약 5건. **전체 750 passed / 8 skipped.**
+- `CLAUDE.md` 계보 정정(378행 판이 현행 init 으로 잘못 기재돼 있던 것) · `docs/COLLABORATION_REQUEST.md` 에 협업자 공지(구 init 팔들은 meta-first 습관 공유 — 위치 민감 분석 전제 깨짐).
+**④ 재빌드 발사**: `sft-b2p3-vunmask-0812` — SFT1 init·3ep·lr 1e-5 그대로, 데이터만 `rvfull_verify_unmasked.parquet`(HF 다운로드), config 는 노드에서 one-key sed 파생, 출력 **`models/b2p3_vunmask_sft`**(신규명). 노드 sft.py 는 구판이지만 **데이터 수준 수리라 결과 동일**(빈 prefix → 마스크 없음).
+**현재 점유**: eval 2(8 GPU) + SFT 재빌드(4) = 12/16. **다음**: 재빌드 완료 → sft2init-eval 하니스로 **수술 전/후 비교** → 통과 시 RL(b2p 레시피).
