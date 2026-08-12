@@ -435,3 +435,25 @@ base 기질(`Qwen/Qwen3-8B-Base`)에서 세 팔을 돌리는 중이다 — 2026-
 **당신 재현과 겹치지 않는다** — 우리는 base 기질에서 **노브 원인 규명**, 당신은 instruct 기질에서
 **독립 재현**이다. 두 기질의 결과가 갈리는 것 자체가 우리가 알고 싶은 것이다.
 
+
+---
+
+## ⛔0812 필독 — SFT2 손실 마스크 결함과 수리 (모든 base-계열 재현에 영향)
+
+**발견(EXP-0812c)**: `sft.py` 는 `wrong_prefix` 가 채워진 행의 그 구간을 손실에서 뺀다. 그런데
+`rv_redirect_verify_functional.parquet` 는 **1,763행 전부**(verify 1,209 + redirect 554) 그 컬럼이
+채워져 있어, SFT2 가 **"메타 앞 추론을 생산하는 것"을 단 한 행도 가르치지 않았다.** 결과: RL step 1 부터
+온폴리시 롤아웃의 97.2%가 `<|meta|>` 로 시작(생각 없이 메모부터). 이 상태에선 pmi_shift(메타 전/후 믿음 대비)·
+calibration(증거 후 선언) 등 모든 메타 보상의 전제가 깨진다.
+
+**수리 (0812 push)**:
+1. **코드**: `src/training/sft.py` 에 `_should_mask_prefix(wrong_prefix, scenario)` — **redirect 행(과
+   scenario 컬럼이 없는 레거시 데이터)만 마스크**, verify 는 전응답 학습. 회귀 테스트
+   `tests/test_sft_prefix_mask_scenario.py` (계약 5건). 전체 스위트 747 passed.
+2. **데이터**: `metacot-rv/data/rvfull_verify_unmasked.parquet` — verify 행 wrong_prefix 비움(그 외 바이트 불변).
+3. **재빌드**: `h100std_sft_b2p3_vunmask.yaml` → `models/b2p3_vunmask_sft` (기존 init 이름은 절대 재사용 금지).
+
+**하위호환**: scenario 컬럼이 없는 코퍼스는 구 동작과 바이트 동일하게 학습된다. 구 코드로 재현하려면
+수리 데이터를 쓰면 결과가 동일하다(빈 prefix → 마스크 없음).
+⚠**구 init(`models/b2p2_rvfull_eb16_sft`)으로 학습한 모든 팔은 meta-first 습관을 공유한다** — 위치 민감 분석
+(메타 전/후 대비, confidence 시점) 은 그 팔들에서 전제가 깨져 있음을 감안할 것.

@@ -41,6 +41,20 @@ def _load_messages(raw_messages):
     raise TypeError(f"Unsupported messages payload type: {type(raw_messages)!r}")
 
 
+def _should_mask_prefix(wrong_prefix: str, scenario: str) -> bool:
+    """Decide whether the wrong_prefix head of the assistant target is loss-masked.
+
+    0812 fix (EXP-0812c / ledger d84f17f): masking the prefix is only correct when
+    the prefix is genuinely flawed — REDIRECT rows. Applying it to VERIFY rows,
+    whose prefix is the model's own sound first pass, removed every "reason
+    first" example from SFT2 (1,209/1,763 rows) and produced meta-first
+    generation from RL step 1 (97.2% of on-policy rollouts open with <|meta|>).
+    Rows with no scenario field keep the legacy behavior (mask) so corpora that
+    predate the scenario column train byte-identically.
+    """
+    return bool(wrong_prefix) and scenario in ("", "redirect")
+
+
 def _load_teacher_kl_config(config: dict[str, Any]) -> dict[str, Any]:
     teacher = dict(config.get("teacher_kl", {}) or {})
     teacher.setdefault("enabled", False)
@@ -109,7 +123,7 @@ def prepare_sft_dataset(
         # have an empty wrong_prefix and keep the prompt-only boundary mask.
         labels = full_ids.copy()
         wrong_prefix = str(row.get("wrong_prefix", "") or "")
-        if wrong_prefix:
+        if _should_mask_prefix(wrong_prefix, str(row.get("scenario", "") or "")):
             prefix_len = len(tokenizer.encode(wrong_prefix, add_special_tokens=False))
             spans = redirect_train_spans(prompt_len, prefix_len, len(full_ids))
             keep = build_segment_loss_mask(len(full_ids), spans)

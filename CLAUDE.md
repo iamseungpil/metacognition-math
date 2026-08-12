@@ -80,11 +80,14 @@ SFT inputs (current = **RQ3v2 think-on** matched ladder — 2단 SFT 스택):
 - b0p arm: data/b0on_v8base_strict_sft.parquet → models/b0p_v8base_strict_sft
   (init Qwen3-8B-Base, 3ep lr 1e-5) — meta 제거된 matched base
 - b2p/b3p arm: **SFT1** data/b2on_v8meta_strict_sft.parquet → b2p_v8meta_strict_sft
-  (init Qwen3-8B-Base, 3ep lr 1e-5) → **SFT2** data/b2p2_rvseg_sft2.parquet →
-  **models/b2p2_rvseg_sft** = RL init for BOTH b2p and b3p (2ep lr 2e-6 light top-up)
-  - ⚠️ SFT2 데이터는 rv_redirect_verify_functional(1,763행)의 378행 부분집합.
-    E-093에서 배제 근인 확정: `think-closed` 조건이 위장된 시나리오 필터라
-    redirect가 554→67(1/8.3)로 기아. 유효 학습량 ≈T1의 1/35. **재구축 대기**.
+  (init Qwen3-8B-Base, 3ep lr 1e-5) → **SFT2** data/rv_redirect_verify_functional.parquet
+  (raw 1,763행, E-093/094/095 수리판) → **models/b2p2_rvfull_eb16_sft** = 현행 RL init
+  (3ep lr 1e-5). ⚠️구 378행 판(`b2p2_rvseg_sft2.parquet`→`models/b2p2_rvseg_sft`)은 은퇴.
+  - ⛔**0812 발견(EXP-0812c)**: SFT2 는 wrong_prefix 를 **전 행**(verify 1,209 포함)에서
+    손실-마스크해 "메타 앞 추론 생산"을 한 행도 가르치지 않았다 → RL step 1 부터
+    온폴리시 97.2%가 meta-first. **수리**: ①`sft.py:_should_mask_prefix` — redirect(와
+    scenario 무필드 레거시)만 마스크 ②수리 코퍼스 `data/rvfull_verify_unmasked.parquet`
+    (HF metacot-rv) ③재빌드 출력 `models/b2p3_vunmask_sft` (h100std_sft_b2p3_vunmask.yaml).
 
 SFT inputs (retired = RQ3 think-off 세대, 부록으로만):
 - data/b0_gold_sft.parquet → models/b0_gold_sft (구 B0 init) — 공개 HF gold,
