@@ -447,6 +447,16 @@ live:
     default: 0.0
     note: "Group-centered: when all 8 rollouts emit it is a group constant => advantage 0.
       Inert exactly when emission is healthy, which is when you would not miss it."
+  dcpo_cal_mode:
+    kind: knob
+    status: live
+    set_at: "h100std_rq3v2f_b3p3.yaml (hydra ++algorithm.dcpo_cal_mode=info_gain)"
+    code_default: "brier_neg at src/training/verl_sdc.py (call site) / dcpo_region.py (strict-validated)"
+    default: brier_neg
+    note: "R_cal repair mode (0812). brier_neg = legacy -(conf-c)^2 (ceiling 0, silence
+      unbeatable). info_gain = rewarding-doubt log score log2(conf_c/0.5)|log2((1-conf_c)/0.5),
+      conf clamp [0.05,0.95], conf parsed inside closed meta blocks only. Owner rq3v2f_b3p3;
+      promote-or-remove after the b3p3-vs-b3p2 verdict. Unknown values raise (fail-closed)."
   dcpo_format_neg:
     kind: knob
     status: live

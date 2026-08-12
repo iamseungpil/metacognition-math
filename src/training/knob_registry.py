@@ -165,7 +165,18 @@ def validate(algorithm_cfg: Any, registry_path: str | None = None) -> List[Tuple
     }
     if load_bearing:
         acked = _read(algorithm_cfg, _ACK_KEY, None)
-        acked_set = set(acked) if isinstance(acked, (list, tuple)) else set()
+        # A18 fix (0812): hydra/OmegaConf hands the ack list over as a ListConfig,
+        # which is neither list nor tuple — the old isinstance check silently read
+        # it as an EMPTY set, making the gate impossible to satisfy from a launcher
+        # override (first tripped live by rq3v2f_b3p3). Accept any non-string
+        # iterable of names; a scalar/str ack stays rejected (must be a list).
+        if acked is None or isinstance(acked, str):
+            acked_set = set()
+        else:
+            try:
+                acked_set = {str(x) for x in acked}
+            except TypeError:
+                acked_set = set()
         missing = sorted(load_bearing - acked_set)
         extra = sorted(acked_set - load_bearing)
         if missing:

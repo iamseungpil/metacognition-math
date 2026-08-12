@@ -245,6 +245,7 @@ jobs:
             ++algorithm.norm_adv_by_std_in_grpo=false \
             actor_rollout_ref.actor.entropy_coeff=0.0 \
             ++algorithm.dcpo_cal_mode=info_gain \
+            ++algorithm.dcpo_ack_load_bearing=[dcpo_meta_floor,dcpo_rmeta_source,trainer.val_before_train] \
             actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
             actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
             actor_rollout_ref.rollout.gpu_memory_utilization=0.35 \
