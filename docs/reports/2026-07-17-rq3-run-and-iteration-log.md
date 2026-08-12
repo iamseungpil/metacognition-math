@@ -8479,3 +8479,11 @@ N2(`rq3v2f-b3null-eval-0812b`)는 사망표식 0, 진행 중. 취소 시도 2건
 **G3/G6**: 주 지표 cal AUROC/ECE 궤적(원점 AUROC 0.575=동전) + gs300 vs b3p2/b2p3v — RQ5(calibration 반전 단락)·RQ2(성분 분해) 링크.
 **적대 검증**: ultracode 4렌즈(legacy-identity·math·wiring·intent) **전부 PASS**(wf_4081283c-b90); minor 6건은 두 주제(오타 무검증·멀티블록 파싱 불일치)로 수렴 — **발사 전 둘 다 수리**(strict 검증 + 전 블록 순회 파싱, 테스트 3건 추가).
 **배포**: tarball `rcal-infogain-0812` 자산 **512078265**(토큰 스캔 clean — 40-hex 가양성 2건은 매니페스트 커밋 해시, `docs/manifests export-ignore` 로 해소 8f08b9c)·자산 내 수리 코드 실림 확인(archive 실사)·노드 신선도 가드 4종 로컬 사전 통과. **`rq3v2f-b3p3-0812` 제출**(21:15Z 경, c165432). 팔 구조: b3p3 vs b3p2 = cal_mode 단일변수 / vs b2p3v = 패키지 효과(공통 init b2p3_vunmask_sft).
+
+## 0812 — b3p3 1차 발진 사망 검시·**A18 실전 수리**·재발사(rq3v2f-b3p3-0812b)
+
+**사인**: step 0 `KnobRegistryError` — 최근 커밋(8b51f85)이 켠 **load-bearing ack 게이트**를 새 tarball 이 실었는데, ①런처에 `dcpo_ack_load_bearing` 부재 + ②**A18 그대로**(OmegaConf ListConfig 인 ack 를 isinstance(list,tuple) 가 빈 집합으로 읽음)라 **오버라이드로도 통과가 원리적으로 불가능**한 상태였다. b3p2 가 무사한 이유 = 게이트 이전의 구 tarball(490407111).
+
+**수리(커밋 8d5274a, 777 passed)**: ⓐknob_registry.py — 비문자열 iterable 전부 수용(str/None 은 여전히 거부, no-ack 음성 대조로 fail-closed 보존 확인) ⓑ`dcpo_cal_mode` KNOBS.yaml 등록(1차 사망의 잠재 2차 원인 예방) ⓒ런처에 공백-무 hydra 리스트로 ack 3종 명시. **A18 은 "차분 승인 대기"였으나 발사의 선행조건으로 승격되어 실전 수리** — 근거: 게이트가 이 버그와 결합하면 모든 신규 tarball 팔이 발사 불능.
+
+**재배포**: tarball `rcal-infogain-0812b` 자산 **512126325**(스캔 clean·A18 수리+KNOBS 등록 실림을 자산 실사로 확인) → 1차 잡 취소(sleep 86400 헛점유) → **`rq3v2f-b3p3-0812b` 제출**(22:40Z 경, f43d5fa).
