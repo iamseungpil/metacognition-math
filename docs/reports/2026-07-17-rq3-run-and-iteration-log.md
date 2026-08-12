@@ -8470,3 +8470,12 @@ N2(`rq3v2f-b3null-eval-0812b`)는 사망표식 0, 진행 중. 취소 시도 2건
 **b3p2 step1~7 기록**: meta_emission **0.951~0.973 안정**(생명선), entropy 0.148~0.188(coeff0 배선 확인 — step1 로그에서 entropy_loss 항 소멸), reward 0.11~0.45 잡음 밴드, pmi_shift 헤드 발화(step1 평균 −0.11±1.02), R_cal 발화(−0.17, max 0 = 알려진 결함 형태 그대로).
 
 **운영**: b2p3v 는 재선점→queued(3회째) — gs50 durable, 자동 재개 대기. 저녁 선점 파도 지속.
+
+## 0812 — **R_cal 수리(info_gain) 구현·검증·발사 (rq3v2f_b3p3)** — 승인 서식 4칸
+
+**차분**(커밋 e829837, +94/−3 두 파일 + 테스트 117줄): ①`dcpo_region.py` `cal_mode` 노브 — 기본 `brier_neg`(레거시 바이트 동일), `info_gain` = **rewarding-doubt log score** `R_cal = log2(conf_c/0.5) if correct else log2((1−conf_c)/0.5)`, conf 클램프 [0.05,0.95] — 정직·유익(오답 앞 의심 포함) 최대 +0.93 / 오해 유발 최대 −3.32 / conf 0.5=침묵=0 (**유익한 발화가 침묵을 처음으로 이김**; 구 헤드는 천장 0 이라 침묵 최적 = conf 억제 교사) ②conf 파싱을 **닫힌 메타 블록 내부 첫 값**으로 통일(CONF 마스크 Pass-B 의미와 정렬, 미닫힘 블록 건너뜀·블록 간 슬라이스 불가) ③cal_mode 오타는 **즉사**(fail-closed, _v4_rmeta_source_strict 선례) ④진단 배열 6종 + `.get` 가드 지표 8종: `dcpo/conf_parse_rate(+meta_rows)·cal_positive_rate·conf_gap_mean·cal_group_gap_mean·meta_first_rate·think_rate`(습관 파수꾼, C-034).
+**G5(회귀)**: 신규 계약 12건 포함 전체 **777 passed / 8 skipped**. 레거시 동일성은 계약 테스트로 고정.
+**G2(발화)**: b3p3 step1 에서 `cal_positive_rate>0`(b3p2 실측 대조 = 정확히 0)·`cal_region_reward max>0` 로 확인 예정.
+**G3/G6**: 주 지표 cal AUROC/ECE 궤적(원점 AUROC 0.575=동전) + gs300 vs b3p2/b2p3v — RQ5(calibration 반전 단락)·RQ2(성분 분해) 링크.
+**적대 검증**: ultracode 4렌즈(legacy-identity·math·wiring·intent) **전부 PASS**(wf_4081283c-b90); minor 6건은 두 주제(오타 무검증·멀티블록 파싱 불일치)로 수렴 — **발사 전 둘 다 수리**(strict 검증 + 전 블록 순회 파싱, 테스트 3건 추가).
+**배포**: tarball `rcal-infogain-0812` 자산 **512078265**(토큰 스캔 clean — 40-hex 가양성 2건은 매니페스트 커밋 해시, `docs/manifests export-ignore` 로 해소 8f08b9c)·자산 내 수리 코드 실림 확인(archive 실사)·노드 신선도 가드 4종 로컬 사전 통과. **`rq3v2f-b3p3-0812` 제출**(21:15Z 경, c165432). 팔 구조: b3p3 vs b3p2 = cal_mode 단일변수 / vs b2p3v = 패키지 효과(공통 init b2p3_vunmask_sft).
