@@ -8331,3 +8331,10 @@ eval(N2·N4)은 수리를 막지 않는 병렬 작업이며, 특히 **N4 = 수�
 - `CLAUDE.md` 계보 정정(378행 판이 현행 init 으로 잘못 기재돼 있던 것) · `docs/COLLABORATION_REQUEST.md` 에 협업자 공지(구 init 팔들은 meta-first 습관 공유 — 위치 민감 분석 전제 깨짐).
 **④ 재빌드 발사**: `sft-b2p3-vunmask-0812` — SFT1 init·3ep·lr 1e-5 그대로, 데이터만 `rvfull_verify_unmasked.parquet`(HF 다운로드), config 는 노드에서 one-key sed 파생, 출력 **`models/b2p3_vunmask_sft`**(신규명). 노드 sft.py 는 구판이지만 **데이터 수준 수리라 결과 동일**(빈 prefix → 마스크 없음).
 **현재 점유**: eval 2(8 GPU) + SFT 재빌드(4) = 12/16. **다음**: 재빌드 완료 → sft2init-eval 하니스로 **수술 전/후 비교** → 통과 시 RL(b2p 레시피).
+
+## 0812 05:15 — 웨이브1 2차 정정: **N4 는 repo·이름 오지정, 재빌드는 tqdm BrokenPipe** → 수리 재발사
+
+**N4(`sft2init-eval-0812b`) 실패 원인 = 내 런처 오류 2건**: ⑴게이트가 `REPO`(dcpo-v3 **model** repo)를 봤는데 **공용 init 은 `iamseungpil/metacot`(dataset) 에 있다** ⑵이름 `b2p2_rvfull_eb16_sft` 는 **어느 repo 에도 없다** — 실물은 `models/b2p2_rvfull_sft`. RL 런처들은 **E-123 이름 해소**(eb16 우선→plain 폴백)를 이미 갖고 있었고 내가 그걸 안 옮겼다(G8 을 init 스테이징 블록에는 적용 안 함). 수리: 같은 해소 규약 이식 + dataset repo + `/scratch/init_name.txt` 로 MERGED 결정 → **`sft2init-eval-0812c`** 재발사.
+**재빌드(`sft-b2p3-vunmask-0812`) 실패 원인 = 템플릿 유래**: SFT1 init 스테이징의 cache+`copytree` 경로가 **tqdm BrokenPipe** (amlt 러너 stdout, `waitstatus 127`)로 복사 전 사망 → `FATAL init missing`. 수리: `HF_HUB_DISABLE_PROGRESS_BARS=1` + `local_dir` 직다운로드(복사 단계 제거) → **`sft-b2p3-vunmask-0812b`** 재발사.
+N2(`rq3v2f-b3null-eval-0812b`)는 사망표식 0, 진행 중. 취소 시도 2건은 "취소 불요"(이미 종료 상태).
+★규율: **런처를 복제할 때 G8 diff 는 SPEC 줄만이 아니라 자산 스테이징 블록(어느 repo·어느 이름·어떻게 받나)에도 걸어라** — RL 런처의 E-123 해소 로직이 정본이었다.

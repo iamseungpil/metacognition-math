@@ -94,24 +94,27 @@ jobs:
         export GS=$${SPEC_REST##*:}
         echo "================ ARM $${ARM} gs$${GS} -> $${UPLOAD_PREFIX} ================"
                 # 1. N4: the init is models/b2p2_rvfull_eb16_sft in HF format - verify present, download, NO merge.
+        # 0812c fix: the shared RL init lives on the DATASET repo iamseungpil/metacot, and the
+        # canonical name resolution (E-123, same as the RL launchers) tries eb16 first then plain.
         $${PYBIN} -c "
         import os
-        from huggingface_hub import HfApi
+        os.environ[\"HF_HUB_DISABLE_PROGRESS_BARS\"]=\"1\"
+        from huggingface_hub import HfApi, snapshot_download
         api=HfApi(token=os.environ[\"HF_TOKEN\"])
-        fs=api.list_repo_files(os.environ[\"REPO\"], repo_type=\"model\")
-        n=sum(1 for f in fs if f.startswith(\"models/b2p2_rvfull_eb16_sft/\"))
-        print(\"init files:\", n)
-        raise SystemExit(0 if n>=5 else \"init model MISSING on HF\")
+        fs=api.list_repo_files(\"iamseungpil/metacot\", repo_type=\"dataset\")
+        name=None
+        for cand in (\"b2p2_rvfull_eb16_sft\", \"b2p2_rvfull_sft\"):
+            if sum(1 for f in fs if f.startswith(\"models/\"+cand+\"/\"))>=5:
+                name=cand; break
+        assert name, \"init model MISSING on iamseungpil/metacot\"
+        snapshot_download(\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/\"+name+\"/*\"], local_dir=\"/scratch\")
+        assert os.path.exists(\"/scratch/models/\"+name+\"/config.json\")
+        open(\"/scratch/init_name.txt\",\"w\").write(name)
+        print(\"init resolved:\", name)
         "
         if [ "$$?" -ne 0 ]; then echo "[YAML] init model missing, abort"; exit 1; fi
-        $${PYBIN} -c "
-        from huggingface_hub import snapshot_download
-        import os
-        snapshot_download(repo_id=os.environ[\"REPO\"], repo_type=\"model\", token=os.environ[\"HF_TOKEN\"],
-            allow_patterns=[\"models/b2p2_rvfull_eb16_sft/**\"], local_dir=\"/scratch\")
-        print(\"init downloaded\")
-        "
-        MERGED=/scratch/models/b2p2_rvfull_eb16_sft
+        MERGED=/scratch/models/$$(cat /scratch/init_name.txt)
         $${PYBIN} -c "
         import json, os
         p=\"$${MERGED}/tokenizer_config.json\"

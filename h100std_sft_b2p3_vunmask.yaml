@@ -85,14 +85,16 @@ jobs:
         # stage the SFT1 init from HF (retry + verify)
         python -c "
         import os, time, shutil
+        os.environ[\"HF_HUB_DISABLE_PROGRESS_BARS\"]=\"1\"
+        os.environ[\"HF_HUB_DISABLE_XET\"]=\"1\"
         from huggingface_hub import snapshot_download
-        dst = \"/scratch/models/b2p_v8meta_strict_sft\"
+        # 0812b fix: the cache+copytree path died mid-copy on a tqdm BrokenPipe under the
+        # amlt runner (waitstatus 127, ls FATAL). Progress bars OFF + direct local_dir
+        # download removes both the tqdm thread and the copy step.
         for attempt in range(5):
             try:
-                p = snapshot_download(\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"], allow_patterns=[\"models/b2p_v8meta_strict_sft/*\"])
-                src = os.path.join(p, \"models\", \"b2p_v8meta_strict_sft\")
-                shutil.copytree(src, dst, dirs_exist_ok=True)
-                assert os.path.exists(os.path.join(dst, \"config.json\")), \"config.json missing\"
+                snapshot_download(\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"], allow_patterns=[\"models/b2p_v8meta_strict_sft/*\"], local_dir=\"/scratch\")
+                assert os.path.exists(\"/scratch/models/b2p_v8meta_strict_sft/config.json\"), \"config.json missing\"
                 print(\"staged SFT1 init OK\")
                 break
             except Exception as e:
