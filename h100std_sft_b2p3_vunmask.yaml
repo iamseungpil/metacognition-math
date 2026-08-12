@@ -107,7 +107,11 @@ jobs:
         ls -l /scratch/metacognition/data/rvfull_verify_unmasked.parquet || { echo "[YAML][corpus] MISSING rvfull_verify_unmasked.parquet"; exit 1; }
         cp /scratch/metacognition/configs/sft_b2p2_rvfull.yaml /scratch/metacognition/configs/sft_b2p3_vunmask.yaml
         sed -i s/rv_redirect_verify_functional/rvfull_verify_unmasked/ /scratch/metacognition/configs/sft_b2p3_vunmask.yaml
+        sed -i s/b2p2_rvfull_sft/b2p3_vunmask_sft/ /scratch/metacognition/configs/sft_b2p3_vunmask.yaml
+        sed -i s/b2p2-rvfull-sft2/b2p3-vunmask-sft2/ /scratch/metacognition/configs/sft_b2p3_vunmask.yaml
         grep -q rvfull_verify_unmasked /scratch/metacognition/configs/sft_b2p3_vunmask.yaml || { echo "[YAML] config swap FAILED"; exit 1; }
+        grep -q checkpoints/b2p3_vunmask_sft /scratch/metacognition/configs/sft_b2p3_vunmask.yaml || { echo "[YAML] output_dir swap FAILED"; exit 1; }
+        grep -c b2p2_rvfull_sft /scratch/metacognition/configs/sft_b2p3_vunmask.yaml && { echo "[YAML] stale b2p2 name remains in config"; exit 1; }
 
         nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
 

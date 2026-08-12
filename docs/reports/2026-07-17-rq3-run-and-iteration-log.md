@@ -8400,3 +8400,11 @@ N2(`rq3v2f-b3null-eval-0812b`)는 사망표식 0, 진행 중. 취소 시도 2건
 ★**규율 신설**: amlt 런처의 명령 본문에 **단일따옴표를 절대 넣지 않는다**(본문이 `bash -c '…'` 로 싸인다). 발사 전 기계검사: `script.count("'") == 2`.
 
 `sft-b2p3-vunmask-0812d` 제출 성공(06:58Z 경). 참고: `amlt list` 의 preparing 은 낡은 캐시일 수 있다 — **failed 판정은 `amlt status` 로**.
+
+## 0812 운영 — 4차(-0812d) 학습 완주했으나 산출물 좌초 → 5차(-0812e) 발사·4차 취소
+
+**4차 경과**: 스테이징·교재교체 전부 통과, **3 epoch 완주**(train_loss 0.277, 1113s, loss 0.95→0.11 건강 곡선). 그러나 **one-key sed 가 한 키 부족** — dataset_path 만 바꾸고 `output_dir: /scratch/checkpoints/b2p2_rvfull_sft` 는 그대로 → 모델은 b2p2 이름 폴더에 저장, EOS 게이트·measure_sft_gate·HF 푸시는 전부 없는 b2p3 경로를 조회(HFValidationError = 로컬 경로 부재 시 repo id 해석 시도) → **shards_on_hf 0/4**, 산출물 노드에 좌초. EOS rc=1·gate 크래시는 품질 신호가 아니라 **경로 부재의 동일 증상**.
+
+**5차 수리**: sed 3키(dataset_path + `b2p2_rvfull_sft→b2p3_vunmask_sft` + run_name) + 가드 3중(교재 grep·output_dir grep·**잔존 b2p2 문자열 0 확인**). 발사 전 로컬 시뮬레이션으로 파생 config 4키 전부 검증, 단일따옴표 count==2 통과. `sft-b2p3-vunmask-0812e` 제출, 4차는 취소(푸시 재시도+12h sleep 로 H100×4 헛점유).
+
+★**규율 보강(G8-스테이징의 따름정리)**: 런처가 config 를 노드에서 파생할 때, **파생 후 config 의 "정체성 키 전부"(dataset·output_dir·run_name)를 grep 가드**하고 **원본 이름의 잔존 0** 을 함께 확인한다 — "one-key" 라는 설계 자체가 이름을 믿은 것.
