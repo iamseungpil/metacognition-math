@@ -8436,3 +8436,9 @@ N2(`rq3v2f-b3null-eval-0812b`)는 사망표식 0, 진행 중. 취소 시도 2건
 부수 관측: 저장 `is_correct` 0.5288 vs robust 0.6470 (−11.8pp) — C-002 재확인. 절대값 채점에 저장 필드 금지 유지.
 
 **닫는 것**: "meta-first 는 SFT1/직렬화 탓" 대안가설(C-034 의 잔여 대안설명 중 마스크 경쟁자들) — 마스크만 바꿔 사라졌다. **여는 것**: 1차 RL(rq3v2f_b2p3v) — 고친 init 위에서 b2p 레시피 재실행, gs300 대비선은 b2p 77.32/원점 64.70.
+
+## 0812 codex-sol 게이트 2차 (EXP-0812f) — **PASS-WITH-EDITS · C-034 승격 반영**
+
+전문: `docs/reports/2026-08-12-codex-gate-exp0812f.md`. 수정 3: ①"직접 원인 확정"→**"verify 마스크 해제가 meta-first 제거에 충분하다는 강한 인과 증거"**(단일 베이크·seed 미분리 → 유일-원인 확정은 다중-seed 후) ②"정확도 무손상/비열등" 삭제→**"−1.12pp, 최대 −2.83pp 손실 가능성 배제 못함"** 병기(사전 지정 비열등 한계 부재) ③코퍼스 "byte-identical" 주장에 diff 검증 요구 — **제작 시 이미 검증됨**(messages 전행 불변·redirect 554행 불변·변경은 verify 행 wrong_prefix 열만)으로 응답. CLAIMS C-034 에 승격 문단 반영.
+
+**1차 RL(rq3v2f_b2p3v) step 1 착지(10:25Z 관측)**: **entropy 0.1734**(b3s 폭주 5.9 대비 정상 밴드), reward/score mean **0.4789**(min −1.2/max 1.0), correctness mean 0.488(±1 스케일 ⇒ 학습분포 정답률 ~74%), 응답길이 평균 602tok(8192 클립율 0.4%), KL 0(coef 0)·grad_norm 0.82·스텝당 396s. 전부 건강.
