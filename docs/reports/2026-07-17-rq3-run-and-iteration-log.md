@@ -8338,3 +8338,25 @@ eval(N2·N4)은 수리를 막지 않는 병렬 작업이며, 특히 **N4 = 수�
 **재빌드(`sft-b2p3-vunmask-0812`) 실패 원인 = 템플릿 유래**: SFT1 init 스테이징의 cache+`copytree` 경로가 **tqdm BrokenPipe** (amlt 러너 stdout, `waitstatus 127`)로 복사 전 사망 → `FATAL init missing`. 수리: `HF_HUB_DISABLE_PROGRESS_BARS=1` + `local_dir` 직다운로드(복사 단계 제거) → **`sft-b2p3-vunmask-0812b`** 재발사.
 N2(`rq3v2f-b3null-eval-0812b`)는 사망표식 0, 진행 중. 취소 시도 2건은 "취소 불요"(이미 종료 상태).
 ★규율: **런처를 복제할 때 G8 diff 는 SPEC 줄만이 아니라 자산 스테이징 블록(어느 repo·어느 이름·어떻게 받나)에도 걸어라** — RL 런처의 E-123 해소 로직이 정본이었다.
+
+## EXP-0812d (탐색 · ★codex-sol 게이트 전 CLAIMS 금지) — **N2 착지: b3null 은 treatment 대역 — 기하·라우팅 묶음이 −2pp 의 주범, 메타 보상은 면책**
+
+`rq3v2f-b3null-eval-0812b` 완료(05:29 UTC 관측). `eval/rq3v2f_b3null_gs303` 20파일 착지.
+
+**사전등록 판정**(발사문 그대로: treatment ~75 대역 ⇒ 기하 기소·메타 보상 면책 / control 77.28 대역 ⇒ 기하 면책):
+
+| | robust_grade (MATH500 n8) |
+|---|---|
+| **b3null gs303** (전 보상 0 · TRIOBJ region 경로만) | **0.7488** |
+| b2p gs300 (통제군 · VANILLA whiten 경로) | 0.7732 |
+| **Δ(b3null−b2p)** | **−2.45pp · 95%CI [−3.72, −1.15]** (문항대응 부트 10k, 문항 500) |
+
+⇒ ★**treatment 대역 확정.** 보상이 하나도 없는 팔이 b3p(−2.08pp)와 같은 구멍에 앉았다.
+**b3\* 팔들의 −2pp 는 메타 보상이 아니라 경로(DCPO region 기하·라우팅 묶음)가 만든 것.**
+⚠스코프(계획 v4·E-173 준수): 이것은 **좌표 1점**이다 — 묶음 내부 귀속(whiten 부재/answer carve-out/discard 제외 중 무엇인지)은 미결(bfmt 사다리, W5).
+
+**첫 줄 검사(부수 발견)**: b3null 4,000행 **전부 `\tiVar` 로 시작**(메타태그 포함률 0.0003, `<|meta|>`-first 0, `cros` 0).
+⇒ **세 번째 변질 무늬**: b3p=`cros`, b3null=**`\tiVar`**. b3null 은 회피할 탐지기도 없으므로 이것은 회피가 아니라
+**붙드는 보상이 없는 region 경로에서 init 의 meta-first 서두가 부패한 형태**로 읽힌다(발화 gs125 붕괴와 정합).
+
+**파이프라인 함의**: 2차 RL("새 b3p")은 **경로를 그대로 쓰면 안 된다** — 후보 ⑴ DCPO + `entropy_coeff=0`(T2e 레버, E-158 의 2.6배 상대압력 보정) ⑵ KL 앵커 ⑶ GDPO 멀티리워드. 재빌드·1차 RL 결과와 함께 결정.
