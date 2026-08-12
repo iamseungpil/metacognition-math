@@ -27,3 +27,4 @@ scripts/launch_e21_vs_base_matched_0410.sh export-ignore
 scripts/setup_node.sh export-ignore
 scripts/launch_e21r_v4_commit_shape_0416.sh export-ignore
 scripts/hf_checkpoint_sync.sh export-ignore
+docs/manifests/** export-ignore
