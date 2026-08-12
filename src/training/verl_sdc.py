@@ -171,6 +171,10 @@ def _compute_dcpo_heads_stash(
         # spec 2026-06-15 §3.3: medium penalty for opened-then-truncated meta
         # rows. Default 0.0 -> truncation stays format-neutral (byte-identical).
         trunc_open_penalty=float(_read("dcpo_trunc_open_penalty", 0.0) or 0.0),
+        # R_cal repair knob (0812): "brier_neg" (default, legacy verbatim) or
+        # "info_gain" (rewarding-doubt log score + meta-scoped conf parse).
+        # Owner: rq3v2f_b3p3. See dcpo_region_rewards' cal_mode docstring.
+        cal_mode=str(_read("dcpo_cal_mode", "brier_neg") or "brier_neg"),
     )
     _DCPO_HEAD_STASH.update(out)
     return out
@@ -674,6 +678,35 @@ def _log_dcpo_trend_scalars(*, step, heads, cf_texts, decoded_responses=None):
                 sum(1 for v in heads.get("format_penalty", []) if float(v) < 0.0) / B
             ),
         }
+        # ── cal/habit scalars (0812 R_cal repair ask). All .get-guarded: older
+        # stashes (or reward paths that never fill the arrays) log nothing —
+        # byte-identical observability for every pre-existing config.
+        _cp = heads.get("conf_parsed", None)
+        if _cp is not None and len(_cp) == B:
+            scal["dcpo/conf_parse_rate"] = sum(float(v) for v in _cp) / B
+            _meta_rows_cp = [i for i in range(B) if hm[i]]
+            scal["dcpo/conf_parse_rate_meta_rows"] = (
+                sum(float(_cp[i]) for i in _meta_rows_cp) / len(_meta_rows_cp)
+                if _meta_rows_cp else 0.0
+            )
+        _cpos = heads.get("cal_positive", None)
+        if _cpos is not None and len(_cpos) == B:
+            scal["dcpo/cal_positive_rate"] = sum(float(v) for v in _cpos) / B
+        for _key, _name in (("conf_gap", "dcpo/conf_gap_mean"),
+                            ("cal_group_gap", "dcpo/cal_group_gap_mean")):
+            _arr = heads.get(_key, None)
+            if _arr is not None:
+                _fin = [float(v) for v in _arr if float(v) == float(v)]
+                scal[_name] = (sum(_fin) / len(_fin)) if _fin else float("nan")
+        # habit sentinels: catch a meta-first relapse from the TRAINING rollouts
+        # themselves (no eval round-trip). C-034 context: the repaired init
+        # starts at meta_first 0.0 / think 1.0.
+        _mf = heads.get("meta_first", None)
+        if _mf is not None and len(_mf) == B:
+            scal["dcpo/meta_first_rate"] = sum(float(v) for v in _mf) / B
+        _ht = heads.get("has_think", None)
+        if _ht is not None and len(_ht) == B:
+            scal["dcpo/think_rate"] = sum(float(v) for v in _ht) / B
         # v3k class-rate scalars (heads["fmt_class"] is None pre-k / v2).
         fc = heads.get("fmt_class", None)
         if fc:

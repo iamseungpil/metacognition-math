@@ -19,6 +19,7 @@ token run inside META_CONTENT. `ANSWER_REGION` is response_mask minus META_REGIO
 """
 from __future__ import annotations
 
+import math
 import re
 from typing import Callable
 
@@ -767,6 +768,22 @@ def dcpo_region_rewards(
     # advantage composer applies it un-centered onto the row's dangling opener
     # (TRUNC_OPEN). 0.0 (default) -> truncation stays format-neutral (verbatim).
     trunc_open_penalty: float = 0.0,
+    # cal_mode (R_cal repair, 2026-08-12 user decision — rewarding-doubt family):
+    #   "brier_neg"  (default) = legacy verbatim: R_cal = -(conf - c_with)^2, conf
+    #                parsed by full-text regex. Every existing config unchanged.
+    #   "info_gain"  = R_cal = log2(conf_c/0.5) if correct else log2((1-conf_c)/0.5)
+    #                with conf_c clamped to [0.05, 0.95]; conf parsed INSIDE the
+    #                first closed <|meta|>...<|/meta|> block only (source unified
+    #                with the CONF token mask). Properties: informative honest
+    #                confidence (incl. honest DOUBT on a wrong rollout) earns up
+    #                to +0.926; misleading overconfidence earns down to -3.32;
+    #                conf=0.5 and silence both score exactly 0 — speaking
+    #                informatively strictly beats silence for the first time.
+    #                Proper scoring rule (log score, affine-shifted), so honest
+    #                probability reporting is the unique optimum.
+    #   OWNER: b3p3 arm (rq3v2f_b3p3). LIFETIME: promote to default or remove
+    #   after the b3p3-vs-b3p2 verdict (stacked-research §10-④).
+    cal_mode: str = "brier_neg",
     # v2 carry-over reward knobs (eps/eps_right_right/p_lo/p_hi/warmup_steps/sandbag_*/
     # format_*) are absorbed here and IGNORED — v3's R_meta = c_with - c_without uses
     # none of them. Kept only so legacy callers don't raise TypeError.
@@ -828,6 +845,14 @@ def dcpo_region_rewards(
     #   c2 = correctness of the FINAL (graded) answer == c_with.
     #   conf = parsed confidence inside the meta block.
     #   c_without = counterfactual correctness (producer / text fallback), or None.
+    # cal_mode is validated STRICTLY (verify-round fix; same fail-closed stance
+    # as verl_sdc._v4_rmeta_source_strict): a typo like "INFO_GAIN"/"info-gain"
+    # must crash at step 1, not silently run the legacy head under a repair name.
+    if cal_mode not in ("brier_neg", "info_gain"):
+        raise ValueError(
+            f"dcpo_cal_mode={cal_mode!r} not in ('brier_neg', 'info_gain') — "
+            "refusing to guess (a typo here would silently un-repair R_cal)."
+        )
     answer2 = [None] * B   # final (graded)
     c2 = [False] * B
     conf = [None] * B
@@ -841,7 +866,34 @@ def dcpo_region_rewards(
         answer2[i] = final
         c2[i] = bool(_check_correctness(final, gts[i])) if final else False
         has_meta[i] = "<|meta|>" in (t or "")
-        conf[i] = _parse_confidence(t)
+        if cal_mode == "info_gain":
+            # Source-unified parse (verify-round fix): the FIRST confidence found
+            # inside ANY properly-closed <|meta|>...<|/meta|> block — mirroring
+            # the CONF token mask's Pass-B semantics (iterate spans, first conf
+            # wins). An unclosed block (next opener arrives before a closer) is
+            # skipped, so the slice can never span across two blocks. A conf
+            # mentioned outside every closed block is NOT a calibration statement.
+            conf[i] = None
+            _pos = 0
+            _t = t or ""
+            while conf[i] is None:
+                _mo = _t.find("<|meta|>", _pos)
+                if _mo == -1:
+                    break
+                _mc = _t.find("<|/meta|>", _mo + 8)
+                if _mc == -1:
+                    break  # no closer anywhere after this opener
+                _no = _t.find("<|meta|>", _mo + 8)
+                if _no != -1 and _no < _mc:
+                    _pos = _no  # this block is unclosed; advance to next opener
+                    continue
+                _c = _parse_confidence(_t[_mo + 8 : _mc])
+                if _c is not None:
+                    conf[i] = _c
+                    break
+                _pos = _mc + 9
+        else:
+            conf[i] = _parse_confidence(t)
         # UNCLOSED-meta gate (text-level mirror of build_dcpo_region_masks'
         # meta_unclosed/meta_drift): a rollout whose ONLY meta is unclosed (no
         # <|/meta|> anywhere) gets R_meta forced to 0 — its meta content is
@@ -947,9 +999,20 @@ def dcpo_region_rewards(
         else:
             R_meta[i] = c_with - (1.0 if c_without[i] else 0.0)
 
-        # R_cal — per-instance Brier against c_with; 0 if conf missing (no floor).
+        # R_cal — cal_mode-routed (see the cal_mode param docstring):
+        #   brier_neg (legacy verbatim): -(conf - c_with)^2, ceiling 0 -> silence
+        #     (exactly 0) is never beaten; the head can only teach "say less".
+        #   info_gain (rewarding-doubt family, 0812): bits of information the
+        #     stated confidence provides over a coin flip. Honest+informative
+        #     (incl. honest doubt before a wrong answer) is POSITIVE; misleading
+        #     overconfidence is the most negative; conf=0.5 == silence == 0.
         if conf[i] is not None:
-            R_cal[i] = -((conf[i] - c_with) ** 2)
+            if cal_mode == "info_gain":
+                _cc = min(0.95, max(0.05, float(conf[i])))
+                _p = _cc if c2[i] else (1.0 - _cc)
+                R_cal[i] = math.log2(_p / 0.5)
+            else:
+                R_cal[i] = -((conf[i] - c_with) ** 2)
         else:
             R_cal[i] = 0.0
 
@@ -999,6 +1062,25 @@ def dcpo_region_rewards(
         ],
         "conf": [float("nan") if conf[i] is None else float(conf[i]) for i in range(B)],
         "has_meta": list(has_meta),
+        # ── cal/habit observability arrays (ADDITIVE, 0812 R_cal repair ask):
+        # consumed by verl_sdc's dcpo/* scalar block (.get-guarded there, so
+        # older stashes stay byte-identical). All modes compute them.
+        "conf_parsed": [1.0 if conf[i] is not None else 0.0 for i in range(B)],
+        "cal_positive": [1.0 if R_cal[i] > 0.0 else 0.0 for i in range(B)],
+        "conf_gap": [
+            float("nan") if conf[i] is None
+            else abs(float(conf[i]) - (1.0 if c2[i] else 0.0))
+            for i in range(B)
+        ],
+        "cal_group_gap": [
+            float("nan") if conf[i] is None else abs(float(conf[i]) - p_hat[i])
+            for i in range(B)
+        ],
+        "meta_first": [
+            1.0 if (texts[i] or "").lstrip().startswith("<|meta|>") else 0.0
+            for i in range(B)
+        ],
+        "has_think": [1.0 if "<think>" in (texts[i] or "") else 0.0 for i in range(B)],
         # FORMAT head (4th routed head, w_format). v3k (fmt_class given): the
         # full §4 table — +1 wellformed (routed onto FORMAT_OK at the closer),
         # -1 drift/discard (routed onto FORMAT_VIOLATION), 0 for replaced
