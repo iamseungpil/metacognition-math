@@ -8232,3 +8232,28 @@ init 데이터의 두-패스 비율은 **20.08%**(raw1763)로 같은데, **instr
 `\boxed`≥2 는 두-패스의 **대리 지표**이지 정의가 아니다 · **EXP 트랙**.
 ★**여는 것**: ⑴**두-패스를 강제**했을 때 base 에서도 두 헤드가 살아나는가(하니스 강제 or 형식 보상) ⑵ pmishift(instruct) 의 학습 중 두-패스 궤적 — 언제부터 23.5% 인가 ⑶ TRIOBJ_META_V1 이 정말 미실행인지 h200 프로젝트 확인.
 ★**규율**: ★**보상 헤드를 고르기 전에 "그 헤드가 요구하는 구조가 롤아웃에 남아 있나"를 세라.** 오늘 두 헤드가 같은 이유로 0 이었다.
+
+## EXP-0812b (탐색 · ⛔판정 아님) — **ultracode 감사 3건 착지: R_cal 미지 결함 6종 · pmi_shift 수정은 "가드+floor 게이팅 한 쌍" · 하니스 강제는 (a)안**
+
+워크플로 `wf_7c451b7a-ab1`: 감사 3건 완료(312k 토큰·56 도구호출), 초안·비평 4 에이전트는 **세션 한도로 실패**(reset 02:30 UTC). 감사 요지:
+
+**감사① R_cal — 알려진 5종 확정 + 미지 6종 적발** (전부 file:line, 수정은 차분 스케치만 = 승인 대상)
+- ⛔[critical] **스칼라/마스크 출처 불일치**(`dcpo_region.py:844` vs `:651-688`): R_cal 의 conf 는 **전체 텍스트 정규식**, 기울기는 **메타 내부 CONF 토큰** — 본문의 "probability 3" 이 팬텀 R_cal 을 만들고, ★**메타 앞 본문을 복원하는 순간(요구 ④) 라벨과 착지점이 갈라져 더 악화된다.**
+- ⛔[critical] **cal 전용 membership 부재**(`:1227,:1200`): R_cal≤0 항상(클램프 0.99 탓에 완벽 발화도 −1e-4) + 침묵=0 + 전원 centering ⇒ **conf 발화가 양의 advantage 를 받을 수 있는 경우가 구조적으로 없다.** R_meta 는 member_mask 로 고쳤는데 R_cal 은 명시적으로 배제됨.
+- ⛔[critical] **anchor_norm × 붕괴 자기잠금**(`:1258-1261`): cal_s EMA 감쇠 후 재발화 1건에 ~10-20× 증폭된 음의 킥. EMA 는 resume 시 리셋.
+- [major] truncation 행 c_with 미가드(R_corr 0714 가드가 R_cal 엔 없음) · excl_conf×floor: **CONF 토큰만 floor 무보호 = "숫자만 탈락"이 보상 최적** · conf 상수 시 그룹 순기울기 해석적 0(A_cal 합=0 증명).
+- ⇒ ★**근본 해법은 코드가 아니라 배치**: conf 를 추론 뒤로(요구 ④와 합치).
+
+**감사② pmi_shift — 최소 패치는 한 쌍**
+- ⛔[critical] **①빈 prefix 가드**(`verl_sdc.py:1623-1672`, `dcpo_pmishift_min_prefix_tokens` 기본 0=no-op) 만으로는 부족 — 켜면 attempted≈0 으로 **헤드가 침묵할 뿐 본문을 쓰라는 기울기가 안 생긴다.** ⛔[critical] **⑦meta_floor 자격을 "prefix 있는 메타"로 AND-게이팅**해야 첫머리-메타의 순양 균형이 깨진다.
+- [major] **⑥4-arm 전부 동결 ref 채점** — R_shift 는 **정책이 아닌 ref 의 믿음 이동**, 행동 변화는 어디서도 측정 안 됨 ⇒ 요구 ③("행동을 바꿔야")의 정공은 강제-계속 eval 의 답-flip rate.
+- dup_thresh 는 빈-prefix 레짐에서 **수학적 no-op**(공집합 Jaccard=0)·대칭이라 부분 베끼기 못 잡음(containment 교체) · decoy 는 LaTeX 답 전멸→정수 편향(length-matched 필터) · split_first_meta 다중블록 오귀속 · PMI 합산 자체는 **올바름 확인**.
+
+**감사③ 하니스 강제 — 3안 비교, (a) 채택 권고**
+- **(a) 에이전트 루프 재사용**: `cf_prefix_agent.py`(라이브·현행 스택 구동 실적) 1차 템플릿 + BCI 의 seed-붙이기 패턴. ~200-250행. **verl 네이티브로 주입 토큰 기울기 제외 지원**(`response_mask` 경로 `agent_loop.py:618-633`→`dp_actor.py:573-653`).
+- **(b) 트레이너 텐서 리팩**: ⛔**이미 실패한 경로** — `_force_inject_rollout` 이 `NotImplementedError` 하드블록(`verl_sdc.py:2496-2516`), 크래시 선례 docstring 명시. 기각.
+- **(c) 비강제 유도**: 실측으로 이미 패배(b2p 포함 5/5 붕괴). 보완재로만.
+- ⚠함정 2: **학습마스크와 파싱마스크 분리 필요**(dcpo_region 파서가 rm=0 을 패딩으로 간주 → 주입 `<|meta|>` 가 라우팅에 투명) · **비강제 방출률을 판정에 포함**(rm=0 이면 마커 방출에 기울기가 없어 전이가 유일한 회피로).
+- 재사용 가능: `pg0_yield_pilot.py` + `meta_inject.plan_inject_prefixes`(유닛테스트 완료) · BCIConfAgentLoop 은 **은퇴 상태**(부활 필요) · agent 블록 배선은 torch28x 스키마 함정(0711) 때문에 **1-step 노드 스모크 필수**.
+
+★**여섯 질문 체계로 확정**(사용자 0812): ①SFT2 ②DCPO ③pmi_shift ④메타 내용 ⑤**전-행동 부재** ⑥**R_cal 등 보상 기능**. ⑥은 감사①+ECE 실측으로 사실상 답변됨(켠 팔 ECE 최악·판별 최고·침묵=만점 아티팩트). 나머지는 계획 루프 재개 후.
