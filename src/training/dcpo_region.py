@@ -848,10 +848,11 @@ def dcpo_region_rewards(
     # cal_mode is validated STRICTLY (verify-round fix; same fail-closed stance
     # as verl_sdc._v4_rmeta_source_strict): a typo like "INFO_GAIN"/"info-gain"
     # must crash at step 1, not silently run the legacy head under a repair name.
-    if cal_mode not in ("brier_neg", "info_gain"):
+    if cal_mode not in ("brier_neg", "info_gain", "info_gain_group"):
         raise ValueError(
-            f"dcpo_cal_mode={cal_mode!r} not in ('brier_neg', 'info_gain') — "
-            "refusing to guess (a typo here would silently un-repair R_cal)."
+            f"dcpo_cal_mode={cal_mode!r} not in ('brier_neg', 'info_gain', "
+            "'info_gain_group') — refusing to guess (a typo here would silently "
+            "un-repair R_cal)."
         )
     answer2 = [None] * B   # final (graded)
     c2 = [False] * B
@@ -866,7 +867,7 @@ def dcpo_region_rewards(
         answer2[i] = final
         c2[i] = bool(_check_correctness(final, gts[i])) if final else False
         has_meta[i] = "<|meta|>" in (t or "")
-        if cal_mode == "info_gain":
+        if cal_mode in ("info_gain", "info_gain_group"):
             # Source-unified parse (verify-round fix): the FIRST confidence found
             # inside ANY properly-closed <|meta|>...<|/meta|> block — mirroring
             # the CONF token mask's Pass-B semantics (iterate spans, first conf
@@ -1011,6 +1012,21 @@ def dcpo_region_rewards(
                 _cc = min(0.95, max(0.05, float(conf[i])))
                 _p = _cc if c2[i] else (1.0 - _cc)
                 R_cal[i] = math.log2(_p / 0.5)
+            elif cal_mode == "info_gain_group":
+                # GROUP-RATE target (user decision 0812 late): the confidence
+                # statement is scored against the question's empirical success
+                # rate over its OWN rollout group (p_hat, computed above —
+                # e.g. 4/8 correct -> the optimal conf is 0.5). Cross-entropy
+                # information gain over a coin flip:
+                #     R = p̂·log2(cc/0.5) + (1−p̂)·log2((1−cc)/0.5)
+                # Unique maximum at conf == p̂ (proper); reduces EXACTLY to the
+                # binary info_gain when p̂ ∈ {0,1}; silence stays 0; misleading
+                # overconfidence (conf far above a low p̂) is the most negative.
+                _cc = min(0.95, max(0.05, float(conf[i])))
+                _ph = float(p_hat[i])
+                R_cal[i] = _ph * math.log2(_cc / 0.5) + (1.0 - _ph) * math.log2(
+                    (1.0 - _cc) / 0.5
+                )
             else:
                 R_cal[i] = -((conf[i] - c_with) ** 2)
         else:

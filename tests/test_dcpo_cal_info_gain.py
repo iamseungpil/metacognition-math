@@ -128,3 +128,41 @@ def test_info_gain_unclosed_first_block_does_not_leak_across():
     out = _run([t], cal_mode="info_gain")
     assert out["conf_parsed"][0] == 1.0
     assert abs(out["R_cal"][0] - math.log2(0.9 / 0.5)) < 1e-9
+
+
+def test_info_gain_group_targets_group_rate():
+    import math as _m
+    # 8형제 중 4개 정답(p̂=0.5): conf 0.5 가 최적(=0, 침묵과 동률), 0.9 는 음수
+    texts = [_mk(conf=0.5, correct=(i < 4)) for i in range(8)]
+    out = dcpo_region_rewards(texts, ground_truth=["42"] * 8, group_index=[0] * 8,
+                              cal_mode="info_gain_group")
+    for v in out["R_cal"]:
+        assert abs(v - 0.0) < 1e-9
+    texts2 = [_mk(conf=0.9, correct=(i < 4)) for i in range(8)]
+    out2 = dcpo_region_rewards(texts2, ground_truth=["42"] * 8, group_index=[0] * 8,
+                               cal_mode="info_gain_group")
+    expected = 0.5 * _m.log2(0.9 / 0.5) + 0.5 * _m.log2(0.1 / 0.5)
+    assert all(abs(v - expected) < 1e-9 for v in out2["R_cal"])
+    assert expected < 0  # p̂=0.5 인데 0.9 라 말하면 벌
+
+
+def test_info_gain_group_reduces_to_binary_at_extremes():
+    import math as _m
+    # 전원 정답(p̂=1): 그룹판 == 이진판
+    texts = [_mk(conf=0.8, correct=True) for _ in range(4)]
+    g = dcpo_region_rewards(texts, ground_truth=["42"] * 4, group_index=[0] * 4,
+                            cal_mode="info_gain_group")["R_cal"][0]
+    b = dcpo_region_rewards(texts, ground_truth=["42"] * 4, group_index=[0] * 4,
+                            cal_mode="info_gain")["R_cal"][0]
+    assert abs(g - b) < 1e-9 and abs(g - _m.log2(0.8 / 0.5)) < 1e-9
+
+
+def test_info_gain_group_honest_low_conf_on_hard_group_positive():
+    # p̂=0.25 인 그룹에서 conf 0.25 는 양수(유익), conf 0.9 는 크게 음수
+    import math as _m
+    texts = [_mk(conf=0.25, correct=(i < 1)) for i in range(4)]
+    out = dcpo_region_rewards(texts, ground_truth=["42"] * 4, group_index=[0] * 4,
+                              cal_mode="info_gain_group")
+    exp = 0.25 * _m.log2(0.25 / 0.5) + 0.75 * _m.log2(0.75 / 0.5)
+    assert all(abs(v - exp) < 1e-9 for v in out["R_cal"])
+    assert exp > 0

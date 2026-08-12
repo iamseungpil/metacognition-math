@@ -455,7 +455,9 @@ live:
     default: brier_neg
     note: "R_cal repair mode (0812). brier_neg = legacy -(conf-c)^2 (ceiling 0, silence
       unbeatable). info_gain = rewarding-doubt log score log2(conf_c/0.5)|log2((1-conf_c)/0.5),
-      conf clamp [0.05,0.95], conf parsed inside closed meta blocks only. Owner rq3v2f_b3p3;
+      conf clamp [0.05,0.95], conf parsed inside closed meta blocks only. info_gain_group (0812 late, user
+      decision) targets the GROUP success rate p_hat instead of the own-rollout 0/1:
+      R = p*log2(cc/0.5)+(1-p)*log2((1-cc)/0.5), unique max at conf==p_hat. Owner rq3v2f_b3p3;
       promote-or-remove after the b3p3-vs-b3p2 verdict. Unknown values raise (fail-closed)."
   dcpo_format_neg:
     kind: knob
