@@ -8257,3 +8257,31 @@ init 데이터의 두-패스 비율은 **20.08%**(raw1763)로 같은데, **instr
 - 재사용 가능: `pg0_yield_pilot.py` + `meta_inject.plan_inject_prefixes`(유닛테스트 완료) · BCIConfAgentLoop 은 **은퇴 상태**(부활 필요) · agent 블록 배선은 torch28x 스키마 함정(0711) 때문에 **1-step 노드 스모크 필수**.
 
 ★**여섯 질문 체계로 확정**(사용자 0812): ①SFT2 ②DCPO ③pmi_shift ④메타 내용 ⑤**전-행동 부재** ⑥**R_cal 등 보상 기능**. ⑥은 감사①+ECE 실측으로 사실상 답변됨(켠 팔 ECE 최악·판별 최고·침묵=만점 아티팩트). 나머지는 계획 루프 재개 후.
+
+## EXP-0812c (탐색 · ⛔판정 아님 · ★★E0 완결 — GPU 0) — **meta-first 는 RL 표류가 아니라 step 1 부터였고, 근원은 SFT2 의 wrong_prefix segment-mask 다**
+
+E0(메타 위치 붕괴 시점)를 wandb rollouts 표(`media/table/dcpo/rollouts_<step>_*`, `main_tail`=마지막 1500자, 1400자 미만 행은 전문)로 판독했다.
+
+**① b3s 온폴리시 롤아웃의 meta-first 비율 (512행/스텝):**
+
+| step | 1 | 2 | 3 | 5 | 10 | 25 | 50 | 100 | 200 | 300 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| meta-first | **.972** | .962 | .975 | .958 | .970 | .979 | .986 | .993 | .983 | .992 |
+| `<think>` 포함 | .010 | .008 | .008 | .014 | .006 | .004 | .004 | .000 | .002 | .002 |
+
+★**RL step 1 에 이미 97.2%.** 붕괴 곡선이 아니라 **초기 조건**이다.
+⇒ ⛔**0811t("RL 이 1차 패스를 지웠다")와 0812 정정("RL 이 민다") 둘 다 위치에 관해서는 틀렸다** — RL 은 지운 것도 민 것도 아니고 **유지했을 뿐**이다. (발화 사멸은 별개 현상으로 유효: floor 0 팔들의 gs125~228 붕괴.)
+
+**② 근원 — 코드와 데이터가 함께 말한다.**
+`src/training/sft.py:106-113` (원문 주석): *"REDIRECT rows additionally carry the student's wrong_prefix at the HEAD of the assistant target — mask it too (**train ONLY the meta block + recovery, never teach the model to PRODUCE the flawed prefix**)."*
+그리고 `rv_redirect_verify_functional.parquet` 실측: **wrong_prefix 비어있지 않음 1.0000 (1,763/1,763행)** — verify 1,209 + redirect 554 **전부**. prefix 길이 중앙 496자.
+⇒ ★**SFT2 는 단 한 행도 "메타 앞 추론을 생산하는 것"을 가르치지 않았다.** 맨 문제에서 시작하는 온폴리시 생성은 **손실을 받아 본 유일한 지점 — 메타 블록 — 에서 시작한다.** meta-first 는 이 설계의 직접 귀결이다.
+★설계 의도 자체는 합리적이었다(redirect 의 결함 prefix 를 가르치지 않기). **문제는 그 마스크가 verify 1,209행(prefix = 모델 자신의 멀쩡한 1차 풀이)에도 적용**되어, "먼저 추론하라"의 예시가 코퍼스에서 전멸한 것이다.
+
+**③ 함의 — 계획 재정렬.**
+- **Q1(SFT2 범인?) = 위치에 관해 YES, GPU 0 으로 완결.** 학습 팔 불필요.
+- ★**SFT1 → RL 팔 재승격**: SFT1 (`b2on_v8meta_strict_sft`)은 **wrong_prefix 컬럼 자체가 없다** = 전응답 손실 = think 안 메타 100%. 내 0812 강등("63.5% 출발점도 못 버텼다")은 **틀렸다** — 그 63.5% 는 **데이터 위치**였고 손실 마스크 탓에 **모델 행동엔 전달된 적이 없다**. 유효한 출발점 대비는 "SFT1(전응답 손실) vs SFT2(메타-이후만 손실)"이다.
+- Q5(전-행동 부재)의 상류 원인이 특정됐다: **하니스 강제와 SFT 재설계(마스크 해제/부분 학습)가 동급 후보**가 된다.
+- instruct 가 몸통을 지킨 이유도 설명된다: instruct RL init(v8_meta_inside_strict)은 **전응답 손실**이었다.
+★**여는 것**: ⑴ SFT1→RL 팔(이제 Q1 검증이 아니라 **Q5 해법 후보**) ⑵ SFT2 재설계 시 verify 행의 prefix 는 학습에 포함(redirect 만 마스크) ⑶ 워크플로 계획에 이 사실 반영(초안은 옛 전제로 돌고 있음 — 최종 보고에서 덮어씀).
+★**규율**: ★**"데이터의 위치"와 "모델의 행동"은 손실 마스크가 갈라놓을 수 있다** — 코퍼스 통계를 행동 예측에 쓰기 전에 **어느 토큰이 손실을 받는지** 확인하라.
