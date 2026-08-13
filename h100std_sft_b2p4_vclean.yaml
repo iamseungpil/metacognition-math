@@ -1,0 +1,182 @@
+description: "B2p4 SFT2 VCLEAN - the EXP-0812d think-grammar repair bake. Same recipe as b2p3_vunmask (SFT1 init models/b2p_v8meta_strict_sft, 3 epochs, lr 1e-5, max_length 4096, same CODE_TAR_REVISION 496769353 - the fix is again data-level, not code-level), differing ONLY in the corpus: data/rvfull_verify_clean.parquet. WHY: b2p3_vunmask fails to terminate on 5.575 pct of held-out generations (223/4000) where its predecessor b2p2_rvfull failed on 0.025 pct (1/4000). Diagnosis: 202 of the 223 truncations (90.6 pct) are an opened-and-never-closed <think>. The chat template splits assistant content into a reasoning slot only when the content contains </think>; otherwise it emits an empty think pair and appends the content verbatim, so a verify row whose student rollout opens <think> and never closes it renders as <think></think><think>... unclosed. That head sat inside the loss-masked prefix under the b2p2 bake (0 rendered-unclosed rows); the 0812 repair that blanked wrong_prefix on the 1,209 verify rows promoted it to a TRAINING TARGET on 568 of them (47.0 pct), and the new init now opens an unclosed think on 59.6 pct of generations. THE FIX (scripts/build_rvfull_verify_clean.py): rewrite the assistant content inside messages - delete meta-block line spans and stray delimiters, drop foreign-script decoder garbage lines, truncate runaway 60-char repetition runs, then normalize think grammar to exactly one closed pair. Measured on the 1,209 verify rows: rendered-unclosed 568 -> 0, boxed-bearing prefixes 354 -> 348 (floor 340), trained-target p99 12,300 -> 2,702 chars, all 554 redirect rows byte-identical, row count 1,763 unchanged. The wrong_prefix blanking of b2p3 is KEPT - this bake isolates think grammar as the single new variable. NEW output name models/b2p4_vclean_sft; ckpt push prefix b2p4_4g (NOT b2p2_4g - that prefix is shared with the b2p2/b2p3 bakes and --keep 2 prunes by delete_folder, so inheriting it would delete their intermediates). Gate widened to 500 problems at max_tokens 16384 because the truncation defect is invisible at 8192 - the cap clips the p99 before the runaway shows. Same EOS + measure_sft_gate re-gate. H100x4 Standard."
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  registry: mcr.microsoft.com
+  image: aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x:latest
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: h100_sft_b2p4_vclean
+    sku: 80G4-H100
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 259200
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        # 0727 repin (E-129). asset 491027629 = metacognition_rq3v2_0727_eb16.tar.gz,
+        # md5 570c3e322c9acaee4c867ceb6acab406, verified by re-fetching through the same
+        # asset URL this command uses. It is a superset of the previously pinned asset on
+        # every file this run touches - both SFT configs, configs/accelerate_sft.yaml, both
+        # corpora and scripts/{push_models_hf,verify_eos_invariant,measure_sft_gate,
+        # eval_vllm_1030}.py are byte-identical - and the only shared file that changed is
+        # src/training/sft.py, whose two new resolvers are no-ops for this config (no
+        # resume_from_checkpoint key -> None, no save_total_limit key -> the old hardcoded
+        # 3). Both arms now pin the SAME asset; they previously pinned different ones.
+        # REQUIRED by the in-training pusher below: scripts/push_sft_ckpts_to_hf.py exists
+        # only in this asset, which is why the guard right before it fails closed.
+        # 0731 repin (E-152). asset 496769353 = metacognition_rq3v2_0731_probe.tar.gz,
+        # md5 b43789e0c89b93451597ec767198ed27. It is asset 491027629 with EXACTLY ONE
+        # file replaced - scripts/push_sft_ckpts_to_hf.py - verified by extracting both
+        # and diffing all 459 files. The old asset predates the --probe-only flag this
+        # launcher calls, so argparse rejected it and the guard below aborted two H100
+        # windows before any training started.
+        CODE_TAR_REVISION: "496769353"
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        WANDB_API_KEY: ${WANDB_API_KEY}
+        WANDB_KEY: ${WANDB_API_KEY}
+        WANDB_PROJECT: metacot-math
+        WANDB_RUN_GROUP: rq3v2_thinkon
+        WANDB_NAME: b2p4_vclean_sft2
+        WANDB_TAGS: rq3v2,thinkon,sft2,rvfull,think-clean,t1-stack,t1-parity
+        HF_HUB_DISABLE_XET: "1"
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints /scratch/models
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        nohup python -c "
+        import torch, time
+        g = torch.cuda.device_count()
+        ts = [torch.randn(2048, 2048, device=i, dtype=torch.float16) for i in range(g)]
+        while True:
+            for i in range(g): ts[i] = (ts[i] @ ts[i]) * 0.5
+            time.sleep(2)
+        " > /scratch/logs/gpu_keeper_inline.log 2>&1 &
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper_early.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        pip uninstall -y hf_xet 2>&1 | tail -1 || true
+        find $${SIMPLERL_DIR}/lib -maxdepth 3 -name "hf_xet*" -exec rm -rf {} + 2>/dev/null || true
+        python -c "import deepspeed" 2>/dev/null || pip install -q deepspeed 2>&1 | tail -1
+
+        # stage the SFT1 init from HF (retry + verify)
+        export HF_HUB_DISABLE_PROGRESS_BARS=1
+        export HF_HUB_DISABLE_XET=1
+        python -c "
+        import os, time, shutil
+        from huggingface_hub import snapshot_download
+        dst = \"/scratch/models/b2p_v8meta_strict_sft\"
+        for attempt in range(5):
+            try:
+                p = snapshot_download(\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"], allow_patterns=[\"models/b2p_v8meta_strict_sft/*\"])
+                src = os.path.join(p, \"models\", \"b2p_v8meta_strict_sft\")
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+                assert os.path.exists(os.path.join(dst, \"config.json\")), \"config.json missing\"
+                print(\"staged SFT1 init OK\")
+                break
+            except Exception as e:
+                print(\"stage attempt\", attempt, \"failed:\", repr(e)[:120])
+                time.sleep(20 * (attempt + 1))
+        "
+        ls -l /scratch/models/b2p_v8meta_strict_sft/config.json || { echo "[YAML][stage] FATAL init missing"; exit 1; }
+        python -c "import os,shutil;from huggingface_hub import hf_hub_download;p=hf_hub_download(\"iamseungpil/metacot-rv\",\"data/rvfull_verify_clean.parquet\",repo_type=\"dataset\",token=os.environ[\"HF_TOKEN\"]);shutil.copy(p,\"/scratch/metacognition/data/rvfull_verify_clean.parquet\");print(\"[corpus] fixed parquet staged\")"
+        ls -l /scratch/metacognition/data/rvfull_verify_clean.parquet || { echo "[YAML][corpus] MISSING rvfull_verify_clean.parquet"; exit 1; }
+        cp /scratch/metacognition/configs/sft_b2p2_rvfull.yaml /scratch/metacognition/configs/sft_b2p4_vclean.yaml
+        sed -i s/rv_redirect_verify_functional/rvfull_verify_clean/ /scratch/metacognition/configs/sft_b2p4_vclean.yaml
+        sed -i s/b2p2_rvfull_sft/b2p4_vclean_sft/ /scratch/metacognition/configs/sft_b2p4_vclean.yaml
+        sed -i s/b2p2-rvfull-sft2/b2p4-vclean-sft2/ /scratch/metacognition/configs/sft_b2p4_vclean.yaml
+        grep -q rvfull_verify_clean /scratch/metacognition/configs/sft_b2p4_vclean.yaml || { echo "[YAML] config swap FAILED"; exit 1; }
+        grep -q checkpoints/b2p4_vclean_sft /scratch/metacognition/configs/sft_b2p4_vclean.yaml || { echo "[YAML] output_dir swap FAILED"; exit 1; }
+        grep -c b2p2_rvfull_sft /scratch/metacognition/configs/sft_b2p4_vclean.yaml && { echo "[YAML] stale b2p2 name remains in config"; exit 1; }
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+
+        # ── STALE-TARBALL GUARD, then the IN-TRAINING PUSHER (E-129).
+        # The 0727 preemption is the argument: a run was taken at step ~125/303 and
+        # everything on /scratch went with the node; the only survivors were what a
+        # concurrently-running pusher had already put on HF. This launcher previously
+        # pushed only after `accelerate launch` returns, which for any run that does not
+        # outlive its window means never. The guard exists because under `set +e` a missing
+        # script would no-op into a log nobody reads and the run would look fixed while
+        # staying exactly as undurable.
+        # These uploads are WEIGHTS-ONLY: push_sft_ckpts_to_hf.py skips the DeepSpeed
+        # global_step*/ optimizer dir (~96 GB for 8B Adam), so a recovered checkpoint is a
+        # warm-start source and forensics, not an exact resume point.
+        ls -l /scratch/metacognition/scripts/push_sft_ckpts_to_hf.py || { echo "[YAML][pusher] MISSING push_sft_ckpts_to_hf.py - STALE TARBALL, this run would be NON-DURABLE; ABORT window"; sleep 300; exit 1; }
+        # A permanently unwritable destination (misspelled repo, token without write scope)
+        # looks EXACTLY like a healthy idle daemon from here: PUSH_PID set, "daemon start"
+        # logged, nothing ever uploaded. Ask synchronously so that case dies now rather
+        # than after the whole window is spent producing nothing durable.
+        python /scratch/metacognition/scripts/push_sft_ckpts_to_hf.py --probe-only --ckpt_dir /scratch --config_name probe \
+            --repo_id iamseungpil/metacot-sft2-4g --repo_type model --path_prefix b2p4_4g \
+            || { echo "[YAML][pusher] destination not writable - this run would be NON-DURABLE; ABORT window"; sleep 300; exit 1; }
+        nohup python /scratch/metacognition/scripts/push_sft_ckpts_to_hf.py \
+            --ckpt_dir /scratch/checkpoints/b2p4_vclean_sft \
+            --repo_id iamseungpil/metacot-sft2-4g --repo_type model \
+            --path_prefix b2p4_4g --config_name b2p4_4g --keep 2 --interval 120 \
+            > /scratch/logs/push_b2p4_4g.log 2>&1 &
+        PUSH_PID=$$!
+        echo "[YAML] in-training checkpoint pusher started pid=$${PUSH_PID}"
+
+        python -m accelerate.commands.launch --config_file configs/accelerate_sft.yaml \
+            src/training/sft.py --config configs/sft_b2p4_vclean.yaml
+        SFT_RC=$$?
+        kill $${PUSH_PID} 2>/dev/null || true
+        echo "[YAML] b2p4-vclean-sft2 rc=$${SFT_RC}"
+
+        CKPT=/scratch/checkpoints/b2p4_vclean_sft
+
+        python /scratch/metacognition/scripts/verify_eos_invariant.py $${CKPT}
+        EOS_RC=$$?
+        echo "[YAML][eos-gate] verify_eos_invariant rc=$${EOS_RC} (0=GREEN required)"
+
+        python scripts/measure_sft_gate.py \
+            --model_path $${CKPT} \
+            --output_dir /scratch/logs/b2p4_vclean_gate \
+            --model_name b2p4_vclean_sft2 \
+            --benchmarks math500 \
+            --max_problems 500 \
+            --max_tokens 16384 \
+            --tp_size 4 \
+            --n_pmi 200 \
+            --base_accuracy_greedy 0.5967
+        GATE_RC=$$?
+        echo "[YAML][re-gate] measure_sft_gate rc=$${GATE_RC}"
+        echo "[YAML][re-gate] ---- sft_gate.json ----"
+        cat /scratch/logs/b2p4_vclean_gate/sft_gate.json 2>/dev/null | head -140
+
+        for i in $$(seq 1 30); do
+            python /scratch/metacognition/scripts/push_models_hf.py --model_path $${CKPT} --model_name b2p4_vclean_sft --repo_id iamseungpil/metacot 2>&1 | tail -3
+            N=$$(python -c "from huggingface_hub import HfApi;import os;fs=HfApi().list_repo_files(\"iamseungpil/metacot\",repo_type=\"dataset\",token=os.environ[\"HF_TOKEN\"]);print(sum(1 for f in fs if \"b2p4_vclean_sft/model-\" in f and f.endswith(\".safetensors\")))")
+            echo "[YAML][push] attempt $$i: shards_on_hf=$$N/4"
+            [ "$$N" = "4" ] && echo "[YAML][push] all 4 shards durable" && break
+            sleep 120
+        done
+        sleep 43200
+        '
