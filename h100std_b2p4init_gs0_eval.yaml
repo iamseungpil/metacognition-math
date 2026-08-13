@@ -1,0 +1,184 @@
+description: "B2P4-INIT gs0 PHOTO (EXP-0813q pre-registered gate judgment) - models/b2p4_vclean_sft evaluated AS-IS at RL step 0. HARNESS IS BYTE-IDENTICAL to eval/b2p3init_gs0 (same CODE_TAR_REVISION 467403206, same eval_vllm_1030.py flags, same seeds) so the b2p3-vs-b2p4 pair is exactly one variable apart: the SFT2 corpus (rvfull_verify_unmasked -> rvfull_verify_clean, think-grammar normalised). WHY: the bake itself completed and its model is durable on HF, but its in-job gate parquets died with the node (only summary lines survived: temp1 acc 52.4 pct avg_len 777 meta 98.6 pct, greedy acc 54.2 pct avg_len 1542 meta 96.0 pct, wellformed 1.0). The PRE-REGISTERED gate needs per-row generations: non-termination <=0.5 pct (b2p3 5.575 pct = 223/4000), length p99 <=2500 (b2p3 16384), rendered-unclosed think <=0.05 (b2p3 0.5960), meta-first <=0.05 (b2p3 0.000 - must NOT regress), accuracy within -1pp of b2p3. PASS ORDER is judgment-first: math500 @16k n8 (the exact 4000-generation basis of the 5.575 pct number) runs FIRST, then the 4k n8 sweep, then gsm8k and aime @16k, with an HF upload after each chunk so a preemption keeps what already finished. Upload prefix eval/b2p4init_gs0 enumerated ABSENT on HF before writing this file (E-146). H100x4 Standard."
+
+# Compute-fit estimate (4xH100 tp=4 vLLM, ~7B model, aggregate decode ~8-12k tok/s at large batch):
+#   setup (tar + bootstrap + ckpt download + fsdp merge)          ~20-30 min
+#   pass a: 1030 x 8 = 8240 gens @<=4096  -> realistic ~15M tok   ~30-60 min  (worst 34M ~90 min)  FITS
+#   pass c: aime 30 x 8 = 240 gens @<=16384 -> <=3.9M tok         ~10-20 min                       FITS
+#   pass b: 8240 gens @<=16384 -> realistic ~50M tok (30% trunc)  ~1.5-2.5 h  (worst 135M ~4h+)    TIGHT
+#   realistic total ~3-4h < 21600s window; WORST CASE pass b can overrun -> pass order is
+#   a (4k FIRST), then c (cheap aime seed-43), then b (riskiest LAST), with an HF upload after
+#   EACH pass so anything already finished survives a hard kill.
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  registry: mcr.microsoft.com
+  image: aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x:latest
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: h100_b2p4init_gs0_eval
+    sku: 80G4-H100
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 21600
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        CODE_TAR_REVISION: "467403206"
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        VLLM_WORKER_MULTIPROC_METHOD: spawn
+        HF_HUB_DISABLE_XET: "1"
+        REPO: iamseungpil/metacot-h200-triobj-dcpo-v3
+        # GS is parsed per-SPEC below (arm:prefix:gs) - ONE step of ONE arm (gs300, the
+        # judgment point). GS_PAIR is deliberately absent so no stale step can leak in.
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -o pipefail
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints /scratch/eval_results
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        nohup python -c "
+        import torch, time
+        g = torch.cuda.device_count()
+        ts = [torch.randn(2048, 2048, device=f\"cuda:{i}\", dtype=torch.float16) for i in range(g)]
+        while True:
+            for i in range(g): ts[i] = (ts[i] @ ts[i]) * 0.5
+            time.sleep(2)
+        " > /scratch/logs/gpu_keeper_inline.log 2>&1 &
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        set +x  # do NOT leak GH_TOKEN into xtrace logs
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        set -x
+        tar -tzf /tmp/metacognition.tar.gz >/dev/null || { echo "[YAML] code tar download FAILED"; exit 1; }
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        PYBIN=$${SIMPLERL_DIR}/bin/python
+        pip uninstall -y hf_xet 2>&1 | tail -1 || true
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+
+        # B3NOPMI JUDGMENT EVAL (0809). ONE arm, ONE step: gs300, the pre-registered judgment
+        # point. SPEC is arm:prefix:gs, parsed per iteration (no GS_PAIR), inherited from the
+        # b3sh mid-ckpt launcher this was cloned from - the loop machinery is byte-identical,
+        # only the SPEC list changed. The checkpoint is verified complete (m/o/e 4/4) and is
+        # already preserved at preserved/mechanism_alive/rq3v2f_b3nopmi_gs300 (23 files, E-177),
+        # so the pruner cannot take it away mid-eval. Upload prefix eval/rq3v2f_b3nopmi_gs300
+        # is NEW - enumerated every existing eval/ prefix on HF before writing this file and it
+        # is absent, because a clone that reused a live prefix overwrote evidence once already
+        # (E-146: eval/rq3v2f_b3s_1030 had to be recovered from revision ac274e72).
+        for SPEC in b2p4init:eval/b2p4init_gs0:0; do
+        export CONFIG_NAME=$${SPEC%%:*}
+        export ARM=$${CONFIG_NAME}
+        SPEC_REST=$${SPEC#*:}
+        export UPLOAD_PREFIX=$${SPEC_REST%%:*}
+        export GS=$${SPEC_REST##*:}
+        echo "================ ARM $${ARM} gs$${GS} -> $${UPLOAD_PREFIX} ================"
+                # 1. the init is models/b2p4_vclean_sft in HF format - verify present, download, NO merge.
+        # 0812c fix: the shared RL init lives on the DATASET repo iamseungpil/metacot, and the
+        # canonical name resolution (E-123, same as the RL launchers) tries eb16 first then plain.
+        $${PYBIN} -c "
+        import os
+        os.environ[\"HF_HUB_DISABLE_PROGRESS_BARS\"]=\"1\"
+        from huggingface_hub import HfApi, snapshot_download
+        api=HfApi(token=os.environ[\"HF_TOKEN\"])
+        fs=api.list_repo_files(\"iamseungpil/metacot\", repo_type=\"dataset\")
+        name=None
+        for cand in (\"b2p4_vclean_sft\",):
+            if sum(1 for f in fs if f.startswith(\"models/\"+cand+\"/\"))>=5:
+                name=cand; break
+        assert name, \"init model MISSING on iamseungpil/metacot\"
+        snapshot_download(\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"models/\"+name+\"/*\"], local_dir=\"/scratch\")
+        assert os.path.exists(\"/scratch/models/\"+name+\"/config.json\")
+        open(\"/scratch/init_name.txt\",\"w\").write(name)
+        print(\"init resolved:\", name)
+        "
+        if [ "$$?" -ne 0 ]; then echo "[YAML] init model missing, abort"; exit 1; fi
+        MERGED=/scratch/models/$$(cat /scratch/init_name.txt)
+        $${PYBIN} -c "
+        import json, os
+        p=\"$${MERGED}/tokenizer_config.json\"
+        if os.path.exists(p):
+            c=json.load(open(p)); c.pop(\"extra_special_tokens\", None); json.dump(c, open(p,\"w\"), indent=2); print(\"tok patched\")
+        "
+
+        OUT=/scratch/eval_results/$${ARM}_1030_v2
+        mkdir -p $${OUT}
+        # upload everything produced so far to the MODEL repo — called after EACH pass (idempotent re-upload is fine).
+        upload_pass() {
+          $${PYBIN} -c "
+        from huggingface_hub import HfApi
+        import os, glob
+        api=HfApi(token=os.environ[\"HF_TOKEN\"])
+        for fn in glob.glob(\"$${OUT}/**\", recursive=True):
+            if not os.path.isfile(fn): continue
+            if not (fn.endswith(\".parquet\") or fn.endswith(\".json\") or fn.endswith(\".log\")): continue
+            rel=os.path.relpath(fn, \"$${OUT}\")
+            try:
+                api.upload_file(path_or_fileobj=fn, path_in_repo=os.environ[\"UPLOAD_PREFIX\"]+\"/\"+rel,
+                    repo_id=os.environ[\"REPO\"], repo_type=\"model\")
+            except Exception as e: print(\"upload skip\", fn, str(e)[:80])
+        print(\"pass upload done\")
+        " || echo "[YAML] upload skipped"
+        }
+
+        # PASS 1 (FIRST - this is the judgment pass): math500 @16k, n=8, seed 42.
+        # 500 problems x 8 = 4000 generations, the EXACT basis of the b2p3 numbers the
+        # pre-registered gate is read against (223/4000 non-terminating, 0.5960 unclosed think).
+        # 16k is mandatory: at 8192 the cap clips the runaway before it becomes visible.
+        NAME=$${ARM}_gs$${GS}_16k_n8_math500
+        echo "================ EVAL $${NAME} ================"
+        $${PYBIN} scripts/eval_vllm_1030.py \
+          --model_path $${MERGED} --model_name $${NAME} --output_dir $${OUT}/$${NAME} \
+          --benchmarks math500 --max_problems 500 \
+          --max_tokens 16384 --temperature 0.7 --top_p 0.95 --seed 42 --tp_size 4 --num_samples 8 \
+          2>&1 | tee $${OUT}/$${NAME}.log || echo "[YAML] $${NAME} eval FAILED, continue"
+        upload_pass
+
+        # PASS 2: all benchmarks @4k, n=8, seed 42 - the cheap sweep, pairs with the b2p3 4k photo.
+        NAME=$${ARM}_gs$${GS}_4k_n8
+        echo "================ EVAL $${NAME} ================"
+        $${PYBIN} scripts/eval_vllm_1030.py \
+          --model_path $${MERGED} --model_name $${NAME} --output_dir $${OUT}/$${NAME} \
+          --benchmarks gsm8k math500 aime2024 --max_problems 500 \
+          --max_tokens 4096 --temperature 0.7 --top_p 0.95 --seed 42 --tp_size 4 --num_samples 8 \
+          2>&1 | tee $${OUT}/$${NAME}.log || echo "[YAML] $${NAME} eval FAILED, continue"
+        upload_pass
+
+        # PASS 3 (LAST, overrun risk): the remaining 16k chunks, cheapest first, HF upload after each.
+        for BENCH in aime2024 gsm8k; do
+          NAME=$${ARM}_gs$${GS}_16k_n8_$${BENCH}
+          echo "================ EVAL $${NAME} ================"
+          $${PYBIN} scripts/eval_vllm_1030.py \
+            --model_path $${MERGED} --model_name $${NAME} --output_dir $${OUT}/$${NAME} \
+            --benchmarks $${BENCH} --max_problems 500 \
+            --max_tokens 16384 --temperature 0.7 --top_p 0.95 --seed 42 --tp_size 4 --num_samples 8 \
+            2>&1 | tee $${OUT}/$${NAME}.log || echo "[YAML] $${NAME} eval FAILED, continue"
+          upload_pass
+        done
+
+        echo "[YAML] $${ARM}_1030_eval_v2 gs$${GS} DONE"
+        done
+        echo "[YAML] B2P4-INIT gs0 PHOTO DONE"
+        sleep 600
+        '

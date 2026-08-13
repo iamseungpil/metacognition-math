@@ -8955,3 +8955,27 @@ MATH500 @**16k**, n=4000/팔, robust 재채점. 세 팔 동일 하니스·동일
 **⓸ 발사**: `sft-b2p4-vclean-0813` (H100x4 Standard). **단일 신규 변수 = think 문법**(0812 의 `wrong_prefix` 언마스킹은 **유지**). 게이트는 500문제·16k(8k 에선 p99 가 상한에 눌려 결함이 안 보인다).
 **사전등록 PASS**: 비종료 **≤0.5%**(b2p3 5.575% / b2p2 0.025%) · 길이 p99 **≤2,500** · **think 미닫힘 ≤0.05**(b2p3 0.596 / b2p2 0.000) · meta-first **≤0.05**(0812 목적 회귀 금지) · 정확도 구 대비 −1pp 이내.
 ⚠**미결(감사 지적)**: ⓐ게이트 설정이 500/16k 로 바뀌어 구 300/8k 수치와 **직접 비교 불가** — 판정 시 같은 열끼리만 비교하고 새 기준선임을 명기 ⓑredirect 554행 중 **471행이 여전히 렌더 미닫힘** — 마스크 덕에 안전할 뿐이므로 **redirect 를 언마스킹하면 같은 회귀가 85% 규모로 재발**한다(표준 사전검사로 등록) ⓒ35행(2.9%)이 **날조된 자기검증**("exact computation confirms it")을 학습 — gs0 calibration 관측 항목으로 사전등록.
+
+---
+
+## EXP-0813r — b2p4 베이크 **완주**(1차 시도) · 재시도 취소 · gs0 사진 발사 (관측 2026-08-13 18:50~19:00 UTC)
+
+**⓵ 베이크는 이미 끝나 있었다.** `sft-b2p4-vclean-0813` 의 **1차 시도**(`user_logs/std_log.txt`)가 완주했다: 학습 `train_runtime` 985.7s(3 epoch, final loss 0.1164, `train_loss` 0.3306) → `SFT model saved` → EOS 불변식 `rc=0` → 게이트 → `push_models_hf.py` → **`[YAML][push] all 4 shards durable`**. 그 뒤 `sleep 43200` 대기 중 **SIGTERM**(선점) → `retry_001` 이 처음부터 재베이크를 시작했다.
+**HF 실측**: `iamseungpil/metacot` `models/b2p4_vclean_sft/` **14파일**(safetensors 4/4 + index + tokenizer 일습) 확인.
+
+**⓶ 재시도를 취소했다**(`amlt cancel` → `killed`). 근거: 산출물이 이미 durable 인데 재시도는 **같은 HF 경로를 다시 덮어쓴다** — 판정한 가중치와 배송될 가중치가 달라진다(0730 시드/비결정성 계보). 취소 전 3율(LIST=status·log·HF 파일목록 → decide → execute) 이행.
+
+**⓷ 게이트 요약치(1차 시도 로그에 남은 것)** — 500문제·16k:
+| | temp1 | greedy |
+|---|---|---|
+| 정확도 | 0.524 | **0.542** |
+| avg_len | 777 | 1,542 |
+| meta 방출 | 0.986 | 0.960 |
+| `wellformed_rate` | **1.000** | — |
+내장 `gate.PASS=false` 지만 **이것은 사전등록 게이트가 아니다** — 불통과 항목은 legacy PMI 3종(`auc_shift>0.55` 0.526, `own!=gold` 판정불가)과 `accuracy_greedy>=base-0.05`(0.542 vs 0.5467, **0.47pp 부족**)이다.
+
+**⓸ 사전등록 게이트는 아직 판정 불가 — 증거가 노드와 함께 죽었다.** `sft_gate.json` 과 세 parquet 은 `/scratch` 에만 있었고 **HF 업로드 경로가 없다**(런처 설계 누락). 비종료율·길이 p99·미닫힘 `<think>`·meta-first 는 **행 단위 생성물이 있어야** 잰다.
+⇒ **`b2p4init-gs0-eval-0813` 발사**(`h100std_b2p4init_gs0_eval.yaml`). `eval/b2p3init_gs0` 런처를 **하네스 바이트 동일**(`CODE_TAR_REVISION 467403206`·같은 플래그·같은 시드)로 복제하고 init 만 교체했다. **판정 패스를 1번으로 올림**: math500 @16k n8 = **500×8 = 4,000 생성**(= b2p3 의 223/4000·0.5960 과 정확히 같은 기준면), 그 다음 4k 스윕, 마지막에 gsm8k·aime. 청크마다 HF 업로드 → 선점돼도 끝난 것은 남는다. 업로드 접두사 `eval/b2p4init_gs0` **부재 확인**(E-146).
+런처 검사: 단일따옴표 2 · 실행영역 `vunmask`/`rvfull_verify_unmasked`/`TQDM_DISABLE`/`b2p2_4g` **전부 0건** · yaml 파싱 OK.
+
+**⓹ 보험 두 팔 정상 전진**(관측 18:56 UTC): `rq3v2f_b2p3v` **step 167**, `rq3v2f_b3p3g` **step 91**, 둘 다 약 10분/스텝. ⚠`scan_history(keys=["_step"])` 단일 키 조회는 **낡은 값**(148/69)을 돌려줬다 — `_timestamp` 를 함께 요청해야 최신 행이 나온다(키별 조회 규율의 반례, 앞으로 스텝 확인은 두 키로).
