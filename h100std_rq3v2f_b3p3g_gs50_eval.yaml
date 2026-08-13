@@ -1,0 +1,202 @@
+description: "MID-RUN CALIBRATION PHOTO - RQ3v2F B3P3G EVAL at gs50. ONE arm, ONE step, 1030 problems, same harness as the b2p3v gs50/gs100 evals so the three are directly comparable. PURPOSE: rq3v2f_b3p3g is the full TRIOBJ_DCPO_V4 package with the REPAIRED group-rate R_cal (dcpo_cal_mode=info_gain_group) on the repaired init models/b2p3_vunmask_sft. Its training-time diagnostics say the head fires (cal_positive_rate 0.418 -> ~0.52, cal_group_gap_mean 0.314 -> ~0.29) and the habit holds (meta_first 0.000, think ~0.98, emit ~0.86) - this eval asks whether ANY of that reaches HELD-OUT behaviour. VERDICT AXES: (1) calibration ECE and discrimination AUROC against the shared origin gs0 (ECE 0.1663, AUROC 0.5752 harness convention / 0.5644 training-head convention) - the paper claims correctness-only training halves ECE while AUROC never leaves chance, so the question is whether a scored confidence report moves AUROC off chance where correctness alone did not; (2) the confidence DISTRIBUTION - gs0 is effectively two-valued (0.75 acc 0.722 / 0.88 acc 0.761), and a proper-scored head should spread it; (3) accuracy vs the same-step base-GRPO reference (b2p3v gs50 = 0.6787, gs0 = 0.6470) - this is a photo, not the gs300 judgment. Checkpoint verified complete (m/o/e 4/4) and insurance-copied at preserved/mechanism_alive/rq3v2f_b3p3g_gs50 because the live lineage prunes. Upload prefix eval/rq3v2f_b3p3g_gs50 verified ABSENT on HF before writing this file (E-146). H100x4 Standard."
+
+# Compute-fit estimate (4xH100 tp=4 vLLM, ~7B model, aggregate decode ~8-12k tok/s at large batch):
+#   setup (tar + bootstrap + ckpt download + fsdp merge)          ~20-30 min
+#   pass a: 1030 x 8 = 8240 gens @<=4096  -> realistic ~15M tok   ~30-60 min  (worst 34M ~90 min)  FITS
+#   pass c: aime 30 x 8 = 240 gens @<=16384 -> <=3.9M tok         ~10-20 min                       FITS
+#   pass b: 8240 gens @<=16384 -> realistic ~50M tok (30% trunc)  ~1.5-2.5 h  (worst 135M ~4h+)    TIGHT
+#   realistic total ~3-4h < 21600s window; WORST CASE pass b can overrun -> pass order is
+#   a (4k FIRST), then c (cheap aime seed-43), then b (riskiest LAST), with an HF upload after
+#   EACH pass so anything already finished survives a hard kill.
+
+target:
+  service: sing
+  name: msrresrchbasicvc
+  workspace_name: msra-sh-aml-ws
+
+environment:
+  registry: mcr.microsoft.com
+  image: aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x:latest
+
+code:
+  local_dir: $CONFIG_DIR/
+
+jobs:
+  - name: h100_rq3v2f_b3p3g_gs50_eval
+    sku: 80G4-H100
+    sla_tier: Standard
+    priority: high
+    identity: managed
+    submit_args:
+      max_run_duration_seconds: 21600
+      env:
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+        HF_TOKEN: ${HF_TOKEN}
+        HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+        GH_TOKEN: ${GH_TOKEN}
+        CODE_TAR_REVISION: "467403206"
+        SIMPLERL_DIR: /scratch/conda_envs/simplerl
+        VLLM_WORKER_MULTIPROC_METHOD: spawn
+        HF_HUB_DISABLE_XET: "1"
+        REPO: iamseungpil/metacot-h200-triobj-dcpo-v3
+        # GS is parsed per-SPEC below (arm:prefix:gs) - ONE step of ONE arm (gs300, the
+        # judgment point). GS_PAIR is deliberately absent so no stale step can leak in.
+    command:
+      - nvidia-smi
+      - |
+        bash -c '
+        set +e
+        set -o pipefail
+        set -x
+        mkdir -p /scratch/logs /scratch/checkpoints /scratch/eval_results
+        cd /scratch
+        source /opt/conda/etc/profile.d/conda.sh
+        conda activate ptca
+        nohup python -c "
+        import torch, time
+        g = torch.cuda.device_count()
+        ts = [torch.randn(2048, 2048, device=f\"cuda:{i}\", dtype=torch.float16) for i in range(g)]
+        while True:
+            for i in range(g): ts[i] = (ts[i] @ ts[i]) * 0.5
+            time.sleep(2)
+        " > /scratch/logs/gpu_keeper_inline.log 2>&1 &
+        pip install -q "huggingface_hub<1.0" 2>&1 | tail -1
+
+        set +x  # do NOT leak GH_TOKEN into xtrace logs
+        curl -fsSL -H "Authorization: token $${GH_TOKEN}" -H "Accept: application/octet-stream" -o /tmp/metacognition.tar.gz https://api.github.com/repos/iamseungpil/metacognition-math/releases/assets/$${CODE_TAR_REVISION}
+        set -x
+        tar -tzf /tmp/metacognition.tar.gz >/dev/null || { echo "[YAML] code tar download FAILED"; exit 1; }
+        tar -xzf /tmp/metacognition.tar.gz -C /scratch
+
+        nohup python /scratch/metacognition/scripts/gpu_keeper.py > /scratch/logs/gpu_keeper.log 2>&1 &
+        bash /scratch/metacognition/scripts/bootstrap_sdc_node.sh
+        export PATH="$${SIMPLERL_DIR}/bin:$${PATH}"
+        export CONDA_PREFIX="$${SIMPLERL_DIR}"
+        PYBIN=$${SIMPLERL_DIR}/bin/python
+        pip uninstall -y hf_xet 2>&1 | tail -1 || true
+        export PYTHONPATH=/scratch/metacognition
+        cd /scratch/metacognition
+
+        # B3P3G MID-RUN CALIBRATION PHOTO (0813). ONE arm, ONE step: gs50. SPEC is arm:prefix:gs, parsed per iteration (no GS_PAIR), inherited from the
+        # b3sh mid-ckpt launcher this was cloned from - the loop machinery is byte-identical,
+        # only the SPEC list changed. The checkpoint is verified complete (m/o/e 4/4) and is
+        # insurance-copied at preserved/mechanism_alive/rq3v2f_b3p3g_gs50 (server-side copy, 0813)
+        # because the live lineage prunes with keep=3. Upload prefix eval/rq3v2f_b3p3g_gs50
+        # is NEW - enumerated every existing eval/ prefix on HF before writing this file and it
+        # is absent, because a clone that reused a live prefix overwrote evidence once already
+        # (E-146: eval/rq3v2f_b3s_1030 had to be recovered from revision ac274e72).
+        for SPEC in rq3v2f_b3p3g:eval/rq3v2f_b3p3g_gs50:50; do
+        export CONFIG_NAME=$${SPEC%%:*}
+        export ARM=$${CONFIG_NAME}
+        SPEC_REST=$${SPEC#*:}
+        export UPLOAD_PREFIX=$${SPEC_REST%%:*}
+        export GS=$${SPEC_REST##*:}
+        echo "================ ARM $${ARM} gs$${GS} -> $${UPLOAD_PREFIX} ================"
+        # 1. verify the EXPLICIT global_step_$${GS} is COMPLETE on HF (no latest-step fallback):
+        #    require >=4 actor model shards AND >=4 extra_state shards (mirrors pull_resume_ckpt.py),
+        #    because push_ckpts_to_hf.py uploads per-file and a bare any-prefix hit can be a PARTIAL
+        #    mid-upload step dir. Bounded wait-poll (12 tries x 300s ~ 1h) so a job that lands in the
+        #    pusher race window self-heals instead of dying; then download it.
+        $${PYBIN} -c "
+        import os, re, time
+        from huggingface_hub import HfApi
+        api=HfApi(token=os.environ[\"HF_TOKEN\"])
+        pre=\"checkpoints/\"+os.environ[\"CONFIG_NAME\"]+\"/global_step_\"+os.environ[\"GS\"]+\"/\"
+        pat=re.compile(re.escape(pre)+r\"actor/model_world_size_\d+_rank_\d+\.pt\")
+        pate=re.compile(re.escape(pre)+r\"actor/extra_state_world_size_\d+_rank_\d+\.pt\")
+        m=e=0
+        for attempt in range(12):
+            fs=api.list_repo_files(os.environ[\"REPO\"], repo_type=\"model\")
+            m=sum(bool(pat.fullmatch(f)) for f in fs)
+            e=sum(bool(pate.fullmatch(f)) for f in fs)
+            if m>=4 and e>=4:
+                print(\"explicit global_step_\"+os.environ[\"GS\"]+\" COMPLETE: model=%d extra=%d\" % (m,e))
+                break
+            print(\"[gate] try %d/12: gs PARTIAL/MISSING under %s: model=%d extra=%d\" % (attempt+1,pre,m,e), flush=True)
+            if attempt < 11: time.sleep(300)
+        else:
+            raise SystemExit(\"gs PARTIAL/MISSING after 12 tries: model=%d extra=%d (\" % (m,e) + pre + \")\")
+        "
+        if [ "$$?" -ne 0 ]; then echo "[YAML] explicit gs$${GS} not COMPLETE on HF (shard-count gate), abort"; exit 1; fi
+        $${PYBIN} -c "
+        from huggingface_hub import snapshot_download
+        import os
+        cfg=os.environ[\"CONFIG_NAME\"]; gs=os.environ[\"GS\"]
+        snapshot_download(repo_id=os.environ[\"REPO\"], repo_type=\"model\", token=os.environ[\"HF_TOKEN\"],
+            allow_patterns=[\"checkpoints/\"+cfg+\"/global_step_\"+gs+\"/**\"], local_dir=\"/scratch\")
+        print(\"gs\"+gs+\" downloaded\")
+        "
+        CKPT=/scratch/checkpoints/$${CONFIG_NAME}/global_step_$${GS}/actor
+        MERGED=/scratch/eval_results/merged_$${ARM}_gs$${GS}
+        mkdir -p $${MERGED}
+        $${PYBIN} -m verl.model_merger merge --backend fsdp --local_dir $${CKPT} --target_dir $${MERGED}
+        if [ "$$?" -ne 0 ]; then echo "[YAML] merge FAILED"; exit 1; fi
+        $${PYBIN} -c "
+        import json, os
+        p=\"$${MERGED}/tokenizer_config.json\"
+        if os.path.exists(p):
+            c=json.load(open(p)); c.pop(\"extra_special_tokens\", None); json.dump(c, open(p,\"w\"), indent=2); print(\"tok patched\")
+        "
+
+        OUT=/scratch/eval_results/$${ARM}_1030_v2
+        mkdir -p $${OUT}
+        # upload everything produced so far to the MODEL repo — called after EACH pass (idempotent re-upload is fine).
+        upload_pass() {
+          $${PYBIN} -c "
+        from huggingface_hub import HfApi
+        import os, glob
+        api=HfApi(token=os.environ[\"HF_TOKEN\"])
+        for fn in glob.glob(\"$${OUT}/**\", recursive=True):
+            if not os.path.isfile(fn): continue
+            if not (fn.endswith(\".parquet\") or fn.endswith(\".json\") or fn.endswith(\".log\")): continue
+            rel=os.path.relpath(fn, \"$${OUT}\")
+            try:
+                api.upload_file(path_or_fileobj=fn, path_in_repo=os.environ[\"UPLOAD_PREFIX\"]+\"/\"+rel,
+                    repo_id=os.environ[\"REPO\"], repo_type=\"model\")
+            except Exception as e: print(\"upload skip\", fn, str(e)[:80])
+        print(\"pass upload done\")
+        " || echo "[YAML] upload skipped"
+        }
+
+        # PASS a (FIRST, cheapest full pass): all benchmarks @4k, n=8, seed 42.
+        NAME=$${ARM}_gs$${GS}_4k_n8
+        echo "================ EVAL $${NAME} ================"
+        $${PYBIN} scripts/eval_vllm_1030.py \
+          --model_path $${MERGED} --model_name $${NAME} --output_dir $${OUT}/$${NAME} \
+          --benchmarks gsm8k math500 aime2024 --max_problems 500 \
+          --max_tokens 4096 --temperature 0.7 --top_p 0.95 --seed 42 --tp_size 4 --num_samples 8 \
+          2>&1 | tee $${OUT}/$${NAME}.log || echo "[YAML] $${NAME} eval FAILED, continue"
+        upload_pass
+
+        # PASS c (small, run BEFORE the risky 16k full pass): aime-only, extra n=8 @16k,
+        # DIFFERENT engine seed 43 so AIME totals 16 samples together with pass b.
+        NAME=$${ARM}_gs$${GS}_16k_n8_seed43_aime
+        echo "================ EVAL $${NAME} ================"
+        $${PYBIN} scripts/eval_vllm_1030.py \
+          --model_path $${MERGED} --model_name $${NAME} --output_dir $${OUT}/$${NAME} \
+          --benchmarks aime2024 --max_problems 500 \
+          --max_tokens 16384 --temperature 0.7 --top_p 0.95 --seed 43 --tp_size 4 --num_samples 8 \
+          2>&1 | tee $${OUT}/$${NAME}.log || echo "[YAML] $${NAME} eval FAILED, continue"
+        upload_pass
+
+        # PASS b (LAST, overrun risk documented above): all benchmarks @16k, n=8, seed 42.
+        # SPLIT per-benchmark, smallest first (aime 30 -> math500 500 -> gsm8k 500), with an HF
+        # upload after EACH chunk so a hard kill / vLLM crash mid-pass-b only loses the chunk in
+        # flight instead of the whole pass. Parquet rows carry the benchmark column, so
+        # aggregating the three chunks is trivial; costs ~2-4 min extra engine load per chunk.
+        for BENCH in aime2024 math500 gsm8k; do
+          NAME=$${ARM}_gs$${GS}_16k_n8_$${BENCH}
+          echo "================ EVAL $${NAME} ================"
+          $${PYBIN} scripts/eval_vllm_1030.py \
+            --model_path $${MERGED} --model_name $${NAME} --output_dir $${OUT}/$${NAME} \
+            --benchmarks $${BENCH} --max_problems 500 \
+            --max_tokens 16384 --temperature 0.7 --top_p 0.95 --seed 42 --tp_size 4 --num_samples 8 \
+            2>&1 | tee $${OUT}/$${NAME}.log || echo "[YAML] $${NAME} eval FAILED, continue"
+          upload_pass
+        done
+
+        echo "[YAML] $${ARM}_1030_eval_v2 gs$${GS} DONE"
+        done
+        echo "[YAML] PAIRED EVAL DONE both arms"
+        sleep 600
+        '

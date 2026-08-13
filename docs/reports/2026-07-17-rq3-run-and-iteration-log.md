@@ -8559,3 +8559,13 @@ cal_positive 0.42/0.36 · max 0.926/0.816 · **cal_group_gap_mean 0.314(진행 �
 ★**보상 축만 세 채점기·두 예산에서 부호가 안정**하고, **절단률도 정합**(4.40% vs 3.70%)이라 "통제군이 종결을 못 한다" 설명이 적용되지 않는다. 반면 패키지 헤드라인은 통제군 절단 **18.82% vs 6.02%** 라 종결 조건화 시 +14→약 +5.6 으로 줄고(상한 추정), **GSM8K 는 +1.35 [−0.43,+3.15] 로 0을 포함**한다 ⇒ "6/6 셀 승리" **주장 불가**.
 ⇒ 논문은 이제 **보상 축(+4.38)** 을 초록·서론·결론의 긍정 결과로 싣고, 패키지 수치는 절단 caveat 와 함께 부차로 둔다. 이는 **0813a AUROC 정정과 같은 규율**(한 규약에서만 성립하는 주장은 쓰지 않는다)의 두 번째 적용이다.
 기타 반영: 제목에서 "Where It Causally Helps" 삭제(수리 후 처치 결과 부재) · **통제군 두 종류 구분 명시**(meta-stripped twin ↔ 동일-init correctness-only) · 중복 4문단 삭제 · 빈 결과표 → 설계표. paper 커밋 c8e107d, 15쪽 빌드 정상.
+
+## 틱-0813c — b2p3v 선점→자동재개 확인 · **b3p3g gs50 중간 사진 발사**(보존 2건 선행)
+
+**b2p3v 선점은 사망이 아니었다**: wandb `state=crashed` 였으나 같은 잡이 gs110 체크포인트로 자동 재개해 **step 111 진행 중**. Standard 티어 선점→릴레이 재개가 설계대로 작동. ⚠규율 확인: **wandb state 만으로 사망 판정 금지**(amlt status + 로그의 `existing GRPO resume gs` 를 같이 볼 것).
+
+**보존 2건**(keep-N 프루닝 대비, 서버측 copy·삭제 무): `preserved/mechanism_alive/rq3v2f_b3p3g_gs50` (23파일) · `rq3v2f_b3p2_gs55` (23파일). ⚠**메타 두 팔은 라이브 체크포인트가 각 1개뿐**(b3p3g gs50 / b3p2 gs55)이라 **b3p2 의 gs50 은 이미 소실** — 두 팔의 **스텝 정합 사진은 gs50 에서 불가**하고 다음 공통 스텝을 기다려야 한다.
+
+**발사**: `b3p3g-gs50-eval-0813` (`h100std_rq3v2f_b3p3g_gs50_eval.yaml`). 4중검사 통과 — 실행영역 원본이름 잔존 0 · 단일따옴표 2 · SPEC `rq3v2f_b3p3g:eval/rq3v2f_b3p3g_gs50:50` · `TQDM_DISABLE` 부재 · 업로드 접두사 HF 부재(E-146). **판정축 셋**: ⓐgs0(ECE .1663 / AUROC .5752 하니스규약·.5644 학습헤드규약) 대비 ECE·AUROC — *정답만 보상하면 ECE 만 절반 되고 AUROC 는 동전에 머문다*(0813a)를 **점수화된 confidence 가 뒤집는가** ⓑconf 분포(gs0 은 실질 2값 0.75/0.88) ⓒ동스텝 base 참조(b2p3v gs50 0.6787).
+
+**학습지표 스냅(관측 09:5x~10:2x UTC)**: b2p3v step111 reward~0.47 entropy 0.33 / b3p2 step55 reward 0.28~0.43 emit 0.857 / b3p3g step52 reward 0.44 emit 0.855 · **cal_group_gap 0.314→0.292** · **cal_positive 0.418→0.480~0.553** · conf_parse 0.834 · **meta_first 0.000** · think 0.975. 습관 유지, 발화 완만 하강(0.96→0.86), 엔트로피 안정.
