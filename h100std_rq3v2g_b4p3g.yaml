@@ -28,6 +28,7 @@ jobs:
       env:
         _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
         HF_TOKEN: ${HF_TOKEN}
+        HF_HUB_DOWNLOAD_TIMEOUT: "60"
         GH_TOKEN: ${GH_TOKEN}
         # 0717 재패키징 완료(tag rq3-code-20260717)
         CODE_TAR_REVISION: "512197452"
@@ -101,13 +102,21 @@ jobs:
         # Same init as the b2p3v VANILLA arm so B3P2 vs B2P3V differ ONLY by the reward
         # package + entropy_coeff. Staged into the same FIXED local path.
         python -c "
-        import os, shutil
+        import os, shutil, time
         from huggingface_hub import snapshot_download
         tok=os.environ[\"HF_TOKEN\"]
         dst=\"/scratch/models/sft2_init\"
         name=\"b2p4_vclean_sft\"
-        snapshot_download(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=tok,
-            allow_patterns=[\"models/%s/**\" % name], local_dir=\"/scratch/models_dl\")
+        ok=False
+        for attempt in range(6):
+            try:
+                snapshot_download(repo_id=\"iamseungpil/metacot\", repo_type=\"dataset\", token=tok,
+                    allow_patterns=[\"models/%s/**\" % name], local_dir=\"/scratch/models_dl\", max_workers=2)
+                ok=True; break
+            except Exception as e:
+                print(\"[init] stage attempt\", attempt, \"failed:\", repr(e)[:160], flush=True)
+                time.sleep(30*(attempt+1))
+        assert ok, \"[init] snapshot_download exhausted retries\"
         shutil.rmtree(dst, ignore_errors=True)
         shutil.copytree(os.path.join(\"/scratch/models_dl\", \"models\", name), dst)
         assert os.path.exists(os.path.join(dst, \"config.json\")), \"config.json missing\"
