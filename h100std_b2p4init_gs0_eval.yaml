@@ -38,6 +38,7 @@ jobs:
         SIMPLERL_DIR: /scratch/conda_envs/simplerl
         VLLM_WORKER_MULTIPROC_METHOD: spawn
         HF_HUB_DISABLE_XET: "1"
+        HF_HUB_DOWNLOAD_TIMEOUT: "60"
         REPO: iamseungpil/metacot-h200-triobj-dcpo-v3
         # GS is parsed per-SPEC below (arm:prefix:gs) - ONE step of ONE arm (gs300, the
         # judgment point). GS_PAIR is deliberately absent so no stale step can leak in.
@@ -97,7 +98,7 @@ jobs:
         # 0812c fix: the shared RL init lives on the DATASET repo iamseungpil/metacot, and the
         # canonical name resolution (E-123, same as the RL launchers) tries eb16 first then plain.
         $${PYBIN} -c "
-        import os
+        import os, time
         os.environ[\"HF_HUB_DISABLE_PROGRESS_BARS\"]=\"1\"
         from huggingface_hub import HfApi, snapshot_download
         api=HfApi(token=os.environ[\"HF_TOKEN\"])
@@ -107,8 +108,16 @@ jobs:
             if sum(1 for f in fs if f.startswith(\"models/\"+cand+\"/\"))>=5:
                 name=cand; break
         assert name, \"init model MISSING on iamseungpil/metacot\"
-        snapshot_download(\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
-            allow_patterns=[\"models/\"+name+\"/*\"], local_dir=\"/scratch\")
+        ok=False
+        for attempt in range(6):
+            try:
+                snapshot_download(\"iamseungpil/metacot\", repo_type=\"dataset\", token=os.environ[\"HF_TOKEN\"],
+                    allow_patterns=[\"models/\"+name+\"/*\"], local_dir=\"/scratch\", max_workers=2)
+                ok=True; break
+            except Exception as e:
+                print(\"stage attempt\", attempt, \"failed:\", repr(e)[:160], flush=True)
+                time.sleep(30*(attempt+1))
+        assert ok, \"snapshot_download exhausted retries\"
         assert os.path.exists(\"/scratch/models/\"+name+\"/config.json\")
         open(\"/scratch/init_name.txt\",\"w\").write(name)
         print(\"init resolved:\", name)
