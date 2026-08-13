@@ -1,0 +1,91 @@
+Reading additional input from stdin...
+OpenAI Codex v0.144.1
+--------
+[1mworkdir:[0m /home/v-seungplee/metacognition-math
+[1mmodel:[0m gpt-5.6-sol
+[1mprovider:[0m openai
+[1mapproval:[0m never
+[1msandbox:[0m workspace-write [workdir, /tmp, $TMPDIR]
+[1mreasoning effort:[0m high
+[1mreasoning summaries:[0m none
+[1msession id:[0m 019ffd7a-a827-78b1-9198-95531a4c265c
+--------
+[36muser[0m
+You are an adversarial reviewer. Try to REFUTE the verdict below before it is registered as a claim. Check: (1) does each number support the stated conclusion, (2) are there alternative explanations not ruled out, (3) is any comparison apples-to-oranges, (4) is the sampling/statistics sound. Answer in numbered findings, each tagged VALID / FLAW / NEEDS-CHECK, then a one-line overall verdict.
+
+# Verdict under review (EXP-0813t, to be registered in CLAIMS)
+
+Setup: Two SFT2 checkpoints ("old" b2p3_vunmask_sft, "new" b2p4_vclean_sft) share the SAME SFT1 parent, recipe (3 epochs, lr 1e-5, max_length 4096), and code revision; the ONLY difference is the SFT2 corpus (1,763 rows; the new one cleans think-grammar / repetition loops / garbage lines inside assistant text of the 1,209 verify rows; 554 redirect rows byte-identical). Both were evaluated at RL step 0 with a byte-identical harness: MATH500 500 problems x 8 samples = 4,000 generations, max_tokens 16384, temp 0.7, top_p 0.95, seed 42, same code tarball.
+
+Claims:
+C1. Non-termination (finish_reason != "stop") fell 5.575% (223/4000) -> 1.125% (45/4000).
+C2. Rendered-unclosed <think> (contains "<think>" but not "</think>") fell 0.1343 -> 0.0720. Of the new init's 45 truncated rows, 97.8% are unclosed-think, so the failure mode is unchanged but 5x rarer.
+C3. Length p99 stayed 16,384 in BOTH because truncation rate > 1% mechanically pins p99 at the cap; the tail actually collapsed: p95 16,384 -> 2,331, p98 16,384 -> 4,364; non-truncated-row p99 3,541 -> 4,077.
+C4. meta-first rate 0.0000 in both (no regression of the 0812 repair).
+C5. Accuracy (robust_grade re-grade of full completion text vs gold, last \boxed) rose 64.70% -> 66.38%; problem-level paired bootstrap (500 problems, 2,000 resamples) delta +1.68pp, 95% CI [+0.18, +3.18].
+C6. classify_dcpo_format (the RL reward router's parser) on 1,000 randomly sampled generations per init: wellformed 42.1% -> 96.8%, discard 50.6% -> 2.0%. Interpretation offered: the old substrate discarded half its rollouts before reward routing, so DCPO metrics measured on it were uninterpretable. (Flagged as hypothesis needing separate confirmation, not a claim.)
+C7. Pre-registered gate thresholds (non-term <=0.5%, p99 <=2500, unclosed <=0.05) were MISSED; the decision to proceed was made by the user on the all-metrics-improved evidence. Self-correction recorded: the unclosed threshold 0.05 was set while looking at a 0.596 figure from a DIFFERENT measurement plane (bake-time gate); same-harness old-init value is 0.1343.
+
+Known caveats already recorded: single seed; single benchmark for the judgment pass; C3's non-truncated p99 went UP slightly (3,541->4,077); the 45 remaining truncations share the old failure mode.
+[1m[33mwarning:[0m[0m Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.
+[35m[3mcodex[0m[0m
+I’ll trace each claim to the underlying artifacts, recompute the key rates/quantiles where possible, and distinguish arithmetic support from causal or interpretive overreach.
+[35m[3mcodex[0m[0m
+The first repository scan hit an environment networking-namespace restriction before running. I’m retrying with a non-login shell; no project files have been changed.
+[35m[3mcodex[0m[0m
+1. **VALID — C1 arithmetic.** \(223/4000=5.575\%\) and \(45/4000=1.125\%\). That is a 4.45 percentage-point decrease, an 79.8% relative reduction, or 4.96× fewer cases. However, uncertainty should be computed with problem-level clustering because eight generations from one problem are not independent.
+
+2. **NEEDS-CHECK — “Only difference is the corpus.”** Matching parent, recipe, and code is insufficient unless training seed, data order/packing, optimizer-step count, hardware/nondeterminism, checkpoint hashes, and inference settings are also verified. With one training run per corpus, the result establishes a checkpoint difference more securely than a uniquely causal cleaning effect.
+
+3. **FLAW — C2’s “5× rarer” conflates two metrics.** Rendered-unclosed `<think>` fell from 0.1343 to 0.0720, only about 1.87×. The approximately 5× reduction applies to all non-termination events, 223→45. Moreover, 97.8% means 44/45 new non-terminations were unclosed-think; it cannot establish that the failure-mode distribution is “unchanged” without the corresponding old intersection count.
+
+4. **NEEDS-CHECK — C2’s denominator and semantics.** The unclosed rates apparently correspond to roughly 537/4000 and 288/4000, far more than the truncation counts. Thus most new unclosed-think rows were not among the 45 non-stops. “Unclosed,” “truncated,” and `finish_reason != stop` must not be treated as interchangeable.
+
+5. **VALID — C3’s unconditional tail comparison, conditionally.** The reported p95 and p98 changes strongly support a shorter unconditional tail. A >1% mass exactly at 16,384 does pin ordinary empirical p99 definitions at the cap. This requires confirmation that those rows actually reached 16,384; `finish_reason != stop` can include reasons other than length exhaustion, and quantile conventions should be recorded.
+
+6. **FLAW — The non-truncated p99 comparison is selection-biased.** Conditioning removes 223 old rows but only 45 new rows, so the retained populations differ. The increase 3,541→4,077 neither cleanly demonstrates a regression nor supports “tail collapse.” It is an apples-to-oranges diagnostic unless evaluated on a common subset of problems/samples.
+
+7. **FLAW — C4 overstates zero observations.** “Meta-first rate was 0/4000 in both” is valid descriptively. “No regression” is not established: zero observations only bounds the rate, and dependence among eight samples per problem weakens a row-level binomial bound. Say “no meta-first cases observed.”
+
+8. **NEEDS-CHECK — C5 is arithmetically and statistically plausible.** The exact values are likely 2588/4000 = 64.700% and 2655/4000 = 66.375%, producing +1.675pp, rounded to +1.68pp. A problem-level paired bootstrap is the correct unit. Registration still requires the bootstrap seed/method, preservation of all eight samples per resampled problem, and ideally more than 2,000 resamples for a stable endpoint.
+
+9. **NEEDS-CHECK — C5 may measure extractability as well as mathematical accuracy.** Because the intervention explicitly improves assistant formatting and grading uses the last `\boxed`, some gain could come from making answers gradeable rather than improving reasoning. That does not invalidate “robust_grade accuracy rose,” but it rules out the stronger interpretation “mathematical capability rose.” Benchmark/training-data overlap should also be checked.
+
+10. **VALID — C6’s sampled descriptive rates, pending sampling provenance.** The reported sample counts would be 421→968 wellformed and 506→20 discard. Confirm random-sample seeds, whether identical generation IDs were sampled for both checkpoints, and that the parser version was frozen.
+
+11. **FLAW — C6’s DCPO interpretation does not follow.** MATH500 eval generations at step 0 are not necessarily representative of RL prompts, sampling parameters, templates, or router inputs. Even a 50.6% discard rate would make DCPO metrics selected/conditional, not automatically “uninterpretable.” Keeping this explicitly as a hypothesis rather than a registered claim is appropriate.
+
+12. **VALID — C7’s gates were missed.** New non-term 1.125% > 0.5%, p99 16,384 > 2,500, and unclosed 0.072 > 0.05. The comparison-plane mistake undermines the provenance of the unclosed threshold but does not turn the failed gate into a pass.
+
+13. **FLAW — “All metrics improved” is false as written.** Overall p99 and meta-first were unchanged, while non-truncated p99 worsened. Proceeding is a documented override of preregistered gates, not a gate-supported decision; subsequent conclusions should be labeled exploratory.
+
+**Overall verdict:** **Do not register as written**—the large descriptive improvements are credible, but C2, C4, C6, and the “all-metrics-improved” rationale overclaim, while causal isolation and statistical details remain unverified.
+[2mtokens used[0m
+24,194
+1. **VALID — C1 arithmetic.** \(223/4000=5.575\%\) and \(45/4000=1.125\%\). That is a 4.45 percentage-point decrease, an 79.8% relative reduction, or 4.96× fewer cases. However, uncertainty should be computed with problem-level clustering because eight generations from one problem are not independent.
+
+2. **NEEDS-CHECK — “Only difference is the corpus.”** Matching parent, recipe, and code is insufficient unless training seed, data order/packing, optimizer-step count, hardware/nondeterminism, checkpoint hashes, and inference settings are also verified. With one training run per corpus, the result establishes a checkpoint difference more securely than a uniquely causal cleaning effect.
+
+3. **FLAW — C2’s “5× rarer” conflates two metrics.** Rendered-unclosed `<think>` fell from 0.1343 to 0.0720, only about 1.87×. The approximately 5× reduction applies to all non-termination events, 223→45. Moreover, 97.8% means 44/45 new non-terminations were unclosed-think; it cannot establish that the failure-mode distribution is “unchanged” without the corresponding old intersection count.
+
+4. **NEEDS-CHECK — C2’s denominator and semantics.** The unclosed rates apparently correspond to roughly 537/4000 and 288/4000, far more than the truncation counts. Thus most new unclosed-think rows were not among the 45 non-stops. “Unclosed,” “truncated,” and `finish_reason != stop` must not be treated as interchangeable.
+
+5. **VALID — C3’s unconditional tail comparison, conditionally.** The reported p95 and p98 changes strongly support a shorter unconditional tail. A >1% mass exactly at 16,384 does pin ordinary empirical p99 definitions at the cap. This requires confirmation that those rows actually reached 16,384; `finish_reason != stop` can include reasons other than length exhaustion, and quantile conventions should be recorded.
+
+6. **FLAW — The non-truncated p99 comparison is selection-biased.** Conditioning removes 223 old rows but only 45 new rows, so the retained populations differ. The increase 3,541→4,077 neither cleanly demonstrates a regression nor supports “tail collapse.” It is an apples-to-oranges diagnostic unless evaluated on a common subset of problems/samples.
+
+7. **FLAW — C4 overstates zero observations.** “Meta-first rate was 0/4000 in both” is valid descriptively. “No regression” is not established: zero observations only bounds the rate, and dependence among eight samples per problem weakens a row-level binomial bound. Say “no meta-first cases observed.”
+
+8. **NEEDS-CHECK — C5 is arithmetically and statistically plausible.** The exact values are likely 2588/4000 = 64.700% and 2655/4000 = 66.375%, producing +1.675pp, rounded to +1.68pp. A problem-level paired bootstrap is the correct unit. Registration still requires the bootstrap seed/method, preservation of all eight samples per resampled problem, and ideally more than 2,000 resamples for a stable endpoint.
+
+9. **NEEDS-CHECK — C5 may measure extractability as well as mathematical accuracy.** Because the intervention explicitly improves assistant formatting and grading uses the last `\boxed`, some gain could come from making answers gradeable rather than improving reasoning. That does not invalidate “robust_grade accuracy rose,” but it rules out the stronger interpretation “mathematical capability rose.” Benchmark/training-data overlap should also be checked.
+
+10. **VALID — C6’s sampled descriptive rates, pending sampling provenance.** The reported sample counts would be 421→968 wellformed and 506→20 discard. Confirm random-sample seeds, whether identical generation IDs were sampled for both checkpoints, and that the parser version was frozen.
+
+11. **FLAW — C6’s DCPO interpretation does not follow.** MATH500 eval generations at step 0 are not necessarily representative of RL prompts, sampling parameters, templates, or router inputs. Even a 50.6% discard rate would make DCPO metrics selected/conditional, not automatically “uninterpretable.” Keeping this explicitly as a hypothesis rather than a registered claim is appropriate.
+
+12. **VALID — C7’s gates were missed.** New non-term 1.125% > 0.5%, p99 16,384 > 2,500, and unclosed 0.072 > 0.05. The comparison-plane mistake undermines the provenance of the unclosed threshold but does not turn the failed gate into a pass.
+
+13. **FLAW — “All metrics improved” is false as written.** Overall p99 and meta-first were unchanged, while non-truncated p99 worsened. Proceeding is a documented override of preregistered gates, not a gate-supported decision; subsequent conclusions should be labeled exploratory.
+
+**Overall verdict:** **Do not register as written**—the large descriptive improvements are credible, but C2, C4, C6, and the “all-metrics-improved” rationale overclaim, while causal isolation and statistical details remain unverified.
