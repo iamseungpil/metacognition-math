@@ -9133,3 +9133,25 @@ MATH500 @**16k**, n=4000/팔, robust 재채점. 세 팔 동일 하니스·동일
 **⓸ 23:33 판**: b4v step10·**HF gs5,10** | b4p2(-0813c) step4 재개(같은 wandb 런 이어짐) | b4p3g step8·**HF gs5**. 5신호 전부 초록(meta_first 0.0000 · think 1.000 · emit 0.975 · clip 0.004 · len ~575). cal_positive 0.699 · conf_parse 0.973.
 
 게이트 원문: `tmp/codex_gate_0813t_out.txt`.
+
+---
+
+## EXP-0813v — b4p3g 호스트 RAM OOM 사망 · 감시 구멍 · 점검기 보강 (관측 2026-08-14 02:30~04:20 UTC)
+
+**⓵ 사망**: `rq3v2g-b4p3g-0813b` 가 02:30 경 죽었다. 로그 원문 — `(raylet) Task main_task failed due to oom. ... 9 worker(s) were killed due to the node running low on memory` → 재시도가 `ray.exceptions.RayTaskError(ValueError): Total available GPUs 0 is less than total desired GPUs 4` 로 실패 → 윈도가 `sleep 86400` 으로 떨어져 **H100x4 를 유휴 점유**. 이는 `three-death-modes-basicvc-0807`(선점 · init 스테이징 실패 · **호스트 RAM OOM**) 중 세 번째의 재발이다.
+
+**⓶ ★감시 구멍(핵심)**: `amlt status` 는 **트레이너가 죽고 keepalive `sleep` 에 빠진 잡도 `running` 으로 보고한다.** 내 점검기는 생존을 amlt 상태로 판정했으므로 이 사망을 **45분간 못 봤다**. 실제 단서는 하나뿐이었다 — **wandb 가 평소 간격(6.7분)의 10배 넘게 조용했다.**
+⇒ **점검기 보강 2종**(scratchpad `watch_b4.py`):
+| 검사 | 내용 |
+|---|---|
+| `DEAD-BUT-RUNNING` | 로그에서 `due to oom` · `sleep 86400` · `Total available GPUs 0` 직접 탐지 |
+| `STALLED` | 마지막 wandb 행이 **관측된 스텝 간격의 3배**를 넘으면 경보 |
+⇒ **규율 신설: `amlt running` 은 생존의 증거가 아니다.** 생존은 **전진**(새 스텝/새 체크포인트)으로만 확인한다.
+
+**⓷ 복구**: `rq3v2g-b4p3g-0813c` 로 재발사. 재개 로그가 중요한 안전 동작을 보여준다 — `[resume] ignoring PARTIAL steps on HF: [35]` → **OOM 이 step 35 업로드를 도중에 끊어 반쪽짜리를 남겼고, 재개 로직이 그것을 거부하고 `global_step_30` 에서 이어받았다**(`latest_checkpointed_iteration.txt = 30`). 04:14 현재 step 32 진행 중. 순손실 = 4스텝 + 재시작 50분.
+
+**⓸ wandb 침묵의 두 번째 원인(오판 방지용 기록)**: 재개가 step 31~34 를 다시 밟는 동안 **wandb 는 마지막 기록 스텝(34)보다 낮은 스텝을 받지 않아** 새 행이 안 보인다. 즉 **재개 직후의 STALLED 경보는 위양성일 수 있다** — 로그의 `step:` 진행과 heartbeat 로 교차확인해야 한다.
+
+**⓹ 다른 두 팔**: `rq3v2g-b4v-0813b` step 56, ckpt[45,50,55], OOM 흔적 0 — **gs50 핀 완료**(`checkpoints/rq3v2g_b4v_gs50_pin/global_step_50`, 23파일, 조각 4/4). ⚠단 b4v 의 스텝 간격에도 **49.7분 공백 1회**가 b4p3g 사망 시각과 겹친다(원인 미규명, 스스로 회복). `rq3v2g-b4p2-0813c` step 47, ckpt[45] 정상.
+
+**⓺ 재발 5신호는 전 구간 정상**: `meta_first` 0.0000 · `think` 0.9980 · `meta_emit` 0.9902 · `clip_ratio` 0.0000~0.0078 · `conf_parse` 0.9844. 직전 z 계산에서 12개 지표 전부 <1.0(평평).
