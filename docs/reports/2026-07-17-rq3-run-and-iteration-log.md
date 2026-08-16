@@ -9395,3 +9395,60 @@ MATH500 @**16k**, n=4000/팔, robust 재채점. 세 팔 동일 하니스·동일
 같은 이유로 `eff_ratio_cal` 0.516→0.292 는 "calibration 이 약해졌다"가 **아니라** 원신호 퍼짐이 줄어 **정규화 증폭률이 커졌다**는 뜻이다 — 잡음 증폭 위험 쪽으로 읽어야 한다.
 
 **⓻ 미확증**: (a) 250→300 정확도 −2.60pp 는 **검증 1회·1시드·mean@1** — 시사적이지 판정 아님. (b) 절단→형식붕괴→폐기 사슬은 상관만 확인, 인과 미확증. (c) 길이 증가분이 메타 블록에서 온 것인지 본문에서 온 것인지 **분해 안 됨**(`epistemic_words_per_meta` 는 +51%, 총 길이는 +119%).
+
+---
+
+## EXP-0816c — 보상 감사(형식 헤드 포함) + base GRPO 대비 효과 판정 자료 (코드 읽기, 새 실행 0회)
+
+**⓪ 롤아웃 구조 확인**: `configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml:83` `rollout.n: 8`, `verl_e4_selfdistill_h200_4x4k.yaml:43` `train_batch_size: 64` ⇒ **한 스텝 = 문제 64개 × 문제당 롤아웃 8개 = 512 롤아웃**. 그룹 중심화(`group_mean_subtract(R, index)`)의 `index`=uid=문제 ⇒ **그룹 = 한 문제의 8개 롤아웃**이 맞다. b4v 도 `rollout.n: 8`(`base_matched_grpo_h100_4x4k.yaml:60`)로 동일.
+
+**⓵ base GRPO 대비 효과 — 짝지은 스텝 4개 전부 잡음 안.**
+
+| step | b4v | b4p2 | Δ |
+|---|---|---|---|
+| 50 | 64.17% | 63.19% | −0.98pp |
+| 100 | 63.94% | 64.36% | +0.42pp |
+| 150 | 67.02% | 67.14% | +0.12pp |
+| 200 | 67.40% | 68.21% | +0.81pp |
+| **평균 Δ** | | | **+0.09pp** |
+
+594문제·mean@1·**단일 시드·체크포인트당 검증 1회**. 부호가 4점 중 3점에서 뒤집힌다. ⇒ **"효과 없음"이 아니라 "이 해상도로 ±2pp 미만은 못 읽는다"**(G3). b4v 는 250·300 미도달이라 **b4p2 가 유일하게 크게 움직인 지점(250→300 −2.60pp)에 짝이 없다.**
+
+**⓶ ★`dcpo_meta_len_cap: 96` 은 이 런에서 한 번도 발화하지 않는다(무효 레버).**
+`dcpo_region.py:1428` 가드가 `if meta_floor and floor_mask is not None:` 인데 `configs/...:154` `dcpo_meta_floor: 0.0` ⇒ **블록 전체가 스킵**되고 그 안에 있는 `meta_len_cap` 도 같이 죽는다. 설정 파일은 "메타 96토큰 상한"을 광고하지만 **실행 경로에 없다.**
+⚠더 중요한 것: **주 R_meta 라우팅에는 상한이 애초에 없다.** 코드 주석(`dcpo_region.py:1425-1427`)이 그 근거를 이렇게 적어 놨다 — *"R_meta keeps its per-token routing (Â_meta>0 only for USEFUL meta, so length there is fine)"*. 즉 **"유용한 메타에만 양수가 붙으니 길이는 괜찮다"가 가정**이고, 아래 ⓷이 그 가정을 겨눈다.
+
+**⓷ 구조적 길이 유인 후보 — R_meta 는 메타 토큰 수에 비례해 gradient mass 를 준다.**
+`dcpo_region.py:1252` `A_token = w_corr*Â_corr*ANSWER + w_meta*Â_meta*META_CONTENT + w_cal*Â_cal*CONF`. `Â_meta` 는 **행당 스칼라를 메타 토큰 전체에 브로드캐스트**하고 손실은 `loss_agg_mode: token-mean` ⇒ **한 행의 메타 기여 ∝ (메타 토큰 수) × Â_meta**.
+그리고 R_meta 정의(`dcpo_pmi_shift.py:60`)는 **메타 블록을 사이에 두고 open↔close 의 gold−decoy logp 차**다. 메타가 길수록 믿음을 움직일 여지가 크다 ⇒ **긴 메타 → 큰 R_meta → 더 많은 토큰에 양의 advantage → 더 긴 메타**의 양의 되먹임 후보.
+**방증**(b4p2 50스텝 블록): `pmishift_rmeta_mean_scored` 0.2736 → **0.4689(+71%)** · `rmeta_mean_meta_rows` 0.1926 → 0.3036 · `epistemic_words_per_meta` 0.6584 → 0.9919(+51%) · `epistemic_word_density` **0.0208 → 0.0209(평평)** ⇒ 인식 어휘 밀도는 그대로인데 총량만 늘었다.
+⛔**확증 불가 — 메타 길이 자체를 재는 지표가 없다**(⓺).
+
+**⓸ 브레이크가 다른 바퀴에 달려 있다.** 길이를 미는 힘은 R_meta(w 0.8, 메타 토큰 전체), 막는 힘은 `dcpo_len_cost` 인데 **R_corr 스칼라에서 차감**된다(`verl_sdc.py:505-513`). 크기는 관측 길이대에서 정답 스윙(2.0)의 **0.28~0.62%**(EXP-0816b ⓷).
+
+**⓹ 형식 헤드 — 비대칭 자체는 문제가 아니나, 무너질수록 처벌이 약해진다.**
+스칼라(`dcpo_region.py:1113-1120`): `wellformed +1.0` / `drift·discard −format_neg(=0.2)` / 나머지(replaced·truncation·no_meta) `0.0`. 이걸 **그룹 전체로 중심화**한다.
+
+| wellformed 비율 | 그룹 평균 | wellformed 행 Â | discard 행 Â |
+|---|---|---|---|
+| 0.9365 (1–50 블록) | +0.9273 | +0.073 | **−1.127** |
+| 0.8223 (201–250 블록) | +0.7949 | +0.205 | **−0.995** |
+
+⇒ 비대칭(+1 vs −0.2)은 중심화가 뒤집어 **discard 가 5배 세게 맞는다 — 설계대로**. 다만 **형식이 무너질수록 discard 처벌이 −1.127 → −0.995 로 약해지고 wellformed 보상은 +0.073 → +0.205 로 커진다.** 완만한 자기 완화. 실측 침식(wellformed 0.9365→0.8223, meta_unclosed 0.0021→0.0327)과 방향이 같다.
+
+**⓺ ★절단을 막는 실질 장치가 사실상 R_corr 하나뿐이다.**
+- 형식 헤드: 절단 행은 `R_format = 0.0` 이고 **FORMAT 토큰을 소유하지 않아** advantage 가 아예 안 닿는다(주석 `dcpo_region.py:1107-1112` 가 의도적이라 명시).
+- `dcpo_trunc_open_penalty: 0.3`: 메타를 열고 못 닫은 행의 **dangling opener 토큰 1개**에 un-centered −0.3. token-mean 손실에서 **1276토큰 중 1개** ⇒ 무시 가능.
+- `dcpo_len_cost`: 0.28~0.62%.
+- ⇒ 남는 것은 절단 → 채점 실패 → **R_corr −1**. 그런데 **한 문제의 8롤아웃이 전부 틀리면 Â_corr = 0** 이라 그 그룹에선 절단이 아무 벌도 안 받는다. 절단은 어려운 문제에 몰리므로 **정확히 그 구간에서 브레이크가 0**이 된다. `dcpo/eff_scale_corr` 0.2255 → 0.1475 하락이 이와 정합(그룹 내 정답 분산 감소). **빈도 미정량**.
+
+**⓻ 관측 공백 둘**: (a) **메타 길이 지표 없음** — `response_length/*` 는 응답 전체뿐이라 길이 증가가 메타에서 왔는지 본문에서 왔는지 못 가른다. ⓷을 확증하려면 이게 먼저다. (b) **b4p2 는 `meta_first_rate`/`think_rate`/`cal_positive_rate`/`conf_parse_rate` 미로깅** — 세 팔 공통 5신호 대조 불가.
+
+**⓼ 정상 확인된 것**: `cf_text_rate` 전 구간 0.0000(=pmi_shift 소스라 CF 경로 미사용, 정상) · `cw_graded_rate` 0.910→0.985 · `replaced_rate` 0.0003→0.0037(미미) · `dcpo_head_member` 가 discard 행을 형제 그룹 평균에서 제외(`verl_sdc.py:400-403`) · emit 라우팅 first_token n=1(길이 농사 불가).
+
+**⓽ 승인 대기 — 제안 넷**(전부 정본 설정/코드 변경):
+1. **메타 길이 관측 추가**(감사 선행조건, 위험 0): 메타 토큰 수/응답 대비 비율을 wandb 스칼라로. 이게 없으면 ⓷은 영원히 가설.
+2. `dcpo_len_cost` **0.08 → 0.5~1.0** 또는 **상한 근처에서 볼록한 형태**로 교체.
+3. `meta_len_cap` 을 **주 R_meta 라우팅에도** 적용(현재는 죽은 floor 블록 안에만 존재).
+4. b4p2 계열에 **5신호 로깅 추가**(⓻b).
+⚠1번은 순수 관측 추가라 위험이 없고 2~4번의 판단 근거를 만든다 ⇒ **1번 먼저 권고**.
