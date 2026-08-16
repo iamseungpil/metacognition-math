@@ -9863,3 +9863,59 @@ EXP-0816h ⓸ 의 H1~H5 는 **부호 예측만** 있고 **널을 해석할 장�
 **⓹ 이 감사가 닫는 것 / 여는 것**
 · **닫는다**: *"SFT 없이 프롬프트만으로 `<|meta|>` 파이프라인을 돌린다"* — 토큰이 없어 원리적으로 불가.
 · **연다**: EOS 덮어쓰기 확인(⓷). 그리고 Qwen3-8B(non-Base)의 redirect 실행 능력 측정.
+
+---
+
+## EXP-0816j — ★A0 결과: EOS 불일치 가설 **기각**. 그리고 6팔 설계 확정
+
+**⓵ EXP-0816i ⓷ 정정 — EOS 는 이미 고쳐져 있었다.**
+`src/training/sft.py:457-497` 이 명시적으로 덮는다: `tokenizer.eos_token = "<|im_end|>"` → `model.config.eos_token_id` → `model.generation_config.eos_token_id`. 그리고 저장된 산출물이 셋 다 일치한다 — `models/b2p4_vclean_sft` 의 `config.json` **151645** · `generation_config.json` **[151645]** · `tokenizer_config.json` **`<|im_end|>`**.
+⇒ **b4 계보의 비종료(5.575%→1.125%)는 EOS 불일치 탓이 아니다.** 내 가설 기각. 다만 EXP-0816i 의 ⓵⓶(메타 토큰 부재 · `</think>` 단일토큰 여부)는 **유효하고**, 기질 이전을 Qwen3 계열 안으로 제한하는 근거로 남는다.
+
+**⓶ 용어 정리(이 세션에서 내가 섞어 쓴 것).**
+· **base 모델** = Qwen3-8B-**Base** (기질) · **base GRPO** = **정답만 주는 대조군**(보상 구성). 둘은 다른 축이다.
+· 그리고 **b4 세대는 Qwen3-8B-Base + SFT1 + SFT2** 다 — 내가 "post-trained instruct" 로 잘못 부른 적이 있다. **instruct 세대(v8 계열)는 Qwen2.5-7B-Instruct** 다(저장소 문자열 3회 등장).
+
+**⓷ base 기질은 "실패"가 아니라 "널"이다.**
+
+| | 대조군 | 우리 보상 | Δ |
+|---|---|---|---|
+| 구 SFT2 (b2p vs b3s) | 77.28% | 74.80% | **−2.48pp** |
+| **새 SFT2 (b4v vs b4p2)** | 67.40% | 68.21% | **+0.09pp** — 널 |
+
+기전 후보(측정됨): **base 에서 redirect 가 실행되지 않는다** — `acc|redirect` **0.292** vs `acc|verify` **0.705**. 증폭할 행동이 없으면 보상이 할 일이 없다.
+반면 instruct 계보 `shiftonly` 는 redirect **96.3%** 이고 `acc|redirect` **0.626 > 0.597**. **기질이 갈린다.**
+
+**⓸ 6팔 설계 (확정, 발사 대기)** — 다른 것은 `dcpo_rmeta_formula` 하나뿐.
+
+```
+A_token = 1.0 · Â_corr · ANSWER  +  λ · Â_meta · META      (2성분 기본)
+끔: dcpo_w_cal / dcpo_w_emit / dcpo_len_cost / dcpo_w_format / dcpo_meta_floor / dcpo_w_over
+```
+
+| 기질 | 팔 | R_meta |
+|---|---|---|
+| non-Base (Qwen3-4B, SFT 새로) | **P0** | 없음 — **base GRPO 대조군** |
+| | **P1** | `pos` (현행 PMI-shift) |
+| | **P2** | `ans` (문맥 차분) |
+| | **P3** | `surprise` (RLRT 계열) |
+| base (기존 `b2p4_vclean_sft` 재사용, SFT 비용 0) | **Q0** | 없음 |
+| | **Q1** | `pos` |
+
+· 2성분 근거: `archive/launchers_pre_rq3/h100std_shiftonly.yaml` 이 정확히 그 구성이고 **유일한 성공 사례**.
+· ⚠**형식 guard 는 조건부 대기**: base 계보에서 `w_format=0` 으로 돌린 `h100std_rq3v2f_b3sh.yaml` 은 **자멸**했다(discard 5.9% gs120 → **46.7%** gs155, gs175 중단). ⇒ `discard_rate > 0.20` 알람, 넘으면 `w_format` 투입. **켜야 했다면 그 자체가 발견**(기질별로 스캐폴드 필요 여부가 다르다).
+
+**⓹ 평가 — 3층 × 4조건.**
+· 층: **학습 전 gs0 로 p̂ 를 재서 고정** {p̂=0 · **0<p̂<1(주 지표)** · p̂=1}, **모든 팔에 동일 적용**.
+  ⚠각 팔의 자기 성적으로 층을 가르면 평균회귀로 처치가 좋아 보인다 — 이 세션에 실제로 저지른 실수다.
+· 조건: **N**(메타 없음) · **D**(다른 문제 메타) · **S**(어절 섞기) · **R**(진짜). **`R > S` 면 의미를 배운 것, `R ≈ S` 면 껍데기만.**
+· 주 지표: 프론티어 층 **쌍대 avg@8** vs P0. 해상도 근거 — 쌍대·avg@8·프론티어 셋을 곱해 ±2pp → **±0.7pp**.
+· 세트: MATH500(주) + GSM8K 500. OOD 축 = **MATH500 L4–5 (n=262)**. ⛔AIME(n=30) 미사용.
+
+**⓺ 게이트 A1 (진행 중)** — Qwen3-4B(non-Base)가 redirect 를 **실행**하나. 통과 조건 `acc|redirect ≥ acc|verify − 0.05`.
+미달이면 non-Base 에도 능력이 없다는 뜻이고, Qwen2.5-7B-Instruct 로 가되 **토큰 id 3개 재매핑 + 파서 재검증**이 선행(반나절).
+
+**⓻ SFT 는 한다 — 선택의 여지가 없다.** `<|meta|>`(151669)·`<|/meta|>`(151670)가 **어느 공개 체크포인트에도 없다**(EXP-0816i ⓵). 없으면 `dcpo_region.py` 의 id 기반 마스킹이 통째로 무효다.
+⚠단 **한 번 굽고 팔이 공유**한다. 교란의 정체는 *"SFT 가 있다"* 가 아니라 *"세대마다 바뀐다"* 였다.
+
+**⓼ 노드 2개 · 총 6~7시간.** A1(로컬 0) → SFT(1노드 40분) → 프론티어(로컬 0) → 6팔(2노드 1.5~2h) → 평가.
