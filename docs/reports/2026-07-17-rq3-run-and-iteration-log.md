@@ -9638,3 +9638,53 @@ step 295 에서 **R_corr 은 0.864 vs 0.839 로 사실상 같은데 R_meta 만 +
 
 **⓷ 제안 — 최소 구성(⛔미승인·미구현)**: `R_corr` 1.0 + **수리된 `R_meta` 1개** + `R_format` 0.1급(파싱 인프라가 의존) **만 남기고** `R_cal`·`R_emit`·`len_cost`·`trunc_open` 은 **0으로**, 죽은 노브 3개는 **설정에서 삭제**(승격/교체/제거 형식 중 "제거", §10). 근거: 무엇이 무엇을 하는지 **한 문장으로 못 쓰는 상태**에서 성분을 더 다듬으면 다듬은 효과를 분리할 수 없다.
 ⚠**단 R_cal 완전 제거 vs 개별 0/1 재시도는 사용자 결정**(결정 (가), 두 번째 대기).
+
+---
+
+## 0816 설계 노트 (⛔판정 아님) — 성분 축소·GDPO↔DCPO·R_meta 재정의(문맥 차분) 여섯 질문
+
+**Q1 보상 개수 축소 — ★기록에 이미 설계돼 있고 미발사다.**
+`E-174`(0808, 원장 §6118) **`bfmt`** = TRIOBJ_DCPO region 기하 + 경찰 헤드(format·trunc·anchor)만 켠 팔. **승인 대기 상태로 남았고 발사되지 않았다.**
+등록된 사다리: **`b2p → bfmt → b3nopmi → b3p`** = **{기하+경찰}** / **{+cal·emit·len}** / **{+PMI}** — 한 단씩. `bfmt` 가 뜨면 `b3nopmi` 와의 차분이 **보조 5헤드 몫을 공짜로** 준다.
+그리고 **C-031 의 "★여는 것"이 정확히 이 팔을 지목**한다(*"공통 TRIOBJ 번들을 가르는 대비 — E-174 의 bfmt"*).
+⛔**끄면 안 되는 것 둘**(0808 근거, EXP-0816g ⓷ 내 제안을 정정한다):
+· `trunc_open_penalty` — format 헤드는 절단 행을 **의도적으로 0 처리**(`dcpo_region.py:1107-1112`)하므로 **절단 탈출구를 `w_format` 이 구조적으로 못 막는다.** un-centered trunc 채널이 **유일한 경찰**이다. (절단률 0.25→6.5% 상승 중이므로 더더욱)
+· `anchor_norm` — 끄면 format 경찰의 실효 강도가 달라져 **새 diff 축이 생긴다.**
+
+**Q2 GDPO ↔ DCPO 는 합치는 게 아니라 이미 나란히 있다**(`verl_sdc_utils.py:464-512`). `compute_gdpo_outcome_advantage` 는 **항상** 돌고, DCPO 모드에서는 그 결과가 **버려진다**(주석: *"Does NOT use base_advantages — the summed GDPO scalar is logging-only for this mode"*).
+
+| | `TRIOBJ_META_V1` (GDPO 계열) | `TRIOBJ_DCPO_V2/3/4` |
+|---|---|---|
+| 라우팅 | 가중합 후 **전 토큰 균일 브로드캐스트** | **헤드별 자기 영역**(ANSWER/META_CONTENT/CONF/FORMAT) |
+| whitening | **있음**(`masked_whiten`) | **없음** |
+| discard 행 | 포함 | `dcpo_head_member` 로 **그룹 평균에서 배제** |
+
+⇒ "합친다"의 유용한 형태 = 이 **세 축 중 일부만** 취하기. 가장 자연스러운 조합은 **정답 헤드는 GDPO식 전역+whiten, 메타 헤드만 영역 라우팅** — 이는 곧 성분 축소안과 같은 물건이다. 그리고 `bfmt` 사다리가 바로 이 세 축의 합효과를 재도록 등록돼 있다(*"region 기하(라우팅·discard 배제·비whiten) + 경찰 헤드의 합효과"*).
+
+**Q3 위치를 자유 변수로 하면 SFT 를 빼나 — 아니다.** THINK-ANYWHERE 도 **콜드스타트 SFT 를 한다**(LoRA, 약 5,000 샘플). 원문 §3.2: *"LLMs do not invoke thinking blocks during code generation, and even explicit instructions in prompts often fail to enforce this behavior reliably. Therefore, they must be explicitly taught through training."* ⇒ **형태는 SFT 가, 위치는 RL 이.** 우리 쪽 함의는 "SFT2 제거"가 아니라 **"SFT2 가 메타 위치를 고정하지 않게"** 이다.
+
+**Q4 base 에 PMI 만 — 이미 샀다.** **C-031**: `b3p − b3nopmi` = **−0.65pp [−1.9,+0.7] p=0.328**(단일 변수 `++algorithm.dcpo_w_meta=0.0` 한 줄). 수준 b3nopmi 75.825% vs b3p 75.175%.
+⚠**"효과 0"이 아니다 — 검정력 없음**(SE 0.66pp, 80% power MDE **1.84pp**). 정확한 진술은 *"PMI 유래 META_CONTENT advantage 항의 end-to-end 순효과는 검출되지 않았다."*
+⇒ 같은 대비를 다시 사지 않는다(C-031 ★닫는 것에 명시).
+
+**Q5·Q6 ★R_meta 재정의 — 위치 차분에서 문맥 차분으로.**
+현재(`src/eval/pmi_shift_signal.py` docstring · `dcpo_pmi_shift.py:60`):
+`OPEN = 메타 앞 본문` / `CLOSE = 본문 + 메타블록` → `shift = PMI_close − PMI_open`.
+⇒ 두 문맥 모두 **메타 이후 본문을 포함하지 않는다.** 그래서 *"메타가 이후 행동을 바꿨나"* 를 **원리적으로 못 본다** — 0811(원장 §8040)이 지목한 그 자리. 그리고 텍스트가 길고 확신에 찬 문장이 붙으면 shift 는 그냥 오른다 ⇒ **정형문이 이걸 먹었다**(0816d: 정형문 R_meta +0.289 vs 그외 −0.145, R_corr 은 0.864 vs 0.839 로 동일).
+
+**제안(⛔미승인)**: **측정 위치 하나(답 직전), 문맥 둘.**
+```
+R_meta = [logp(gold|전체응답) − logp(decoy|전체응답)]
+       − [logp(gold|메타를 길이맞춤 중립문으로 치환한 전체응답) − logp(decoy|…)]
+```
+· **정형문은 자동으로 0 이 된다** — 문제 정보가 없는 문장은 중립문으로 바꿔도 정답 확률이 안 변한다(정의상).
+· **진짜 교정은 크게 남는다** — 부호를 고친 메타를 치환하면 이후 본문의 정답 확률이 무너진다.
+· **"이미 맞던 답"에 상이 안 간다** — victory lap 이 구조적으로 제거되므로 별도 조건절(0816f 안 D)이 불필요.
+· **비용: 생성 0회**, teacher-forced forward 1회 추가. 현 PMI 도 이미 두 문맥 teacher-forcing 이므로 **기계는 그대로, 문맥 구성만 바뀐다.** 진짜 CF 재생성(생성 2배)의 극히 일부.
+· **중립 치환 통제는 우리가 이미 돌려봤다** — PG0(0619): `R`(실제 메타) vs `N'`(중립 주입) vs `Nc`, `N'=Nc` 로 *"아무 주입"* 교란 기각.
+⚠**off-distribution 위험**: 메타를 지운 채 이후 본문을 남기면 문맥이 어긋나 logp 가 *유용성과 무관하게* 떨어질 수 있다(길이가 긴 메타일수록 더). **길이맞춤 중립 치환이 이 교란의 통제**이며, 치환 vs 삭제를 **오프라인에서 먼저 비교**해야 한다.
+· **사용자 제안(메타 뒤 커밋먼트 한 문장)은 여기에 붙는다** — 한 문장을 강제하면 그것이 **ablation 단위**가 되어 블록 전체보다 국소적이고 치환 통제도 만들기 쉽다. ⚠SFT 서식 변경 필요 ⇒ 다음 세대.
+
+**★검정을 발사 전에 할 수 있다(§11 사다리 ③)**: b4p2 롤아웃 테이블 300스텝이 이미 있다. 동결 모델 1대로 teacher-forced forward 만 돌려 **정형문의 ablation delta 가 실제로 0 에 붙는지**, 그리고 **치환 vs 삭제의 차이**를 GPU 몇 시간에 확인 가능. **여기서 실패하면 발사 안 한다.**
+
+**권고 순서**: ⑴`bfmt` 발사(성분 축소, 이미 설계됨) · ⑵ablation-PMI **오프라인 검정** · ⑶통과 시 `bfmt + R_meta_abl` · ⑷위치 자유 변수는 다음 세대.
