@@ -881,6 +881,157 @@ def format_penalty_reward(completions, ground_truth=None, **kwargs):
     return out
 
 
+# ── COUNTDOWN_6ARM reward-head wiring (ADDITIVE) ──────────────────────────────
+# The countdown arms are GROUP-dependent (p_hat / sign(A_corr) need the rollout
+# group) and TEACHER-dependent (the PMI-shift term needs a frozen-ref forward),
+# but the reward manager calls each reward_fn per-key with no group structure and
+# no trainer handle. Same shape as the DCPO wiring above: ONE mode-gated pre-pass
+# (`_compute_countdown_arm_stash`, defined below the PMI helpers it reuses) runs
+# per batch and stashes the per-rollout arm totals; the single thin wrapper here
+# just reads the stash, so REWARD_CONFIGS['COUNTDOWN_6ARM'] keeps the standard
+# funcs/keys contract. Pre-existing modes never touch this.
+#
+# NOTE ON WEIGHTS: `arm_reward` already multiplies each term by its ARM_SPECS
+# weight AND the step warmup, so the head's manager-side weight MUST stay 1.0 —
+# a second multiplication here would silently rescale every arm.
+_COUNTDOWN_MODE = "COUNTDOWN_6ARM"
+_COUNTDOWN_STASH: dict = {"step": None, "arm": None, "total": None,
+                          "components": None, "n": 0}
+
+
+def countdown_arm_reward(completions, **kwargs):
+    """The ONE reward head of COUNTDOWN_6ARM — a thin reader of the pre-pass stash.
+
+    There is deliberately NO text fallback and NO zero fill. A missing or stale
+    stash means the pre-pass did not run for this batch, i.e. the arm is declared
+    but not wired; returning 0.0 there is exactly the failure this mode exists to
+    make impossible (eight arms silently trained on the same reward). We raise,
+    and the countdown branch of the reward loop re-raises instead of swallowing.
+    """
+    n = len(completions)
+    total = _COUNTDOWN_STASH.get("total")
+    if total is None or len(total) != n:
+        raise RuntimeError(
+            "[COUNTDOWN] arm-reward stash is missing or stale (have "
+            f"{'None' if total is None else len(total)} rows, batch has {n}): the "
+            "pre-pass did not run for this batch. Refusing to emit a silent 0.0 "
+            "reward — that is the 'declared lever, no wiring' failure mode.")
+    return [float(v) for v in total]
+
+
+def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_length, step):
+    r"""COUNTDOWN_6ARM 의 **유일한 발전기**. 배치당 한 번 돌며 `_COUNTDOWN_STASH` 를 채운다.
+
+    위의 `countdown_arm_reward` 는 이 스태시를 읽기만 한다. 이 함수가 안 돌면 그쪽이
+    RuntimeError 를 던지고, 아래 보상 루프의 countdown 분기가 그것을 **재던진다** —
+    "선언된 레버, 배선 0" 실패(여덟 팔이 같은 보상으로 조용히 학습)를 불가능하게 만든다.
+
+    학습·검증 두 배치 모두 `MetaCotSDCRewardManager.__call__` 을 지나므로, 보상 루프
+    바로 앞에 두면 검증 배치도 같은 보상을 본다(팔 간 비교가 성립하려면 그래야 한다).
+    """
+    from src.training import countdown_pmi as _cdp
+    from src.training import countdown_rewards as _cdr
+    from src.training import countdown_task as _cdt
+
+    arm = str(getattr(getattr(self.config, "algorithm", None),
+                      "countdown_arm", "") or "").upper()
+    if arm not in _cdr.ARM_SPECS:                      # fail-closed. 조용한 기본값 금지.
+        raise ValueError(
+            f"[COUNTDOWN] algorithm.countdown_arm={arm!r} 가 ARM_SPECS "
+            f"{sorted(_cdr.ARM_SPECS)} 에 없다 — 팔이 배선되지 않았다. 런처가 "
+            "++algorithm.countdown_arm 을 넘겼는지 확인하라.")
+
+    nt = data.non_tensor_batch
+
+    def _col(name):
+        v = nt.get(name, None)
+        if v is None:
+            raise RuntimeError(
+                f"[COUNTDOWN] non_tensor_batch 에 '{name}' 컬럼이 없다. parquet 이 "
+                "countdown_task.build_records(include_flat_cols=True) 로 빌드됐는지 "
+                "확인하라 — PMI 원재료가 없으면 메타 팔 전부가 무효다.")
+        return list(v)
+
+    witnesses, decoys = _col("witness"), _col("decoy")
+    nums_col, target_col = _col("nums"), _col("target")
+
+    prompt_texts = [
+        _decode_prompt_only(self.tokenizer, data[i].batch["prompts"],
+                            data[i].batch["attention_mask"], prompt_length)
+        for i in range(bs)
+    ]
+
+    # ── PMI-shift. 평문 <meta> 토큰 스팬 + 증인식/연산자교체오답의 발산 토큰. ──────
+    #    여기서만 GPU 를 쓴다(동결 ref forward). config 위반은 삼키지 않고 즉사한다.
+    rows, diag = _cdp.score_pmi_shift(
+        tokenizer=self.tokenizer,
+        trainer=_ACTIVE_SDC_CONTEXT.get("trainer", None),
+        prompt_texts=prompt_texts,
+        response_texts=list(decoded_responses),
+        witnesses=witnesses, decoys=decoys, step=step)
+
+    # ── 채점 · 형식 · 텔레메트리 원재료. gold 불필요 — target 이 프롬프트에 있다. ──
+    def _parse_ok(t):
+        return int(_cdt.extract_expr(t) is not None)
+
+    for i, r in enumerate(rows):
+        text = decoded_responses[i]
+        r["text"] = text
+        r["r_corr"] = int(_cdt.grade(text, nums_col[i], int(target_col[i])))
+        r["format_ok"] = _cdr.format_ok_row(text, arm, parse_expr_ok=_parse_ok)
+        r["final_expr"] = _cdt.extract_expr(text)   # 답 누출률이 요구하는 키
+        r["arm"] = arm
+
+    # ── 그룹 단위 두 수: p̂(자가검증률) 와 sign(A_corr). uid 없으면 계산 불가. ─────
+    uid = nt.get("uid", None)
+    if uid is None:
+        raise RuntimeError(
+            "[COUNTDOWN] non_tensor_batch 에 uid 가 없다 — p̂ 와 sign(A_corr) 는 "
+            "롤아웃 그룹 단위라 계산할 수 없다. 곱하기·게이팅 팔이 전부 무효가 된다.")
+    uid = [str(u) for u in uid]
+    groups: dict = {}
+    for i, u in enumerate(uid):
+        groups.setdefault(u, []).append(i)
+    phat_of, mean_of = {}, {}
+    for u, ix in groups.items():
+        phat_of[u] = _cdr.compute_phat([rows[i] for i in ix])
+        mean_of[u] = sum(float(rows[i]["r_corr"]) for i in ix) / len(ix)
+    for i, r in enumerate(rows):
+        r["adv_corr"] = float(r["r_corr"]) - mean_of[uid[i]]
+        r["phat"] = phat_of[uid[i]]
+        r["group_id"] = uid[i]
+
+    totals, comps = [], []
+    for i, r in enumerate(rows):
+        _t, _c = _cdr.arm_reward(arm, r, step=step, phat=phat_of[uid[i]])
+        totals.append(float(_t))
+        comps.append(_c)
+
+    _COUNTDOWN_STASH.update({"step": step, "arm": arm, "total": totals,
+                             "components": comps, "n": len(totals), "rows": rows})
+
+    # ★배선의 유일한 증거. 런처 가드가 이 줄을 grep 해 없으면 창을 죽인다.
+    #   반드시 계산 **뒤**에 찍는다 — import 시점에 찍으면 가드는 통과하고 아무것도
+    #   증명하지 못한다(그게 이 모드가 존재하는 이유인 바로 그 실패다).
+    print(f"[COUNTDOWN][WIRED] arm={arm} step={step} n={len(totals)} "
+          f"mean={sum(totals) / max(1, len(totals)):.4f} "
+          f"distinct={len({round(v, 6) for v in totals})} "
+          f"phat_groups={len(groups)} "
+          f"pmi_scored={diag.get('scored', 0)}/{diag.get('B', 0)}", flush=True)
+
+    # ── 텔레메트리 7종 + 중단 조건. 구현만 있고 호출이 0건이면 무효 레버다. ───────
+    if step % 10 == 0:
+        try:
+            _rep = _cdr.telemetry_report(
+                [[rows[i] for i in ix] for ix in groups.values()], components=comps)
+            print(f"[COUNTDOWN][TELEMETRY] step={step} {_rep}", flush=True)
+            for _hit in _cdr.check_abort(_rep):
+                print(f"[COUNTDOWN][ABORT] step={step} {_hit}", flush=True)
+        except Exception as _texc:                    # 텔레메트리 실패로 학습을 죽이지 않는다
+            print(f"[COUNTDOWN][TELEMETRY] step={step} 실패: {_texc}", flush=True)
+    return totals
+
+
 REWARD_CONFIGS = {
     "SDC_SHARED": {
         "funcs": [
@@ -1116,6 +1267,23 @@ REWARD_CONFIGS = {
         "weights": [1.0, 0.5, 0.3, 0.0, 0.1],
         "keys": ["correctness", "meta_region_utility", "cal_region_reward", "meta_emission",
                  "format_penalty"],
+    },
+    # COUNTDOWN_6ARM (ADDITIVE, sequence-level GRPO, NO region routing): the
+    # Countdown 6-arm family (A corr / B cur / C mul / E gate / F full / G neg).
+    # EXACTLY ONE head. Every arm difference lives in
+    # src/training/countdown_rewards.ARM_SPECS, selected by
+    # algorithm.countdown_arm; the head below is a thin reader of the pre-pass
+    # stash. Weight is 1.0 BY CONTRACT (arm_reward already applied the ARM_SPECS
+    # weights and the 0->20 step warmup — see countdown_arm_reward's docstring).
+    # This mode does NOT join _REGION_ROUTED_MODES or _VANILLA_MODES: with
+    # algorithm.adv_estimator=grpo and sdc_enabled=false, patched_compute_advantage
+    # falls straight through to verl's own GRPO advantage (no teacher forward, no
+    # region routing, dcpo_region.py untouched). The mode-dispatch guard in
+    # main_task fails the launch closed if either of those two is not true.
+    "COUNTDOWN_6ARM": {
+        "funcs": [countdown_arm_reward],
+        "weights": [1.0],
+        "keys": ["countdown_arm"],
     },
 }
 
@@ -2260,6 +2428,13 @@ class MetaCotSDCRewardManager:
                     _pf_heads.get("canary_pass1_acc", [1.0] * bs), dtype=np.float32)
                 data.non_tensor_batch["dcpo_sandbag_clamp"] = np.asarray(
                     _pf_heads.get("sandbag_clamp", [1.0] * bs), dtype=np.float32)
+            elif _mode_pf == _COUNTDOWN_MODE:
+                # COUNTDOWN_6ARM 의 발전기. 이 줄이 없으면 스태시가 비고 여섯 팔이
+                # 전부 상수 0 보상으로 150스텝을 돈다(advantage 0 = 무학습).
+                _compute_countdown_arm_stash(
+                    self, data, decoded_responses, bs, prompt_length,
+                    int(getattr(_ACTIVE_SDC_CONTEXT.get("trainer", None),
+                                "global_steps", 0) or 0))
             for func_idx, reward_fn in enumerate(self.reward_funcs):
                 key = self.reward_keys[func_idx]
                 try:
@@ -2270,6 +2445,10 @@ class MetaCotSDCRewardManager:
                         answer_extracted=answer_extracted_list,
                     )
                 except Exception as exc:
+                    # countdown 은 삼키지 않는다 — 조용한 0 보상으로 150스텝을 도는
+                    # 것이 이 모드가 존재해서 막으려는 바로 그 실패다.
+                    if key == "countdown_arm":
+                        raise
                     print(f"[verl_sdc] reward {key} failed (pre-filled path): {exc}")
                     scores = [0.0] * bs
                 if len(scores) != bs:
@@ -2449,6 +2628,14 @@ class MetaCotSDCRewardManager:
         from src.training.rewards import _extract_answer_fallback as _extract_ans_for_degen
         answer_extracted_list = [_extract_ans_for_degen(t) for t in decoded_responses]
 
+        # COUNTDOWN_6ARM 의 발전기 (동기 경로). 학습·검증 두 배치가 모두 여기를 지나므로
+        # 검증도 같은 보상을 본다 — 그래야 팔 간 비교가 성립한다.
+        if _ACTIVE_SDC_CONTEXT.get("mode", "") == _COUNTDOWN_MODE:
+            _compute_countdown_arm_stash(
+                self, data, decoded_responses, bs, prompt_length,
+                int(getattr(_ACTIVE_SDC_CONTEXT.get("trainer", None),
+                            "global_steps", 0) or 0))
+
         for func_idx, reward_fn in enumerate(self.reward_funcs):
             key = self.reward_keys[func_idx]
             try:
@@ -2459,6 +2646,8 @@ class MetaCotSDCRewardManager:
                     answer_extracted=answer_extracted_list,
                 )
             except Exception as exc:
+                if key == "countdown_arm":            # 조용한 0 을 막는다 (위와 같은 이유)
+                    raise
                 print(f"[verl_sdc] reward {key} failed: {exc}")
                 traceback.print_exc()
                 scores = [0.0] * bs
@@ -3715,7 +3904,18 @@ def main_task(config):
     # went 0.05 -> 0.0 on 2026-06-22 for cf_group, a pmi_shift run inherited it six
     # weeks later, and meta emission fell 1.00 -> 0.018 with every declared launch gate
     # still green. Opt out only for a mode that has no dcpo_* surface at all.
-    if str(getattr(config, "mode", "")).upper().startswith("TRIOBJ"):
+    if str(getattr(config, "mode", "")).upper() == _COUNTDOWN_MODE:
+        # 팔 문자열은 load-bearing 이다 — 잘못되면 여섯 잡이 조용히 같아진다.
+        # 프리패스 안에도 같은 검사가 있지만, 여기서 죽으면 GPU 를 40분 안 태운다.
+        from src.training.countdown_rewards import ARM_SPECS as _CD_ARM_SPECS
+        _cd_arm = str(getattr(getattr(config, "algorithm", None),
+                              "countdown_arm", "") or "").upper()
+        if _cd_arm not in _CD_ARM_SPECS:
+            raise ValueError(
+                f"COUNTDOWN_6ARM: algorithm.countdown_arm={_cd_arm!r} 가 미지정이거나 "
+                f"미지의 팔이다. 가능한 값: {sorted(_CD_ARM_SPECS)}")
+        print(f"[SDC] countdown arm = {_cd_arm}")
+    if str(getattr(config, "mode", "")).upper().startswith(("TRIOBJ", "COUNTDOWN")):
         from src.training.knob_registry import validate as _validate_knobs
         _resolved = _validate_knobs(getattr(config, "algorithm", None))
         print("[SDC] knob registry OK — %d live knobs resolved:" % len(_resolved))

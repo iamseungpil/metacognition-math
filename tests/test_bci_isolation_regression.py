@@ -221,8 +221,11 @@ def test_every_preexisting_mode_byte_identical(reward_configs):
 
 
 def test_no_preexisting_mode_dropped(reward_configs):
-    # every key in REWARD_CONFIGS is either a frozen pre-existing mode or BCI_RLVR
-    known = set(EXPECTED) | {"BCI_RLVR"}
+    # every key in REWARD_CONFIGS is either a frozen pre-existing mode, BCI_RLVR,
+    # or COUNTDOWN_6ARM (added 2026-08-18: Countdown 여섯 팔. 한 헤드가 배치당 한 번
+    # 도는 프리패스 스태시를 읽는다 — 이 테스트가 그 추가를 의도적으로 승인한 자리다.
+    # 기존 모드는 test_every_preexisting_mode_byte_identical 이 그대로 지킨다).
+    known = set(EXPECTED) | {"BCI_RLVR", "COUNTDOWN_6ARM"}
     extra = set(reward_configs) - known
     assert not extra, f"unexpected new modes (snapshot the test): {extra}"
     missing = set(EXPECTED) - set(reward_configs)
