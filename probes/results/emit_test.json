@@ -1,0 +1,39 @@
+{
+ "P0_none": {
+  "emit": 0,
+  "wellformed": 0,
+  "acc": 0.2025,
+  "ntok": 1137.9075,
+  "samples": []
+ },
+ "P1_weak": {
+  "emit": 0.2075,
+  "wellformed": 0,
+  "acc": 0.18,
+  "ntok": 892.33,
+  "samples": [
+   "Most likely blocking grouping: (25 \u00d7 14)",
+   "Blocking grouping: (21 - 20) + (18 - 7) + 11 = 23"
+  ]
+ },
+ "P2_format": {
+  "emit": 0.5875,
+  "wellformed": 0.5875,
+  "acc": 0.1525,
+  "ntok": 825.975,
+  "samples": [
+   "confidence: 0.6 | (25 * 14) + (13 + 9) is too high, and (25 * 13) + (14 + 2 + 9) is too low | decision: verify",
+   "confidence: 0.3 | the large numbers make it hard to get a small target | decision: verify"
+  ]
+ },
+ "P3_fewshot": {
+  "emit": 0.4875,
+  "wellformed": 0.4875,
+  "acc": 0.195,
+  "ntok": 1103.725,
+  "samples": [
+   "confidence: 0.6 | The pairing 22*8=176 overshoots and leaves no way back. | decision: redirect",
+   "confidence: 0.6 | The pairing 23*10=230 overshoots and leaves no way back. | decision: redirect"
+  ]
+ }
+}
