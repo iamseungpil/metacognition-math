@@ -979,7 +979,12 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
         r["text"] = text
         r["r_corr"] = int(_cdt.grade(text, nums_col[i], int(target_col[i])))
         r["format_ok"] = _cdr.format_ok_row(text, arm, parse_expr_ok=_parse_ok)
-        r["final_expr"] = _cdt.extract_expr(text)   # 답 누출률이 요구하는 키
+        # ⚠`or ""` 를 지우지 마라. answer_leak 은 None 을 받으면 **예외를 던진다**
+        #   (조용한 0 이 누출 중단조건을 무력화하는 것을 막는 의도적 설계다). 그런데
+        #   \boxed 가 없는 행 — 절단되거나 답을 못 맺은 행 — 은 정말로 `None` 이 나오고,
+        #   그런 행이 배치에 하나만 있어도 텔레메트리 전체가 터진다. 식을 안 썼으면
+        #   누출도 없으므로 "" 가 정직한 값이다(빈 식은 어떤 메타에도 안 들어 있다).
+        r["final_expr"] = _cdt.extract_expr(text) or ""
         r["arm"] = arm
 
     # ── 그룹 단위 두 수: p̂(자가검증률) 와 sign(A_corr). uid 없으면 계산 불가. ─────

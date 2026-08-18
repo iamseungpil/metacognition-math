@@ -5,7 +5,7 @@ description: "COUNTDOWN 6-ARM SEQUENCE-LEVEL GRPO (Qwen3-4B, NO SFT, prompt-only
 # ${WANDB_API_KEY} are expanded by the SUBMITTING shell, not on the node:
 #
 #     set -a; source /home/v-seungplee/metacognition-math/.env; set +a
-#     amlt run countdown_rl_6arm.yaml cd6b0818 -y
+#     amlt run countdown_rl_6arm.yaml cd6c0818 -y
 #
 # This is not hygiene, it is measured. The GH_TOKEN that may already be exported
 # in an interactive shell returns 401 against the release-asset API; the one in
@@ -65,7 +65,7 @@ jobs:
         HF_HUB_DOWNLOAD_TIMEOUT: "60"
         HF_HUB_DISABLE_XET: "1"
         GH_TOKEN: ${GH_TOKEN}
-        CODE_TAR_REVISION: "519191232"
+        CODE_TAR_REVISION: "519216117"
         SIMPLERL_DIR: /scratch/conda_envs/simplerl
         VLLM_WORKER_MULTIPROC_METHOD: spawn
         PYTHONFAULTHANDLER: "1"
@@ -222,7 +222,7 @@ jobs:
         HF_HUB_DOWNLOAD_TIMEOUT: "60"
         HF_HUB_DISABLE_XET: "1"
         GH_TOKEN: ${GH_TOKEN}
-        CODE_TAR_REVISION: "519191232"
+        CODE_TAR_REVISION: "519216117"
         SIMPLERL_DIR: /scratch/conda_envs/simplerl
         WANDB_API_KEY: ${WANDB_API_KEY}
         WANDB_KEY: ${WANDB_API_KEY}
@@ -581,7 +581,7 @@ jobs:
         HF_HUB_DOWNLOAD_TIMEOUT: "60"
         HF_HUB_DISABLE_XET: "1"
         GH_TOKEN: ${GH_TOKEN}
-        CODE_TAR_REVISION: "519191232"
+        CODE_TAR_REVISION: "519216117"
         SIMPLERL_DIR: /scratch/conda_envs/simplerl
         WANDB_API_KEY: ${WANDB_API_KEY}
         WANDB_KEY: ${WANDB_API_KEY}
@@ -940,7 +940,7 @@ jobs:
         HF_HUB_DOWNLOAD_TIMEOUT: "60"
         HF_HUB_DISABLE_XET: "1"
         GH_TOKEN: ${GH_TOKEN}
-        CODE_TAR_REVISION: "519191232"
+        CODE_TAR_REVISION: "519216117"
         SIMPLERL_DIR: /scratch/conda_envs/simplerl
         WANDB_API_KEY: ${WANDB_API_KEY}
         WANDB_KEY: ${WANDB_API_KEY}
@@ -1299,7 +1299,7 @@ jobs:
         HF_HUB_DOWNLOAD_TIMEOUT: "60"
         HF_HUB_DISABLE_XET: "1"
         GH_TOKEN: ${GH_TOKEN}
-        CODE_TAR_REVISION: "519191232"
+        CODE_TAR_REVISION: "519216117"
         SIMPLERL_DIR: /scratch/conda_envs/simplerl
         WANDB_API_KEY: ${WANDB_API_KEY}
         WANDB_KEY: ${WANDB_API_KEY}
@@ -1658,7 +1658,7 @@ jobs:
         HF_HUB_DOWNLOAD_TIMEOUT: "60"
         HF_HUB_DISABLE_XET: "1"
         GH_TOKEN: ${GH_TOKEN}
-        CODE_TAR_REVISION: "519191232"
+        CODE_TAR_REVISION: "519216117"
         SIMPLERL_DIR: /scratch/conda_envs/simplerl
         WANDB_API_KEY: ${WANDB_API_KEY}
         WANDB_KEY: ${WANDB_API_KEY}
@@ -2017,7 +2017,7 @@ jobs:
         HF_HUB_DOWNLOAD_TIMEOUT: "60"
         HF_HUB_DISABLE_XET: "1"
         GH_TOKEN: ${GH_TOKEN}
-        CODE_TAR_REVISION: "519191232"
+        CODE_TAR_REVISION: "519216117"
         SIMPLERL_DIR: /scratch/conda_envs/simplerl
         WANDB_API_KEY: ${WANDB_API_KEY}
         WANDB_KEY: ${WANDB_API_KEY}
