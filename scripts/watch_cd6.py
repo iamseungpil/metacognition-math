@@ -19,7 +19,7 @@ import re
 import subprocess
 import sys
 
-EXP = "cd6d0818"
+EXP = "cd6e0818"
 AMLT = ("/tmp/claude-587327809/-home-v-seungplee/"
         "41a99d3b-d246-48cd-b893-68375dc4e059/scratchpad/amlt216/bin/amlt")
 ARMS = {"cd6_corr": "A", "cd6_cur": "B", "cd6_mul": "C",

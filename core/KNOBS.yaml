@@ -405,6 +405,25 @@ default_only:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 live:
+  # ── COUNTDOWN_6ARM (2026-08-18) ────────────────────────────────────────────
+  countdown_arm:
+    kind: knob
+    status: live
+    reached_by: [cd6_corr, cd6_cur, cd6_mul, cd6_gate, cd6_full, cd6_neg]
+    set_at: "countdown_rl_6arm.yaml  (++algorithm.countdown_arm=$ARM, 잡마다 A/B/C/E/F/G)"
+    code_default: "없음 — src/training/verl_sdc.py 가 미지정이면 ValueError 로 즉사한다"
+    default: null
+    # ★이 노브가 여기 있는 이유. 이것은 이 저장소에서 가장 load-bearing 한 문자열이다 —
+    #   여섯 잡이 오직 이 한 글자로 갈리고, 나머지는 바이트 동일이다. 두 판이 연속으로
+    #   여기서 죽었다: 8팔 판은 이 키를 **읽는 코드가 0건**이라 전 팔이 SDC_SHARED 로 돌
+    #   뻔했고, 6팔 첫 판은 스태시를 읽는 쪽만 착지해 전 팔이 상수 0 보상이 될 뻔했다.
+    #   둘 다 로그는 그럴듯했다. 그래서 배선의 증거를 로그 한 줄로 강제한다.
+    indistinguishable_states: |
+      countdown_arm 이 미지정이거나 오타여도, 배선이 없으면 잡은 정상으로 보인다
+      (체크포인트·wandb·HF 푸시가 전부 돈다). 구별하는 유일한 방법은
+      verl_main.log 에 `[COUNTDOWN][WIRED] arm=X` 가 찍혔는지이고, 런처가 그것을
+      240x10초 폴링해 없으면 자기 창을 죽인다.
+    gate: "src/training/verl_sdc.py — 부팅 시 ARM_SPECS 미포함이면 ValueError; 배치마다 프리패스가 WIRED 를 출력"
 
   # ── reward head weights (compose_dcpo_region_advantage) ──
   dcpo_w_corr:

@@ -16,16 +16,16 @@
 
 | | 상태 |
 |---|---|
-| 실험 | **`cd6d0818`** (basicvc · 80G1-H100 × 7). 노드 대기 중, 배선 미확인 |
-| 코드 | GitHub `master` · 릴리스 `countdown-6arm-0818` 자산 **519216117** |
+| 실험 | **`cd6e0818`** (basicvc · 80G1-H100 × 7). 노드 대기 중, 배선 미확인 |
+| 코드 | GitHub `master` · 릴리스 `countdown-6arm-0818` 자산 **520146497** |
 | 데이터 | HF `iamseungpil/metacot-sdc-data` **루트**의 `countdown_{train,val}.parquet` (8000/500) |
 | 체크포인트 | HF `iamseungpil/metacot-h200-triobj-dcpo-v3` · lineage `cd6_<팔>` (이웃과 안 겹침) |
 | 사전등록 | `docs/PREREGISTRATION_countdown_6arm.md` — **판정 전에 §6 을 먼저 통과시켜라** |
 | 증거 | `probes/` (스크립트 32) + HF `probe_results/` (결과 26개·36MB, sha256 대조표는 `probes/results/MANIFEST.json`) |
 | 감시기 | `scripts/watch_cd6.py` — 배선·보상분리·텔레메트리 15종·중단조건 |
 
-⚠**`cd6d0818` 은 이 기계에서 제출됐고 아직 살아 있다.** 이관한다면 취소하거나
-(`amlt cancel cd6d0818`) 그대로 두고 결과만 받아라. `cd6_mul` 은 노드 배정 전에
+⚠**`cd6e0818` 은 이 기계에서 제출됐고 아직 살아 있다.** 이관한다면 취소하거나
+(`amlt cancel cd6e0818`) 그대로 두고 결과만 받아라. `cd6_mul` 은 노드 배정 전에
 한 번 죽어(선점, 로그 0바이트) `cd6_mul_r2` 로 재제출돼 있다 — **잡 이름은 달라도
 `LINEAGE` 는 `ARM_LABEL` 에서 나오므로 체크포인트 경로는 `cd6_mul` 그대로다.**
 

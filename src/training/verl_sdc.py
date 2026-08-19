@@ -3920,7 +3920,14 @@ def main_task(config):
                 f"COUNTDOWN_6ARM: algorithm.countdown_arm={_cd_arm!r} 가 미지정이거나 "
                 f"미지의 팔이다. 가능한 값: {sorted(_CD_ARM_SPECS)}")
         print(f"[SDC] countdown arm = {_cd_arm}")
-    if str(getattr(config, "mode", "")).upper().startswith(("TRIOBJ", "COUNTDOWN")):
+    # ⛔COUNTDOWN 을 이 게이트에 넣지 마라. 2026-08-19 에 넣었다가 7잡을 잃었다.
+    #   core/KNOBS.yaml 은 **DCPO 세대의 계약**이다 — `dcpo_rmeta_source`(상호배타
+    #   메타보상 세대 선택)와 `dcpo_ack_load_bearing` 을 요구하는데, COUNTDOWN_6ARM 은
+    #   시퀀스 수준 GRPO 라 그 노브를 하나도 안 쓴다. 그래서 통과가 원리적으로 불가능하고,
+    #   실패는 부팅 시 KnobRegistryError 로 나온다.
+    #   COUNTDOWN 의 팔 검증은 위의 fail-closed(`countdown_arm not in ARM_SPECS -> ValueError`)와
+    #   배치마다 찍는 `[COUNTDOWN][WIRED]` 가 담당한다 — 레지스트리보다 강한 검사다.
+    if str(getattr(config, "mode", "")).upper().startswith("TRIOBJ"):
         from src.training.knob_registry import validate as _validate_knobs
         _resolved = _validate_knobs(getattr(config, "algorithm", None))
         print("[SDC] knob registry OK — %d live knobs resolved:" % len(_resolved))
