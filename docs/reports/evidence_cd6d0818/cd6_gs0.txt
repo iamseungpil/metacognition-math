@@ -1,0 +1,5 @@
+# cd6d0818 :cd6_gs0 — 배선 가드 발동 증거 (2026-08-19)
+# 원본 64529 bytes 에서 판정에 쓰인 줄만 추렸다. 전체는 amlt log download 로 재취득 가능.
+
+228:+ echo '[YAML] staging guards ok'
+229:[YAML] staging guards ok

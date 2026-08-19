@@ -1,0 +1,28 @@
+# cd6d0818 :cd6_corr — 배선 가드 발동 증거 (2026-08-19)
+# 원본 58054 bytes 에서 판정에 쓰인 줄만 추렸다. 전체는 amlt log download 로 재취득 가능.
+
+222:+ echo '[YAML] staging guard 1/4 CODE ok'
+223:[YAML] staging guard 1/4 CODE ok
+238:+ echo '[YAML] staging guard 2/4 ARM_SPECS ok'
+239:[YAML] staging guard 2/4 ARM_SPECS ok
+268:+ echo '[YAML] staging guard 3/4 DATA ok'
+269:[YAML] staging guard 3/4 DATA ok
+286:+ echo '[YAML] staging guard 4/4 INIT ok'
+287:[YAML] staging guard 4/4 INIT ok
+382:+ /scratch/conda_envs/simplerl/bin/python -u -m src.training.verl_sdc --config-name=countdown_6arm ++mode=COUNTDOWN_6ARM ++algorithm.countdown_arm=A trainer.experiment_name=cd6_corr trainer.default_local_dir=/scratch/checkpoints/cd6_corr trainer.project_name=metacot-countdown-6arm trainer.nnodes=1 trainer.n_gpus_per_node=1 actor_rollout_ref.model.path=/scratch/models/init actor_rollout_ref.rol
+391:+ grep -q '\[COUNTDOWN\]\[WIRED\] arm=A' /scratch/logs/verl_main.log
+403:+ grep -q '\[COUNTDOWN\]\[WIRED\] arm=A' /scratch/logs/verl_main.log
+414:Error executing job with overrides: ['++mode=COUNTDOWN_6ARM', '++algorithm.countdown_arm=A', 'trainer.experiment_name=cd6_corr', 'trainer.default_local_dir=/scratch/checkpoints/cd6_corr', 'trainer.project_name=metacot-countdown-6arm', 'trainer.nnodes=1', 'trainer.n_gpus_per_node=1', 'actor_rollout_ref.model.path=/scratch/models/init', 'actor_rollout_ref.rollout.tensor_model_parallel_size=1', '
+415:Traceback (most recent call last):
+426:ray.exceptions.RayTaskError(FileNotFoundError): [36mray::main_task()[39m (pid=5364, ip=100.64.24.15)
+433:FileNotFoundError: [Errno 2] No such file or directory: '/scratch/metacognition/core/KNOBS.yaml'
+638:[36m(main_task pid=5364)[0m  'mode': 'COUNTDOWN_6ARM',
+688:[36m(main_task pid=5364)[0m [SDC] countdown arm = A
+690:+ grep -q '\[COUNTDOWN\]\[WIRED\] arm=A' /scratch/logs/verl_main.log
+696:+ echo '[YAML] FATAL WIRING: no [COUNTDOWN][WIRED] arm=A in /scratch/logs/verl_main.log - the reward is NOT the arm this job is named after; ABORT window'
+697:[YAML] FATAL WIRING: no [COUNTDOWN][WIRED] arm=A in /scratch/logs/verl_main.log - the reward is NOT the arm this job is named after; ABORT window
+698:+ grep -n COUNTDOWN /scratch/logs/verl_main.log
+700:5:Error executing job with overrides: ['++mode=COUNTDOWN_6ARM', '++algorithm.countdown_arm=A', 'trainer.experiment_name=cd6_corr', 'trainer.default_local_dir=/scratch/checkpoints/cd6_corr', 'trainer.project_name=metacot-countdown-6arm', 'trainer.nnodes=1', 'trainer.n_gpus_per_node=1', 'actor_rollout_ref.model.path=/scratch/models/init', 'actor_rollout_ref.rollout.tensor_model_parallel_size=1',
+701:229:[36m(main_task pid=5364)[0m  'mode': 'COUNTDOWN_6ARM',
+712:[36m(main_task pid=5364)[0m  'mode': 'COUNTDOWN_6ARM',
+762:[36m(main_task pid=5364)[0m [SDC] countdown arm = A
