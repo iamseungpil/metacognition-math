@@ -128,6 +128,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    # 프롬프트 변형(plain/new/p3/old)과 메타 파싱 형식(new/old)·형식 채점 팔은 다른 축이다.
+    PARSE_FORM = "old" if args.meta_format == "old" else "new"
+    FORMAT_ARM = "N0" if args.meta_format == "plain" else ("H" if args.meta_format == "old" else "A")
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -185,8 +188,7 @@ def main() -> None:
             r = {
                 "text": text,
                 "r_corr": int(grade(text, inst["nums"], inst["target"])),
-                "format_ok": cdr.format_ok_row(text, "A" if args.meta_format == "new"
-                                               else "H", parse_expr_ok=parse_ok),
+                "format_ok": cdr.format_ok_row(text, FORMAT_ARM, parse_expr_ok=parse_ok),
                 # ⚠`or ""` 필수 — answer_leak 은 None 에 예외를 던진다(의도적).
                 #   \boxed 없는 행이 하나만 있어도 텔레메트리 전체가 터진다.
                 "final_expr": extract_expr(text) or "",
@@ -195,7 +197,7 @@ def main() -> None:
                 "n_tok": len(x.token_ids),
                 "truncated": int(truncated),
             }
-            m = cdr.parse_meta(text, form=args.meta_format)
+            m = cdr.parse_meta(text, form=PARSE_FORM)
             r["meta"] = m
             r["emitted"] = int(m.get("emitted", 0))
             if r["emitted"]:
@@ -220,7 +222,7 @@ def main() -> None:
     nums_col = [insts[i]["nums"] for i, g in enumerate(groups) for _ in g]
     tgt_col = [insts[i]["target"] for i, g in enumerate(groups) for _ in g]
 
-    rep = cdr.telemetry_report(groups, form=args.meta_format)
+    rep = cdr.telemetry_report(groups, form=PARSE_FORM)
     rep["rescue"] = rescue_stats(flat, nums_col, tgt_col)
     # 인과 방향 검정용: 「짧아서 맞혔나, 맞혀서 짧았나」를 가르려면
     # **틀린 답만** 골라 길이를 비교해야 한다. 정답은 찾는 순간 끝나므로
