@@ -26,6 +26,7 @@ sys.path.insert(0, "/scratch/metacognition")
 
 from src.training import countdown_rewards as cdr          # noqa: E402
 from src.training.countdown_task import PROMPT_VARIANTS  # noqa: E402
+from src.training.countdown_task import parse_ok as _cdt_parse_ok  # noqa: E402
 from src.training.countdown_task import (                  # noqa: E402
     build_prompt, extract_expr, grade,
 )
@@ -175,7 +176,8 @@ def main() -> None:
     # ── 행을 만든다. 키 이름은 학습 팔의 행 규약과 **같아야 한다** ────────────────
     #    (countdown_rewards 의 텔레메트리가 그 이름으로 읽는다).
     def parse_ok(t: str) -> int:
-        return int(extract_expr(t) is not None)
+        # 0904: 학습 경로(verl_sdc)와 같은 정의 — extract_expr!=None 은 파싱 불가 문자열에도 형식 점수를 줬다.
+        return int(_cdt_parse_ok(t))
 
     groups, samples = [], []
     n_trunc = 0
@@ -240,6 +242,12 @@ def main() -> None:
     rep["tag_body"] = tag_body_agreement(flat)
 
     # 문제별 결과 — 같은 200문제를 푼 팔끼리 «짝지은» 비교를 하려면 이게 필요하다.
+    # 전체 응답 텍스트 덤프 — 자 검증·특징 분포 측정(SC 임계값 등)은 표본 40개가 아니라 전체가 필요하다.
+    with (out / "texts.jsonl").open("w") as fh:
+        for gi, (inst, grp) in enumerate(zip(insts, groups)):
+            for r in grp:
+                fh.write(json.dumps({"group_id": f"g{gi}", "nums": list(inst["nums"]), "target": int(inst["target"]),
+                                     "r_corr": int(r["r_corr"]), "text": r["text"]}, ensure_ascii=False) + "\n")
     with (out / "per_problem.jsonl").open("w") as fh:
         for i, g in enumerate(groups):
             fh.write(json.dumps({
