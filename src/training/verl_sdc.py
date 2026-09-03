@@ -1209,6 +1209,15 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
         if int(r.get("emitted", 0)) != _pm_emitted:
             _emit_disagree += 1
         r["emitted"] = _pm_emitted
+        # ★0904 결함: PMI 경로를 건너뛰는 팔(감사결함6 수리)은 `meta_n_tok` 이 자리표시자 0 이라
+        #   G 팔의 len 항이 매 스텝 정확히 0 으로 지급됐다(cd7_G_new_s1 42스텝 comp_len=0.000 실측).
+        #   메타 토큰 수는 PMI 없이도 셀 수 있으므로 여기서 파서의 raw 스팬을 직접 센다.
+        if _pm_emitted and not int(r.get("meta_n_tok", 0) or 0):
+            _raw = _cdr.parse_meta(r.get("text") or "", _meta_form).get("raw") or ""
+            try:
+                r["meta_n_tok"] = int(len(self.tokenizer.encode(_raw, add_special_tokens=False)))
+            except Exception:
+                r["meta_n_tok"] = len(_raw.split())
     if _emit_disagree:
         print(f"[COUNTDOWN][EMIT-DEFN] step={step} arm={arm} "
               f"pmi_vs_parse_meta_disagree={_emit_disagree}/{len(rows)}", flush=True)

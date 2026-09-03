@@ -423,3 +423,11 @@ def test_steer_prompts_p3_is_imported_back_from_countdown_task():
     src = (_REPO_ROOT / "scripts" / "steer_prompts.py").read_text()
     assert 'P3 = PROMPT_VARIANTS["p3"]' in src
     assert "P3 = P2 + EX_P2" not in src
+
+
+def test_stash_counts_meta_tokens_without_pmi_path():
+    """0904: PMI 경로를 건너뛰는 팔에서 G 의 len 항이 0 이 되지 않도록 스태시가 meta_n_tok 을 직접 센다."""
+    src = open("src/training/verl_sdc.py", encoding="utf-8").read()
+    i = src.find("[COUNTDOWN][EMIT-DEFN]")
+    block = src[i - 1500:i]
+    assert 'r["meta_n_tok"] = int(len(self.tokenizer.encode(_raw' in block
