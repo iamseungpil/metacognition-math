@@ -205,8 +205,22 @@ def _run_one_job(gpu: int, job_path: Path, lock_fd) -> None:
     with open(log_path, "a") as logf:
         logf.write(f"\n=== [{_now()}] gpu={gpu} job={job_path.name} cmd={job['cmd']!r} ===\n")
         logf.flush()
-        proc = subprocess.run(["bash", "-lc", job["cmd"]], stdout=logf, stderr=subprocess.STDOUT, env=env)
-    rc = proc.returncode
+        # 잡을 자기 세션(프로세스 그룹)으로 띄운다: 잡이 죽거나 우리가 죽이면 vLLM EngineCore
+        # 같은 spawn 자식까지 함께 정리해야 GPU 메모리가 고아로 남지 않는다(0904 실측: 부모만
+        # 죽자 EngineCore 49GB 가 카드에 남아 다음 잡이 OOM).
+        proc = subprocess.Popen(["bash", "-lc", job["cmd"]], stdout=logf, stderr=subprocess.STDOUT,
+                                env=env, start_new_session=True)
+        try:
+            rc = proc.wait()
+        finally:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+                time.sleep(3)
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except Exception:
+                pass
 
     job["exit_code"] = rc
     job["finished_at"] = _now()
