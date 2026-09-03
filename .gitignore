@@ -49,3 +49,9 @@ checkpoints_recovered/
 .wrangler/
 docs/site/.wrangler/
 amlt/
+
+# 0903: 대용량 로컬 데이터 (HF 에서 받는 것 / 실행 산출물)
+hf_data/
+outputs/
+*.bak_*
+tea_debug.log

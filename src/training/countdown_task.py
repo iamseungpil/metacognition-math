@@ -416,7 +416,35 @@ SOLVE_SYS_OLD = (
     + _CLOSING
 )
 
-PROMPT_VARIANTS = {"new": SOLVE_SYS_NEW, "old": SOLVE_SYS_OLD}
+# ★수리(0823) 프라이밍 예시 — Gandhi et al. 2025 "Four Habits" 의 실측 재현.
+#   그 논문: **틀린 풀이로 프라이밍해도 «행동»만 올바르면 정답 풀이와 동일한 성능**.
+#   그래서 아래 예시의 산수는 **일부러 틀려 있다** — 답이 아니라 «탐색·점검·전환의
+#   모양»만 가르친다. 가중치를 안 건드리므로 SFT 가 아니다(in-context).
+#   실측(0823, 24문제 x 8롤아웃, 생각모드 OFF):
+#       기준     발화 45.3% · 정확도  8.9% · boxed 99.0%
+#       +예시    발화 77.1% · 정확도 24.0% · boxed 99.5%   ← 채택
+#       +예시+재강조  발화 97.4% · 정확도 27.1%  ⛔ 발화 포화 → E 팔(게이팅)이 죽는다
+#   ⚠모든 팔에 **동일하게** 적용한다(공유 환경). 주장은 이 위에서의 팔 간 차이뿐이다.
+SOLVE_SHOT = (
+    "\n\nEXAMPLE (format only — the arithmetic below is deliberately imperfect):\n"
+    "Numbers: [5, 7, 8, 25] Target: 30\n"
+    "Attempt 1: (5*7)=35, 35-8=27, 27+25=52. Too high.\n"
+    "Attempt 2: (25+8)=33, 33-7=26, 26+5=31. Close.\n"
+    "<meta>\n confidence: 0.4\n"
+    " I am working through additive groupings anchored on 25, which keep landing just "
+    "above or below the target; this family looks near-exhausted and a multiplicative "
+    "anchor may be more promising.\n decision: redirect\n</meta>\n"
+    "Attempt 3: (8-5)=3, 3*7=21, 21+25=46. No.\n"
+    "\\boxed{(25+8)-7+5}\n\nNow solve the real problem below the same way.\n"
+)
+SOLVE_SYS_SHOT = SOLVE_SYS_NEW + SOLVE_SHOT
+
+# ★2026-09-02 N0 대조군: 메타 지시문이 «전혀» 없는 맨 프롬프트. 규칙 + 종결만.
+SOLVE_SYS_PLAIN = _RULES + _CLOSING.lstrip("\n")
+assert "<meta>" not in SOLVE_SYS_PLAIN and "metacognitive" not in SOLVE_SYS_PLAIN
+
+PROMPT_VARIANTS = {"new": SOLVE_SYS_NEW, "old": SOLVE_SYS_OLD, "shot": SOLVE_SYS_SHOT,
+                   "plain": SOLVE_SYS_PLAIN}
 
 # ★프롬프트 길이 실측 (2026-08-18, `Qwen/Qwen3-4B` 토크나이저 + chat template +
 #   add_generation_prompt, 인스턴스 200개):

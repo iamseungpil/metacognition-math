@@ -30,6 +30,81 @@ from src.training.countdown_task import (                  # noqa: E402
 )
 
 
+# ══ 계측 3종 (2026-08-25 추가) ═══════════════════════════════════════════════
+# 학습 텔레메트리(verl_sdc)에만 있던 구조율을 평가에도 넣는다. verl_sdc 를
+# import 하지 않는다 — 그쪽은 verl 을 패치하는 부작용이 있어 평가에서 위험하다.
+# 아래 두 헬퍼는 verl_sdc.py:2178/2181 과 **같은 정의**다.
+import re as _re
+_RESCUE_EXPR = _re.compile(r"[\d(][\d\s+\-*/().]{4,}")
+
+
+def _solves(expr, nums, target) -> bool:
+    from src.training import countdown_task as _t
+    try:
+        return (_t.eval_countdown(expr) == int(target)
+                and _t.expr_numbers(expr) == sorted(int(x) for x in nums))
+    except Exception:
+        return False
+
+
+def rescue_stats(rows, nums_col, target_col) -> dict:
+    """메타 블록 **뒤**에서 처음 정답식이 나오면 «구조». 미발화 행은 분모에서 뺀다."""
+    resc = pre = never = 0
+    att, n = [], 0
+    for i, row in enumerate(rows):
+        text = row.get("text") or ""
+        att.append(len(_RESCUE_EXPR.findall(text)))
+        m = cdr.parse_meta(text, "new")
+        if not m["emitted"]:
+            continue
+        n += 1
+        nums, tgt = nums_col[i], target_col[i]
+
+        def _found(seg):
+            return any(_solves(mm.group(0).strip().rstrip("."), nums, tgt)
+                       for mm in _RESCUE_EXPR.finditer(seg))
+
+        if _found(text[: m["start"] or 0]):
+            pre += 1
+        elif _found(text[m["end"] or 0:]):
+            resc += 1
+        else:
+            never += 1
+    d = float(n) if n else float("nan")
+    return {"rescue_rate": resc / d, "pre_had_rate": pre / d, "never_rate": never / d,
+            "rescue_n": resc, "rescue_denom": n,
+            "n_attempts_mean": (sum(att) / len(att)) if att else float("nan")}
+
+
+# 태그(dec=verify/redirect)와 본문이 어긋나는 비율. 휴리스틱이며 «참고 지표»다.
+_REDIRECT_CUE = _re.compile(
+    r"red herring|not helpful|unlikely|dead end|different approach|"
+    r"abandon|won't work|will not work|need to try", _re.I)
+_VERIFY_CUE = _re.compile(r"promising|on track|looks? (?:good|right)|close to", _re.I)
+
+
+def tag_body_agreement(rows) -> dict:
+    ok = bad = amb = 0
+    for row in rows:
+        m = row.get("meta") or {}
+        if not m.get("emitted"):
+            continue
+        dec = (m.get("decision") or "").lower()
+        body = m.get("body") or ""
+        r_cue, v_cue = bool(_REDIRECT_CUE.search(body)), bool(_VERIFY_CUE.search(body))
+        if r_cue == v_cue:            # 둘 다거나 둘 다 아님 → 판정 보류
+            amb += 1
+        elif (dec == "redirect") == r_cue:
+            ok += 1
+        else:
+            bad += 1
+    tot = ok + bad
+    return {"agree_rate": (ok / tot) if tot else float("nan"),
+            "mismatch_rate": (bad / tot) if tot else float("nan"),
+            "n_decided": tot, "n_ambiguous": amb}
+# ═══════════════════════════════════════════════════════════════════════════
+
+
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model_path", required=True)
@@ -66,7 +141,10 @@ def main() -> None:
     llm = LLM(model=args.model_path, dtype="bfloat16", seed=args.seed,
               tensor_parallel_size=args.tp_size,
               gpu_memory_utilization=args.gpu_util,
-              max_model_len=args.max_tokens + 1024)
+              max_model_len=args.max_tokens + 1024,
+              # 학습이 4장을 쓰는 동안 CPU 경합으로 torch.compile 이 죽는다.
+              # 평가는 추론뿐이므로 컴파일을 건너뛴다(느리지만 확실하다).
+              enforce_eager=True)
     tok = llm.get_tokenizer()
 
     def chat(msgs) -> str:
@@ -135,7 +213,39 @@ def main() -> None:
                             "meta": (grp[0]["meta"] or {}).get("body", "")[:400],
                             "tail": grp[0]["text"][-300:]})
 
+    # ── 계측 3종 ────────────────────────────────────────────────────────────
+    flat = [r for g in groups for r in g]
+    nums_col = [insts[i]["nums"] for i, g in enumerate(groups) for _ in g]
+    tgt_col = [insts[i]["target"] for i, g in enumerate(groups) for _ in g]
+
     rep = cdr.telemetry_report(groups, form=args.meta_format)
+    rep["rescue"] = rescue_stats(flat, nums_col, tgt_col)
+    # 인과 방향 검정용: 「짧아서 맞혔나, 맞혀서 짧았나」를 가르려면
+    # **틀린 답만** 골라 길이를 비교해야 한다. 정답은 찾는 순간 끝나므로
+    # 길이가 짧아지는 게 당연하기 때문이다.
+    def _mean(xs):
+        return (sum(xs) / len(xs)) if xs else float("nan")
+    _cw = [r["n_tok"] for r in flat if r["r_corr"]]
+    _cl = [r["n_tok"] for r in flat if not r["r_corr"]]
+    _aw = [len(_RESCUE_EXPR.findall(r["text"])) for r in flat if r["r_corr"]]
+    _al = [len(_RESCUE_EXPR.findall(r["text"])) for r in flat if not r["r_corr"]]
+    rep["len_by_correct"] = {
+        "len_correct": _mean(_cw), "len_wrong": _mean(_cl),
+        "attempts_correct": _mean(_aw), "attempts_wrong": _mean(_al),
+        "n_correct": len(_cw), "n_wrong": len(_cl)}
+    rep["tag_body"] = tag_body_agreement(flat)
+
+    # 문제별 결과 — 같은 200문제를 푼 팔끼리 «짝지은» 비교를 하려면 이게 필요하다.
+    with (out / "per_problem.jsonl").open("w") as fh:
+        for i, g in enumerate(groups):
+            fh.write(json.dumps({
+                "i": i, "target": insts[i]["target"], "nums": insts[i]["nums"],
+                "n": len(g),
+                "n_correct": sum(x["r_corr"] for x in g),
+                "n_emitted": sum(x["emitted"] for x in g),
+                "phat": g[0]["phat"],
+            }) + "\n")
+
     rep["meta_format"] = args.meta_format
     rep["n_problems"] = len(groups)
     rep["n_rollouts_per_problem"] = args.num_samples
@@ -169,6 +279,9 @@ def main() -> None:
         ("redirect 비율", g("decision", "redirect")),
         ("confidence 종수", g("confidence", "n_unique")),
         ("메타 내 산수", rep.get("arith_in_meta_rate")),
+        ("★구조율", g("rescue", "rescue_rate")),
+        ("★구조 분모", g("rescue", "rescue_denom")),
+        ("★태그일치율", g("tag_body", "agree_rate")),
     ]:
         print(f"  {label:16s} {val}")
     hits = cdr.check_abort(rep)

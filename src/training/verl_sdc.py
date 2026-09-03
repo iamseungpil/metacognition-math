@@ -20,6 +20,7 @@ Refactor notes (2026-04-20):
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 import traceback
@@ -95,6 +96,10 @@ from src.training.dcpo_region import (
     signature_suppression_ids,
 )
 from src.training._decoy_utils import _rule_based_decoy
+
+# ★검수(0831) countdown 원재료 컬럼의 «출처» 기억. 컬럼당 한 번만 찍기 위한 것.
+#   값이 바뀌면(flat↔extra_info) 다시 찍는다 — 경로가 런 도중 갈리면 그게 사건이다.
+_COUNTDOWN_COL_PROVENANCE: dict[str, str] = {}
 # split_first_meta — the ONE prefix/meta/continuation splitter, shared by the
 # live pmi_shift scorer and the always-on epistemic wandb block. (The dense-PMI
 # generation this module was built for was removed 2026-08-03.)
@@ -919,6 +924,100 @@ def countdown_arm_reward(completions, **kwargs):
     return [float(v) for v in total]
 
 
+def _log_countdown_rmeta_wandb(*, step, arm, mag, gvd=None, mq=None, phat_of=None, uid=None):
+    """R_meta 크기 스칼라를 wandb 로. 없으면 조용히 no-op (콘솔 전용 런 지원).
+
+    0818 인계 문서: "지표는 wandb 로 안 간다 — stdout 에만 찍히므로 로그를 판다.
+    다음 판에 wandb 로깅을 붙이는 게 맞다." 이 함수가 그것이다.
+    """
+    try:
+        import wandb  # noqa: F811
+        if wandb.run is None:
+            return
+        scal = {
+            f"cd/{arm}/meta_floor_abs_mean": float(mag["meta_floor_abs_mean"]),
+            f"cd/{arm}/meta_abs_mean_total": float(mag["meta_abs_mean_total"]),
+        }
+        if "meta_share_of_total" in mag:
+            scal[f"cd/{arm}/meta_share_of_total"] = float(mag["meta_share_of_total"])
+        for k in ("std_total", "std_meta", "std_nonmeta", "std_corr",
+                  "meta_var_share", "frac_corr_constant", "frac_tiny_std", "amp_p95"):
+            if gvd and k in gvd:
+                scal[f"cd/{arm}/gvar/{k}"] = float(gvd[k])
+        for k in ("auc", "auc_total", "inversion_rate", "gap", "mean_pos", "mean_neg"):
+            if mq and k in mq:
+                scal[f"cd/{arm}/metaq/{k}"] = float(mq[k])
+        for k, v in mag["terms"].items():
+            scal[f"cd/{arm}/{k}/mean"] = float(v["mean"])
+            scal[f"cd/{arm}/{k}/abs_mean"] = float(v["abs_mean"])
+            scal[f"cd/{arm}/{k}/std"] = float(v["std"])
+            scal[f"cd/{arm}/{k}/frac_zero"] = float(v["frac_zero"])
+            scal[f"cd/{arm}/{k}/p95_abs"] = float(v["p95_abs"])
+        # sign(A_corr)==0 비율 — 곱셈 팔(C·F)의 메타 항이 침묵하는 비율.
+        # 이것이 높으면 C·F 의 널은 "곱하기가 안 통한다"가 아니라 "잴 수 없었다"이다.
+        if phat_of is not None and uid is not None:
+            ps = [phat_of[u] for u in uid if u in phat_of]
+            if ps:
+                scal[f"cd/{arm}/frac_sign_zero"] = (
+                    sum(1.0 for p in ps if p in (0.0, 1.0)) / len(ps))
+        wandb.log(scal, step=int(step))
+    except Exception as _e:  # pragma: no cover — 관측이 학습을 죽이지 않는다
+        print(f"[COUNTDOWN][RMETA] wandb log skipped: "
+              f"{type(_e).__name__}: {_e}", flush=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OSD 자동 강등 — «규칙에 손을 단다»
+# ══════════════════════════════════════════════════════════════════════════════
+# 지난 세대의 실패는 "규칙이 없었다" 가 아니다. `meta_outcome_discrimination` 의
+# docstring 에 «AUC ~ 0.5 면 B/C/F 의 널은 신호 없음이다» 라고 **적혀 있었고**, AUC 를
+# 매 스텝 재고 있었는데, 그 데이터에 **행동할 권한을 가진 코드가 없어서** 모니터링이
+# 회로차단기가 아니라 사후 고고학이 됐다(0825 포스트모템). 이번엔 규칙이 손을 갖는다.
+_OSD_AUC_HIST: list = []          # (step, auc)
+_OSD_DEMOTED: dict = {"on": False, "step": None, "auc": None}
+_OSD_AUC_FLOOR = 0.58             # 관문 통과선 0.60 보다 살짝 아래(학습 중 잡음 여유)
+_OSD_AUC_MIN_STEP = 15            # 워밍업(0->20) 도중의 과민 반응을 막는다
+_OSD_AUC_WINDOW = 10
+
+
+def _osd_demote_check(step, auc, arm, *, n_pos=None, n_neg=None, n_unique=None) -> bool:
+    """최근 10스텝 평균 AUC 가 바닥 밑이면 True — 호출자가 w_meta 를 0 으로 내린다."""
+    if _OSD_DEMOTED["on"]:
+        return True
+    if auc is None or auc != auc:      # NaN = «못 쟀다» — 기록하지 않는다
+        return False
+    # ★«측정이 성립했는가» 게이트 (0826 06:10 추가).
+    #   NaN 만 걸러서는 부족하다. 점수가 **전부 동률**이면 AUC 는 정의상 0.500 이 되고,
+    #   그것은 «판별력이 없다» 가 아니라 «잴 수 없었다» 이다. 그 0.500 을 유효값으로
+    #   받으면 회로차단기가 신호 품질과 무관하게 step 15 에서 무조건 자폭하고,
+    #   그 순간 이 팔은 대조군과 비트 동일해진다 — 안전장치를 경유한 «배선 0».
+    if n_unique is not None and int(n_unique) <= 1:
+        print(f"[COUNTDOWN][OSD-AUC][SKIP] arm={arm} step={step} "
+              f"점수 고유값 {n_unique}개 — 측정 불성립. 히스토리에 기록하지 않는다.",
+              flush=True)
+        return False
+    if (n_pos is not None and int(n_pos) < 20) or (n_neg is not None and int(n_neg) < 20):
+        print(f"[COUNTDOWN][OSD-AUC][SKIP] arm={arm} step={step} "
+              f"표본 부족(pos={n_pos} neg={n_neg}) — 기록하지 않는다.", flush=True)
+        return False
+    _OSD_AUC_HIST.append((int(step), float(auc)))
+    if int(step) < _OSD_AUC_MIN_STEP:
+        return False
+    win = [a for _s, a in _OSD_AUC_HIST[-_OSD_AUC_WINDOW:]]
+    if len(win) < _OSD_AUC_WINDOW:
+        return False
+    roll = sum(win) / len(win)
+    if roll < _OSD_AUC_FLOOR:
+        _OSD_DEMOTED.update({"on": True, "step": int(step), "auc": roll})
+        print(f"[COUNTDOWN][OSD-DEMOTE] arm={arm} step={step} "
+              f"rolling{_OSD_AUC_WINDOW}_auc={roll:.3f} < floor={_OSD_AUC_FLOOR} "
+              f"-- w_meta 를 0 으로 강등한다. 이후 스텝은 대조군(A)과 동등하므로 "
+              f"사후 판정에서 처치로 세지 마라.", flush=True)
+        return True
+    return False
+
+
+
 def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_length, step):
     r"""COUNTDOWN_6ARM 의 **유일한 발전기**. 배치당 한 번 돌며 `_COUNTDOWN_STASH` 를 채운다.
 
@@ -929,6 +1028,7 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
     학습·검증 두 배치 모두 `MetaCotSDCRewardManager.__call__` 을 지나므로, 보상 루프
     바로 앞에 두면 검증 배치도 같은 보상을 본다(팔 간 비교가 성립하려면 그래야 한다).
     """
+    from src.training import countdown_inv as _cdi
     from src.training import countdown_pmi as _cdp
     from src.training import countdown_rewards as _cdr
     from src.training import countdown_task as _cdt
@@ -945,11 +1045,54 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
 
     def _col(name):
         v = nt.get(name, None)
+        _src = "flat"
+        if v is None:
+            _src = "extra_info"
+            # ★2026-08-21: async(agent-loop) 경로는 parquet 의 **평평한** 컬럼을
+            #   non_tensor_batch 로 넘기지 않는다. verl 이 항상 나르는 `extra_info`
+            #   안에 같은 값이 들어 있으므로(build_records 가 양쪽에 넣는다) 거기서 읽는다.
+            ei = nt.get("extra_info", None)
+            if ei is not None:
+                try:
+                    cand = [(e or {}).get(name, None) for e in list(ei)]
+                    if not all(x is None for x in cand):
+                        v = cand
+                except Exception:
+                    v = None
         if v is None:
             raise RuntimeError(
-                f"[COUNTDOWN] non_tensor_batch 에 '{name}' 컬럼이 없다. parquet 이 "
+                f"[COUNTDOWN] non_tensor_batch 에 '{name}' 컬럼이 없다(extra_info 폴백도 실패). "
+                f"사용 가능한 키: {sorted(nt.keys())}. parquet 이 "
                 "countdown_task.build_records(include_flat_cols=True) 로 빌드됐는지 "
                 "확인하라 — PMI 원재료가 없으면 메타 팔 전부가 무효다.")
+        # ★검수(0831) 출처 무음 제거. 실측: verl 0.7.1 의 async 경로는
+        #   ray_trainer._get_gen_batch 가 flat 컬럼을 gen_batch 로 pop 하고,
+        #   agent_loop._postprocess 는 reward_loop_worker_handles 가 None 일 때만
+        #   되돌려 준다. SDC 는 init_workers 시점에 use_rm=False 이므로 핸들이
+        #   «리스트»(None 아님)로 생성되고 → flat 은 **항상** 사라진다.
+        #   즉 이 폴백은 예외가 아니라 상시 경로다. 어느 쪽을 읽었는지 남기지 않으면
+        #   «어느 미끼로 학습했는가»가 사후 확정 불가능해진다(cd6_B_other50 사고).
+        _seen = _COUNTDOWN_COL_PROVENANCE
+        if _seen.get(name) != _src:
+            _seen[name] = _src
+            print(f"[COUNTDOWN][COL] {name} <- {_src}", flush=True)
+        # flat 과 extra_info 가 둘 다 있으면서 어긋나면 즉사한다. 조용히 한쪽을
+        # 고르면 «선언한 데이터»와 «학습한 데이터»가 갈라진다.
+        if _src == "flat":
+            _ei = nt.get("extra_info", None)
+            if _ei is not None:
+                try:
+                    _alt = [(e or {}).get(name, None) for e in list(_ei)]
+                except Exception:
+                    _alt = None
+                if _alt is not None and not all(x is None for x in _alt):
+                    _bad = sum(1 for a, b in zip(_alt, list(v)) if str(a) != str(b))
+                    if _bad:
+                        raise RuntimeError(
+                            f"[COUNTDOWN] '{name}' 이 flat 컬럼과 extra_info 에서 다르다 "
+                            f"({_bad}/{len(_alt)} 행). 어느 쪽으로 학습했는지 사후 확정이 "
+                            "불가능해지므로 즉사한다. parquet 을 다시 빌드하라 "
+                            "(countdown_task.build_records 는 양쪽에 같은 값을 넣는다).")
         return list(v)
 
     witnesses, decoys = _col("witness"), _col("decoy")
@@ -963,16 +1106,49 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
 
     # ── PMI-shift. 평문 <meta> 토큰 스팬 + 증인식/연산자교체오답의 발산 토큰. ──────
     #    여기서만 GPU 를 쓴다(동결 ref forward). config 위반은 삼키지 않고 즉사한다.
-    rows, diag = _cdp.score_pmi_shift(
-        tokenizer=self.tokenizer,
-        trainer=_ACTIVE_SDC_CONTEXT.get("trainer", None),
-        prompt_texts=prompt_texts,
-        response_texts=list(decoded_responses),
-        witnesses=witnesses, decoys=decoys, step=step)
+    if "meta_pos_full" in _cdr.ARM_SPECS[arm]["terms"]:
+        # ★P 팔: 같은 4n 팔 배치에서 «전체 스팬 평균» PMI 를 읽는 변형 스코어러.
+        from src.training import countdown_pmi_full as _cdpf   # noqa: PLC0415
+        rows, diag = _cdpf.score_pmi_shift_full(
+            tokenizer=self.tokenizer,
+            trainer=_ACTIVE_SDC_CONTEXT.get("trainer", None),
+            prompt_texts=prompt_texts,
+            response_texts=list(decoded_responses),
+            witnesses=witnesses, decoys=decoys, step=step)
+    else:
+        rows, diag = _cdp.score_pmi_shift(
+            tokenizer=self.tokenizer,
+            trainer=_ACTIVE_SDC_CONTEXT.get("trainer", None),
+            prompt_texts=prompt_texts,
+            response_texts=list(decoded_responses),
+            witnesses=witnesses, decoys=decoys, step=step)
+
+    # ★B3(감사 0821): ref 스코어링이 실패하면 PMI 가 전부 NaN 이 되고, NaN 은
+    #   `_pmi_shift_reward` 에서 fail-closed 로 0.0 이 된다 ⇒ 메타 항이 **조용히 사라져**
+    #   B≡A · C≡A · F≡E 가 되고 `[COUNTDOWN][WIRED]` 는 정상으로 보인다. 이 모드가
+    #   막으려던 바로 그 실패(«선언된 레버, 배선 0»)이므로 여기서 즉사시킨다.
+    _pmi_terms = {"meta_pos", "meta_mul", "meta_ctx"} & set(_cdr.ARM_SPECS[arm]["terms"])
+    if diag.get("ref_error") and _pmi_terms:
+        raise RuntimeError(
+            f"[COUNTDOWN] arm={arm} step={step}: PMI ref 스코어링 실패 "
+            f"({diag['ref_error']}) — {sorted(_pmi_terms)} 항이 무음 0 이 되어 "
+            f"이 팔이 A 팔과 같아진다. 조용히 진행하지 않는다.")
+
+    _pmi_full_terms = {"meta_pos_full"} & set(_cdr.ARM_SPECS[arm]["terms"])
+    if diag.get("ref_error") and _pmi_full_terms:
+        raise RuntimeError(
+            f"[COUNTDOWN] arm={arm} step={step}: PMI-FULL ref 스코어링 실패 "
+            f"({diag['ref_error']}) — meta_pos_full 항이 무음 0 이 되어 이 팔이 "
+            f"A 팔과 같아진다. 조용히 진행하지 않는다.")
 
     # ── 채점 · 형식 · 텔레메트리 원재료. gold 불필요 — target 이 프롬프트에 있다. ──
     def _parse_ok(t):
-        return int(_cdt.extract_expr(t) is not None)
+        # ★수리(0823): 원래 `extract_expr(t) is not None` 이었다. 그것은 문자집합·AST
+        #   파싱을 건너뛰어 `\\boxed{(3+*)}` `\\boxed{abc}` 같은 **파싱 불가 문자열에
+        #   w_format 0.35 를 지급**했다 — `countdown_task.parse_ok` 가 고치려던 결함 ④
+        #   가 호출 지점에서 되살아나 있었다. 전원오답 조가 71% 인 구간에서 형식 항은
+        #   조 내 분산의 큰 몫이므로 이 누수는 무해하지 않다.
+        return int(_cdt.parse_ok(t))
 
     for i, r in enumerate(rows):
         text = decoded_responses[i]
@@ -986,6 +1162,166 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
         #   누출도 없으므로 "" 가 정직한 값이다(빈 식은 어떤 메타에도 안 들어 있다).
         r["final_expr"] = _cdt.extract_expr(text) or ""
         r["arm"] = arm
+        if "plan" in _cdr.ARM_SPECS[arm]["terms"]:      # ★0902 P 팔: next 첫수 해 생존 · 이행
+            r["plan_ok"], r["plan_followed"] = _cdr.plan_next(text, nums_col[i], int(target_col[i]))
+
+    # ── OSD (Outcome-Signed Surprisal Drop) — «메타 제거 문맥» Δcert. ─────────────
+    #   PMI 경로와 **병렬**이다. 위의 score_pmi_shift 는 한 글자도 바뀌지 않았고,
+    #   여기서는 별도 배치(행당 2팔) + 별도 ref 호출을 쓴다 — PMI 의 `base=4*k` 부기를
+    #   건드리지 않기 위해서다(같은 배치에 섞으면 그 스트라이드가 조용히 깨진다).
+    #   final_expr 이 필요하므로 채점 루프 **뒤**에 둔다(누출 가드 ②가 그걸 본다).
+    #
+    #   켜짐 조건 두 가지:
+    #     · 팔이 meta_osd 항을 쓰면 **무조건** 켜지고, 실패는 fail-loud 다(PMI 와 같은
+    #       이유 — 무음 0 은 그 팔을 A 팔로 만든다).
+    #     · 아니면 `COUNTDOWN_OSD` 환경변수(기본 "1")로 켠다. 이때는 **측정 모드**다:
+    #       기존 팔 A~H 의 보상은 delta_cert 를 읽지 않으므로 한 글자도 바뀌지 않고,
+    #       [COUNTDOWN][OSD] 의 p90 만 쌓인다(정규화 상수 c 를 그 수로 정한다).
+    #   ⚠비용: 발화 행마다 forward 2팔이 는다. 실측 수는 아래 로그의 fwd_* 에 찍는다.
+    # ★항 이름을 여기서 문자열로 쓰지 않는다. 0825 적대검증에서 이 줄이 "meta_osd" 를
+    #   보는데 실제 항은 "osd" 라, 이 가드가 **모든 팔에서 항상 빈 집합**이었고 OSD 팔이
+    #   A 팔과 비트 동일한 보상을 냈다. 정의처는 countdown_rewards.OSD_TERM 하나다.
+    _osd_terms = {_cdr.OSD_TERM} & set(_cdr.ARM_SPECS[arm].get("terms", ()))
+    _osd_on = bool(_osd_terms) or os.environ.get("COUNTDOWN_OSD", "1") == "1"
+    osd_diag: dict = {"enabled": bool(_osd_on)}
+    if not _osd_on:
+        for r in rows:
+            r.update(_osd_empty_row("off"))
+    else:
+        try:
+            osd_rows, _od = _compute_countdown_osd(
+                tokenizer=self.tokenizer,
+                trainer=_ACTIVE_SDC_CONTEXT.get("trainer", None),
+                prompt_texts=prompt_texts,
+                response_texts=list(decoded_responses),
+                final_exprs=[r["final_expr"] for r in rows], step=step)
+            osd_diag.update(_od)
+            for i, r in enumerate(rows):
+                r.update(osd_rows[i])
+        except Exception as _oexc:
+            # 항을 쓰는 팔이면 즉사한다 — 조용한 0 은 이 모드가 막으려는 실패다.
+            if _osd_terms:
+                raise
+            # 아니면 학습을 죽이지 않는다. 단 **조용히 0 으로 채우지 않는다**:
+            # delta_cert=None(«못 쟀다») 으로 두고 크게 남긴다.
+            osd_diag["error"] = f"{type(_oexc).__name__}: {_oexc}"
+            for r in rows:
+                r.update(_osd_empty_row("error"))
+            print(f"[COUNTDOWN][OSD][FAIL] step={step} arm={arm} "
+                  f"{osd_diag['error']}", flush=True)
+            # traceback 은 **첫 실패에만** — 150 스텝 내내 같은 스택을 쏟으면 로그가
+            # 못 읽히고, 그러면 정작 다른 실패가 묻힌다. 위 [FAIL] 한 줄은 매 스텝 남는다.
+            if _OSD_FAIL_SEEN["n"] == 0:
+                traceback.print_exc()
+            _OSD_FAIL_SEEN["n"] += 1
+        # ★PMI 의 fail-loud 와 같은 규약: ref 가 실패했는데 팔이 그 항을 쓰면 즉사.
+        if osd_diag.get("ref_error") and _osd_terms:
+            raise RuntimeError(
+                f"[COUNTDOWN] arm={arm} step={step}: OSD ref 스코어링 실패 "
+                f"({osd_diag['ref_error']}) — meta_osd 항이 무음 0 이 되어 이 팔이 "
+                f"A 팔과 같아진다. 조용히 진행하지 않는다.")
+        # ── 텔레메트리 한 줄. p90 은 정규화 상수 c 를 정하는 값이다. ──────────────
+        #   ⚠예외로 죽은 스텝에는 찍지 않는다 — 그 줄의 0 들은 「쟀는데 0」으로 읽히는데
+        #     사실은 「못 쟀다」다. 그 스텝은 위 [OSD][FAIL] 한 줄이 대신한다.
+        if "error" not in osd_diag:
+            print(f"[COUNTDOWN][OSD] step={step} arm={arm} B={osd_diag.get('B', bs)} "
+                  f"n_emitted={osd_diag.get('n_emitted', 0)} "
+                  f"n_scored={osd_diag.get('scored', 0)} "
+                  f"n_leak_blocked={osd_diag.get('leak_blocked', 0)} "
+                  f"n_nan={osd_diag.get('nan_rows', 0)} "
+                  f"no_boxed={osd_diag.get('no_boxed', 0)} "
+                  f"meta_first={osd_diag.get('meta_first', 0)} "
+                  f"dcert_mean={osd_diag.get('d_mean', float('nan')):+.4f} "
+                  f"dcert_std={osd_diag.get('d_std', float('nan')):.4f} "
+                  f"dcert_p90={osd_diag.get('d_p90', float('nan')):+.4f} "
+                  f"dcert_abs_p90={osd_diag.get('d_abs_p90', float('nan')):.4f} "
+                  f"pos_frac={osd_diag.get('d_pos_frac', float('nan')):.3f} "
+                  f"w_len_mean={(osd_diag.get('w_len_sum', 0) / max(1, osd_diag.get('attempted', 0))):.1f} "
+                  f"fwd_calls={osd_diag.get('fwd_calls', 0)} "
+                  f"fwd_rows={osd_diag.get('fwd_rows', 0)}(+pad{osd_diag.get('fwd_rows_pad', 0)}) "
+                  f"fwd_tokens={osd_diag.get('fwd_tokens', 0)} "
+                  f"leak={osd_diag.get('leak_reasons', {})} "
+                  f"terms_on={bool(_osd_terms)}", flush=True)
+
+    # ── INV (도치 자) — «정답 힌트를 준 문맥 vs 안 준 문맥» 의 메타 프로즈 logp. ─────
+    #   PMI·OSD 와 **병렬**이다. 셋 다 `_build_pmi_score_batches` + `_dcpo_v4_ref_logprobs`
+    #   를 재사용하지만 **각자 별도 배치·별도 ref 호출**이다 — PMI 의 `base=4*k`, OSD 의
+    #   `base=2*k`, INV 의 `base=2*k` 부기는 섞는 순간 조용히 깨진다(verl_sdc.py:2082 경고).
+    #   final_expr 이 필요하므로(G5 누출 가드) 채점 루프 **뒤**에 둔다.
+    #
+    #   ★정답(witness)이 «채점용 문맥» 에만 들어가고 롤아웃에는 절대 안 들어간다는 격리:
+    #     · 롤아웃 프롬프트는 parquet 의 `prompt` 컬럼이고 그것은
+    #       `countdown_task.build_prompt` = [system, "Numbers: … / Target: …"] 뿐이다.
+    #       witness 는 `extra_info`/평평한 컬럼에만 있다(`countdown_task.build_records`).
+    #     · 여기서 만드는 힌트 프롬프트는 `countdown_inv.inv_hint_prompt` 가 돌려주는
+    #       **새 문자열**이고, 그것이 가는 곳은 `_build_pmi_score_batches` 가 새로 만든
+    #       텐서와 `DataProto.from_dict` 로 감싼 **새 DataProto** 뿐이다.
+    #       `data.batch["prompts"]` 에는 한 글자도 안 쓴다(이 함수는 rows dict 만 채운다).
+    #     · 그 forward 는 **동결 ref** 위의 teacher-forced 채점이고 생성이 아니다.
+    #       정책이 witness 에 대해 배우는 것은 **행당 스칼라 1개**(보상)뿐이며, 그것은
+    #       `r_corr`(정답 채점)이 이미 쓰는 통로와 같다.
+    #   ⚠비용: 발화 행마다 forward 2팔. 실측 수는 아래 fwd_* 에 찍는다(OSD 와 같은 규모).
+    _inv_terms = {_cdr.INV_TERM} & set(_cdr.ARM_SPECS[arm].get("terms", ()))
+    _inv_on = bool(_inv_terms) or os.environ.get("COUNTDOWN_INV", "0") == "1"
+    inv_diag: dict = {"enabled": bool(_inv_on)}
+    if not _inv_on:
+        for r in rows:
+            r.update(_cdi.inv_empty_row("off"))
+    else:
+        try:
+            inv_rows, _id = _cdi.score_inv(
+                tokenizer=self.tokenizer,
+                trainer=_ACTIVE_SDC_CONTEXT.get("trainer", None),
+                prompt_texts=prompt_texts,
+                response_texts=list(decoded_responses),
+                witnesses=witnesses,
+                targets=target_col,
+                final_exprs=[r["final_expr"] for r in rows], step=step)
+            inv_diag.update(_id)
+            for i, r in enumerate(rows):
+                r.update(inv_rows[i])
+        except Exception as _iexc:
+            if _inv_terms:
+                raise                       # 항을 쓰는 팔이면 즉사(무음 0 = A 팔 위장)
+            inv_diag["error"] = f"{type(_iexc).__name__}: {_iexc}"
+            for r in rows:
+                r.update(_cdi.inv_empty_row("error"))
+            print(f"[COUNTDOWN][INV][FAIL] step={step} arm={arm} "
+                  f"{inv_diag['error']}", flush=True)
+            if _INV_FAIL_SEEN["n"] == 0:
+                traceback.print_exc()
+            _INV_FAIL_SEEN["n"] += 1
+        if inv_diag.get("ref_error") and _inv_terms:
+            raise RuntimeError(
+                f"[COUNTDOWN] arm={arm} step={step}: INV ref 스코어링 실패 "
+                f"({inv_diag['ref_error']}) — {_cdr.INV_TERM} 항이 무음 0 이 되어 이 팔이 "
+                f"A 팔과 같아진다. 조용히 진행하지 않는다.")
+        # ── 텔레메트리 한 줄. p50 이 τ 를, pen_p90 이 c 를 정하는 값이다. ───────────
+        if "error" not in inv_diag:
+            _att = max(1, inv_diag.get("attempted", 0))
+            print(f"[COUNTDOWN][INV] step={step} arm={arm} B={inv_diag.get('B', bs)} "
+                  f"ruler={_cdi.inv_signature()} "
+                  f"n_emitted={inv_diag.get('n_emitted', 0)} "
+                  f"n_scored={inv_diag.get('scored', 0)} "
+                  f"n_leak_blocked={inv_diag.get('leak_blocked', 0)} "
+                  f"n_false_claim={inv_diag.get('false_claim', 0)} "
+                  f"n_nan={inv_diag.get('nan_rows', 0)} "
+                  f"short_prose={inv_diag.get('short_prose', 0)} "
+                  f"no_witness={inv_diag.get('no_witness', 0)} "
+                  f"anchor_err={inv_diag.get('anchor_error', 0)} "
+                  f"inv_mean={inv_diag.get('i_mean', float('nan')):+.4f} "
+                  f"inv_std={inv_diag.get('i_std', float('nan')):.4f} "
+                  f"inv_p25={inv_diag.get('i_p25', float('nan')):+.4f} "
+                  f"inv_p50={inv_diag.get('i_p50', float('nan')):+.4f} "
+                  f"inv_p75={inv_diag.get('i_p75', float('nan')):+.4f} "
+                  f"pen_rate={inv_diag.get('i_pen_rate', float('nan')):.3f} "
+                  f"pen_p90={inv_diag.get('i_pen_p90', float('nan')):.4f} "
+                  f"prose_tok_mean={(inv_diag.get('prose_tok_sum', 0) / _att):.1f} "
+                  f"fwd_calls={inv_diag.get('fwd_calls', 0)} "
+                  f"fwd_rows={inv_diag.get('fwd_rows', 0)}(+pad{inv_diag.get('fwd_rows_pad', 0)}) "
+                  f"fwd_tokens={inv_diag.get('fwd_tokens', 0)} "
+                  f"leak={inv_diag.get('leak_reasons', {})} "
+                  f"terms_on={bool(_inv_terms)}", flush=True)
 
     # ── 그룹 단위 두 수: p̂(자가검증률) 와 sign(A_corr). uid 없으면 계산 불가. ─────
     uid = nt.get("uid", None)
@@ -1006,14 +1342,31 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
         r["phat"] = phat_of[uid[i]]
         r["group_id"] = uid[i]
 
+    # ★강등이 걸려 있으면 osd 항을 0 으로 죽인다(이전 스텝의 판정이 이번 스텝부터 적용된다).
+    #   지난 판정을 «다음 스텝부터» 적용하는 것이 옳다 — 이미 뽑은 롤아웃의 보상을
+    #   소급해 바꾸면 그 스텝의 어드밴티지가 정책과 어긋난다.
+    _osd_off = bool(_COUNTDOWN_STASH.get("osd_demoted"))
     totals, comps = [], []
     for i, r in enumerate(rows):
         _t, _c = _cdr.arm_reward(arm, r, step=step, phat=phat_of[uid[i]])
+        if _osd_off and _cdr.OSD_TERM in _c:
+            _t = float(_t) - float(_c[_cdr.OSD_TERM])
+            _c = dict(_c); _c[_cdr.OSD_TERM] = 0.0
         totals.append(float(_t))
         comps.append(_c)
 
     _COUNTDOWN_STASH.update({"step": step, "arm": arm, "total": totals,
                              "components": comps, "n": len(totals), "rows": rows})
+
+    # ★팔의 **정체 서명**을 런당 한 번 찍는다(검수 0831).
+    #   `countdown_rewards.arm_signature` 의 docstring 은 "런처·로그·분석이 전부 이
+    #   문자열을 찍으면 어떤 팔이 실제로 무엇을 켜고 돌았는지가 사후에 한 줄로 확인된다"
+    #   고 선언하는데, **어디서도 찍지 않고 있었다**(로그 전수 grep 결과 0건).
+    #   R 팔은 τ·c 가 잠정이면 서명에 '?' 가 박히므로, 이 줄이 없으면 «잠정값으로 돌았다»
+    #   는 사실이 로그 어디에도 남지 않는다 — 서명을 둔 목적 그 자체가 사라진다.
+    if not _ARM_SIG_SEEN.get(arm):
+        _ARM_SIG_SEEN[arm] = True
+        print(f"[COUNTDOWN][SIG] arm={arm} {_cdr.arm_signature(arm)}", flush=True)
 
     # ★배선의 유일한 증거. 런처 가드가 이 줄을 grep 해 없으면 창을 죽인다.
     #   반드시 계산 **뒤**에 찍는다 — import 시점에 찍으면 가드는 통과하고 아무것도
@@ -1022,18 +1375,187 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
           f"mean={sum(totals) / max(1, len(totals)):.4f} "
           f"distinct={len({round(v, 6) for v in totals})} "
           f"phat_groups={len(groups)} "
-          f"pmi_scored={diag.get('scored', 0)}/{diag.get('B', 0)}", flush=True)
+          f"pmi_scored={diag.get('scored', 0)}/{diag.get('B', 0)} "
+          f"osd_scored={osd_diag.get('scored', 0)}/{osd_diag.get('B', 0)} "
+          f"inv_scored={inv_diag.get('scored', 0)}/{inv_diag.get('B', 0)}", flush=True)
 
-    # ── 텔레메트리 7종 + 중단 조건. 구현만 있고 호출이 0건이면 무효 레버다. ───────
-    if step % 10 == 0:
+    # ★0902 관측: 보상 구성 요소별 평균 · 발화율 · 계획 항(해 생존/이행) 비율 · 응답 표본 8개 → wandb (실패해도 학습은 계속)
+    try:
+        import wandb as _wb
+        if _wb.run is not None:
+            _keys = sorted({k for c in comps for k in c})
+            _log = {f"cd/comp_{k}": sum(float(c.get(k, 0.0)) for c in comps) / max(1, len(comps)) for k in _keys}
+            _log["cd/emit_rate"] = sum(int(r.get("emitted", 0)) for r in rows) / max(1, len(rows))
+            if "plan" in _cdr.ARM_SPECS[arm]["terms"]:
+                _em = [r for r in rows if int(r.get("emitted", 0))]
+                _log["cd/plan_ok_rate"] = sum(int(r.get("plan_ok", 0)) for r in _em) / max(1, len(_em))
+                _log["cd/plan_followed_rate"] = sum(int(r.get("plan_followed", 0)) for r in _em) / max(1, len(_em))
+                _log["cd/plan_hit_rate"] = sum(int(r.get("plan_ok", 0)) and int(r.get("plan_followed", 0)) for r in _em) / max(1, len(_em))
+            _log["cd/corr_rate"] = sum(int(r.get("r_corr", 0)) for r in rows) / max(1, len(rows))
+            _log["cd/len_mean"] = sum(len(str(r.get("text", ""))) for r in rows) / max(1, len(rows))
+            _wb.log(_log, step=step)
+            print(f"[COUNTDOWN][CD] step={step} " + " ".join(f"{k.split('/')[1]}={v:.3f}" for k, v in sorted(_log.items())), flush=True)
+            if step % 5 == 0:   # 표본: 정답 4 · 오답 4 (메타 있는 행 우선)
+                _pick = sorted(range(len(rows)), key=lambda i: (-int(rows[i].get("emitted", 0)), i))
+                _c1 = [i for i in _pick if int(rows[i].get("r_corr", 0))][:4]; _c0 = [i for i in _pick if not int(rows[i].get("r_corr", 0))][:4]
+                # 열: 메타 «앞» 응답 / 메타 블록 / 메타 «뒤» 응답 (사용자 요청 0902)
+                _tbl = _wb.Table(columns=["step", "corr", "total", "emitted", "plan_ok", "followed", "before_meta", "meta", "after_meta"])
+                for i in _c1 + _c0:
+                    _txt = str(rows[i].get("text", "")); _pm = _cdr.parse_meta(_txt, "new")
+                    if _pm.get("emitted") and _pm.get("start") is not None:
+                        _b, _m, _a = _txt[:_pm["start"]], _txt[_pm["start"]:_pm["end"]], _txt[_pm["end"]:]
+                    else:
+                        _b, _m, _a = _txt, "", ""
+                    _tbl.add_data(step, int(rows[i].get("r_corr", 0)), round(totals[i], 3), int(rows[i].get("emitted", 0)),
+                                  int(rows[i].get("plan_ok", -1)), int(rows[i].get("plan_followed", -1)), _b[-1500:], _m[:800], _a[:1500])
+                _wb.log({f"cd/samples": _tbl}, step=step)
+    except Exception as _we:
+        print(f"[COUNTDOWN][WANDB] 로깅 실패(무시): {_we}", flush=True)
+
+    # ── R_meta 크기 계기 — **매 스텝**. C-012 가 만든 계기다. ────────────────────
+    #   왜 텔레메트리(10스텝)와 따로 매 스텝인가: 붕괴는 스텝 사이에서 일어난다.
+    #   base b3p 는 gs115 에 0.98 이었다가 gs135 에 0.744 였다 — 10스텝 격자로는
+    #   내려가는 중간을 못 본다. 그리고 이 세 숫자(mean / abs_mean / std)는 계산이
+    #   싸다(성분 dict 평균 몇 번).
+    try:
+        _mag = _cdr.rmeta_magnitude(comps, totals=totals,
+                                   warmup=_cdr.warmup_scale(step))
+        _parts = " ".join(
+            f"{_k}[mean={_v['mean']:+.4f} abs={_v['abs_mean']:.4f} "
+            f"std={_v['std']:.4f} zero={_v['frac_zero']:.2f}]"
+            for _k, _v in _mag["terms"].items())
+        print(f"[COUNTDOWN][RMETA] arm={arm} step={step} warmup={_mag['warmup']:.2f} {_parts} "
+              f"floor_abs={_mag['meta_floor_abs_mean']:.4f} "
+              f"floor_vs_meta={_mag['floor_vs_meta']:.3f} "
+              f"meta_share={_mag.get('meta_share_of_total', float('nan')):.3f} "
+              f"verdict={_mag['verdict']}", flush=True)
+        # 그룹 내 분산 분해 — /σ 정규화가 켜져 있으면 이쪽이 실제 영향력이다.
+        _gvd = _cdr.group_variance_decomposition(
+            [[comps[i] for i in ix] for ix in groups.values()])
+        print(f"[COUNTDOWN][GVAR] arm={arm} step={step} "
+              f"std_total={_gvd['std_total']:.4f} std_meta={_gvd['std_meta']:.4f} "
+              f"std_corr={_gvd['std_corr']:.4f} "
+              f"meta_var_share={_gvd['meta_var_share']:.3f} "
+              f"corr_const={_gvd['frac_corr_constant']:.2f} "
+              f"tiny_std={_gvd['frac_tiny_std']:.2f} amp_p95={_gvd['amp_p95']:.1f} "
+              f"verdict={_gvd['verdict']}", flush=True)
+
+        # ★«좋은 메타인지인가» — R_meta 가 정답/오답을 가르는지. 수학 세대에서 이
+        #   판별력이 가짜 대조군보다 낮았다(AUC 0.457 vs 0.598, 0817 §1.5).
+        _mq = _cdr.meta_outcome_discrimination(rows, comps, group_ids=uid)
+        # ★자동 강등 — OSD 팔에서만. unsigned Δcert 의 판별력이 바닥 밑이면 w_meta:=0.
+        #   (osd 항은 y=r_corr 를 곱해 AUC 가 항진명제이므로, 판정은 **unsigned** 로 한다.)
+        if _cdr.OSD_TERM in set(_cdr.ARM_SPECS[arm].get("terms", ())):
+            # ★«발화한 행 전부» 를 센다 — 관문(scripts/osd_gate.py:228-247)의 정의다.
+            #   관문은 형식위반·빈W·누출 행을 **Δ=0.0 으로 포함**한다. 두 이유:
+            #     ① 그 행들은 실제로 R_osd=0 을 받는다. 감시는 «정책이 겪는 것» 을 재야 한다.
+            #     ② 관문이 통과선을 정의했으므로, 감시가 다른 집단을 재면 두 수를 비교할 수 없다.
+            #   ⚠0826 06:45~08:45 에 «채점 성공만» 으로 좁혔던 것은 오류다(내가 넣었다).
+            #     같은 관문 스크립트로 학습 데이터를 재면 0.733 인데 학습 중 감시는 0.496 이었다.
+            #     발화 2287행 중 358행(15.7%)을 뺀 것이 그 차이의 유력한 원인이다.
+            #   미발화 행은 제외한다 — 관문의 `rows` 도 발화 행만이다.
+            _keep = [i for i, r in enumerate(rows)
+                     if int(r.get("emitted", 0)) == 1]
+            _unsigned = [{"r_corr": rows[i].get("r_corr", 0)} for i in _keep]
+            # ★키는 반드시 META_TERMS 에 있는 이름이어야 한다. 집계기가
+            #   `sum(c.get(k,0) for k in META_TERMS)` 로만 읽기 때문이다.
+            #   0826 검증에서 "osd_unsigned" 를 쓰다가 **완벽 판별 신호에도 AUC 0.500**
+            #   이 나왔다 — 어제의 meta_osd/osd 키 불일치와 같은 버그가 그걸 막으라고
+            #   만든 안전장치 안에서 재발했다.
+            # 채점 못한 행(누출·답없음·형식위반)은 0.0 — 관문과 같은 규약.
+            _uc = [{_cdr.OSD_TERM: float(rows[i].get("delta_cert") or 0.0)}
+                   for i in _keep]
+            _mq_u = _cdr.meta_outcome_discrimination(
+                _unsigned, _uc, group_ids=[uid[i] for i in _keep])
+            _uniq = len({round(float(c.get(_cdr.OSD_TERM, 0.0)), 9) for c in _uc})
+            _demoted = _osd_demote_check(
+                step, _mq_u.get("auc"), arm,
+                n_pos=_mq_u.get("n_pos"), n_neg=_mq_u.get("n_neg"), n_unique=_uniq)
+            _COUNTDOWN_STASH["osd_demoted"] = bool(_demoted)
+            print(f"[COUNTDOWN][OSD-AUC] arm={arm} step={step} "
+                  f"unsigned_auc={_mq_u.get('auc', float('nan')):.3f} "
+                  f"n_pos={_mq_u.get('n_pos')} n_neg={_mq_u.get('n_neg')} "
+                  f"n_kept={len(_keep)}/{len(rows)} demoted={_demoted}", flush=True)
+        print(f"[COUNTDOWN][METAQ] arm={arm} step={step} scope={_mq['scope']} "
+              f"auc={_mq['auc']:.3f} auc_total={_mq['auc_total']:.3f} "
+              f"inversion={_mq['inversion_rate']:.1%} gap={_mq['gap']:+.4f} "
+              f"mean_pos={_mq['mean_pos']:+.4f} mean_neg={_mq['mean_neg']:+.4f} "
+              f"n_pos={_mq['n_pos']} n_neg={_mq['n_neg']} "
+              f"verdict={_mq['verdict']}", flush=True)
+        _log_countdown_rmeta_wandb(step=step, arm=arm, mag=_mag, gvd=_gvd, mq=_mq,
+                                   phat_of=phat_of, uid=uid)
+    except Exception as _mexc:      # 계기 실패로 학습을 죽이지 않는다
+        print(f"[COUNTDOWN][RMETA] step={step} 실패: "
+              f"{type(_mexc).__name__}: {_mexc}", flush=True)
+
+    # ── 텔레메트리 + 중단 조건. ★수리(0823): 10스텝 격자 → **매 스텝**. ──────────
+    #   왜: 붕괴는 스텝 사이에서 일어난다(이 파일 RMETA 주석이 이미 그렇게 적었다).
+    #   그리고 2스텝 검증 런에서는 step%10==0 이 한 번도 참이 아니어서 **발화율을
+    #   학습 중에 본 적이 한 번도 없었다** — 그 맹점이 이 실험을 두 번 헛돌게 했다.
+    try:
+        _rep = _cdr.telemetry_report(
+            [[rows[i] for i in ix] for ix in groups.values()], components=comps)
+        # ★수리(0823) 구조율 — 연구 의도("틀려도 점검해서 정답까지 간다")의 직접 지표.
+        #   기존 보상 항 8종 중 이것을 재는 것이 하나도 없었다.
+        _resc = _countdown_rescue_stats(rows, nums_col, target_col)
+        _rep.update(_resc)
+        _rep["arith_in_meta"] = _cdr.arithmetic_in_meta_rate(rows)
+        print(f"[COUNTDOWN][TELEMETRY] step={step} arm={arm} {_rep}", flush=True)
+        print(f"[COUNTDOWN][RESCUE] step={step} arm={arm} "
+              f"rescue={_resc['rescue_rate']:.3f} pre_had={_resc['pre_had_rate']:.3f} "
+              f"never={_resc['never_rate']:.3f} attempts={_resc['n_attempts_mean']:.1f} "
+              f"emit={_rep.get('emit_rate', float('nan')):.3f} "
+              f"arith={_rep['arith_in_meta']:.3f}", flush=True)
+        _all = _cdr.check_abort(_rep)
+        # ★두 상태를 절대 섞지 않는다.
+        #   abort  = 지표를 쟀고 **선을 넘었다** → 연속 위반이면 학습을 죽인다.
+        #   missing= 지표가 **안 찍혔다** → 죽이지 않는다. 계기 하나가 빠졌다고 정상
+        #            학습을 죽이면 그게 더 큰 손실이다. 대신 [BLIND] 로 크게 남겨
+        #            «못 보고 있다»가 조용히 지나가지 않게 한다(WIRED=0 사고의 교훈).
+        # ★수리(0823) 실제 응답 표본 로깅 — 지표만 보면 «무엇이 오르는지»는 알아도
+        #   «무엇을 쓰고 있는지»는 모른다. 판박이·편법은 숫자보다 원문에서 먼저 보인다.
         try:
-            _rep = _cdr.telemetry_report(
-                [[rows[i] for i in ix] for ix in groups.values()], components=comps)
-            print(f"[COUNTDOWN][TELEMETRY] step={step} {_rep}", flush=True)
-            for _hit in _cdr.check_abort(_rep):
-                print(f"[COUNTDOWN][ABORT] step={step} {_hit}", flush=True)
-        except Exception as _texc:                    # 텔레메트리 실패로 학습을 죽이지 않는다
-            print(f"[COUNTDOWN][TELEMETRY] step={step} 실패: {_texc}", flush=True)
+            _ex = []
+            for _i, _row in enumerate(rows):
+                _m = _cdr.parse_meta(_row.get("text") or "", "new")
+                if _m["emitted"]:
+                    _ex.append((_i, _m, _row))
+                if len(_ex) >= 2:
+                    break
+            for _i, _m, _row in _ex:
+                _sh = (_row.get("pmi_close", float("nan")) - _row.get("pmi_open", float("nan")))
+                print(f"[COUNTDOWN][SAMPLE] step={step} arm={arm} i={_i} "
+                      f"corr={_row.get('r_corr')} conf={_m['confidence']} dec={_m['decision']} "
+                      f"shift={_sh:+.3f} pos={(_m['start'] or 0)}/{len(_row.get('text') or '')} "
+                      f"| {' '.join((_m['body'] or '').split())[:170]}", flush=True)
+        except Exception as _sexc:
+            print(f"[COUNTDOWN][SAMPLE] step={step} 실패: {_sexc}", flush=True)
+
+        _hits = [h for h in _all if h.get("status") == "abort"]
+        # ★0902: 메타 항이 없는 팔(N0 맨 GRPO)은 발화율 중단 규칙을 적용하지 않는다 — 발화 0 이 정상이다.
+        if not any(t.startswith("meta") or t in ("gate", "osd", "plan") for t in _cdr.ARM_SPECS[arm]["terms"]):
+            _hits = [h for h in _hits if h.get("metric") != "emit_rate"]
+        for _hit in _hits:
+            print(f"[COUNTDOWN][ABORT] step={step} {_hit}", flush=True)
+        for _miss in [h for h in _all if h.get("status") != "abort"]:
+            print(f"[COUNTDOWN][BLIND] step={step} {_miss['metric']} 미측정 — "
+                  f"통과가 아니라 «못 봤다»다.", flush=True)
+        # ★수리(0823): 중단 조건이 **출력만 하고 멈추지 않았다**(사전등록 §7 은 이것을
+        #   '중단 조건'이라 부른다). 연속 위반이면 실제로 학습을 죽인다.
+        _key = f"{arm}"
+        if _hits:
+            _ABORT_STREAK[_key] = _ABORT_STREAK.get(_key, 0) + 1
+        else:
+            _ABORT_STREAK[_key] = 0
+        if _ABORT_STREAK.get(_key, 0) >= _ABORT_PATIENCE:
+            raise _CountdownAbort(
+                f"[COUNTDOWN][ABORT] arm={arm} step={step}: 중단 조건이 "
+                f"{_ABORT_STREAK[_key]} 스텝 연속 위반 — {_hits}. 사전등록 §7 에 따라 정지한다.")
+    except _CountdownAbort:
+        raise                                         # ★중단은 삼키지 않는다
+    except Exception as _texc:                        # 계기 실패로 학습을 죽이지는 않는다
+        print(f"[COUNTDOWN][TELEMETRY] step={step} 실패: "
+              f"{type(_texc).__name__}: {_texc}", flush=True)
     return totals
 
 
@@ -1340,7 +1862,18 @@ _CONTRASTIVE_MODES = {
     # the λ=0 advantage plane — neither affects which teacher forwards run.
     "STABLE_GFN_C2FIX",
 }
-_ACTIVE_SDC_CONTEXT = {"trainer": None, "tokenizer": None, "mode": "SDC_SHARED"}
+# ★배선 수정 2026-08-21 (A100 이식): `mode` 는 main_task 에서만 세팅되는 **모듈 변수**라
+#   Ray 워커(별도 프로세스)에는 전달되지 않는다. 같은 함정이 R16 에 이미 기록돼 있다
+#   ("Ray RewardLoopWorker actors do NOT inherit module-level _ACTIVE_SDC_CONTEXT").
+#   COUNTDOWN 분기(`elif _mode_pf == _COUNTDOWN_MODE`)가 그 미수정 경로에 걸려
+#   **여섯 팔 전부가 countdown 보상을 한 번도 못 받고** 150스텝을 돌 뻔했다
+#   (실측: 5스텝 진행, [COUNTDOWN][WIRED] 0건).
+#   ⇒ 환경변수로 초기화한다. 환경변수는 Ray 워커가 상속하므로 모든 프로세스가 같은 값을 본다.
+_ACTIVE_SDC_CONTEXT = {
+    "trainer": None,
+    "tokenizer": None,
+    "mode": os.environ.get("SDC_MODE_ENV", "") or "SDC_SHARED",
+}
 # One-shot guard so the pairwise_ctb "0 usable uid groups" warning prints once
 # per process instead of every degenerate microbatch (codex review pt.4).
 _CTB_INACTIVE_WARNED = {"done": False}
@@ -1701,6 +2234,406 @@ def _dcpo_v4_ref_logprobs(trainer, tensors):
     return out.batch["ref_log_prob"]
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# OSD — Outcome-Signed Surprisal Drop. «메타 제거 문맥» teacher-forced logp.
+# ══════════════════════════════════════════════════════════════════════════════
+# 왜 여기에 있나 (추측 아님 — 읽고 확인한 것)
+#   OSD 는 PMI-shift 를 **대체하지 않고 병렬로 얹는다**. PMI 경로(countdown_pmi.
+#   score_pmi_shift)는 한 글자도 바뀌지 않는다. 재사용하는 것은 딱 두 개,
+#   `_build_pmi_score_batches`(좌측패딩 정렬 수리 포함)와 `_dcpo_v4_ref_logprobs`
+#   (T=1.0 + use_legacy_worker_impl fail-closed assert)다 — 둘 다 무수정.
+#
+#   ⚠PMI 배치와 **섞지 않는다**. `countdown_pmi.read_pmi_from_ref_logprobs` 는
+#     `base = 4*k` 고정 스트라이드를 가정한다. OSD 는 행당 2팔이므로 같은 배치에
+#     넣으면 그 부기가 조용히 깨진다. 그래서 별도 배치 + 별도 ref 호출이다.
+#
+# 정의 (사양 그대로)
+#   t0 = span.open_start   (`ids[:t0]` 에 `<meta>` 가 한 글자도 없다)
+#   t1+1 = span.close_end  (`ids[:close_end]` 는 `</meta>` 를 반드시 포함한다)
+#   W = ids[close_end : close_end + L],  L = min(200, 마지막 \boxed 답 끝까지)
+#   Δcert = mean logP(W | prompt ⊕ ids[:close_end])     # 메타 포함 문맥
+#         − mean logP(W | prompt ⊕ ids[:open_start])    # 메타 구간만 제거한 문맥
+#   두 문맥은 **메타 유무만** 다르고 W 는 양쪽에서 **같은 토큰열**이다. 샘플링 없음.
+#
+# 왜 with_meta 쪽을 재사용하지 못하나 (비용 감사 — verl 0.7.1 루프를 읽고 확인)
+#   `ray_trainer.py:1343/1382` 에서 보상이 계산되고, `old_log_prob` 은 :1404,
+#   `ref_log_prob`(KL 용) 은 그 뒤다. 즉 **보상 시점에는 응답 전체의 ref logp 가
+#   아직 존재하지 않는다**. 게다가 PMI 4팔이 재는 것은 `\boxed{gold}`/`\boxed{decoy}`
+#   합성 문자열이지 W 가 아니다. ⇒ 두 팔 다 새 forward 다. 추가 forward 는
+#   **행당 2팔, 배치당 ref 호출 1회**이고, 그 수를 `[COUNTDOWN][OSD]` 에 찍는다.
+
+_OSD_FAIL_SEEN = {"n": 0}      # fail-soft 경로에서 traceback 을 한 번만 찍기 위한 카운터
+_INV_FAIL_SEEN = {"n": 0}      # 같은 이유(도치 자 스코어러)
+_ARM_SIG_SEEN: dict = {}       # 팔 정체 서명을 런당 한 번만 찍기 위한 부기(검수 0831)
+# ★자체 선언 금지 — arm_signature 가 서명에 새기는 값과 실제로 도는 값이 갈리면
+#   서명이 거짓말한다. 정의처는 countdown_rewards 하나다(0825 적대검증).
+#   `_cdr` 은 이 파일에서 함수 안에서만 import 되므로 여기서 한 번 더 가져온다.
+from src.training.countdown_rewards import (  # noqa: E402
+    OSD_W_MAX as OSD_W_MAX_TOK,
+    OSD_LEAK_NGRAM,
+)
+
+
+
+def _osd_boxed_end_char(text: str):
+    r"""마지막 `\boxed{…}` 의 **닫는 중괄호 다음** 문자 인덱스(배타). 없으면 None.
+
+    `countdown_task._last_boxed` 와 **같은 균형괄호 스캔**이다(정규식판이 중첩 괄호에서
+    실패한 전례가 그 함수를 그 형태로 만들었다). 그 함수를 부르지 않는 이유는 하나뿐이다
+    — 그쪽은 **내용 문자열만** 돌려주고 우리는 **인덱스**가 필요하다. 채점(`grade`)이
+    보는 것도 *마지막* boxed 이므로 여기서도 마지막을 쓴다(둘이 갈리면 안 된다).
+    """
+    t = text or ""
+    end, i = None, 0
+    while True:
+        j = t.find("\\boxed{", i)
+        if j < 0:
+            break
+        k, dep = j + 7, 1
+        while k < len(t) and dep:
+            dep += (t[k] == "{") - (t[k] == "}")
+            k += 1
+        if dep == 0:
+            end = k          # 닫는 '}' 다음 (배타)
+        i = j + 7
+    return end
+
+
+def _osd_encode_with_offsets(tokenizer, text: str, span):
+    r"""`span` 이 서 있는 것과 **같은 토큰화**의 (ids, offsets).
+
+    `MetaSpan` 은 offsets 를 보관하지 않는다(`countdown_pmi.MetaSpan`). W 의 끝을
+    `\boxed` 문자 오프셋으로 잘라야 하므로 offsets 가 필요하고, 그래서 한 번 더
+    인코딩한다(CPU 비용만). **다른 토큰화가 나오면 예외** — 두 토큰화를 섞어 문맥을
+    만들면 Δcert 가 조용히 어긋난다(`find_meta_token_span` 의 `response_ids` 검사와
+    같은 규약).
+    """
+    enc = tokenizer(text or "", add_special_tokens=False, return_offsets_mapping=True)
+    ids = list(enc["input_ids"])
+    if ids != list(span.ids):
+        raise ValueError(
+            f"_osd_encode_with_offsets: 재인코딩이 MetaSpan 의 토큰화와 다르다 "
+            f"({len(ids)} vs {len(span.ids)} 토큰).")
+    return ids, [tuple(o) for o in enc["offset_mapping"]]
+
+
+def _osd_window(span, offsets, boxed_end_char, max_len: int = OSD_W_MAX_TOK):
+    r"""W 의 토큰 반열린 구간 `(w0, w1)`. 못 만들면 `(None, 사유)`.
+
+    w0 = `span.close_end` — 메타 바로 뒤 토큰(사양의 t1+1).
+    w1 = 마지막 `\boxed{…}` **끝을 넘지 않는** 마지막 토큰의 다음, 단 w0+max_len 이하.
+         boxed 끝에 걸친 토큰은 **넣는다**(답을 잘라내지 않는다 — `find_meta_token_span`
+         의 CLOSE 정책과 같은 방향).
+    `\boxed` 가 없으면 잴 답이 없으므로 윈도를 만들지 않는다(사양이 L 을 boxed 끝으로
+    정의한다). 그런 행은 r_corr=0 인 절단/미완 행이고, R_osd 는 0 이 된다.
+    """
+    n = len(span.ids)
+    w0 = int(span.close_end)
+    if w0 >= n:
+        return None, "meta_at_end"          # 메타 뒤에 토큰이 없다 → |W|==0
+    if boxed_end_char is None:
+        return None, "no_boxed"
+    w1 = n
+    for idx, (a, b) in enumerate(offsets):
+        if b <= a:                          # 길이 0 오프셋(특수토큰)은 건너뛴다
+            continue
+        if b >= boxed_end_char:
+            w1 = idx + 1                    # 끝에 걸친 토큰까지 포함
+            break
+    w1 = min(w1, w0 + int(max_len), n)
+    if w1 <= w0:
+        return None, "boxed_before_meta"    # 답이 메타보다 앞에 있다 → |W|==0
+    return (w0, w1), ""
+
+
+def _osd_leak_guard(span, w_ids, meta_raw: str, final_expr: str,
+                    *, ngram: int = OSD_LEAK_NGRAM) -> str:
+    r"""누출 가드. 막으면 사유 문자열, 깨끗하면 "".
+
+    막는 것 둘 (사양):
+      ① 메타 본문과 W 가 **ngram 토큰 이상** 연속으로 겹친다 → 메타에 미래 토큰을 미리
+         써 두고 Δcert 를 부풀리는 해킹.
+      ② 메타가 최종 `\boxed` 식 문자열을 담고 있다 → `countdown_rewards.answer_leak`
+         **그대로** 재사용한다(이 저장소가 정확히 이 용도로 이미 가진 함수다. 정규화
+         규칙을 복제하면 두 곳이 갈린다).
+
+    ⚠이 함수가 누출 가드의 **유일한 정의처**다. 토큰 id 기준 8-그램이 사양이다.
+    ⚠(0825: countdown_rewards 에 있던 공백-단어 기준 판본은 2~3배 헐거워 제거했다.) 원문:
+      바꿔라. 지금 그 이름은 저장소에 **없다**(`grep -r osd src/` → 0건) — 없는 함수의
+      시그니처를 추측해 부르지 않는다. ①은 토큰 id 가 필요한데 `countdown_rewards` 는
+      의존성 0 의 순수 텔레메트리 모듈이라 토크나이저를 모른다는 점도 함께 본다.
+    """
+    from src.training import countdown_rewards as _cdr      # noqa: PLC0415
+
+    n = int(ngram)
+    meta_ids = tuple(span.ids[span.inner_start:span.inner_end])
+    w = tuple(w_ids)
+    if n > 0 and len(meta_ids) >= n and len(w) >= n:
+        grams = {meta_ids[i:i + n] for i in range(len(meta_ids) - n + 1)}
+        for i in range(len(w) - n + 1):
+            if w[i:i + n] in grams:
+                return f"ngram{n}"
+    if final_expr:
+        # answer_leak 은 final_expr=None 에 **예외**를 던진다(조용한 0 금지 설계).
+        # 빈 식은 어떤 메타에도 안 들어 있으므로 여기서 걸러 넘긴다.
+        if _cdr.answer_leak(meta_raw or "", final_expr):
+            return "answer_expr"
+    return ""
+
+
+# ★«못 쟀다» 와 «쟀는데 값이 0 으로 정의된다» 는 다른 사건이다 (0826 06:10 수리).
+#   섞으면 둘 중 하나가 반드시 틀린다. 실제로 틀렸다 — 아래 W-정의불가 사유들이
+#   delta_cert=None 을 받았고, r_osd 의 fail-loud 가 그걸 «배선 끊김» 으로 읽어
+#   step 1 에서 학습을 죽였다. 이 사유는 512행 중 3~30행으로 **매 스텝 발생**한다.
+_OSD_UNDEFINED_W = frozenset({
+    "no_boxed",            # \boxed 가 없다 → 잴 답이 없다
+    "meta_at_end",         # 메타 뒤에 토큰이 없다 → |W|=0
+    "boxed_before_meta",   # 답이 메타보다 앞 → |W|=0
+})
+# 아래는 «스코어러가 안 돌았다» — 진짜 배선 사고이므로 None 을 유지해 fail-loud 한다.
+_OSD_NOT_MEASURED = frozenset({"off", "ref_error", "span_error", "pending"})
+
+
+def _osd_empty_row(status: str = "off") -> dict:
+    """행 규약의 OSD 기본값.
+
+    ★status 에 따라 delta_cert 가 갈린다:
+      · W 가 **구조적으로 정의 불가**(no_boxed / meta_at_end / boxed_before_meta)
+        → **0.0**. 이건 정상 행이다. 누출 차단 행(:2240)과 같은 규약이고,
+          `_osd_window` 의 docstring 이 이미 «그런 행은 R_osd 는 0 이 된다» 고 선언한다.
+      · **스코어러가 안 돌았다**(off / ref_error / span_error / pending)
+        → **None**. 이건 배선 사고이므로 r_osd 가 즉사시켜야 한다.
+    """
+    d = 0.0 if status in _OSD_UNDEFINED_W else None
+    return {"delta_cert": d, "osd_scored": 0, "osd_leak": 0,
+            "osd_w_len": 0, "osd_status": status, "osd_meta_first": False}
+
+
+class _OsdAttempt:
+    __slots__ = ("row", "w_len")
+
+    def __init__(self, row: int, w_len: int):
+        self.row, self.w_len = int(row), int(w_len)
+
+
+def _build_osd_arms(tokenizer, prompt_texts, response_texts, final_exprs):
+    r"""점수를 매길 **2n 개** (문맥, W) 팔. GPU 를 잡지 않는다.
+
+    행 하나당 팔 둘, **고정 순서**:  `W@close` (메타 포함), `W@open` (메타 제거).
+    두 팔의 응답 토큰열은 **바이트 동일**하다 — 그것이 OSD 의 전제다.
+
+    Returns (arm_prompts, arm_resps, attempts, per_row, diag).
+      per_row[i]  그 행의 OSD 필드 초안(윈도·누출 판정까지 반영, Δcert 는 아직 없음)
+    """
+    from src.training import countdown_pmi as _cdp          # noqa: PLC0415
+
+    B = len(response_texts)
+    if not (len(prompt_texts) == len(final_exprs) == B):
+        raise ValueError(
+            f"_build_osd_arms: 길이 불일치 prompt={len(prompt_texts)} "
+            f"resp={B} final_expr={len(final_exprs)}")
+
+    arm_prompts, arm_resps, attempts = [], [], []
+    per_row = [_osd_empty_row("no_meta") for _ in range(B)]
+    diag = {"B": B, "no_meta": 0, "no_boxed": 0, "meta_at_end": 0,
+            "boxed_before_meta": 0, "leak_blocked": 0, "span_error": 0,
+            "meta_first": 0, "n_emitted": 0, "attempted": 0, "w_len_sum": 0,
+            "fwd_tokens": 0, "leak_reasons": {}}
+
+    for i in range(B):
+        text = response_texts[i] or ""
+        try:
+            span = _cdp.find_meta_token_span(tokenizer, text)
+        except TypeError:
+            raise                                   # fast 토크나이저 없음 = 즉사(설계)
+        except Exception as e:
+            per_row[i] = _osd_empty_row(f"span_error:{type(e).__name__}")
+            diag["span_error"] += 1
+            continue
+        if span is None:
+            diag["no_meta"] += 1
+            continue                                # per_row 는 이미 no_meta
+        diag["n_emitted"] += 1
+
+        try:
+            _ids, offsets = _osd_encode_with_offsets(tokenizer, text, span)
+        except Exception as e:
+            per_row[i] = _osd_empty_row(f"span_error:{type(e).__name__}")
+            diag["span_error"] += 1
+            continue
+
+        win, why = _osd_window(span, offsets, _osd_boxed_end_char(text))
+        if win is None:
+            per_row[i] = _osd_empty_row(why)
+            diag[why] = diag.get(why, 0) + 1
+            continue
+        w0, w1 = win
+        w_ids = list(span.ids[w0:w1])
+
+        # 누출 행은 Δcert := 0 이 사양이므로 **forward 를 아예 아끼고** 0 을 채운다
+        #   (R_osd = y*clip(0/c) = 0 으로 결과가 같다). 조용히 넘어가지 않게 개수와
+        #   사유를 진단에 남긴다.
+        meta_raw = text[span.char_open:span.char_close_end]
+        reason = _osd_leak_guard(span, w_ids, meta_raw, final_exprs[i] or "")
+        if reason:
+            per_row[i] = {"delta_cert": 0.0, "osd_scored": 0, "osd_leak": 1,
+                          "osd_w_len": len(w_ids), "osd_status": f"leak:{reason}",
+                          "osd_meta_first": bool(span.meta_first)}
+            diag["leak_blocked"] += 1
+            diag["leak_reasons"][reason] = diag["leak_reasons"].get(reason, 0) + 1
+            continue
+
+        p_ids = list(tokenizer(prompt_texts[i] or "",
+                               add_special_tokens=False)["input_ids"])
+        ctx_close = p_ids + list(span.ids[:span.close_end])     # 메타 포함
+        ctx_open = p_ids + list(span.ids[:span.open_start])     # 메타 구간만 제거
+        arm_prompts.append(ctx_close); arm_resps.append(w_ids)
+        arm_prompts.append(ctx_open);  arm_resps.append(list(w_ids))
+        attempts.append(_OsdAttempt(row=i, w_len=len(w_ids)))
+        # meta_first 행은 ctx_open 이 **프롬프트만** 이다 — Δcert 는 여전히 정의되지만
+        # 「메타 앞 믿음」이 프롬프트만의 믿음이라 판정에서 갈라 봐야 한다
+        # (`countdown_pmi.MetaSpan.meta_first` 주석과 같은 이유).
+        per_row[i] = {"delta_cert": None, "osd_scored": 0, "osd_leak": 0,
+                      "osd_w_len": len(w_ids), "osd_status": "pending",
+                      "osd_meta_first": bool(span.meta_first)}
+        diag["meta_first"] += int(bool(span.meta_first))
+        diag["w_len_sum"] += len(w_ids)
+        diag["fwd_tokens"] += len(ctx_close) + len(ctx_open) + 2 * len(w_ids)
+
+    diag["attempted"] = len(attempts)
+    return arm_prompts, arm_resps, attempts, per_row, diag
+
+
+def _read_osd_from_ref_logprobs(ref_lp, attempts):
+    r"""ref 토큰별 logp → 행별 Δcert.
+
+    `base = 2*k`, 팔 순서 `W@close, W@open`. 각 팔의 `[:len(W)]` 를 **평균**한다
+    (사양이 |W| 로 나눈다 — 메타 길이는 공식에 등장하지 않는다).
+    유한하지 않으면 그 행만 NaN 으로 fail-closed 한다 — `countdown_pmi.
+    read_pmi_from_ref_logprobs` 와 **같은 규약**이다. 행을 배치에서 빼지 않는 이유:
+    GRPO 그룹에서 행을 진짜 빼면 그룹 크기가 달라져 센터링이 깨진다. 대신 그 행의
+    항만 0 이 되고(`countdown_rewards._f`), 배치 전체가 실패한 경우에만 즉사한다.
+    """
+    from src.training.countdown_pmi import _row_sum          # noqa: PLC0415
+
+    out = []
+    for k, at in enumerate(attempts):
+        base = 2 * k
+        L = at.w_len
+        try:
+            close = _row_sum(ref_lp, base + 0, L, slice(0, L)) / L
+            open_ = _row_sum(ref_lp, base + 1, L, slice(0, L)) / L
+        except Exception:
+            out.append(float("nan"))
+            continue
+        d = close - open_
+        out.append(float(d) if math.isfinite(d) else float("nan"))
+    return out
+
+
+def _compute_countdown_osd(*, tokenizer, trainer, prompt_texts, response_texts,
+                           final_exprs, step: int = 0, _ref_scorer=None):
+    r"""행별 Δcert(`delta_cert`) + 진단. **여기서만 GPU 를 쓴다** (ref forward 1회).
+
+    Returns (per_row, diag).
+      per_row[i] = {"delta_cert", "osd_scored", "osd_leak", "osd_w_len", "osd_status"}
+                   delta_cert 는 float | 0.0(누출) | NaN(비유한) | None(못 쟀다).
+      diag       사유별 개수 + Δcert 요약통계 + **추가 forward 비용**.
+
+    `_ref_scorer` 는 테스트 주입구다(주면 verl 을 안 부른다) — `score_pmi_shift` 와 같은 규약.
+    """
+    from src.training import countdown_pmi as _cdp          # noqa: PLC0415
+
+    arm_prompts, arm_resps, attempts, per_row, diag = _build_osd_arms(
+        tokenizer, prompt_texts, response_texts, final_exprs)
+    diag["scored"] = 0
+    diag["nan_rows"] = 0
+    diag["ref_error"] = None
+    diag["fwd_calls"] = 0
+    diag["fwd_rows"] = 0
+    diag["fwd_rows_pad"] = 0
+
+    if not attempts:
+        for r in per_row:
+            if r["osd_status"] == "pending":
+                r["osd_status"] = "unscored"
+        diag.update(_osd_delta_stats([]))
+        return per_row, diag
+
+    if _ref_scorer is None:
+        _cdp.assert_pmi_config(trainer)             # config 위반은 진입 즉시 깨진다
+        tensors, real_n = _build_pmi_score_batches(
+            arm_prompts, arm_resps, _cdp._pad_unit(trainer))
+        if real_n != 2 * len(attempts):
+            raise AssertionError(
+                f"OSD 팔 부기가 깨졌다: {real_n} != 2*{len(attempts)}")
+        diag["fwd_calls"] = 1
+        diag["fwd_rows"] = real_n
+        diag["fwd_rows_pad"] = int(tensors["input_ids"].shape[0]) - real_n
+        try:
+            ref_lp = _dcpo_v4_ref_logprobs(trainer, tensors)
+        except AssertionError:
+            raise                                   # config 위반은 절대 삼키지 않는다
+        except Exception as e:
+            diag["ref_error"] = f"{type(e).__name__}: {e}"
+            for at in attempts:
+                per_row[at.row]["osd_status"] = "ref_error"
+            print(f"[COUNTDOWN][OSD][FAIL] step={step}: ref 스코어링 실패 "
+                  f"({diag['ref_error']}) — 이 배치의 delta_cert 는 전부 None.",
+                  flush=True)
+            diag.update(_osd_delta_stats([]))
+            return per_row, diag
+    else:
+        diag["fwd_calls"] = 1
+        diag["fwd_rows"] = 2 * len(attempts)
+        ref_lp = _ref_scorer(arm_prompts, arm_resps)
+
+    deltas = _read_osd_from_ref_logprobs(ref_lp, attempts)
+    good = []
+    for at, d in zip(attempts, deltas):
+        r = per_row[at.row]
+        if math.isfinite(d):
+            r["delta_cert"] = float(d)
+            r["osd_scored"] = 1
+            r["osd_status"] = "ok"
+            good.append(float(d))
+        else:
+            r["delta_cert"] = float("nan")          # 조용한 0 이 아니다
+            r["osd_scored"] = 0
+            r["osd_status"] = "nan"
+            diag["nan_rows"] += 1
+    diag["scored"] = len(good)
+    diag.update(_osd_delta_stats(good))
+    return per_row, diag
+
+
+def _osd_delta_stats(vals) -> dict:
+    r"""Δcert 요약. **p90 은 정규화 상수 c 를 정하는 값이다**(사양: |Δcert| 의 90 퍼센타일).
+
+    분위수는 `countdown_rewards._quantile`(선형보간, 의존성 0)을 쓴다 — 저장소에 이미
+    있는 분위수를 복제하지 않는다.
+    """
+    from src.training.countdown_rewards import _quantile     # noqa: PLC0415
+
+    xs = [float(v) for v in vals if math.isfinite(float(v))]
+    n = len(xs)
+    if not n:
+        nan = float("nan")
+        return {"d_mean": nan, "d_std": nan, "d_p90": nan, "d_abs_p90": nan,
+                "d_abs_mean": nan, "d_pos_frac": nan, "n_delta": 0}
+    m = sum(xs) / n
+    var = sum((v - m) ** 2 for v in xs) / n
+    return {
+        "d_mean": m,
+        "d_std": math.sqrt(var),
+        "d_p90": _quantile(xs, 0.90),
+        "d_abs_p90": _quantile([abs(v) for v in xs], 0.90),   # ★= 정규화 상수 c 후보
+        "d_abs_mean": sum(abs(v) for v in xs) / n,
+        "d_pos_frac": sum(1.0 for v in xs if v > 0) / n,
+        "n_delta": n,
+    }
+
+
 def _pmi_position_scalar(logp_gold, logp_decoy, divergent_mask) -> float:
     r"""gold-minus-decoy summed logp over the DIVERGENT answer tokens at ONE
     teacher-forcing context (PMI_open or PMI_close).
@@ -1982,6 +2915,111 @@ def _log_pmi_shift_wandb_scalars(step: int, *, attempted_rate: float,
             }, step=int(step))
     except Exception:
         pass
+
+
+# ══ ★수리(0823) 구조율(rescue) 계기 ═══════════════════════════════════════════
+#   연구 의도: "풀이가 조금 틀리더라도 계속 점검·확인해서 정답까지 가이드되는가".
+#   구조(rescue) = 메타 블록 **앞**에는 정답식이 없었는데 **뒤**에 나타난 롤아웃.
+#   보상 항이 아니라 **계기**다 — 팔 정체를 바꾸지 않는다(사전등록 처치 불변).
+_ABORT_STREAK: dict = {}
+_ABORT_PATIENCE: int = 3
+
+
+class _CountdownAbort(RuntimeError):
+    """사전등록 §7 중단 조건. 계기 예외와 구분하기 위한 전용 타입."""
+
+
+_RESCUE_EXPR = __import__("re").compile(r"[\d(][\d\s+\-*/().]{4,}")
+
+
+def _countdown_solves(expr, nums, target) -> bool:
+    from src.training import countdown_task as _t
+    try:
+        return (_t.eval_countdown(expr) == int(target)
+                and _t.expr_numbers(expr) == sorted(int(x) for x in nums))
+    except Exception:
+        return False
+
+
+def _countdown_rescue_stats(rows, nums_col, target_col) -> dict:
+    """행별 구조 판정 → 집계. 메타 미발화 행은 분모에서 뺀다(구조가 정의 안 됨)."""
+    from src.training import countdown_rewards as _r
+    resc = pre = never = 0
+    att = []
+    n = 0
+    for i, row in enumerate(rows):
+        text = row.get("text") or ""
+        att.append(len(_RESCUE_EXPR.findall(text)))
+        m = _r.parse_meta(text, "new")
+        if not m["emitted"]:
+            continue
+        n += 1
+        nums, tgt = nums_col[i], target_col[i]
+        def _found(seg):
+            for mm in _RESCUE_EXPR.finditer(seg):
+                if _countdown_solves(mm.group(0).strip().rstrip("."), nums, tgt):
+                    return True
+            return False
+        before = _found(text[: m["start"] or 0])
+        after = _found(text[m["end"] or 0 :])
+        if before:
+            pre += 1
+        elif after:
+            resc += 1
+        else:
+            never += 1
+    d = float(n) if n else float("nan")
+    return {"rescue_rate": resc / d, "pre_had_rate": pre / d, "never_rate": never / d,
+            "rescue_n": resc, "rescue_denom": n,
+            "n_attempts_mean": (sum(att) / len(att)) if att else float("nan")}
+
+
+def _countdown_populate_token_rewards(data, algo_config):
+    r"""★COUNTDOWN 메인프로세스 훅 (2026-08-21).
+
+    verl 0.7.1 은 `rollout.mode=sync` 를 **제거**했고(ValueError), async 경로는
+    동기 `MetaCotSDCRewardManager.__call__` 을 우회한다(이 파일 2111행 주석):
+      "In the async-rollout path the synchronous __call__ DCPO block is bypassed,
+       and reward_loop_score (running per-rollout in Ray actors, no group) cannot
+       compute the GROUP-aware R_meta (p_hat) — it only emits 0.0 placeholders."
+    그 결과 COUNTDOWN 보상이 **한 번도 계산되지 않은 채** 여섯 팔이 같은 보상으로
+    돈다(실측: [COUNTDOWN][WIRED] 0건 x 4회, 그중 한 번은 5스텝 학습 완료).
+    DCPO 계열은 `_populate_dcpo_region_keys` 로 같은 우회로를 이미 갖고 있다 —
+    COUNTDOWN 판만 없었다. 이 함수가 그 자리를 채운다.
+
+    여기는 **메인 프로세스**이고 `uid` 그룹이 온전하므로 p̂ 와 sign(A_corr) 를 셀 수 있다.
+    """
+    import torch as _t
+    from types import SimpleNamespace as _NS
+
+    tok = _ACTIVE_SDC_CONTEXT.get("tokenizer")
+    trainer = _ACTIVE_SDC_CONTEXT.get("trainer")
+    if tok is None:
+        raise RuntimeError("[COUNTDOWN] tokenizer 가 컨텍스트에 없다 — 배선 버그다.")
+
+    bs = len(data)
+    prompt_length = data.batch["prompts"].shape[-1]
+    decoded = []
+    for i in range(bs):
+        item = data[i]
+        text, _ids = _decode_response(
+            tok, item.batch["prompts"], item.batch["responses"],
+            item.batch["attention_mask"], prompt_length)
+        decoded.append(text)
+
+    shim = _NS(tokenizer=tok, config=_NS(algorithm=algo_config))
+    step = int(getattr(trainer, "global_steps", 0) or 0)
+    totals = _compute_countdown_arm_stash(shim, data, decoded, bs, prompt_length, step)
+
+    # 시퀀스 스칼라를 마지막 유효 토큰에 싣는다(verl 관례: token_level_rewards 합 = 시퀀스 보상).
+    tlr = _t.zeros_like(data.batch["responses"], dtype=_t.float32)
+    valid = data.batch["attention_mask"][:, prompt_length:].sum(dim=1) - 1
+    for i in range(bs):
+        j = int(valid[i])
+        if 0 <= j < tlr.shape[1]:
+            tlr[i, j] = float(totals[i])
+    data.batch["token_level_rewards"] = tlr
+    return data
 
 
 def _attach_teacher_signals(data: DataProto):
@@ -3812,6 +4850,9 @@ def _patch_verl_for_sdc():
             data.batch["advantages"] = advantages
             data.batch["returns"] = returns
             return data
+        # ★COUNTDOWN: async 우회로. 위 설명은 `_countdown_populate_token_rewards` 참조.
+        if _adv_sdc_mode == _COUNTDOWN_MODE:
+            data = _countdown_populate_token_rewards(data, config)
         return original_compute_advantage(
             data,
             adv_estimator=adv_estimator,
@@ -3868,6 +4909,30 @@ import hydra
 
 @hydra.main(config_path="../../configs", config_name="verl_sdc_e21r_shared", version_base=None)
 def main(config):
+    # ★수리(0823) 영구 Ray 클러스터 연결 경로.
+    #   실측: raylet 은 포트 파일을 15초 기다리는데(하드코딩), 공유 호스트 부하
+    #   (load 36~45)에서 대시보드 에이전트 «프로세스 시작»만 23초 걸린다
+    #   (18:05:25 raylet 시작 → 18:05:40 크래시 → 18:05:48 에이전트 시작).
+    #   의존성을 다 깔아도(모듈 0→7개) 프로세스 기동 지연은 그대로다.
+    #   ⇒ 팔마다 클러스터를 새로 띄우지 말고 한 번 띄운 것에 붙는다.
+    _ray_addr = os.environ.get("RAY_ADDRESS")
+    if _ray_addr and not ray.is_initialized():
+        ray.init(address=_ray_addr, runtime_env={"env_vars": {
+            "TOKENIZERS_PARALLELISM": "true",
+            "NCCL_DEBUG": "WARN",
+            "PYTHONPATH": os.environ.get("PYTHONPATH", "/scratch/metacognition"),
+            "SDC_MODE_ENV": os.environ.get("SDC_MODE_ENV", ""),
+            "VERL_DISABLE_FLASH_XENT": os.environ.get("VERL_DISABLE_FLASH_XENT", "1"),
+            "TRITON_CACHE_DIR": os.environ.get("TRITON_CACHE_DIR", ""),
+            # ★검수 0831: 측정모드 스위치도 실어야 한다. Ray 워커는 드라이버의 임의
+            #   환경변수를 상속하지 않는다(바로 아래 주석의 SDC_MODE_ENV 사고와 같은
+            #   함정). 로컬 head 경로는 raylet 이 드라이버 env 를 물려받아 우연히
+            #   통하지만, RAY_ADDRESS 로 **기존 클러스터에 붙는 이 경로**는 통하지
+            #   않는다 — COUNTDOWN_INV=1 이 조용히 무시되어 τ·c 관문이 아무것도
+            #   안 재고 통과한 것처럼 보인다.
+            "COUNTDOWN_INV": os.environ.get("COUNTDOWN_INV", "0"),
+        }})
+        print(f"[SDC] 기존 Ray 클러스터에 연결: {_ray_addr}", flush=True)
     if not ray.is_initialized():
         # AMLT single-node jobs can expose a non-loopback pod IP that makes
         # Ray's default head bootstrap path hang while waiting for GCS.
@@ -3877,6 +4942,8 @@ def main(config):
         ray.init(
             include_dashboard=False,
             _node_ip_address="127.0.0.1",
+            _system_config={"agent_register_timeout_ms": 600000},  # ★0823: raylet 이 15초만 기다리다 크래시(포트파일은 7초 뒤 생성). 공유호스트 부하로 에이전트 기동이 22초 지연됨. RAY_* 환경변수로는 안 바뀌어 여기서 직접 넘긴다.
+            object_store_memory=20_000_000_000,  # ★0823: 기본은 /dev/shm 에 200GB mmap(store_runner.cc:50). 공유호스트 부하에서 이 mmap 이 기동을 지연시켜 raylet 의 하드코딩 30초 포트 대기를 넘긴다. verl 은 20GB 면 충분하다.
             # propagate PYTHONPATH to Ray workers so hydra.utils.instantiate can
             # import custom _target_ classes (e.g. the E.9 BCIConfAgentLoop) by
             # FQDN inside the rollout workers. Harmless for every other mode (the
@@ -3885,6 +4952,15 @@ def main(config):
                 "TOKENIZERS_PARALLELISM": "true",
                 "NCCL_DEBUG": "WARN",
                 "PYTHONPATH": os.environ.get("PYTHONPATH", "/scratch/metacognition"),
+                # ★2026-08-21: Ray 워커는 드라이버의 임의 환경변수를 **상속하지 않는다**.
+                #   여기에 실은 것만 전달된다. `mode` 는 모듈 변수라 워커에 안 가고
+                #   (R16 이 기록한 동일 함정), 그 결과 COUNTDOWN 분기가 통째로 죽어
+                #   여섯 팔이 전부 countdown 보상 없이 돌 뻔했다(실측 5스텝, WIRED 0건).
+                "SDC_MODE_ENV": os.environ.get("SDC_MODE_ENV", ""),
+                "VERL_DISABLE_FLASH_XENT": os.environ.get("VERL_DISABLE_FLASH_XENT", "1"),
+                "TRITON_CACHE_DIR": os.environ.get("TRITON_CACHE_DIR", ""),
+                # ★검수 0831: 측정모드 스위치(위 RAY_ADDRESS 경로와 같은 이유).
+                "COUNTDOWN_INV": os.environ.get("COUNTDOWN_INV", "0"),
             }},
         )
     ray.get(main_task.remote(config))
@@ -3945,6 +5021,9 @@ def main_task(config):
 
     logger_cfg = list(config.trainer.get("logger", []))
     has_wandb_key = bool(os.environ.get("WANDB_API_KEY") or os.environ.get("WANDB_KEY"))
+    # ★0902: 키가 없어도 WANDB_MODE=offline 이면 로컬 run 디렉터리에 기록한다 (나중에 `wandb sync`).
+    if os.environ.get("WANDB_MODE", "") == "offline":
+        has_wandb_key = True
     if "wandb" in logger_cfg and not has_wandb_key:
         filtered = [name for name in logger_cfg if name != "wandb"] or ["console"]
         with open_dict(config.trainer):

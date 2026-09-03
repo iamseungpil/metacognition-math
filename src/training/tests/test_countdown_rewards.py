@@ -11,6 +11,7 @@
 실행:  python -m pytest src/training/tests/test_countdown_rewards.py -q
    또는 python src/training/tests/test_countdown_rewards.py
 """
+import pytest
 import math
 import sys
 from pathlib import Path
@@ -236,11 +237,22 @@ SPEC_TABLE = {   # 사양 §보상 을 손으로 옮긴 것. 코드가 아니라
     "F": (("corr", "format", "meta_floor", "meta_mul", "gate"), "new", "full"),
     "G": (("corr", "format", "meta_floor", "len"), "new", "neg"),
     "H": (("corr", "format", "meta_floor", "meta_mul", "gate"), "old", "oldfmt"),
+    # OSD: PMI-shift(AUC 0.52 폐기)의 대체 처치. 여덟 팔 뒤에 **추가**된 것이라
+    # 키가 한 글자가 아니다.
+    "OSD": (("corr", "format", "meta_floor", "osd"), "new", "osd"),
+    # P: 식 전체 평균 PMI(갈아끼우기 AUC 0.587). 사양의 여덟 뒤에 추가된 처치.
+    "P": (("corr", "format", "meta_floor", "meta_pos_full"), "new", "full"),
+    # R: 도치 자 단측 벌(라벨 d=+1.04, reencode/a2d/min). 마찬가지로 추가된 처치.
+    "R": (("corr", "format", "meta_floor", "meta_inv"), "new", "inv"),
 }
+
+# ★사양의 여덟 팔 + 그 뒤에 **추가된** 처치 팔. 추가는 사양 개정이 아니라 확장이므로
+#   여덟 팔의 정체는 위 SPEC_TABLE 이 계속 원본으로 지킨다.
+ADDED_ARMS = ["OSD", "P", "R"]
 
 
 def test_arm_specs_match_spec_table():
-    assert sorted(cr.ARM_SPECS) == list("ABCDEFGH")
+    assert sorted(cr.ARM_SPECS) == sorted(list("ABCDEFGH") + ADDED_ARMS)
     for arm, (terms, form, label) in SPEC_TABLE.items():
         got = cr.ARM_SPECS[arm]
         assert tuple(got["terms"]) == terms, f"{arm} 항 집합 불일치"
@@ -272,7 +284,8 @@ def test_F_is_C_plus_E():
 
 def test_warmup_applies_to_meta_and_gate_only():
     warmed = {t for t, cfg in cr.TERMS.items() if cfg["warmup"]}
-    assert warmed == {"meta_pos", "meta_mul", "meta_ctx", "gate", "len"}
+    assert warmed == {"meta_pos", "meta_mul", "meta_ctx", "gate", "len", "osd",
+                      "meta_pos_full", cr.INV_TERM}
     for t in ("corr", "format", "meta_floor"):
         assert not cr.TERMS[t]["warmup"]
 
@@ -280,7 +293,7 @@ def test_warmup_applies_to_meta_and_gate_only():
 def test_arm_signatures_are_all_distinct():
     """★G8: 여덟 서명이 전부 달라야 팔 diff 가 성립한다."""
     sigs = cr.all_arm_signatures()
-    assert len(set(sigs.values())) == 8, sigs
+    assert len(set(sigs.values())) == len(cr.ARM_SPECS), sigs
     assert all(cr.SPEC_VERSION in s for s in sigs.values())
     assert "form=old" in sigs["H"] and "form=new" in sigs["F"]
     assert sigs["F"] != sigs["H"]          # 보상은 같아도 형식이 다르면 다른 팔
@@ -301,10 +314,40 @@ def test_arm_A_has_no_meta_term():
     assert abs(total - (1.0 + 0.35 + 0.02)) < 1e-9
 
 
+def _expect(term, raw):
+    """항별 정규화(2026-08-20)를 반영한 기대 기여값. 상수를 박지 않고 계약을 따른다."""
+    x = raw / cr.TERM_MAX_ABS[term] if cr.NORMALIZE_TERMS else raw
+    x = max(-1.0, min(1.0, x)) if cr.NORMALIZE_TERMS else x
+    return cr.TERMS[term]["weight"] * x
+
+
 def test_arm_B_adds_shift_after_warmup():
+    raw = cr.r_meta_pos(-0.5, 0.5)          # clip(+1.0) + save(+1.0) = +2.0
+    assert abs(raw - 2.0) < 1e-9            # 원값 자체는 정규화와 무관하게 고정
+    exp = _expect("meta_pos", raw)
     total, comps = cr.arm_reward("B", _row(), step=999)
-    assert abs(comps["meta_pos"] - cr.W_META * cr.r_meta_pos(-0.5, 0.5)) < 1e-9
-    assert abs(total - (1.0 + 0.35 + 0.02 + 2.0)) < 1e-9
+    assert abs(comps["meta_pos"] - exp) < 1e-9
+    assert abs(total - (1.0 + 0.35 + 0.02 + exp)) < 1e-9
+
+
+def test_solving_outranks_a_perfect_meta_on_a_failed_attempt():
+    """★정규화가 존재하는 이유 — 목표 역전 방지.
+
+    사전등록 §1: «메타인지는 목적이 아니라 정확도를 올리는 수단». 따라서
+    「풀었다 + 메타 평범」이 「못 풀었다 + 메타 최고」보다 **반드시 높아야** 한다.
+    정규화 이전에는 1.370 < 3.370 으로 뒤집혀 있었다.
+    """
+    solved_flat, _ = cr.arm_reward(
+        "B", _row(r_corr=1, pmi_open=0.0, pmi_close=0.0), step=999)
+    failed_best, _ = cr.arm_reward(
+        "B", _row(r_corr=0, pmi_open=-1.5, pmi_close=1.5), step=999)
+    assert solved_flat > failed_best, (solved_flat, failed_best)
+
+
+def test_normalization_state_is_in_the_arm_signature():
+    """정규화 상태가 서명에 없으면 서명이 거짓말을 한다(G8)."""
+    sig = cr.arm_signature("B")
+    assert ("norm=on" if cr.NORMALIZE_TERMS else "norm=off") in sig
 
 
 def test_warmup_zeroes_meta_terms_at_step_zero_but_not_corr():
@@ -349,7 +392,18 @@ def test_arm_F_is_sum_of_C_and_E_components():
 
 def test_arm_G_len_term():
     _, comps = cr.arm_reward("G", _row(meta_n_tok=250), step=999)
-    assert comps["len"] == cr.W_LEN * 2.5
+    assert abs(comps["len"] - _expect("len", 2.5)) < 1e-9
+
+
+def test_arm_G_len_saturates_so_the_fake_control_is_not_unbounded():
+    """가짜 대조군도 다른 팔과 같은 세기여야 «G 가 이기면 폐기» 가 공정한 판정이 된다.
+
+    정규화 전에는 meta 3000 토큰 = 30.0 으로 corr(최대 1.0)의 30배였다.
+    """
+    _, big = cr.arm_reward("G", _row(meta_n_tok=3000), step=999)
+    if cr.NORMALIZE_TERMS:
+        assert abs(big["len"] - cr.TERMS["len"]["weight"]) < 1e-9   # [-1,1] 로 포화
+    assert big["len"] <= cr.TERMS["len"]["weight"] + 1e-9
 
 
 def test_meta_terms_are_zero_when_not_emitted():
@@ -584,28 +638,53 @@ def test_telemetry_report_has_every_spec_metric():
 
 # ══════════════════════════════════════════════════════════ 11. 중단 조건
 
+def _abort_report(**over):
+    """여섯 칸이 전부 통과인 보고서. 각 검사가 **바꾼 칸만** 덮어쓴다."""
+    rep = {"emit_rate": 0.5, "boilerplate": {"boilerplate_rate": 0.3},
+           "answer_leak_rate": 0.05, "arith_in_meta_rate": 0.0,
+           "false_claim_rate": 0.0, "confidence": {"mean": 0.5}}
+    rep.update(over)
+    return rep
+
+
 def test_check_abort_thresholds():
-    ok = {"emit_rate": 0.5, "boilerplate": {"boilerplate_rate": 0.3},
-          "answer_leak_rate": 0.05}
-    assert cr.check_abort(ok) == []
-    bad = {"emit_rate": 0.19, "boilerplate": {"boilerplate_rate": 0.51},
-           "answer_leak_rate": 0.11}
+    assert cr.check_abort(_abort_report()) == []
+    bad = _abort_report(emit_rate=0.19, boilerplate={"boilerplate_rate": 0.51},
+                        answer_leak_rate=0.11, arith_in_meta_rate=0.03,
+                        false_claim_rate=0.03, confidence={"mean": 0.81})
     got = {v["metric"] for v in cr.check_abort(bad)}
-    assert got == {"emit_rate", "boilerplate_rate", "answer_leak_rate"}
+    assert got == set(cr.ABORT_RULES)
 
 
 def test_check_abort_boundaries_are_strict():
     """문턱 위/아래가 아니라 **정확히 문턱**일 때 통과인지 — 판정 밴드도 검사 대상이다."""
-    edge = {"emit_rate": 0.2, "boilerplate": {"boilerplate_rate": 0.5},
-            "answer_leak_rate": 0.1}
-    assert cr.check_abort(edge) == []      # < 0.2 / > 0.5 / > 0.1 이므로 등호는 통과
+    edge = _abort_report(emit_rate=0.2, boilerplate={"boilerplate_rate": 0.5},
+                         answer_leak_rate=0.1, arith_in_meta_rate=0.02,
+                         false_claim_rate=0.02, confidence={"mean": 0.8})
+    assert cr.check_abort(edge) == []      # 등호는 전부 통과
 
 
 def test_check_abort_reports_missing_metric_as_missing_not_pass():
     """★안 잰 칸은 통과가 아니다 — 원장 0731 '상시 WARN 은 소음이 아니다'."""
     got = cr.check_abort({"emit_rate": 0.5})
     missing = {v["metric"] for v in got if v["status"] == "missing"}
-    assert missing == {"boilerplate_rate", "answer_leak_rate"}
+    assert missing == set(cr.ABORT_RULES) - {"emit_rate"}
+
+
+def test_g4_gates_that_the_review_demanded_are_actually_wired():
+    """설계검토가 «기존 게이트 셋은 전부 못 막는다» 고 실측한 구멍 셋이 닫혔는가."""
+    assert {"arith_in_meta_rate", "false_claim_rate", "confidence_mean"} <= set(cr.ABORT_RULES)
+    # 도치 자의 argmax(«확신에 찬 오답»)를 잡는 칸이 실제로 abort 를 낸다
+    hit = cr.check_abort(_abort_report(false_claim_rate=0.05))
+    assert [v for v in hit if v["metric"] == "false_claim_rate"][0]["status"] == "abort"
+
+
+def test_false_claim_rate_is_nan_when_the_scorer_did_not_run():
+    """«안 쟀다» 가 «깨끗하다» 로 위장하면 안 된다 — NaN 이어야 check_abort 가 missing 을 낸다."""
+    rows = [{"text": "<meta>\nconfidence: 0.5\nhm\ndecision: verify\n</meta>"}]
+    assert math.isnan(cr.false_claim_rate(rows, form="new"))
+    rows[0]["inv_false_claim"] = 1
+    assert cr.false_claim_rate(rows, form="new") == 1.0
 
 
 def test_check_abort_nan_is_missing():
@@ -649,3 +728,90 @@ if __name__ == "__main__":
         fn()
         print(f"ok  {fn.__name__}")
     print(f"\n{len(fns)} passed")
+
+
+# ══════════════════════════════════════════════════════ 12. R 팔 — 도치 자 단측 벌
+# 이 절이 지키는 것: «상은 없다»(단측), «정체가 서명에 박힌다», «못 쟀으면 즉사».
+
+def test_r_meta_inv_is_one_sided_never_positive():
+    """어떤 입력에서도 **0 보다 클 수 없다**. 상이 생기면 그 순간 argmax 사냥이 시작된다."""
+    for v in (-1e6, -10.0, -1.0, cr.INV_TAU - 1e-9, cr.INV_TAU, cr.INV_TAU + 1e-9,
+              1.0, 10.0, 1e6):
+        assert cr.r_meta_inv(v, 0) <= 0.0, v
+    # τ 이하는 정확히 0 (벌 없음 = 정직한 혼잣말의 탈출구)
+    assert cr.r_meta_inv(cr.INV_TAU, 0) == 0.0
+    assert cr.r_meta_inv(cr.INV_TAU - 5.0, 0) == 0.0
+
+
+def test_r_meta_inv_is_bounded_to_minus_one():
+    assert cr.r_meta_inv(cr.INV_TAU + 1e9, 0) == -1.0
+    assert cr.r_meta_inv(cr.INV_TAU + 1e9, 1) == -1.0     # 두 벌을 더해도 포화는 −1
+
+
+def test_r_meta_inv_scales_by_c_between_tau_and_tau_plus_c():
+    half = cr.INV_TAU + 0.5 * cr.INV_C
+    assert cr.r_meta_inv(half, 0) == pytest.approx(-0.5, abs=1e-9)
+
+
+def test_r_meta_inv_false_claim_penalises_on_its_own():
+    """G2. 도치 점수가 깨끗해도(τ 이하) 거짓 선언은 그것만으로 벌이다."""
+    assert cr.r_meta_inv(cr.INV_TAU - 5.0, 1) == pytest.approx(
+        -min(1.0, cr.INV_FALSE_CLAIM_PEN))
+
+
+def test_r_meta_inv_none_is_fail_loud_but_nan_is_fail_closed():
+    """None(못 쟀다)과 NaN(쟀는데 비유한)은 다른 사건이다 — r_osd 와 같은 규약."""
+    with pytest.raises(ValueError):
+        cr.r_meta_inv(None, 0)
+    assert cr.r_meta_inv(float("nan"), 0) == 0.0
+    # NaN 이어도 거짓 선언 벌은 그대로 간다(텍스트만 보는 판정이라 항상 정의된다)
+    assert cr.r_meta_inv(float("nan"), 1) < 0.0
+
+
+def test_r_meta_inv_rejects_bad_constants():
+    with pytest.raises(ValueError):
+        cr.r_meta_inv(0.0, 0, c=0.0)
+    with pytest.raises(ValueError):
+        cr.r_meta_inv(0.0, 0, c=-1.0)
+    with pytest.raises(ValueError):
+        cr.r_meta_inv(0.0, 0, tau=float("nan"))
+
+
+def test_arm_R_term_is_off_without_meta_or_format():
+    row = _row(inv_raw=cr.INV_TAU + 10.0, inv_false_claim=1)
+    on, c_on = cr.arm_reward("R", row, step=999)
+    assert c_on[cr.INV_TERM] == pytest.approx(-cr.TERMS[cr.INV_TERM]["weight"])
+    for kill in ({"emitted": 0}, {"format_ok": 0}):
+        r2 = dict(row); r2.update(kill)
+        _t, c2 = cr.arm_reward("R", r2, step=999)
+        assert c2[cr.INV_TERM] == 0.0, kill
+
+
+def test_arm_R_is_not_arm_A():
+    """«선언된 레버, 배선 0» 방지: 같은 행에서 R 과 A 의 총보상이 달라야 한다."""
+    row = _row(inv_raw=cr.INV_TAU + cr.INV_C, inv_false_claim=0)
+    a, _ = cr.arm_reward("A", row, step=999)
+    r, _ = cr.arm_reward("R", row, step=999)
+    assert r != a
+    assert r < a                                   # 벌만 주므로 항상 A 이하다
+
+
+def test_arm_R_missing_material_dies_loud():
+    row = _row()                                   # inv_raw 가 없다
+    with pytest.raises(KeyError):
+        cr.arm_reward("R", row, step=999)
+
+
+def test_inv_ruler_identity_is_in_the_arm_signature():
+    """12 칸 중 신호가 있는 칸은 하나뿐이다 — 셋 다 서명에 박혀야 «어느 자로 돌았나»가 남는다."""
+    sig = cr.arm_signature("R")
+    for frag in (f"scope={cr.INV_SCOPE}", f"form={cr.INV_FORM}", f"agg={cr.INV_AGG}",
+                 f"tau={cr.INV_TAU:g}", f"c={cr.INV_C:g}",
+                 f"fcpen={cr.INV_FALSE_CLAIM_PEN:g}"):
+        assert frag in sig, (frag, sig)
+    # 잠정값이면 '?' 가 붙어 로그가 그 사실을 숨기지 못한다(OSD_C_PROVISIONAL 규약)
+    assert ("?" in sig) == bool(cr.INV_TAU_PROVISIONAL)
+    # 다른 팔의 서명에는 한 조각도 안 들어간다(조건부 추가여야 팔 diff 의 연속성이 산다)
+    for arm in cr.ARM_SPECS:
+        if arm != "R":
+            assert "inv=" not in cr.arm_signature(arm), arm
