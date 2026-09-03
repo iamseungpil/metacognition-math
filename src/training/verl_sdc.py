@@ -1035,6 +1035,7 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
     from src.training import countdown_inv as _cdi
     from src.training import countdown_pmi as _cdp
     from src.training import countdown_rewards as _cdr
+    from src.training import countdown_selfcontrol as _cdsc
     from src.training import countdown_task as _cdt
 
     arm = str(getattr(getattr(self.config, "algorithm", None),
@@ -1176,7 +1177,16 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
         #   누출도 없으므로 "" 가 정직한 값이다(빈 식은 어떤 메타에도 안 들어 있다).
         r["final_expr"] = _cdt.extract_expr(text) or ""
         r["arm"] = arm
-        if "plan" in _cdr.ARM_SPECS[arm]["terms"]:      # ★0902 P 팔: next 첫수 해 생존 · 이행
+        _terms_i = _cdr.ARM_SPECS[arm]["terms"]
+        # ★0904 SC/SCg: 상태 조건부 메타 항(explore·explore_g·verify·early_cost)의
+        #   원재료는 `countdown_selfcontrol.sc_row`가 텍스트에서 직접 뽑는다(PMI/OSD/INV
+        #   와 달리 GPU forward 가 필요 없다 — 전부 정규식·완전열거 기반 순수 함수).
+        if {"explore", "explore_g", "verify", "early_cost"} & set(_terms_i):
+            r.update(_cdsc.sc_row(text, nums_col[i], int(target_col[i]), r["r_corr"],
+                                  _cdr.SC_K_STUCK, _cdr.SC_CONF_HI))
+        # ★explore_g 도 plan_ok(근거-진리, 완전열거)가 필요하다 — "plan" 항(PL 팔)과
+        #   같은 계산이므로 조건에 함께 넣는다(복제 금지 규약).
+        if {"plan", "explore_g"} & set(_terms_i):      # ★0902 P 팔: next 첫수 해 생존 · 이행
             r["plan_ok"], r["plan_followed"] = _cdr.plan_next(text, nums_col[i], int(target_col[i]))
 
     # ── ★수리(0904, 감사결함3): `emitted` 의 정의를 하나로 통일한다. ─────────────
@@ -1434,6 +1444,18 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
                 _log["cd/plan_ok_rate"] = sum(int(r.get("plan_ok", 0)) for r in _em) / max(1, len(_em))
                 _log["cd/plan_followed_rate"] = sum(int(r.get("plan_followed", 0)) for r in _em) / max(1, len(_em))
                 _log["cd/plan_hit_rate"] = sum(int(r.get("plan_ok", 0)) and int(r.get("plan_followed", 0)) for r in _em) / max(1, len(_em))
+            # ★0904 SC/SCg: 상태 조건부 습관의 발생률. `_countdown_sc_stats` 하나가
+            #   여기와 아래 TELEMETRY 블록에서 **같은 계산**을 하도록 재사용한다
+            #   (복제하면 두 로그의 숫자가 갈릴 수 있다).
+            if {"explore", "explore_g", "verify", "early_cost"} & set(_cdr.ARM_SPECS[arm]["terms"]):
+                _scw = _countdown_sc_stats(rows)
+                _log["cd/sc_stuck_rate"] = _scw["stuck_rate"]
+                _log["cd/sc_early_rate"] = _scw["early_rate"]
+                _log["cd/sc_hi_rate"] = _scw["hi_rate"]
+                _log["cd/sc_novel_rate"] = _scw["novel_rate"]
+                _log["cd/sc_checked_rate"] = _scw["checked_rate"]
+                _log["cd/sc_explore_hit_rate"] = _scw["explore_hit_rate"]
+                _log["cd/sc_verify_pos_rate"] = _scw["verify_pos_rate"]
             _log["cd/corr_rate"] = sum(int(r.get("r_corr", 0)) for r in rows) / max(1, len(rows))
             _log["cd/len_mean"] = sum(len(str(r.get("text", ""))) for r in rows) / max(1, len(rows))
             _wb.log(_log, step=step)
@@ -1543,12 +1565,26 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
         _resc = _countdown_rescue_stats(rows, nums_col, target_col)
         _rep.update(_resc)
         _rep["arith_in_meta"] = _cdr.arithmetic_in_meta_rate(rows)
+        # ★0904 SC/SCg — **측정만** 한다. ABORT_RULES 에는 안 넣는다(사전등록에 없는
+        #   중단 규칙을 여기서 새로 만들지 않는다는 지시). `check_abort` 는 미리 정한
+        #   여섯 지표만 읽으므로 `_rep["sc"]` 를 추가해도 중단 판정은 한 글자도 안 바뀐다
+        #   — TELEMETRY/[BLIND] 줄에 실려 사람이 보는 용도다.
+        if {"explore", "explore_g", "verify", "early_cost"} & set(_cdr.ARM_SPECS[arm]["terms"]):
+            _rep["sc"] = _countdown_sc_stats(rows)
         print(f"[COUNTDOWN][TELEMETRY] step={step} arm={arm} {_rep}", flush=True)
         print(f"[COUNTDOWN][RESCUE] step={step} arm={arm} "
               f"rescue={_resc['rescue_rate']:.3f} pre_had={_resc['pre_had_rate']:.3f} "
               f"never={_resc['never_rate']:.3f} attempts={_resc['n_attempts_mean']:.1f} "
               f"emit={_rep.get('emit_rate', float('nan')):.3f} "
               f"arith={_rep['arith_in_meta']:.3f}", flush=True)
+        if "sc" in _rep:
+            _scs = _rep["sc"]
+            print(f"[COUNTDOWN][SC] step={step} arm={arm} "
+                  f"stuck={_scs['stuck_rate']:.3f} early={_scs['early_rate']:.3f} "
+                  f"hi={_scs['hi_rate']:.3f} novel|stuck={_scs['novel_rate']:.3f} "
+                  f"checked|hi={_scs['checked_rate']:.3f} "
+                  f"explore_hit|stuck={_scs['explore_hit_rate']:.3f} "
+                  f"verify_pos|hi={_scs['verify_pos_rate']:.3f}", flush=True)
         _all = _cdr.check_abort(_rep)
         # ★두 상태를 절대 섞지 않는다.
         #   abort  = 지표를 쟀고 **선을 넘었다** → 연속 위반이면 학습을 죽인다.
@@ -3019,6 +3055,35 @@ def _countdown_rescue_stats(rows, nums_col, target_col) -> dict:
     return {"rescue_rate": resc / d, "pre_had_rate": pre / d, "never_rate": never / d,
             "rescue_n": resc, "rescue_denom": n,
             "n_attempts_mean": (sum(att) / len(att)) if att else float("nan")}
+
+
+def _countdown_sc_stats(rows) -> dict:
+    r"""SC/SCg 상태 조건부 습관의 발생률 — **측정 전용**(사전등록에 새 중단 규칙을 안 만든다).
+
+    `rows` 는 이미 `countdown_selfcontrol.sc_row` 가 채운 필드(stuck·early·hi·novel·
+    checked·dec_redirect·dec_verify·followed)를 가진다 — 여기서 다시 파싱하지 않는다.
+    조건부 비율(novel|stuck 등)은 그 상태에 실제로 놓인 행에서만 나눠 "막힌 행 중
+    몇 %가 새 계열로 갔나"를 직접 답한다 — 배치 전체로 나누면 stuck/hi 자체의
+    희소성에 가려 습관의 실제 발생률이 왜곡된다.
+    """
+    n = max(1, len(rows))
+    stuck_rows = [r for r in rows if int(r.get("stuck", 0))]
+    hi_rows = [r for r in rows if int(r.get("hi", 0))]
+    return {
+        "stuck_rate": sum(int(r.get("stuck", 0)) for r in rows) / n,
+        "early_rate": sum(int(r.get("early", 0)) for r in rows) / n,
+        "hi_rate": sum(int(r.get("hi", 0)) for r in rows) / n,
+        "novel_rate": (sum(int(r.get("novel", 0)) for r in stuck_rows) / max(1, len(stuck_rows))),
+        "checked_rate": (sum(int(r.get("checked", 0)) for r in hi_rows) / max(1, len(hi_rows))),
+        "explore_hit_rate": (
+            sum(1 for r in stuck_rows if int(r.get("dec_redirect", 0))
+                and int(r.get("novel", 0)) and int(r.get("followed", 0)))
+            / max(1, len(stuck_rows))),
+        "verify_pos_rate": (
+            sum(1 for r in hi_rows if int(r.get("dec_verify", 0)) and int(r.get("checked", 0)))
+            / max(1, len(hi_rows))),
+        "n_stuck": len(stuck_rows), "n_hi": len(hi_rows), "n": len(rows),
+    }
 
 
 def _countdown_populate_token_rewards(data, algo_config):
@@ -5003,30 +5068,53 @@ def main(config):
         # For this veRL workload we only need a local head on the same node, so
         # pin Ray bootstrap to loopback and skip the dashboard to reduce
         # startup fragility.
+        # ★0904 SC/SCg: `_resolved_arith_threshold`/`get_abort_patience`
+        #   (countdown_rewards.py) 는 `os.environ.get(...) is None` 일 때만 기본값을
+        #   쓰고, 그 외엔 `float()`/`int()` 로 파싱한다 — 그래서 **미설정과 빈 문자열은
+        #   다르다**. 빈 문자열을 무조건 심으면 "미설정"이 파싱 에러로 바뀐다. 실제로
+        #   설정된 경우에만 조건부로 채운다(COUNTDOWN_INV·COUNTDOWN_OSD 처럼 boolean
+        #   플래그 성격의 값은 미설정=기본 "0"이 안전해 그대로 둔다).
+        _local_ray_env_vars = {
+            "TOKENIZERS_PARALLELISM": "true",
+            "NCCL_DEBUG": "WARN",
+            "PYTHONPATH": os.environ.get("PYTHONPATH", "/scratch/metacognition"),
+            # ★2026-08-21: Ray 워커는 드라이버의 임의 환경변수를 **상속하지 않는다**.
+            #   여기에 실은 것만 전달된다. `mode` 는 모듈 변수라 워커에 안 가고
+            #   (R16 이 기록한 동일 함정), 그 결과 COUNTDOWN 분기가 통째로 죽어
+            #   여섯 팔이 전부 countdown 보상 없이 돌 뻔했다(실측 5스텝, WIRED 0건).
+            "SDC_MODE_ENV": os.environ.get("SDC_MODE_ENV", ""),
+            "VERL_DISABLE_FLASH_XENT": os.environ.get("VERL_DISABLE_FLASH_XENT", "1"),
+            "TRITON_CACHE_DIR": os.environ.get("TRITON_CACHE_DIR", ""),
+            # ★검수 0831: 측정모드 스위치(위 RAY_ADDRESS 경로와 같은 이유).
+            "COUNTDOWN_INV": os.environ.get("COUNTDOWN_INV", "0"),
+            # ★0904: 위 줄과 같은 이유로 실어야 한다 — `COUNTDOWN_OSD` 를 읽는 곳
+            #   (`_compute_countdown_arm_stash`)이 전부 Ray 워커 프로세스 안에서 돈다.
+            #   드라이버에서만 export 하면 COUNTDOWN_INV 사고와 같은 모양으로 조용히
+            #   무시된다. 이 값은 boolean 플래그라 미설정 기본값 "0" 을 그대로 심는다.
+            "COUNTDOWN_OSD": os.environ.get("COUNTDOWN_OSD", "0"),
+        }
+        for _k in ("COUNTDOWN_ABORT_ARITH", "COUNTDOWN_ABORT_PATIENCE"):
+            if os.environ.get(_k) is not None:
+                _local_ray_env_vars[_k] = os.environ[_k]
+
         ray.init(
             include_dashboard=False,
             _node_ip_address="127.0.0.1",
             _system_config={"agent_register_timeout_ms": 600000},  # ★0823: raylet 이 15초만 기다리다 크래시(포트파일은 7초 뒤 생성). 공유호스트 부하로 에이전트 기동이 22초 지연됨. RAY_* 환경변수로는 안 바뀌어 여기서 직접 넘긴다.
             object_store_memory=20_000_000_000,  # ★0823: 기본은 /dev/shm 에 200GB mmap(store_runner.cc:50). 공유호스트 부하에서 이 mmap 이 기동을 지연시켜 raylet 의 하드코딩 30초 포트 대기를 넘긴다. verl 은 20GB 면 충분하다.
+            # ★0904: 여러 잡이 같은 박스에서 이 로컬 head 경로로 동시에 돈다(SC/SCg
+            #   4-GPU 배치 등). Ray 의 기본 임시디렉토리(/tmp/ray)는 프로세스가 아니라
+            #   **호스트** 단위라, 두 잡이 겹치면 소켓·플라즈마 스토어 경로가 충돌한다.
+            #   `RAY_TMPDIR`(activate_simplerl.sh 가 잡별로 다르게 둘 수 있다)이 있으면
+            #   그쪽으로 분리하고, 없으면 기존 기본값(None → Ray 자체 기본)을 그대로 쓴다.
+            _temp_dir=os.environ.get("RAY_TMPDIR") or None,
             # propagate PYTHONPATH to Ray workers so hydra.utils.instantiate can
             # import custom _target_ classes (e.g. the E.9 BCIConfAgentLoop) by
             # FQDN inside the rollout workers. Harmless for every other mode (the
             # repo is already importable); removes the one registration unknown.
-            runtime_env={"env_vars": {
-                "TOKENIZERS_PARALLELISM": "true",
-                "NCCL_DEBUG": "WARN",
-                "PYTHONPATH": os.environ.get("PYTHONPATH", "/scratch/metacognition"),
-                # ★2026-08-21: Ray 워커는 드라이버의 임의 환경변수를 **상속하지 않는다**.
-                #   여기에 실은 것만 전달된다. `mode` 는 모듈 변수라 워커에 안 가고
-                #   (R16 이 기록한 동일 함정), 그 결과 COUNTDOWN 분기가 통째로 죽어
-                #   여섯 팔이 전부 countdown 보상 없이 돌 뻔했다(실측 5스텝, WIRED 0건).
-                "SDC_MODE_ENV": os.environ.get("SDC_MODE_ENV", ""),
-                "VERL_DISABLE_FLASH_XENT": os.environ.get("VERL_DISABLE_FLASH_XENT", "1"),
-                "TRITON_CACHE_DIR": os.environ.get("TRITON_CACHE_DIR", ""),
-                # ★검수 0831: 측정모드 스위치(위 RAY_ADDRESS 경로와 같은 이유).
-                "COUNTDOWN_INV": os.environ.get("COUNTDOWN_INV", "0"),
-            }},
+            runtime_env={"env_vars": _local_ray_env_vars},
         )
+
     ray.get(main_task.remote(config))
 
 

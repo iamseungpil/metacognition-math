@@ -82,7 +82,9 @@ __all__ = [
     # 보상
     "compute_phat", "compute_phat_loo", "sign_of",
     "r_gate", "r_meta_pos", "r_meta_mul", "r_meta_ctx", "r_len", "r_meta_floor",
-    "r_osd",
+    "r_osd", "plan_next", "plan_followed",
+    "SC_K_STUCK", "SC_CONF_HI", "W_EXPLORE", "W_VERIFY", "W_EARLY",
+    "r_explore", "r_explore_g", "r_verify", "r_early",
     "OSD_TERM", "OSD_C", "OSD_C_PROVISIONAL", "OSD_W_MAX", "OSD_LEAK_NGRAM",
     "INV_TERM", "INV_SCOPE", "INV_FORM", "INV_AGG", "INV_TAU", "INV_C",
     "INV_TAU_PROVISIONAL", "INV_MIN_PROSE_TOK", "INV_FALSE_CLAIM_PEN", "r_meta_inv",
@@ -128,6 +130,26 @@ META_FLOOR = 0.02   # 공통. 처치 아님. 메타를 냈다는 사실 자체�
 W_META = 1.0
 W_GATE = 1.0
 W_LEN = 1.0
+
+# ── SC(자기제어) / SCg 팔 — SC_DESIGN.md(2026-09-04) ────────────────────────────
+# 왜 새 팔인가. B~H·OSD·R 은 전부 "메타가 정답과 정렬됐는가(=근거-진리 또는 PMI)"를
+# 재는데, 그 잣대는 모델 자신의 **상태**(막혔는가·과신했는가)를 안 본다. SC 는 응답
+# **프리픽스**(메타 이전 텍스트)에서 관측 가능한 상태만으로 두 조건부 습관을 겨냥한다:
+#   ① 막히면(prefix 안 시도 수 ≥ K_S) 새 계열로 갈아타는가(decision=redirect ∧
+#      다음 쌍이 프리픽스에 없던 새 결합 ∧ 실제로 그 쌍을 이었는가) → `explore`
+#   ② 과신하면(confidence ≥ CONF_HI) 메타 뒤에 실제 재계산(참인 등식)을 보였는가,
+#      그리고 verify 라 선언해놓고 안 쟀으면서 틀렸으면 벌 → `verify`
+#   ③ 시작하자마자(prefix 시도 0) 메타부터 내는 것은 비용 → `early_cost`
+# 근거-진리(완전 열거로 next 가 해를 살리는지)는 SC 에서 **안 쓴다** — SC 는 모델
+# 자신의 신호만으로 충분한지를 보는 대조다. SCg 는 `explore` 에 `plan_ok`(근거-진리)를
+# 곱해 "내부 신호만으로 충분한가"의 대조점을 만든다(SC_DESIGN.md §행 특징).
+SC_K_STUCK = 4       # gs0 분포에서 사전 고정할 후보값 중 하나(설계 §행 특징). 발사 전
+                     # 실측으로 교체될 수 있다 — 그때는 이 상수 한 줄만 바뀐다.
+SC_CONF_HI = 0.8     # 과신 임계. INV_TAU 류와 달리 confidence 는 [0,1] 스칼라라
+                     # 분위수 실측 없이도 "0.8 이상"이 사전등록된 임계로 고정 가능하다.
+W_EXPLORE = 1.0      # SC_DESIGN.md: w_x = 1.0
+W_VERIFY = 0.5       # SC_DESIGN.md: w_v = 0.5
+W_EARLY = 0.25       # SC_DESIGN.md: w_e = 0.25
 
 # ── OSD (Outcome-Signed Surprisal Drop) — PMI-shift 의 대체 항 (2026-08-25) ──
 # 왜 새 항인가. PMI-shift 는 오프라인 판별력 **AUC 0.52(=우연)** 로 측정돼 폐기됐다.
@@ -266,6 +288,12 @@ TERM_MAX_ABS: dict = {
     # r_meta_inv 가 이미 [−1, 0] 이라 정규화는 항등이다. `.get(t, 1.0)` 기본값에 기대지
     # 않고 **명시한다**(osd 와 같은 이유).
     "meta_inv":   1.0,   # [−1, 0] (정의상)
+    # ── SC/SCg — 전부 함수 정의상 이미 [-1,1] 안이다. `.get(t, 1.0)` 기본값에 기대지
+    #   않고 명시한다(osd·meta_inv 와 같은 이유 — 나중에 항이 조용히 스케일을 잃지 않게).
+    "explore":    1.0,   # stuck×dec_redirect×novel×followed ∈ {0,1}
+    "explore_g":  1.0,   # explore × plan_ok ∈ {0,1}
+    "verify":     1.0,   # hi×(dec_verify×checked − (1−checked)×1[y<0]) ∈ [-1,1]
+    "early_cost": 1.0,   # −early ∈ {-1,0}
 }
 
 # sign(adv_corr) == 0 일 때의 정책. 아래 `r_meta_mul` 주석 참조.
@@ -625,6 +653,64 @@ def r_meta_floor(emitted) -> float:
     return 1.0 if _bool01(emitted) else 0.0
 
 
+# ── SC(자기제어) / SCg 항 — `countdown_selfcontrol.sc_row()` 가 채운 행 필드를 읽는다.
+#   ★다른 meta 항(r_meta_pos 등)과 달리 **row 하나를 통째로** 받는다. 이유: SC 의
+#   재료는 pmi 같은 스칼라 하나가 아니라 stuck·decision·novel·followed·checked·y 처럼
+#   여러 불리언/스칼라의 조합이고, 그 조합 자체가 「상태 조건부 습관」의 정의다.
+#   함수 시그니처를 (row) 하나로 두면 TERMS["needs"] 의 키 목록과 함수 본문이 항상
+#   같은 이름을 가리켜, 이름이 갈리는 사고(0825 meta_osd/osd)를 원천적으로 막는다.
+
+def r_explore(row: Mapping) -> float:
+    r"""SC 팔. explore = stuck × 1[decision=redirect] × novel × followed.  범위 {0,1}.
+
+    막혔는데(stuck) redirect 를 선언하고, 그 next 가 프리픽스에 없던 새 쌍(novel)이며,
+    실제로 그 쌍을 이었다(followed) — 넷이 전부 참일 때만 1이다. 어느 하나가 빠지면
+    "말만 redirect"이고 그건 이 항이 겨냥하는 습관이 아니다.
+    """
+    return float(_bool01(row["stuck"]) * _bool01(row["dec_redirect"])
+                * _bool01(row["novel"]) * _bool01(row["followed"]))
+
+
+def r_explore_g(row: Mapping) -> float:
+    r"""SCg 팔. explore_g = explore × plan_ok(근거-진리, 완전열거).  범위 {0,1}.
+
+    SC 의 `explore`(모델 자기 신호만)에 "그 next 가 실제로 해를 살리는가"(완전열거
+    `_solvable`)를 곱한다 — SC_DESIGN.md 의 대조 취지: "근거-진리 없이 내부 신호만으로
+    충분한가"를 SC 대 SCg 로 검정한다. `plan_ok` 는 `plan_next()`(=PL 팔이 이미 쓰는
+    같은 완전열거)가 채운다 — 여기서 다시 계산하지 않는다(복제 금지 규약).
+    """
+    return float(r_explore(row) * _bool01(row["plan_ok"]))
+
+
+def r_verify(row: Mapping) -> float:
+    r"""SC/SCg 팔. verify = hi × ( dec_verify×checked − (1−checked)×1[y<0] ).  범위 [-1,1].
+
+    hi(과신, confidence≥CONF_HI) 가 아니면 0 — 확신이 낮을 때는 이 항이 겨냥하는
+    "과신했으면 검산해라"가 애초에 적용 대상이 아니다. hi 인데:
+      dec=verify ∧ checked  → +1  (확신하고 실제로 재계산까지 했다 — 상)
+      checked 아님 ∧ 오답(y=-1) → −1  (확신에 차 놓고 검산도 안 하고 틀렸다 — 벌)
+      그 외(예: dec=verify 인데 checked=0, 또는 checked=1 인데 오답) → 0
+    ★`y` 는 `r_corr`(행 자신의 채점 결과)라 0 이 될 수 없다 — `r_osd` 와 같은 이유로
+      sign_of()==0 문제가 없다.
+    """
+    if not _bool01(row["hi"]):
+        return 0.0
+    checked = _bool01(row["checked"])
+    wrong = 1 if float(row["y"]) < 0 else 0
+    dec_v = _bool01(row["dec_verify"])
+    val = float(dec_v * checked - (1 - checked) * wrong)
+    return max(-1.0, min(1.0, val))
+
+
+def r_early(row: Mapping) -> float:
+    r"""SC/SCg 팔. early_cost = −early.  범위 {-1,0}.
+
+    early = 1[프리픽스 시도 수 == 0] — 시작하자마자(아무것도 안 해보고) 메타부터
+    내는 것에 대한 비용. §18 실측(SC_DESIGN.md)에서 해로움이 확인된 패턴이다.
+    """
+    return float(-_bool01(row["early"]))
+
+
 def warmup_scale(step, warmup_steps: int = 20) -> float:
     """0→1 선형 워밍업. step 0 에서 0.0, step ≥ warmup_steps 에서 1.0.
 
@@ -679,6 +765,19 @@ TERMS: dict[str, dict] = {
     #   경계가 형식으로 정의되므로 형식이 깨진 행의 inv 는 다른 것을 잰 값이다.
     "meta_inv": {"needs": ("emitted", "inv_raw", "inv_false_claim", "format_ok"),
                  "warmup": True, "weight": W_META},
+    # ── SC/SCg. needs 는 `countdown_selfcontrol.sc_row()` 가 채우는 필드명 그대로다
+    #   (pmi_open 류 원값이 아니라 이미 조합된 불리언/스칼라 — r_explore 등 참조).
+    "explore":    {"needs": ("stuck", "dec_redirect", "novel", "followed"),
+                   "warmup": True, "weight": W_EXPLORE},
+    "explore_g":  {"needs": ("stuck", "dec_redirect", "novel", "followed", "plan_ok"),
+                   "warmup": True, "weight": W_EXPLORE},
+    "verify":     {"needs": ("hi", "dec_verify", "checked", "y"),
+                   "warmup": True, "weight": W_VERIFY},
+    # ★early_cost 는 워밍업을 **안 받는다**(meta_floor 와 같은 이유, 명시적 결정):
+    #   이것은 "메타를 켜는 보상"이 아니라 "너무 이른 메타에 매기는 비용(바닥형 가드)"
+    #   이다. 워밍업을 받으면 초반 스텝에 그 가드가 꺼진 채로 조기발화 습관이 굳을 수
+    #   있고, 처음부터 걸려 있어야 "시작하자마자 메타부터 내지 마라"가 스텝 0부터 성립한다.
+    "early_cost": {"needs": ("early",), "warmup": False, "weight": W_EARLY},
 }
 
 _COMMON = ("corr", "format", "meta_floor")   # 공통 = 처치 아님. 여덟 팔 전부 동일.
@@ -722,6 +821,20 @@ ARM_SPECS: dict[str, dict] = {
     #   그 칸은 `reverse_ruler.V1_prose_min` 과 ρ=0.974 로 같은 자다.
     "R": {"label": "inv", "terms": _COMMON + ("meta_inv",), "meta_form": "new",
           "note": "★도치 단측 벌. −clip(max(0,inv−τ)/c + P·거짓선언, 0, 1). 상 없음."},
+    # ★SC/SCg (2026-09-04, SC_DESIGN.md): 「막히면 탐색(새 계열 redirect), 과신하면
+    #   실제 재계산(verify)」 을 모델 **자신의 신호**(프리픽스 시도수·confidence·decision)
+    #   로 보상한다. 근거-진리(완전열거)는 SC 에서 안 쓴다. data = `_4num_p3`(P3 프롬프트,
+    #   ruled_out/next 구조 — PL 팔과 같은 프롬프트 변형).
+    "SC": {"label": "selfctrl", "terms": _COMMON + ("explore", "verify", "early_cost"),
+           "meta_form": "new",
+           "note": "★자기제어. 막힘→redirect+novel+followed(explore) · "
+                   "과신→verify+checked(verify) · 조기메타 비용(early_cost). "
+                   "근거-진리 없음 — 내부 신호만. 데이터 _4num_p3."},
+    # ★SCg = SC 의 대조점. explore 에만 plan_ok(근거-진리, PL 팔과 같은 완전열거)를
+    #   곱한다 — 「내부 신호만으로 충분한가」를 SC 대 SCg 로 검정한다(SC_DESIGN.md).
+    "SCg": {"label": "selfctrl_g", "terms": _COMMON + ("explore_g", "verify", "early_cost"),
+            "meta_form": "new",
+            "note": "★SC + 근거-진리 대조. explore_g = explore × plan_ok. 데이터 _4num_p3."},
 }
 
 
@@ -762,6 +875,12 @@ def arm_signature(arm: str) -> str:
         extra += (f"|inv=scope={INV_SCOPE},form={INV_FORM},agg={INV_AGG},"
                   f"tau={INV_TAU:g}{_q},c={INV_C:g}{_q},"
                   f"fcpen={INV_FALSE_CLAIM_PEN:g},minprose={INV_MIN_PROSE_TOK:d}")
+    # ★SC/SCg 정체 — K_S(막힘 임계)·conf_hi(과신 임계)·세 항의 무게가 이 팔의 전부다.
+    #   하나라도 안 박으면 "어느 K_S 로 돌았나"가 로그에서 사라진다(OSD_C/INV_TAU 와
+    #   같은 규약). 무게는 위 `parts` 루프가 이미 `t@weight` 로 찍으므로 여기서는
+    #   `parts` 가 안 담는 두 임계값만 더한다.
+    if {"explore", "explore_g", "verify", "early_cost"} & set(spec["terms"]):
+        extra += f"|sc_k={SC_K_STUCK:d},sc_conf_hi={SC_CONF_HI:g}"
     extra += f"|norm={'on' if NORMALIZE_TERMS else 'off'}"
     # ★수리(0904, 감사결함5): P0-보정 임계값을 오버라이드했으면 서명에 박는다 —
     #   안 박으면 "이 로그가 어느 중단 임계값 아래서 났는가"를 사후에 확인할 수 없다.
@@ -866,6 +985,22 @@ def arm_reward(
         raw[INV_TERM] = (r_meta_inv(row["inv_raw"], row["inv_false_claim"])
                          if (emitted and _bool01(row["format_ok"])) else 0.0)
 
+    # ── SC/SCg. explore·explore_g·verify 는 decision/confidence 가 원재료라 미발화면
+    #   정의상 이미 0(decision=None→dec_redirect·dec_verify=0, confidence=None→hi=0)
+    #   이지만, 다른 meta 항과 같은 관례(if emitted else 0.0)로 명시해 둔다 — 그래야
+    #   "emitted 게이팅을 빠뜨렸다"는 감사 질문에 코드로 바로 답할 수 있다.
+    if "explore" in terms:
+        raw["explore"] = r_explore(row) if emitted else 0.0
+    if "explore_g" in terms:
+        raw["explore_g"] = r_explore_g(row) if emitted else 0.0
+    if "verify" in terms:
+        raw["verify"] = r_verify(row) if emitted else 0.0
+    if "early_cost" in terms:
+        # ★emitted 로 게이팅하지 않는다(명시적 결정). `early`는 "메타가 없었다"가
+        #   아니라 "프리픽스 시도 수가 0"이라는 뜻이고, 이 비용은 meta_floor 처럼
+        #   워밍업도 없이 스텝 0부터 늘 걸려 있어야 하는 바닥형 가드다(TERMS 주석 참조).
+        raw["early_cost"] = r_early(row)
+
     comps: dict[str, float] = {}
     for t, v in raw.items():
         w = float(TERMS[t]["weight"])
@@ -961,6 +1096,22 @@ def _multiset_has_pair(nums, a: int, b: int) -> bool:
     return c.get(a, 0) >= 1 and c.get(b, 0) >= 1
 
 
+def plan_followed(after_text: str, nums, a: int, b: int) -> int:
+    r"""메타 **뒤** 첫 시도가 (a,b) 를 실제로 결합하는가. 0/1.
+
+    ★`plan_next` 에서 분리한 헬퍼(SC_DESIGN.md 배선 요구): `plan_next` 는 "next 가
+    해를 살리는가"(완전열거 `_solvable`)와 "실제로 따라갔는가"를 **함께** 계산해서
+    반환하는데, `countdown_selfcontrol.sc_row` 의 `followed` 는 완전열거 없이 이
+    "따라갔는가"만 필요하다(SC 는 근거-진리를 안 쓴다 — SCg 만 `plan_ok` 를 따로
+    붙인다). 완전열거를 매번 다시 도는 대신 이 부분만 떼어 두 자리에서 같은 함수를
+    부른다 — 복제하면 "따라갔다"의 정의가 두 곳에서 갈릴 수 있다.
+    """
+    first = _PAIR_RE.search(after_text or "")
+    return int(bool(first)
+               and {int(first.group(1)), int(first.group(3))} == {int(a), int(b)}
+               and _multiset_has_pair(nums, a, b))
+
+
 def plan_next(text: str, nums, target: int) -> tuple[int, int]:
     """(plan_ok, plan_followed).
 
@@ -994,10 +1145,7 @@ def plan_next(text: str, nums, target: int) -> tuple[int, int]:
     new = _apply_move(nums, a, o, b)
     ok = int(new is not None and _solvable(new, int(target)))
     after = text[int(m.get("end", 0)):] if m.get("end") else text.split("</meta>", 1)[-1]
-    first = _PAIR_RE.search(after)
-    followed = int(bool(first)
-                   and {int(first.group(1)), int(first.group(3))} == {a, b}
-                   and _multiset_has_pair(nums, a, b))
+    followed = plan_followed(after, nums, a, b)
     return ok, followed
 
 
@@ -1407,7 +1555,8 @@ def component_means(components: Sequence[Mapping[str, float]], *, dead_eps: floa
 # ★새 메타 항은 **반드시** 여기 등록한다. 미등록 항은 크기계기·그룹분산분해·AUC 에서
 #   통째로 사라져 "쟀는데 0" 과 "안 쟀다" 가 구별되지 않는다.
 META_TERMS: tuple = ("meta_pos", "meta_mul", "meta_ctx", "gate", "len", "osd",
-                     "meta_pos_full", "plan", INV_TERM)
+                     "meta_pos_full", "plan", INV_TERM,
+                     "explore", "explore_g", "verify", "early_cost")
 
 
 def rmeta_magnitude(components: Sequence[Mapping[str, float]],

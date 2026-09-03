@@ -249,7 +249,9 @@ SPEC_TABLE = {   # 사양 §보상 을 손으로 옮긴 것. 코드가 아니라
 # ★사양의 여덟 팔 + 그 뒤에 **추가된** 처치 팔. 추가는 사양 개정이 아니라 확장이므로
 #   여덟 팔의 정체는 위 SPEC_TABLE 이 계속 원본으로 지킨다.
 #   N0 = 맨 GRPO 기준선(메타 자체가 없다) · PL = 계획 항(근거-진리) 처치.
-ADDED_ARMS = ["OSD", "P", "R", "N0", "PL"]
+#   SC/SCg = 자기제어 팔(2026-09-04, SC_DESIGN.md) — 상태 조건부 메타(막힘→탐색,
+#   과신→검산) 보상. SCg 는 SC 의 explore 에 근거-진리(plan_ok)를 곱한 대조점.
+ADDED_ARMS = ["OSD", "P", "R", "N0", "PL", "SC", "SCg"]
 
 
 def test_arm_specs_match_spec_table():
@@ -295,8 +297,9 @@ def test_F_is_C_plus_E():
 def test_warmup_applies_to_meta_and_gate_only():
     warmed = {t for t, cfg in cr.TERMS.items() if cfg["warmup"]}
     assert warmed == {"meta_pos", "meta_mul", "meta_ctx", "gate", "len", "osd",
-                      "meta_pos_full", "plan", cr.INV_TERM}
-    for t in ("corr", "format", "meta_floor"):
+                      "meta_pos_full", "plan", cr.INV_TERM,
+                      "explore", "explore_g", "verify"}
+    for t in ("corr", "format", "meta_floor", "early_cost"):
         assert not cr.TERMS[t]["warmup"]
 
 
