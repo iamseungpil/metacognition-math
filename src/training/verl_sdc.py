@@ -46,12 +46,16 @@ def _dcpo_install_faulthandler(tag: str):  # pragma: no cover — node-only diag
     sec = os.environ.get("DCPO_FAULTHANDLER_SEC")
     if not sec:
         return
+    # ★수리(0904, 감사결함9): `/scratch` 하드코딩 — 노드에 `/scratch` 가 없는 환경
+    # (로컬 개발·다른 클러스터)에서 이 진단이 무조건 실패했다. SDC_LOG_DIR 로
+    # 오버라이드할 수 있게 하고, 기본값은 기존 동작과 바이트 동일(`/scratch/logs`).
+    log_dir = os.environ.get("SDC_LOG_DIR", "/scratch/logs")
     try:
-        os.makedirs("/scratch/logs", exist_ok=True)
-        fh = open(f"/scratch/logs/faulthandler_{tag}.log", "a", buffering=1)
+        os.makedirs(log_dir, exist_ok=True)
+        fh = open(f"{log_dir}/faulthandler_{tag}.log", "a", buffering=1)
         faulthandler.dump_traceback_later(int(sec), repeat=True, file=fh)
         print(f"[DCPO] faulthandler self-dump every {sec}s -> "
-              f"/scratch/logs/faulthandler_{tag}.log", flush=True)
+              f"{log_dir}/faulthandler_{tag}.log", flush=True)
     except Exception as _e:
         print(f"[DCPO] faulthandler setup skipped ({tag}): {_e}", flush=True)
 
@@ -1106,6 +1110,7 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
 
     # ── PMI-shift. 평문 <meta> 토큰 스팬 + 증인식/연산자교체오답의 발산 토큰. ──────
     #    여기서만 GPU 를 쓴다(동결 ref forward). config 위반은 삼키지 않고 즉사한다.
+    _pmi_terms_needed = {"meta_pos", "meta_mul", "meta_ctx"} & set(_cdr.ARM_SPECS[arm]["terms"])
     if "meta_pos_full" in _cdr.ARM_SPECS[arm]["terms"]:
         # ★P 팔: 같은 4n 팔 배치에서 «전체 스팬 평균» PMI 를 읽는 변형 스코어러.
         from src.training import countdown_pmi_full as _cdpf   # noqa: PLC0415
@@ -1115,23 +1120,32 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
             prompt_texts=prompt_texts,
             response_texts=list(decoded_responses),
             witnesses=witnesses, decoys=decoys, step=step)
-    else:
+    elif _pmi_terms_needed:
         rows, diag = _cdp.score_pmi_shift(
             tokenizer=self.tokenizer,
             trainer=_ACTIVE_SDC_CONTEXT.get("trainer", None),
             prompt_texts=prompt_texts,
             response_texts=list(decoded_responses),
             witnesses=witnesses, decoys=decoys, step=step)
+    else:
+        # ★수리(0904, 감사결함6·계산 정합): meta_pos/meta_mul/meta_ctx 어느 것도
+        #   쓰지 않는 팔(A/N0/E/G/H/OSD/PL/R…)은 증인·오답 대조 ref forward 가 애초에
+        #   필요 없다 — 그 결과(pmi_open/pmi_close)를 어떤 항도 읽지 않는다.
+        #   그런데도 매 스텝 `score_pmi_shift` 를 그대로 돌리면, 쓰이지도 않는 GPU
+        #   forward 를 발화 행마다 문다("계산량이 팔 정체와 안 맞는다"는 감사 결함).
+        #   `empty_rows`/`empty_diag` 는 `score_pmi_shift` 가 쓰는 것과 **같은 키**를
+        #   가진 자리표시자라 아래 로직(`emitted` 재정의·WIRED 로그 등)이 팔에 따라
+        #   분기하지 않는다.
+        rows, diag = _cdp.empty_rows(bs), _cdp.empty_diag(bs)
 
     # ★B3(감사 0821): ref 스코어링이 실패하면 PMI 가 전부 NaN 이 되고, NaN 은
     #   `_pmi_shift_reward` 에서 fail-closed 로 0.0 이 된다 ⇒ 메타 항이 **조용히 사라져**
     #   B≡A · C≡A · F≡E 가 되고 `[COUNTDOWN][WIRED]` 는 정상으로 보인다. 이 모드가
     #   막으려던 바로 그 실패(«선언된 레버, 배선 0»)이므로 여기서 즉사시킨다.
-    _pmi_terms = {"meta_pos", "meta_mul", "meta_ctx"} & set(_cdr.ARM_SPECS[arm]["terms"])
-    if diag.get("ref_error") and _pmi_terms:
+    if diag.get("ref_error") and _pmi_terms_needed:
         raise RuntimeError(
             f"[COUNTDOWN] arm={arm} step={step}: PMI ref 스코어링 실패 "
-            f"({diag['ref_error']}) — {sorted(_pmi_terms)} 항이 무음 0 이 되어 "
+            f"({diag['ref_error']}) — {sorted(_pmi_terms_needed)} 항이 무음 0 이 되어 "
             f"이 팔이 A 팔과 같아진다. 조용히 진행하지 않는다.")
 
     _pmi_full_terms = {"meta_pos_full"} & set(_cdr.ARM_SPECS[arm]["terms"])
@@ -1165,6 +1179,30 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
         if "plan" in _cdr.ARM_SPECS[arm]["terms"]:      # ★0902 P 팔: next 첫수 해 생존 · 이행
             r["plan_ok"], r["plan_followed"] = _cdr.plan_next(text, nums_col[i], int(target_col[i]))
 
+    # ── ★수리(0904, 감사결함3): `emitted` 의 정의를 하나로 통일한다. ─────────────
+    #   위에서 `rows`(PMI 경로 또는 그 자리표시자)가 채운 `emitted` 는 "증인/오답
+    #   대조식을 만들 수 있는 <meta> 토큰 스팬이 있었나"를 뜻한다 — 빈 `<meta></meta>`
+    #   도 스팬만 있으면 emitted=1 이다(`countdown_pmi.build_pmi_arms`). 그런데
+    #   `arm_reward`·게이팅(phat)·중단조건(`emit_rate`)·wandb 로그가 전부 "emitted"
+    #   라는 **이름 하나**를 읽는다 — 그 이름이 실제로 뜻하는 바가 자리에 따라
+    #   갈리면 "발화율" 숫자가 무엇을 쟀는지 사후에 확정할 수 없다("무효 레버" 부류의
+    #   실패). `countdown_rewards.parse_meta` 는 "신뢰도와 decision 을 **둘 다** 가진
+    #   완결된 메타를 실제로 냈나"를 본다 — 사양·프롬프트·나머지 텔레메트리
+    #   (meta_form_ok, arithmetic_in_meta_rate 등)가 쓰는 것과 같은 정의다.
+    #   여기서 그 정의를 유일한 것으로 못박는다. PMI 쪽 emitted 는 스팬 탐색에만
+    #   쓰고 버린다(pmi_open/close 자체는 그대로 둔다 — 별개의 값이다).
+    _meta_form = _cdr.ARM_SPECS[arm]["meta_form"]
+    _emit_disagree = 0
+    for r in rows:
+        _pm_emitted = 0 if _meta_form == "none" else int(
+            _cdr.parse_meta(r.get("text") or "", _meta_form)["emitted"])
+        if int(r.get("emitted", 0)) != _pm_emitted:
+            _emit_disagree += 1
+        r["emitted"] = _pm_emitted
+    if _emit_disagree:
+        print(f"[COUNTDOWN][EMIT-DEFN] step={step} arm={arm} "
+              f"pmi_vs_parse_meta_disagree={_emit_disagree}/{len(rows)}", flush=True)
+
     # ── OSD (Outcome-Signed Surprisal Drop) — «메타 제거 문맥» Δcert. ─────────────
     #   PMI 경로와 **병렬**이다. 위의 score_pmi_shift 는 한 글자도 바뀌지 않았고,
     #   여기서는 별도 배치(행당 2팔) + 별도 ref 호출을 쓴다 — PMI 의 `base=4*k` 부기를
@@ -1174,15 +1212,20 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
     #   켜짐 조건 두 가지:
     #     · 팔이 meta_osd 항을 쓰면 **무조건** 켜지고, 실패는 fail-loud 다(PMI 와 같은
     #       이유 — 무음 0 은 그 팔을 A 팔로 만든다).
-    #     · 아니면 `COUNTDOWN_OSD` 환경변수(기본 "1")로 켠다. 이때는 **측정 모드**다:
-    #       기존 팔 A~H 의 보상은 delta_cert 를 읽지 않으므로 한 글자도 바뀌지 않고,
-    #       [COUNTDOWN][OSD] 의 p90 만 쌓인다(정규화 상수 c 를 그 수로 정한다).
+    #     · 아니면 `COUNTDOWN_OSD` 환경변수로 켤 수 있다("측정 모드": 기존 팔 A~H 의
+    #       보상은 delta_cert 를 읽지 않으므로 한 글자도 바뀌지 않고, [COUNTDOWN][OSD]
+    #       의 p90 만 쌓인다 — 정규화 상수 c 를 그 수로 정할 때만 켠다).
     #   ⚠비용: 발화 행마다 forward 2팔이 는다. 실측 수는 아래 로그의 fwd_* 에 찍는다.
+    #   ★수리(0904, 감사결함6·계산 정합): 기본값이 "1"(항상 켜짐)이었다 — osd 항을
+    #   안 쓰는 팔(A~H 대부분)도 매 스텝 이 ref forward 를 물었다. c 를 다시 정할
+    #   때만 명시적으로 COUNTDOWN_OSD=1 을 켜라는 뜻으로 기본을 "0"으로 내린다.
+    #   osd 항을 실제로 쓰는 팔(OSD)은 `_osd_terms` 가 이미 비어 있지 않으므로
+    #   이 기본값과 무관하게 그대로 켜진다.
     # ★항 이름을 여기서 문자열로 쓰지 않는다. 0825 적대검증에서 이 줄이 "meta_osd" 를
     #   보는데 실제 항은 "osd" 라, 이 가드가 **모든 팔에서 항상 빈 집합**이었고 OSD 팔이
     #   A 팔과 비트 동일한 보상을 냈다. 정의처는 countdown_rewards.OSD_TERM 하나다.
     _osd_terms = {_cdr.OSD_TERM} & set(_cdr.ARM_SPECS[arm].get("terms", ()))
-    _osd_on = bool(_osd_terms) or os.environ.get("COUNTDOWN_OSD", "1") == "1"
+    _osd_on = bool(_osd_terms) or os.environ.get("COUNTDOWN_OSD", "0") == "1"
     osd_diag: dict = {"enabled": bool(_osd_on)}
     if not _osd_on:
         for r in rows:
@@ -1547,7 +1590,9 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
             _ABORT_STREAK[_key] = _ABORT_STREAK.get(_key, 0) + 1
         else:
             _ABORT_STREAK[_key] = 0
-        if _ABORT_STREAK.get(_key, 0) >= _ABORT_PATIENCE:
+        # ★수리(0904, 감사결함5): 고정 상수 대신 `_cdr.get_abort_patience()` —
+        #   COUNTDOWN_ABORT_PATIENCE 환경변수로 프롬프트 변형별 오버라이드 가능.
+        if _ABORT_STREAK.get(_key, 0) >= _cdr.get_abort_patience():
             raise _CountdownAbort(
                 f"[COUNTDOWN][ABORT] arm={arm} step={step}: 중단 조건이 "
                 f"{_ABORT_STREAK[_key]} 스텝 연속 위반 — {_hits}. 사전등록 §7 에 따라 정지한다.")
@@ -2922,7 +2967,9 @@ def _log_pmi_shift_wandb_scalars(step: int, *, attempted_rate: float,
 #   구조(rescue) = 메타 블록 **앞**에는 정답식이 없었는데 **뒤**에 나타난 롤아웃.
 #   보상 항이 아니라 **계기**다 — 팔 정체를 바꾸지 않는다(사전등록 처치 불변).
 _ABORT_STREAK: dict = {}
-_ABORT_PATIENCE: int = 3
+# ★수리(0904, 감사결함5): 고정 상수를 없앴다 — patience 는 이제
+# `countdown_rewards.get_abort_patience()`(COUNTDOWN_ABORT_PATIENCE 환경변수,
+# 기본 3)에서 매번 읽는다. 여기 상수를 남겨두면 두 진실이 갈릴 수 있었다.
 
 
 class _CountdownAbort(RuntimeError):
@@ -3532,6 +3579,14 @@ class MetaCotSDCRewardManager:
         body_masks = []
         fallback_flags = []
 
+        # ★수리(0904, 감사결함7): COUNTDOWN_6ARM 은 이 마스크를 **전혀 읽지 않는다** —
+        #   `self.reward_funcs == [countdown_arm_reward]` 하나뿐이고, 그 함수는
+        #   `_COUNTDOWN_STASH` 만 읽는다(레거시 수학 헤드 correctness_reward·
+        #   meta_penalty·SDC 리전 헤드는 COUNTDOWN_6ARM 의 REWARD_CONFIGS 에 아예
+        #   없다). 그런데도 롤아웃마다 `build_sdc_region_masks` 로 정규식 스캔 +
+        #   텐서 4개를 만들었다 — 계산은 하고 결과는 아무도 안 읽는 순수 낭비다.
+        #   0 마스크로 대체한다(shape 은 그대로라 아래 `torch.stack` 이 안 깨진다).
+        _mode_sync = _ACTIVE_SDC_CONTEXT.get("mode", "")
         for i in range(bs):
             item = data[i]
             text, response_ids = _decode_response(
@@ -3546,6 +3601,15 @@ class MetaCotSDCRewardManager:
             if isinstance(gt, dict):
                 gt = gt.get("ground_truth", "")
             ground_truths.append(str(gt))
+
+            if _mode_sync == _COUNTDOWN_MODE:
+                zeros = torch.zeros(response_length, dtype=torch.float32)
+                meta_masks.append(zeros)
+                post_shared_masks.append(zeros.clone())
+                post_diff_masks.append(zeros.clone())
+                body_masks.append(zeros.clone())
+                fallback_flags.append(0.0)
+                continue
 
             masks = build_sdc_region_masks(
                 self.tokenizer,

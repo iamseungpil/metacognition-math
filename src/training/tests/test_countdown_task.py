@@ -112,16 +112,23 @@ def test_wrong_kind_4_unparseable(rows):
 
 
 def test_grade_is_exact_not_float():
-    """★회귀: 원본 `grade` 는 `eval` 의 **float** 나눗셈으로 값을 낸 뒤에야
-    `Fraction` 으로 쌌다(docstring 은 "부동소수 오차 0"이라고 적어 놓고서).
+    """★회귀 + 갱신(0904, 감사결함1). 원본 `grade` 는 `eval` 의 **float** 나눗셈으로
+    값을 낸 뒤에야 `Fraction` 으로 쌌다(docstring 은 "부동소수 오차 0"이라고 적어
+    놓고서) — `eval_exact` 는 AST 를 직접 Fraction 으로 접어 그 오차를 없앴고,
+    그 사실은 여전히 참이다(아래 첫 두 줄).
 
-    아래 식은 정확 유리수로 딱 25 다. 원본은 0점(거짓 음성)을 줬고 수리판은 1점을 준다
-    — 2026-08-18 실측으로 확인한 실제 발산 사례다. R_corr 이 이 함수 위에 서므로
-    거짓 음성은 곧 정답을 낸 롤아웃에서 correctness 를 빼앗는 자리였다.
+    다만 `grade` 자체는 그 뒤(0904, 감사결함1) 다시 바뀌었다: 이제는 **중간값이
+    양의 정수가 아니면 최종값이 맞아도 0점**이다(`eval_countdown`/`_fold_countdown`
+    이 검사한다 — 프롬프트·`countdown_rewards._solvable`·`swap_op_decoy` 가 이미
+    보던 바로 그 규칙이다). `(((1/3)*5)*15)` 는 최종값이 정확히 25 지만 `(1/3)` 이
+    중간에 비정수라서 지금은 **0점이 옳다** — "값만 맞으면 1점"이라던 이전 판정은
+    감사가 지적한 결함이었다(`test_countdown_fixes.py::test_grade_rejects_*` 가 이
+    새 규칙을 전담해서 검사한다).
     """
     assert eval_exact("(((1/3)*5)*15)") == Fraction(25)
-    assert grade(boxed("(((1/3)*5)*15)"), [1, 3, 5, 15], 25) == 1
-    assert grade(boxed("(((1/3)*7)*9)"), [1, 3, 7, 9], 21) == 1
+    assert eval_exact("(((1/3)*7)*9)") == Fraction(21)
+    assert grade(boxed("(((1/3)*5)*15)"), [1, 3, 5, 15], 25) == 0
+    assert grade(boxed("(((1/3)*7)*9)"), [1, 3, 7, 9], 21) == 0
 
 
 # ─────────────────────────────────────────────── ③ 수리된 decoy 가 유효 등식

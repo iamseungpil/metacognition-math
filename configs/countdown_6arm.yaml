@@ -398,6 +398,13 @@ trainer:
   # instead of producing a quietly wrong shift for arms B/C/F.
   use_legacy_worker_impl: disable
   balance_batch: True
+  # ★수리(0904, 감사결함8): 기본값(null=무제한)이면 5스텝마다(save_freq) FSDP 샤드
+  # 전체가 /scratch 에 쌓여 디스크가 찬다. 판단 스텝(judgment step)의 체크포인트는
+  # FSDP 샤드를 보존해서가 아니라 scripts/local 파이프라인이 bf16 로 머지해 HF 에
+  # 올리는 방식으로 보존한다 — 그러니 로컬 FSDP 보관은 재개(resume)에 필요한
+  # 최근 것 몇 개면 충분하다.
+  max_actor_ckpt_to_keep: 2
+  max_critic_ckpt_to_keep: 2
 
 # verl 0.7.1 requires top-level global_profiler for optional torch-profiler integration
 global_profiler:

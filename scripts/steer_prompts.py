@@ -35,6 +35,10 @@ import sys
 
 sys.path.insert(0, os.environ.get("REPO", "/home/jovyan/beomi/splee/metacognition-math"))
 from src.training.countdown_task import PROMPT_VARIANTS, eval_countdown  # noqa: E402
+# ★수리(0904, 감사결함10): P3 자체의 정의는 countdown_task.py 로 옮겼다
+# (countdown_task.build_p3_prompt / PROMPT_VARIANTS["p3"]) — 그래야
+# `countdown_task.build_parquet --variant p3` 와 이 스크립트가 같은 바이트를 본다.
+# 여기서는 그 결과를 되돌려 받기만 한다 (아래 P3 대입부 참조).
 
 _BAN = ("★Do NOT do arithmetic in here — no expressions, no equalities, "
         "no combining of numbers, no candidate answer. "
@@ -99,7 +103,14 @@ EX_P2 = _EX_HEAD + ("<meta>\nconfidence: 0.3\nruled_out: 25*3, (25+3)*7\nnext: 8
                     + _EX_JUDGE + "\ndecision: redirect\n</meta>")
 
 P0e = P0 + EX_P0
-P3 = P2 + EX_P2
+# ★수리(0904, 감사결함10): P3 는 이제 countdown_task.py 가 정의처다. 여기서는
+# 되돌려 받고, 이 스크립트가 여전히 같은 조립식(P2+EX_P2)을 유지하고 있는지만
+# 확인한다 — 어긋나면 이 스크립트나 countdown_task.build_p3_prompt 둘 중 하나가
+# 조용히 갈라졌다는 뜻이라 여기서 바로 죽는다(fail-loud).
+P3 = PROMPT_VARIANTS["p3"]
+assert P3 == P2 + EX_P2, (
+    "countdown_task.PROMPT_VARIANTS['p3'] 가 steer_prompts 의 P1→P2→P3 조립과 "
+    "달라졌다 — 감사결함10 수리(P3 를 한 곳에서만 정의)가 깨졌다.")
 
 VARIANTS = {"P0": P0, "P0e": P0e, "P1": P1, "P2": P2, "P3": P3}
 

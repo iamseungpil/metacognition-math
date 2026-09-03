@@ -61,6 +61,7 @@ torch·verl 을 import 하지 않는다 — 전부 순수 함수라 CPU 로 테�
 from __future__ import annotations
 
 import math
+import os
 import re
 from collections import Counter
 from typing import Callable, Iterable, Mapping, Sequence
@@ -762,6 +763,12 @@ def arm_signature(arm: str) -> str:
                   f"tau={INV_TAU:g}{_q},c={INV_C:g}{_q},"
                   f"fcpen={INV_FALSE_CLAIM_PEN:g},minprose={INV_MIN_PROSE_TOK:d}")
     extra += f"|norm={'on' if NORMALIZE_TERMS else 'off'}"
+    # ★수리(0904, 감사결함5): P0-보정 임계값을 오버라이드했으면 서명에 박는다 —
+    #   안 박으면 "이 로그가 어느 중단 임계값 아래서 났는가"를 사후에 확인할 수 없다.
+    #   오버라이드가 **없으면** 붙이지 않는다(조건부) — 무조건 붙이면 지금까지의
+    #   전체 팔 서명이 다 바뀌어 로그 연속성이 끊긴다(OSD/INV 항과 같은 규약).
+    if _abort_arith_overridden():
+        extra += f"|abort_arith={_resolved_arith_threshold():g}"
     return (f"{SPEC_VERSION}|{arm}={spec['label']}|form={spec['meta_form']}"
             f"|{'+'.join(parts)}{extra}")
 
@@ -938,9 +945,40 @@ def _apply_move(nums, a: int, o: str, b: int):
     return rest + [v]
 
 
+def _multiset_has_pair(nums, a: int, b: int) -> bool:
+    """`nums` 다중집합에서 a·b 를 **동시에** 뽑을 수 있는가 (같은 값이면 두 자리 필요).
+
+    ★수리(0904, 감사결함4) 근거: `plan_followed` 는 "메타 뒤 첫 시도"를 정규식
+    `_PAIR_RE` 로만 찾았다. 그 정규식은 산술 시도와 우연히 같은 모양인 산문
+    ("3-4 ideas about it")도 구분 없이 잡는다. 두 수가 **원래 문제의 다중집합에
+    실제로 있는 값**이라는 조건을 추가로 걸면, 적어도 "지목한 두 수 자체가
+    이 문제에 등장하지도 않는" 우연한 문자열은 걸러진다(완전한 산문 구분은 정규식
+    으로는 원리적으로 불가능하다 — 이 검사는 최소 방어선이다).
+    """
+    c = Counter(int(v) for v in nums)
+    if a == b:
+        return c[a] >= 2
+    return c.get(a, 0) >= 1 and c.get(b, 0) >= 1
+
+
 def plan_next(text: str, nums, target: int) -> tuple[int, int]:
-    """(plan_ok, plan_followed). 첫 메타의 `next:` 를 읽어 (a) 그 첫수 뒤 목표 도달 가능? (b) 메타 뒤 첫 시도가 그 수인가?
-    next 가 없거나 파싱 불가면 (0, 0)."""
+    """(plan_ok, plan_followed).
+
+    첫 메타의 `next:` 를 읽어
+      (a) plan_ok       그 첫수 뒤로 **원래 다중집합**(nums) 기준 목표 도달이 가능한가
+                        (`_apply_move` 로 한 수를 접은 뒤 `_solvable` 완전열거).
+      (b) plan_followed 메타 **뒤** 첫 시도가 그 두 수를 실제로 결합하는가.
+    next 가 없거나 파싱 불가면 (0, 0).
+
+    ★"next 는 원래 수 기준" 규약: `next:` 가 이름 붙인 두 수는 응답이 지금까지
+    접어온 **중간값**이 아니라 항상 문제의 원래 다중집합 `nums` 안에서 찾는다.
+    예를 들어 접두에서 이미 `25+3=28` 을 만들었어도 `next: 28*7` 은 (0, 0) 이다
+    (28 이 nums 에 없으므로). 이는 의도된 설계다 — P3 프롬프트가 요구하는 것은
+    "지금까지의 결합을 이어가는 계획"이 아니라 "**새로운** 부분 그룹화"이고, 중간값을
+    허용하면 채점기가 임의의 트리 깊이를 추적해야 해서(응답 파싱만으로는 어떤
+    중간값이 어떤 부분식에서 나왔는지 항상 복원되지 않는다) 검증 자체가 게임당하기
+    쉬워진다.
+    """
     m = parse_meta(text, "new")
     if not m.get("emitted"):
         return 0, 0
@@ -948,6 +986,7 @@ def plan_next(text: str, nums, target: int) -> tuple[int, int]:
     mm = _NEXT_RE.search(body)
     if not mm:
         return 0, 0
+    # "5+8 or 25-7" 같은 복수 후보는 **첫 번째만** 본다(re.search 는 leftmost match).
     pr = _PAIR_RE.search(mm.group(1))
     if not pr:
         return 0, 0
@@ -956,7 +995,9 @@ def plan_next(text: str, nums, target: int) -> tuple[int, int]:
     ok = int(new is not None and _solvable(new, int(target)))
     after = text[int(m.get("end", 0)):] if m.get("end") else text.split("</meta>", 1)[-1]
     first = _PAIR_RE.search(after)
-    followed = int(bool(first) and {int(first.group(1)), int(first.group(3))} == {a, b})
+    followed = int(bool(first)
+                   and {int(first.group(1)), int(first.group(3))} == {a, b}
+                   and _multiset_has_pair(nums, a, b))
     return ok, followed
 
 
@@ -1764,6 +1805,32 @@ ABORT_RULES = {
 }
 
 
+# ★수리(0904, 감사결함5): `arith_in_meta_rate` 의 임계값 0.02 는 **P0 프롬프트로
+#   실측한 기저**(주석 0.001)에서 정한 값이다. 다른 프롬프트 변형(P3 등)은 메타
+#   본문에 산술이 섞이는 자연 기저율이 달라질 수 있는데, 그때마다 이 파일을 고쳐
+#   재배포하면 "무엇을 기준으로 판단했는지"가 커밋 로그에만 남고 실행 로그에는
+#   안 남는다. 환경변수로 오버라이드하고 `arm_signature()` 가 그 사실을 찍게 한다
+#   ("선언은 있고 배선은 없음" 방지 원칙 — 이 파일 `arm_signature` docstring과 같다).
+def _resolved_arith_threshold() -> float:
+    """`arith_in_meta_rate` 중단 임계값 — `COUNTDOWN_ABORT_ARITH` 로 오버라이드."""
+    v = os.environ.get("COUNTDOWN_ABORT_ARITH")
+    return float(ABORT_RULES["arith_in_meta_rate"]["thr"]) if v is None else float(v)
+
+
+def _abort_arith_overridden() -> bool:
+    return os.environ.get("COUNTDOWN_ABORT_ARITH") is not None
+
+
+def get_abort_patience() -> int:
+    """중단 조건 연속 위반 허용 스텝 수 — `COUNTDOWN_ABORT_PATIENCE` 로 오버라이드(기본 3).
+
+    ★verl_sdc.py 의 `_ABORT_STREAK` 판정이 이 값을 읽는다. 프롬프트 변형별로
+    노이즈 수준이 달라 patience 를 조정해야 할 수 있어 P0 고정값을 벗어난다.
+    """
+    v = os.environ.get("COUNTDOWN_ABORT_PATIENCE")
+    return 3 if v is None else int(v)
+
+
 def check_abort(report: Mapping) -> list[dict]:
     r"""사양의 중단 조건을 재고, **위반 목록**을 돌려준다(빈 리스트 = 통과).
 
@@ -1786,10 +1853,11 @@ def check_abort(report: Mapping) -> list[dict]:
                         "why": "지표가 없다 — 안 쟀다는 뜻이지 통과가 아니다"})
             continue
         v = float(v)
-        bad = (v < rule["thr"]) if rule["op"] == "<" else (v > rule["thr"])
+        thr = _resolved_arith_threshold() if name == "arith_in_meta_rate" else rule["thr"]
+        bad = (v < thr) if rule["op"] == "<" else (v > thr)
         if bad:
             out.append({"metric": name, "status": "abort", "value": v,
-                        "threshold": rule["thr"], "op": rule["op"], "why": rule["why"]})
+                        "threshold": thr, "op": rule["op"], "why": rule["why"]})
     return out
 
 

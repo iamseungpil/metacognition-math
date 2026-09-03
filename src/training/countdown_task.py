@@ -31,12 +31,22 @@
      ★실측 발산 사례: `\boxed{(((1/3)*5)*15)}` 는 정확히 25 인데 **원본은 0점**
      (거짓 음성), 수리판은 1점. R_corr 이 이 함수 위에 서므로 정답을 낸 롤아웃에서
      correctness 를 빼앗는 자리였다. 여기서는 AST 를 직접 `Fraction` 으로 접어
-     오차를 0으로 만들었다(`eval` 도 함께 제거). **판정 의미는 바꾸지 않았다** —
-     여전히 ⓐ파싱 ⓑ다중집합 일치 ⓒ값 일치 셋만 본다(중간값 제약은 채점에 넣지 않는다.
-     사양의 R_corr 정의가 그렇다).
+     오차를 0으로 만들었다(`eval` 도 함께 제거).
+     ★수리 2차(0904, 감사결함1): "판정 의미는 바꾸지 않았다"고 적었던 위 문장은
+     틀렸다 — `grade` 는 최종값만 보고 중간값 제약(양의 정수)을 전혀 안 봤는데,
+     프롬프트("Every intermediate value must be a positive integer")·
+     `countdown_rewards._solvable`·`swap_op_decoy` 는 전부 그 제약을 규칙의 일부로
+     본다. `(2-5)*(1-4)` (중간에 음수) · `((1/3)*5)*15` (중간에 비정수)가 최종값만
+     맞으면 채점기를 통과했다 — 채점기 하나가 나머지 배선과 다른 언어를 썼다는
+     뜻이다. 지금은 `eval_countdown`(= `_fold_countdown`, 중간값 양의 정수 강제)을
+     써서 규칙을 통일했다. `eval_exact`(중간값 제약 없음)는 다른 호출자가 의존하므로
+     그대로 둔다.
   ④ `parse_ok` — 문자집합만 보고 **파싱 불가 문자열에 형식 점수를 줬다**.
      `(3+*)` · `(2+3` · `3 4` · `((2+3)` · `+` 다섯 개 전부 원본 1점, 수리판 0점.
      사양의 w_format 0.35 가 이 함수 위에 서므로 쓰레기에 형식 보상이 흐르는 자리였다.
+     ★수리 2차(0904, 감사결함2): AST 파싱 성공만으로도 부족했다. `2(3+4)`(함수호출로
+     파싱되는 암묵적 곱셈)·`8//3+1`(FloorDiv, Countdown 이 안 쓰는 연산자)가 둘 다
+     파싱엔 성공해 형식 보상을 받았다. `_is_binop_tree` 로 노드 종류를 마저 걸렀다.
 
 이식하며 **바꾸지 않은 것**
   `gen_instance` · `parse_ok` · `n_attempts` · `_last_boxed` 의 판정 의미.
@@ -268,24 +278,45 @@ def extract_expr(text: str):
 
 
 def grade(text: str, nums, target) -> int:
-    """식을 뽑아 **정확히** 평가한다. 셋 다 맞아야 1점.
+    """식을 뽑아 **정확히** 평가한다. 넷 다 맞아야 1점.
 
       ① 파싱 가능한 산술식인가
       ② 주어진 수를 각각 정확히 한 번씩 썼나 (다중집합 일치)
       ③ 값이 목표수와 같은가  (Fraction 접기 — 부동소수 오차 0)
+      ④ 모든 중간값이 양의 정수인가 (Countdown 규칙 — `eval_countdown`/`_fold_countdown`)
 
-    ★중간값 제약(양의 정수)은 **채점에 넣지 않는다.** 사양의
-      R_corr = 1{식이 목표수를 만들고 주어진 수를 각각 한 번씩 쓴다} 를 그대로 따른다.
+    ★수리(0904, 감사결함1): 예전엔 ④를 안 봤다 — docstring 은 "사양의 R_corr 정의가
+      그렇다"고 적었지만, 그 정의 자체가 `countdown_rewards._solvable`·프롬프트의
+      "Every intermediate value must be a positive integer" 규칙과 어긋났다.
+      `(2-5)*(1-4)` 처럼 중간에 음수를 거치거나 `((1/3)*5)*15` 처럼 중간에 정수가
+      아닌 값을 거치는 식이 **최종값만 맞으면** 정답 처리됐다 — 채점기와 "풀이가
+      뭔가"를 규정하는 나머지 배선(프롬프트·`_solvable`·`swap_op_decoy`)이 서로
+      다른 언어를 썼다는 뜻이다. `eval_exact`(중간값 제약 없음)는 그대로 두고
+      (다른 호출자가 의존한다), 여기서는 `eval_countdown`(= `_fold_countdown`,
+      **모든 중간값이 양의 정수**를 강제)으로 바꿔 규칙을 통일한다.
     """
     e = extract_expr(text)
     if e is None or not _EXPR_OK.match(e):
         return 0
     if expr_numbers(e) != sorted(int(v) for v in nums):
         return 0
-    val = eval_exact(e)
+    val = eval_countdown(e)
     if val is None:
         return 0
-    return int(val == Fraction(int(target)))
+    return int(val == int(target))
+
+
+def _is_binop_tree(node) -> bool:
+    """`grade`/`parse_ok` 가 인정하는 산술식 AST 인가 — 정수 리터럴과 + − × ÷
+    BinOp 로만 이루어진 트리. `ast.parse` 는 이보다 훨씬 넓은 파이썬 문법을
+    받아준다(함수호출·단항부호·`//`·`**`·비교식…) 이므로 **문자집합 검사 뒤에도**
+    노드 종류를 직접 걸러야 한다.
+    """
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, int) and not isinstance(node.value, bool)
+    if isinstance(node, ast.BinOp) and type(node.op) in _BINOPS:
+        return _is_binop_tree(node.left) and _is_binop_tree(node.right)
+    return False
 
 
 def parse_ok(text: str) -> int:
@@ -298,11 +329,20 @@ def parse_ok(text: str) -> int:
       여기서는 문자집합 + **실제 AST 파싱** 둘 다 통과해야 1점이다.
       ⚠이 변경으로 형식 보상이 원본보다 **약간 엄격해진다**(파싱 불가 문자열이
       1→0). 값·다중집합은 여전히 보지 않는다.
+    ★수리 2차(0904, 감사결함2): `_parse(e) is not None` 만으로는 부족했다 —
+      `ast.parse` 는 파이썬 문법 전체를 받아주므로 `2(3+4)`(암묵적 곱셈처럼 보이는
+      함수호출, `ast.Call`)와 `8//3+1`(정수 나눗셈 `ast.FloorDiv`, Countdown 이
+      허용하지 않는 연산자)가 **문자집합도 통과하고 파싱도 성공**해 형식 보상을
+      받았다. 이제 파싱 뒤에 `_is_binop_tree` 로 노드 종류까지 검사한다 — 정수
+      리터럴과 + − × ÷ BinOp 만 인정하고, Call·UnaryOp·FloorDiv·Pow 등은 전부 0.
     """
     e = extract_expr(text)
     if e is None or not _EXPR_OK.match(e):
         return 0
-    return 1 if _parse(e) is not None else 0
+    node = _parse(e)
+    if node is None or not _is_binop_tree(node):
+        return 0
+    return 1
 
 
 def n_attempts(text: str) -> int:
@@ -445,6 +485,77 @@ assert "<meta>" not in SOLVE_SYS_PLAIN and "metacognitive" not in SOLVE_SYS_PLAI
 
 PROMPT_VARIANTS = {"new": SOLVE_SYS_NEW, "old": SOLVE_SYS_OLD, "shot": SOLVE_SYS_SHOT,
                    "plain": SOLVE_SYS_PLAIN}
+
+# ─────────────────────────────────────────────────────── P3 조향 프롬프트 (0904) ──
+# ★수리(감사결함10): `scripts/steer_prompts.py` 가 이 조립(P0→P1→P2→P3)을 자기
+#   안에서 스스로 해서 `PROMPT_VARIANTS` 밖에 있었다 — `countdown_task.build_parquet
+#   --variant p3` 로 부를 방법이 없었고, "실험 스크립트가 분석한 프롬프트"와
+#   "실제로 빌드한 학습셋의 프롬프트"가 같은 바이트인지 사후에 확인할 길이 없었다.
+#   여기로 옮기고 `scripts/steer_prompts.py` 는 이 결과를 되돌려 받기만 하게 한다
+#   (그 스크립트는 P0e/P1/P4/P5 등 실험용 변형을 계속 자기 안에서 만든다 — 이 파일이
+#   떠맡는 건 P3 하나, 사양의 팔이 실제로 쓰는 변형이기 때문이다).
+_P3_BAN = ("★Do NOT do arithmetic in here — no expressions, no equalities, "
+           "no combining of numbers, no candidate answer. "
+           "Assess the approach; do not solve the puzzle.")
+_P3_BAN_NARROW = ("★Do NOT write a complete expression that uses ALL the given numbers — "
+                  "that is the answer and it does not belong here. "
+                  "Partial groupings you have ruled out or intend to try next are fine.")
+_P3_OLD_MANDATE = ("Write `decision: verify` when the confidence you just wrote is high and the "
+                   "current line of search deserves to be pushed through and checked. Write "
+                   "`decision: redirect` when that confidence is low and the current line of "
+                   "search should be abandoned for a different family of groupings. The decision "
+                   "must follow from the confidence.")
+_P3_NEW_MANDATE = ("Write `decision: redirect` when `next` names a grouping from a different "
+                   "family than the one you have been exploring; write `decision: verify` when "
+                   "`next` says you will check the current line. The decision must follow from "
+                   "`ruled_out` and `next`. Confidence reports how likely the current family is "
+                   "to succeed; it does not dictate the decision.")
+_P3_STRUCT = """<meta>
+confidence: <a single number between 0 and 1>
+ruled_out: <the specific partial groupings you have already tried and eliminated, \
+comma-separated, e.g. `25*3, (25+3)*7`. Write `none` only if you have tried nothing yet. \
+List only groupings that actually appear in your work above and that actually failed.>
+next: <the specific partial grouping you will try next, e.g. `8*7 first`. It must be one you \
+have NOT already combined above, and it must use FEWER than all of the given numbers. \
+If you are going to verify instead of changing course, write what you will check.>
+<One sentence judging YOUR OWN APPROACH: which family of groupings you are exploring, and \
+whether that family is worth continuing. ★Do NOT write a complete expression that uses ALL \
+the given numbers — that is the answer and it does not belong here.>
+decision: verify
+</meta>"""
+_P3_BLOCK_RE = re.compile(r"<meta>\nconfidence:.*?\n</meta>", re.DOTALL)
+_P3_EX_HEAD = "\n\nExample of the block, for numbers [25, 3, 7, 8] and target 68:\n\n"
+_P3_EX_JUDGE = ("The multiply-25-first family overshoots badly and I keep having to subtract "
+               "back, so it is not worth continuing.")
+
+
+def build_p3_prompt() -> str:
+    r"""P0(=`SOLVE_SYS_NEW`) → P1(금지를 완성식만으로 좁힘) → P2(ruled_out/next 구조
+    + decision 을 confidence 가 아니라 그 구조에서 따르게 재배선) → P3(P2 + 예시 하나).
+
+    `scripts/steer_prompts.py` 의 P0/P1/P2/P3 조립을 **문자 그대로** 옮긴 것 —
+    한 글자라도 갈리면 그 스크립트의 채점기(`parse_fields`/`next_ok`/`followed_plan`
+    등)가 조용히 다른 프롬프트를 채점하게 된다. 검증은
+    `src/training/tests/test_countdown_fixes.py` 가 예전 조립식으로 다시 계산한
+    문자열과 바이트 비교한다.
+    """
+    p0 = SOLVE_SYS_NEW
+    if _P3_BAN not in p0 or _P3_OLD_MANDATE not in p0:
+        raise ValueError(
+            "build_p3_prompt: SOLVE_SYS_NEW 에서 금지문/decision 문단을 찾지 못했다 "
+            "— 프롬프트가 바뀌어 P3 조립이 더 이상 원본과 같지 않다.")
+    p1 = p0.replace(_P3_BAN, _P3_BAN_NARROW)
+    p1_struct, n = _P3_BLOCK_RE.subn(_P3_STRUCT, p1, count=1)
+    if n != 1:
+        raise ValueError("build_p3_prompt: <meta> 블록 서식을 찾지 못했다.")
+    p2 = p1_struct.replace(_P3_OLD_MANDATE, _P3_NEW_MANDATE)
+    ex_p2 = _P3_EX_HEAD + (
+        "<meta>\nconfidence: 0.3\nruled_out: 25*3, (25+3)*7\nnext: 8*7 first\n"
+        + _P3_EX_JUDGE + "\ndecision: redirect\n</meta>")
+    return p2 + ex_p2
+
+
+PROMPT_VARIANTS["p3"] = build_p3_prompt()
 
 # ★프롬프트 길이 실측 (2026-08-18, `Qwen/Qwen3-4B` 토크나이저 + chat template +
 #   add_generation_prompt, 인스턴스 200개):

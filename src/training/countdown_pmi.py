@@ -605,3 +605,41 @@ def score_pmi_shift(
               f"path(div/full)={diag['path_div']}/{diag['path_full']} "
               f"meta_first={diag['meta_first']}", flush=True)
     return rows, diag
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ★수리(0904, 감사결함6·계산 정합) — PMI 항(meta_pos/meta_mul/meta_ctx) 이 없는
+# 팔용 자리표시자. `score_pmi_shift` 를 그대로 돌리면 ref forward(GPU) 를 무는데,
+# 그 팔들은 `pmi_open`/`pmi_close` 를 어떤 보상 항도 읽지 않는다 — "쓰이지 않는
+# 계산을 판마다 문다"는 계산-정합 감사 결함이다. 아래 두 함수는 `score_pmi_shift`
+# 가 채우는 **같은 키 집합**을 값만 "못 쟀다/0"으로 채워 돌려준다 — 호출부
+# (`_compute_countdown_arm_stash`)가 팔에 따라 분기하지 않게 하기 위해서다.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def empty_rows(n: int) -> list[dict]:
+    """`score_pmi_shift` 의 초기 행 규약과 **바이트 동일**(위 542행 참조).
+
+    pmi_open/pmi_close = NaN(못 쟀다), emitted = 0, meta_n_tok = 0, path = None,
+    meta_first = False, scored = False.
+    """
+    return [{"pmi_open": _NAN, "pmi_close": _NAN, "meta_n_tok": 0,
+             "emitted": 0, "path": None, "meta_first": False, "scored": False}
+            for _ in range(n)]
+
+
+def empty_diag(n: int) -> dict:
+    """`build_pmi_arms`/`score_pmi_shift` 가 채우는 진단 키를 전부 0/None 으로.
+
+    호출부가 `diag.get("scored")`·`diag.get("B")`·`diag.get("ref_error")` 를 무조건
+    읽으므로(어느 팔이든 같은 코드 경로), 이 자리표시자도 그 키를 전부 갖는다.
+    """
+    # ★0 이 맞다(안 쟀다 ≠ 0건 발견) — 이 팔은 애초에 `build_pmi_arms` 스캔 자체를
+    #   돌지 않으므로 no_meta 등 "스캔 사유별 개수"는 정의되지 않는다. 0 은 "그런
+    #   사유로 건너뛴 행이 없었다"는 뜻이 아니라 "안 셌다"는 뜻이지만, 이 진단은
+    #   PMI 항이 켜진 팔에서만 실질적으로 읽히므로(WIRED 로그의 `scored`/`B` 만
+    #   무조건 읽는다) 여기서는 그 두 키만 정확하면 된다.
+    return {"no_meta": 0, "no_witness": 0, "no_decoy": 0, "bad_pair": 0,
+            "meta_first": 0, "straddle_open": 0, "straddle_close": 0,
+            "path_div": 0, "path_full": 0, "B": n, "attempted": 0,
+            "scored": 0, "attempted_rate": 0.0, "scored_rate": 0.0,
+            "ref_error": None}
