@@ -212,7 +212,7 @@ for STEP in "${JUDGMENT_STEPS[@]}"; do
   python scripts/countdown_gs0_eval.py \
     --model_path "${MERGED_DIR}" \
     --data "${DATA_VAL}" \
-    --meta_format "${EVAL_META_FORMAT:-new}" \
+    --meta_format "${EVAL_META_FORMAT:-${DATA_VARIANT}}" \
     --num_samples 8 \
     --seed 11 \
     --limit 0 \

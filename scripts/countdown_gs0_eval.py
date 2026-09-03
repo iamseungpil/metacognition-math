@@ -25,6 +25,7 @@ from pathlib import Path
 sys.path.insert(0, "/scratch/metacognition")
 
 from src.training import countdown_rewards as cdr          # noqa: E402
+from src.training.countdown_task import PROMPT_VARIANTS  # noqa: E402
 from src.training.countdown_task import (                  # noqa: E402
     build_prompt, extract_expr, grade,
 )
@@ -109,7 +110,8 @@ def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model_path", required=True)
     ap.add_argument("--data", required=True, help="countdown_val.parquet")
-    ap.add_argument("--meta_format", default="new", choices=["new", "old"])
+    ap.add_argument("--meta_format", default="new", choices=sorted(PROMPT_VARIANTS),
+                    help="프롬프트 변형 (countdown_task.PROMPT_VARIANTS 키; 로컬 라운드는 plain/new/p3)")
     ap.add_argument("--num_samples", type=int, default=16,
                     help="문제당 롤아웃 수 = p̂ 의 그룹 크기")
     ap.add_argument("--max_tokens", type=int, default=3072)
