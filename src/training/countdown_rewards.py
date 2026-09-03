@@ -1366,7 +1366,7 @@ def component_means(components: Sequence[Mapping[str, float]], *, dead_eps: floa
 # ★새 메타 항은 **반드시** 여기 등록한다. 미등록 항은 크기계기·그룹분산분해·AUC 에서
 #   통째로 사라져 "쟀는데 0" 과 "안 쟀다" 가 구별되지 않는다.
 META_TERMS: tuple = ("meta_pos", "meta_mul", "meta_ctx", "gate", "len", "osd",
-                     "meta_pos_full", INV_TERM)
+                     "meta_pos_full", "plan", INV_TERM)
 
 
 def rmeta_magnitude(components: Sequence[Mapping[str, float]],

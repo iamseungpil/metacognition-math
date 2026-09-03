@@ -248,7 +248,8 @@ SPEC_TABLE = {   # 사양 §보상 을 손으로 옮긴 것. 코드가 아니라
 
 # ★사양의 여덟 팔 + 그 뒤에 **추가된** 처치 팔. 추가는 사양 개정이 아니라 확장이므로
 #   여덟 팔의 정체는 위 SPEC_TABLE 이 계속 원본으로 지킨다.
-ADDED_ARMS = ["OSD", "P", "R"]
+#   N0 = 맨 GRPO 기준선(메타 자체가 없다) · PL = 계획 항(근거-진리) 처치.
+ADDED_ARMS = ["OSD", "P", "R", "N0", "PL"]
 
 
 def test_arm_specs_match_spec_table():
@@ -261,8 +262,17 @@ def test_arm_specs_match_spec_table():
 
 
 def test_common_terms_are_identical_across_all_arms():
-    """공통(처치 아님)이 팔마다 다르면 그 실험은 팔 비교가 아니다."""
+    """공통(처치 아님)이 팔마다 다르면 그 실험은 팔 비교가 아니다.
+
+    ★예외는 N0 하나뿐이다. N0 는 메타를 «요구하지 않는» 맨 GRPO 기준선이라
+      meta_floor(발화 하한)를 주면 기준선이 아니게 된다. 그 대신 N0 는 어떤 메타
+      처치 항도 갖지 않는다 — 아래에서 그것을 함께 못 박는다.
+    """
     for arm in cr.ARM_SPECS:
+        if arm == "N0":
+            assert tuple(cr.ARM_SPECS[arm]["terms"]) == ("corr", "format")
+            assert cr.ARM_SPECS[arm]["meta_form"] == "none"
+            continue
         for t in ("corr", "format", "meta_floor"):
             assert t in cr.ARM_SPECS[arm]["terms"]
     assert cr.TERMS["corr"]["weight"] == 1.0
@@ -285,7 +295,7 @@ def test_F_is_C_plus_E():
 def test_warmup_applies_to_meta_and_gate_only():
     warmed = {t for t, cfg in cr.TERMS.items() if cfg["warmup"]}
     assert warmed == {"meta_pos", "meta_mul", "meta_ctx", "gate", "len", "osd",
-                      "meta_pos_full", cr.INV_TERM}
+                      "meta_pos_full", "plan", cr.INV_TERM}
     for t in ("corr", "format", "meta_floor"):
         assert not cr.TERMS[t]["warmup"]
 
