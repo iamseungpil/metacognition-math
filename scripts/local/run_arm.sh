@@ -120,6 +120,9 @@ TRAIN_CMD=(python -u -m src.training.verl_sdc
   "data.train_files=${DATA_TRAIN}"
   "data.val_files=${DATA_VAL}"
   "++data.seed=${SEED}"
+  # ★0904: Qwen3 하이브리드는 기본이 thinking ON 이라 <meta> 발화가 0 이 된다(cd6 prereg A.2 와 동일 결정).
+  #   학습 전 평가(countdown_gs0_eval.py)도 enable_thinking=False 라 이 옵션이 있어야 조건이 같다.
+  "+data.apply_chat_template_kwargs.enable_thinking=false"
   "data.train_batch_size=64"
   "data.max_response_length=${MAX_RESP}"
   "actor_rollout_ref.rollout.max_model_len=4096"
