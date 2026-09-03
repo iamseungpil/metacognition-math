@@ -251,7 +251,7 @@ SPEC_TABLE = {   # 사양 §보상 을 손으로 옮긴 것. 코드가 아니라
 #   N0 = 맨 GRPO 기준선(메타 자체가 없다) · PL = 계획 항(근거-진리) 처치.
 #   SC/SCg = 자기제어 팔(2026-09-04, SC_DESIGN.md) — 상태 조건부 메타(막힘→탐색,
 #   과신→검산) 보상. SCg 는 SC 의 explore 에 근거-진리(plan_ok)를 곱한 대조점.
-ADDED_ARMS = ["OSD", "P", "R", "N0", "PL", "SC", "SCg"]
+ADDED_ARMS = ["OSD", "P", "R", "N0", "PL", "SC", "SCg", "SC_GH"]
 
 
 def test_arm_specs_match_spec_table():
@@ -274,6 +274,10 @@ def test_common_terms_are_identical_across_all_arms():
         if arm == "N0":
             assert tuple(cr.ARM_SPECS[arm]["terms"]) == ("corr", "format")
             assert cr.ARM_SPECS[arm]["meta_form"] == "none"
+            continue
+        if arm == "SC_GH":
+            # 굿하트 압력시험(관문 G-F): corr 를 일부러 뺀다. 비교 팔이 아니라 검사 도구다.
+            assert "corr" not in cr.ARM_SPECS[arm]["terms"]
             continue
         for t in ("corr", "format", "meta_floor"):
             assert t in cr.ARM_SPECS[arm]["terms"]

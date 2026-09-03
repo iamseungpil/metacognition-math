@@ -317,3 +317,24 @@ def test_no_torch_or_verl_import():
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ── 0904: «new» 프롬프트(next: 필드 없음)에서의 novelty 정의 ───────────────────────────
+def test_sc_row_novelty_without_next_field_uses_first_post_meta_pair():
+    from src.training.countdown_selfcontrol import sc_row
+    nums = [25, 3, 7, 8]
+    pre = "Try 25*3 = 75. Then 75-7 = 68. No. Try 25+3 = 28. 28*7 = 196. No. 3*7 = 21. 8+7 = 15.\n"
+    meta = "<meta>\nconfidence: 0.4\nThe multiply family fails.\ndecision: redirect\n</meta>\n"
+    r = sc_row(pre + meta + "Let me try 25-8 = 17 first.", nums, 68, 0, 4, 0.8)
+    assert r["next"] is None and r["novel"] == 1 and r["followed"] == 1
+    r2 = sc_row(pre + meta + "Let me try 25*3 = 75 again.", nums, 68, 0, 4, 0.8)
+    assert r2["novel"] == 0 and r2["followed"] == 1
+    r3 = sc_row(pre + meta + "So the answer is \\boxed{25*3-7}", nums, 68, 1, 4, 0.8)
+    assert r3["novel"] == 0  # 25*3 은 프리픽스에 있던 쌍
+
+
+def test_sc_gh_arm_has_no_corr_term():
+    from src.training.countdown_rewards import ARM_SPECS, arm_signature
+    t = ARM_SPECS["SC_GH"]["terms"]
+    assert "corr" not in t and {"explore", "verify", "early_cost"} <= set(t)
+    assert "corr@" not in arm_signature("SC_GH") and "explore@" in arm_signature("SC_GH")

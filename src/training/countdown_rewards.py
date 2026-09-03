@@ -829,12 +829,17 @@ ARM_SPECS: dict[str, dict] = {
            "meta_form": "new",
            "note": "★자기제어. 막힘→redirect+novel+followed(explore) · "
                    "과신→verify+checked(verify) · 조기메타 비용(early_cost). "
-                   "근거-진리 없음 — 내부 신호만. 데이터 _4num_p3."},
+                   "근거-진리 없음 — 내부 신호만. 데이터 _4num_new (0904: p3 는 메타 96% 가 시도 전이라 부적합)."},
     # ★SCg = SC 의 대조점. explore 에만 plan_ok(근거-진리, PL 팔과 같은 완전열거)를
     #   곱한다 — 「내부 신호만으로 충분한가」를 SC 대 SCg 로 검정한다(SC_DESIGN.md).
     "SCg": {"label": "selfctrl_g", "terms": _COMMON + ("explore_g", "verify", "early_cost"),
             "meta_form": "new",
-            "note": "★SC + 근거-진리 대조. explore_g = explore × plan_ok. 데이터 _4num_p3."},
+            "note": "★SC + 근거-진리 대조. explore_g = explore × plan_ok. 데이터 _4num_p3 (next: 필드 필요)."},
+    # ★SC_GH = 굿하트 압력시험(관문 G-F). 정답 항을 **뺀** SC — 메타 항만 최적화하면 정책이
+    #   무엇으로 수렴하는지 20스텝만 보고 표본을 눈으로 검사한다. 학습 주장에 쓰지 않는다.
+    "SC_GH": {"label": "selfctrl_goodhart", "terms": ("format", "meta_floor", "explore", "verify", "early_cost"),
+              "meta_form": "new",
+              "note": "★굿하트 압력시험. corr 없음. 20스텝 뒤 메타 텍스트 퇴화 여부만 본다. 데이터 _4num_new."},
 }
 
 

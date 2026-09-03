@@ -229,14 +229,26 @@ def sc_row(text: str, nums, target, r_corr, K_S: int, CONF_HI: float) -> dict:
 
     novel = 0
     followed = 0
+    end = mf.get("meta_end")
+    after = text[int(end):] if end is not None else ""
     if mf["next"] is not None:
         a, _op, b = mf["next"]
         pair = (min(a, b), max(a, b))
         if pair not in pf["pairs_pre"] and _pair_in_multiset(nums, a, b):
             novel = 1
-        end = mf.get("meta_end")
-        after = text[int(end):] if end is not None else ""
         followed = plan_followed(after, nums, a, b)
+    elif pf["has_meta"]:
+        # ★0904 «new» 프롬프트(next: 필드 없음)용 정의. gs0 실측(Qwen3-4B, new, 500×8):
+        #   발화 행의 87% 가 이미 14회쯤 시도한 뒤이고 next 필드가 없으므로, «탐색»은
+        #   메타 뒤 **첫 시도 쌍**이 프리픽스에 없던 쌍인가로 읽는다(실측 4.7%). 이때
+        #   «이행»은 정의상 1 이다(첫 시도가 곧 계획). p3 처럼 next 가 있으면 위 분기.
+        m = _PAIR_RE.search(after)
+        if m:
+            a, b = int(m.group(1)), int(m.group(3))
+            pair = (min(a, b), max(a, b))
+            if pair not in pf["pairs_pre"] and _pair_in_multiset(nums, a, b):
+                novel = 1
+            followed = 1
 
     checked = post_meta_checked(text, nums)
     y = 1 if _bool01(r_corr) else -1
