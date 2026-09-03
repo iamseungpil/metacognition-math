@@ -64,5 +64,6 @@ export LOCAL_RANK=0
 export PYTHONNOUSERSITE=1
 export SDC_LOG_DIR="${WORK}/logs"
 export TRITON_CACHE_DIR="${WORK}/triton_cache"; mkdir -p "${TRITON_CACHE_DIR}"
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
 echo "[env.sh] REPO_ROOT=${REPO_ROOT} WORK=${WORK} HF_TOKEN=$([ -n "${HF_TOKEN:-}" ] && echo set || echo unset) WANDB_MODE=${WANDB_MODE:-online}"
