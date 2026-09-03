@@ -162,9 +162,22 @@ for f in "${DATA_TRAIN}" "${DATA_VAL}"; do
 done
 
 echo "[run_arm] starting training, appending to ${LOG_FILE}" | tee -a "${LOG_FILE}"
+# ── Ray 기동 직렬화. 0904 실측: 4 잡이 동시에 ray.init 하면 «node timed out during startup»
+#    (raylet/agent 등록 경합)로 죽는다. 기동 창(기본 300초) 동안만 전역 flock 을 잡고,
+#    그 뒤에는 잠금을 풀어 다른 잡이 기동하게 한다. 학습 자체는 병렬이다.
+STARTUP_LOCK="${QUEUE_ROOT:-/hdd_data/seungpil/queue}/.startup.lock"
+STARTUP_HOLD_SEC="${STARTUP_HOLD_SEC:-300}"
+exec 9>"${STARTUP_LOCK}"
+echo "[run_arm] waiting for startup lock ${STARTUP_LOCK}" | tee -a "${LOG_FILE}"
+flock 9
+echo "[run_arm] startup lock acquired $(date -Is); holding ${STARTUP_HOLD_SEC}s" | tee -a "${LOG_FILE}"
 set +e
-"${TRAIN_CMD[@]}" >> "${LOG_FILE}" 2>&1
+"${TRAIN_CMD[@]}" >> "${LOG_FILE}" 2>&1 &
+TRAIN_PID=$!
+( sleep "${STARTUP_HOLD_SEC}"; flock -u 9; echo "[run_arm] startup lock released $(date -Is)" >> "${LOG_FILE}" ) &
+wait "${TRAIN_PID}"
 TRAIN_RC=$?
+flock -u 9 2>/dev/null || true
 set -e
 
 if [ "${TRAIN_RC}" != "0" ]; then
