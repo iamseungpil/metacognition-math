@@ -1,117 +1,81 @@
 # ARCHITECTURE — metacognition-math
 
-> **START HERE.** This file maps the one live method, its exact file spine, and
-> where the superseded variants and archived reward modes now live. Everything
-> that is not on the spine below is history, kept for reproducibility under
-> `archive/runs_archive/` and `configs/archive/`.
+> **START HERE.** 10분 안에 "지금 뭐가 도는가"를 알기 위한 지도. 세부 근거는 각 절이
+> 가리키는 문서에 있다.
 
-## The one path that matters
+## (a) 한 줄 목표
 
-The live method is **PMI-shift metacognitive self-distillation**: a teacher-free
-self-distillation reward applied to the meta tokens. The current live experiment
-is the **RQ3 MATCHED LADDER** (2026-07-11): a 4-arm matched RL comparison on the
-real `Qwen/Qwen3-8B-Base` substrate — B0 (no-meta gold SFT init + VANILLA_GRPO),
-B2 (meta SFT init + VANILLA_GRPO), B3pkg (same meta SFT init + TRIOBJ_DCPO_V4
-full package, region-split, rmeta=pmi_shift — corrected 2026-07-12 from the
-failed pmi-only strip), and B3-noPMI (identical to B3pkg except
-`dcpo_w_meta=0.0` — the minus-one pmi-isolation control). RQ1 = B2−B0 (meta-SFT
-effect), RQ2 = B3pkg−B2 (meta reward package effect; the pure pmi isolation is
-B3pkg−B3-noPMI). Everything else in the
-tree is history — superseded variants and probes, kept for reproducibility under
-`archive/runs_archive/` and `configs/archive/`.
+**메타인지 행동을 강화해서 정확도를 올린다.** calibration(자기 confidence를 정답률에
+맞추기)은 부분 목표일 뿐이고, 최종 목표는 *좋은 메타인지 행동 → 정답률 향상*이다.
+그러려면 먼저 metacot(언제·무엇이 좋은 메타인지인가)를 정의하고, 그 행동이 실제로
+정답률을 올릴 때만 보상하는 RL을 설계해야 한다. 전문은 `CLAUDE.md`의 "Intent" 절.
 
-> **0727: the block below is the retired RQ3 think-off generation.** The current
-> generation is RQ3v2 think-on — a two-stage SFT stack (SFT1 → SFT2 on the RV
-> corpus and its meta-removed twin) feeding `h100std_rq3v2f_{b0p,b2p,b3p}.yaml`
-> (the A100 twins were retired 2026-08-03 into `archive/launchers_retired_0803/`). The data flow and trainer entry points below are
-> still accurate; the launcher names and the init checkpoints are not.
+## (b) 세 세대 요약
+
+| 세대 | 무엇을 했나 | 배운 것 | 증거 |
+|---|---|---|---|
+| 1. instruct PMI-shift | Qwen3-8B(**instruct**) 기질, meta-SFT + PMI-shift(자기 gold-vs-decoy 증거 이동) 보상 RL | 방법이 **작동한다** — MATH500 +14.00pp, OOD(L4–5)에서 기울기 더 큼. 단 기울기의 출처는 프라이밍이지 RL 보상이 아님 | `docs/CLAIMS.md` C-001 계열, `README.md` "검증된 것" |
+| 2. Qwen3-8B-Base 복제 | 같은 방법을 **pretrained-only base** 기질로 이식(RQ3v2 사다리, b0p/b2p/b3p) | **복제 실패.** 프라이밍은 base에서 널(+0.18pp, C-026), 우리 보상 패키지는 통제군보다 **음수**(−2.48pp, C-029) — instruct 이득은 그 기질 고유의 성질이었다 | `docs/CLAIMS.md` C-026·C-029 |
+| 3. Countdown 자(ruler) 탐색 (cd6) | base 복제가 막히자 과제를 Countdown(다중해 산술 탐색)으로 바꾸고, "모델 속 신호로 좋은 메타를 가려내는 자" 25개를 적대적으로 검증 | **내부 자 전부 탈락.** Countdown은 정답이 여럿이라 "정답 닮음 = 좋음"이 성립하지 않는다. 살아남은 것은 모델 속을 안 보는 근거-진리(완전열거) 계획 항 하나뿐이고, 그것으로 학습해 정확도가 오르는지는 **아직 확인 안 됨(결과 0건)** | `docs/FINDINGS_cd6.md`, `docs/POSTMORTEM_cd6_rulers_2026-09-03.md` |
+| 4. **현재 — cd7 SC 라운드** | 근거-진리 없이, 모델 **자신의** 신호(프리픽스 시도 수·자기보고 confidence/decision·메타 뒤 행동)만으로 "막히면 새 계열 탐색, 과신하면 실제 재계산"을 보상(SC 팔). 로컬 H100에서 100스텝, 판정 30/50/100 | **결과 0건 시점** — 학습 전 gs0 기준선만 관측. new 프롬프트에서 explore 발동률 0.0145로 낮고, RL이 이걸 못 올리면 "침묵 항" 판정 | `docs/PREREGISTRATION_countdown_sc_round.md` |
+
+## (c) 현재 라이브 경로 (spine)
 
 ```
-SFT      archive/launchers_retired_0727/h100std_sft_b0_gold.yaml        → configs/sft_b0_gold.yaml        → models/b0_gold_sft        (B0 init, no-meta gold)
-         archive/launchers_retired_0727/h100std_sft_b23_unmasked.yaml   → configs/sft_b23_unmasked.yaml   → models/b23_rv_unmasked_sft (B2/B3 init, meta RV unmasked)
-   │  src/training/sft.py  (wrong_prefix segment-mask)
+scripts/local/gpu_queue.py start-workers 0 1 2 3      GPU당 워커 1개, 큐 폴링
+   │  submit --cmd "bash scripts/local/run_arm.sh <ARM> <SEED> 100 <VARIANT>"
    ▼
-LAUNCH   archive/launchers_retired_0727/h100std_rq3_b0.yaml   (B0: no-meta init + VANILLA_GRPO)
-         archive/launchers_retired_0727/h100std_rq3_b2.yaml   (B2: meta init  + VANILLA_GRPO)
-         archive/launchers_retired_0727/h100std_rq3_b3.yaml   (B3pkg: meta init + TRIOBJ_DCPO_V4 FULL package — w_meta 0.8/w_format 0.35/w_emit 0.1/w_cal 0.3/len 0.08, w_over=0, rmeta=pmi_shift; ⚠️ 2026-07-12 corrected — the pmi-only strip failed)
-         archive/launchers_retired_0727/h100std_rq3_b3nopmi.yaml (B3-noPMI: same as B3pkg with only ++algorithm.dcpo_w_meta=0.0 — pmi-isolation control)
-   │  amlt → python -m src.training.verl_sdc
+scripts/local/run_arm.sh ARM SEED [STEPS=100] [VARIANT]
+   │  python -m src.training.verl_sdc --config-name=countdown_6arm \
+   │      ++algorithm.countdown_arm=<ARM>
    ▼
-CONFIG   configs/base_matched_grpo_h100_4x4k.yaml       (B0/B2)
-         configs/triobj_dcpo_v4_stage3b_h100_4x4k.yaml  (B3pkg/B3-noPMI)
-         parent: configs/verl_e4_selfdistill_h200_4x4k.yaml
+src.training.verl_sdc                                  hydra 진입점 / RayPPOTrainer
+   │
+   ├─ src.training.countdown_rewards.arm_reward         팔 정체(ARM_SPECS)와 항(TERMS) 조립
+   │    └─ src.training.countdown_selfcontrol.sc_row    SC/SCg 팔의 원재료(stuck·hi·novel·
+   │                                                      followed·checked) — 순수 함수, torch 무의존
+   │    └─ src.training.countdown_task.grade             정답 채점(완전 열거 기반)
    ▼
-TRAINER  src/training/verl_sdc.py           entry + GDPO trainer (monolith)
-         src/training/verl_sdc_utils.py     region masks / advantage / length cost
+verl.model_merger merge --backend fsdp                  판정 스텝(30/50/100)마다 FSDP 샤드 → bf16 병합
    ▼
-REWARD   src/training/dcpo_pmi_shift.py     ★ the paper's reward
-         src/training/dcpo_region.py        meta-region routing (where reward lands)
-         src/training/rewards.py            correctness + meta shape/penalty heads
+scripts/countdown_gs0_eval.py                           held-out 500×8 평가, 씨앗 11
+   ▼
+scripts/local/hf_upload.py                              병합 체크포인트만 HF 업로드
+                                                          (iamseungpil/metacot-countdown-local)
 ```
 
-The RQ2 decomposition arms `h100std_shiftonly.yaml` and `h100std_gandhi.yaml`
-launch the same spine with the PMI-shift head decomposed into its parts
-(pre-rq3 generation; the current live experiment is the rq3 ladder above).
+팔 하나 = GPU 한 장. 현재 라운드(cd7)의 팔: N0(맨 GRPO 기준선) / A(메타 요구, 무채점) /
+SC(자기제어) / G(길이 위약) + SC_GH(정답 항 뺀 굿하트 압력시험, 20스텝, 학습 주장 미사용).
+전체 사용법은 `scripts/local/README.md`, 설계·판정 기준은
+`docs/PREREGISTRATION_countdown_sc_round.md`.
 
-`dcpo_rmeta_source=pmi_shift` selects the `dcpo_pmi_shift.py` branch inside
-`verl_sdc.py`. The sibling reward modules (`dcpo_pmi.py`, `dcpo_directional.py`,
-`dcpo_asymcf.py`) are imported unconditionally and are **load-bearing at import
-time**, but their code paths run only under *other* `dcpo_rmeta_source` values —
-they are inert for the live method and must stay in place.
+## (d) 모듈 지도
 
-## What PMI-shift does (one paragraph)
-
-For each rollout the frozen SFT reference model scores the log-prob of the gold
-answer and a decoy answer at two teacher-forced positions — just before the meta
-block opens and just after it closes. If probability that had drifted toward the
-decoy swings back toward gold across the meta block (SAVE) the meta span is
-rewarded; if gold drifts to decoy (DERAIL) it is penalized (asymmetric,
-sign-reversal). The signal is the model's own gold/decoy discrimination distilled
-into the meta region — **no external teacher**. Reward is routed by
-`dcpo_region.py` onto META_CONTENT tokens only, sign-gated by correctness,
-combined with a correctness head (`rewards.py`) and a length cost
-(`verl_sdc_utils.py`) under a GDPO advantage.
-
-## "base" naming — pre-rq3 vs current rq3 ladder (naming note)
-
-**2026-07-11 — the Qwen3-8B-Base redesign has LANDED.** The current rq3 ladder
-uses the real pretrained-only `Qwen/Qwen3-8B-Base` as the substrate for all
-three arms (see `configs/sft_b0_gold.yaml` / `configs/sft_b23_unmasked.yaml`).
-The earlier instruct-substrate generation (pre-rq3) is now an archived
-generation.
-
-Historical caveat for old docs/runs: in the **pre-rq3** generation, "base" /
-"base_matched" / "qwen3_base_sft" / "basearm" meant the **no-meta CONTROL arm**
-SFT'd from `Qwen/Qwen3-8B` (the **INSTRUCT** release) — the same starting model
-as the meta arm, minus the `<|meta|>` tokens and the PMI-shift head. When
-reading pre-rq3 material, do not read that "base" as the pretrained-only model.
-In the current rq3 ladder, by contrast, every arm really does start from
-`Qwen3-8B-Base`, and the no-meta control is the **B0** arm.
-
-## Module map
-
-| Role | Files |
+| 상태 | 파일 |
 |---|---|
-| CORE entry/trainer | `verl_sdc.py`, `verl_sdc_utils.py` |
-| CORE reward (live) | `dcpo_pmi_shift.py`, `dcpo_region.py`, `rewards.py` |
-| CORE reward (imported, other rmeta modes) | `dcpo_pmi.py`, `dcpo_directional.py`, `dcpo_asymcf.py`, `meta_revision_rewards.py`, `_decoy_utils.py` |
-| CORE SFT/tokens | `sft.py`, `tokenizer_utils.py`, `meta_template.py`, `meta_token_init.py` |
-| VARIANT trainers (not the paper method) | `grpo_v2.py`, `grpo_clean.py`, `verl_gdpo*.py`, `verl_reward.py`, `meta_rod*_trainer.py`, `meta_opd_trainer.py`, `meta_rlsd_trainer.py`, `contrastive_meta_rlsd_trainer.py`, `meta_rlsd_data_pipeline.py` |
-| DEAD / probe-only | `bci_agent_loop.py`, `cf_*_agent.py`, `meta_inject.py`, `meta_quality.py`, `*_processor.py`, `redirect_*.py`, `segment_loss_mask.py`, `self_distill_data.py` |
+| **LIVE (Countdown, cd7)** | `src/training/countdown_rewards.py`(ARM_SPECS/TERMS 단일 정의처), `src/training/countdown_selfcontrol.py`(SC 행 특징), `src/training/countdown_task.py`(채점·프롬프트), `src/training/verl_sdc.py`(트레이너), `src/training/verl_sdc_utils.py`, `src/training/sft.py`, `src/training/tokenizer_utils.py`, `scripts/countdown_gs0_eval.py`, `scripts/local/*.py`·`*.sh`(큐·러너·데이터·업로드·디스크가드) |
+| **math-DCPO 경로 — 보존되나 현재 안 돎** | `src/training/dcpo_pmi_shift.py`, `src/training/dcpo_region.py`, `src/training/rewards.py`, `src/training/meta_revision_rewards.py`, `src/training/_decoy_utils.py` — 세대 1·2(instruct PMI-shift, base 복제)의 방법. 재현 가능하나 cd7은 이 경로를 안 쓴다 |
+| **verl_sdc.py 안의 config-inert 계열** | `cf_prefix_agent`/`meta_inject`/GFN/teacher 관련 블록과 구세대 `REWARD_CONFIGS` 12개 — import는 되지만 `countdown_6arm` config에서는 선택되지 않는 죽은 분기. `core/KNOBS.yaml`에 노브별로 등록돼 있고, **이번 라운드가 끝난 뒤** 테스트로 지켜가며 제거 예정(지금은 건드리지 않는다 — 도는 arm이 이 파일을 공유한다) |
 
-## Where to look for canonical descriptions
+## (e) 아카이브 배치
 
-For the current rq3 ladder, `docs/redesign/base_rl_recipe.md` (v2 recipe) and
-`docs/redesign/EXPERIMENT_LOG.md` are canonical. For the pre-rq3 generation,
-`experiments/configs/science/rl_pmishift.yaml` and `experiments/README.md`
-describe that run in clean, already-de-cluttered form. When the root yamls
-and the science configs disagree, the science configs are the intended spec; the
-root yamls are the actual historical launch scripts.
+| 디렉터리 | 무엇 | 시점 |
+|---|---|---|
+| `archive/dead_code_2026_09_04/` | 임포터 0건인 src 모듈 10개 + 고아 스크립트 24개 + `scripts/retired/` 전체 | 2026-09-04 |
+| `archive/launchers_retired_0904/` | 현행 6개 arm(SFT2 쌍 3 + RL 3)을 제외한 루트 `h100std_*.yaml` 27개 | 2026-09-04 |
+| `archive/launchers_retired_0818/`, `_0803/`, `_0727/`, `launchers_pre_rq3/` | 각 세대 전환 시 은퇴한 amlt 런처 (날짜별) | 각 날짜 |
+| `archive/reward_lineages_retired_0803/`, `reports_pre_regrade_0803/` | 재채점 이전 보상 계보·리포트 | 2026-08-03 |
+| `archive/incidents_pre_rq3/`, `docs_pre_rq3/`, `data_pre_rq3/`, `results_archive/`, `runs_archive/`, `2026_04_16_cleanup/`, `dead_code_2026_07_12/` | 세대 1(instruct) 이전 문서·데이터·런·정리 이력 | 각 날짜 |
 
-## Archived, not deleted
+각 디렉터리에 왜 옮겨졌는지 설명하는 `README.md`가 있다(예:
+`archive/dead_code_2026_09_04/README.md`, `archive/launchers_retired_0904/README.md`).
+아무것도 삭제되지 않았다 — `git log --follow <경로>`로 이력을 볼 수 있다.
 
-`archive/runs_archive/` = old amlt launchers (ROD/OPD/RLSD/GDPO/e4-e9 lines, metacognition
-A100 launchers, triobj v2-v3 and intermediate v4 stages, decoy/asymcf/weight-soup
-probes, superseded eval one-offs). `configs/archive/` = their hydra configs.
-Nothing was removed — `git log --follow <archived-file>` for its history, and any
-archived run is reproducible by its original path.
+## 더 보기
+
+- `docs/PREREGISTRATION_countdown_sc_round.md` — 현재 라운드(cd7) 설계·판정 기준
+- `docs/POSTMORTEM_cd6_rulers_2026-09-03.md`, `docs/FINDINGS_cd6.md` — 왜 자 탐색에서
+  Countdown 자기제어 라운드로 왔는가
+- `docs/CODE_MAP.md` — math-DCPO 경로(세대 1·2)의 상세 호출 사슬과 config 함정
+- `scripts/local/README.md` — 실행 방법
+- `NODE_POLICY.md`, `docs/mainline_registry_2026_04_13.md` — DEPRECATED(pre-rq3 세대)

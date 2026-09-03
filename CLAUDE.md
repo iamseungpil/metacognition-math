@@ -29,7 +29,16 @@ enabling self-assessment, error correction, and calibrated confidence.
   제거해야 한다.
 - TRAPI scope: api://trapi/.default (endpoint: trapi.research.microsoft.com/gcr/shared)
 
-## Compute (0727 기준 — 두 VC 모두 제약이 있고, 그 제약이 실험 설계를 결정한다)
+## Compute
+
+**현재(0904) 실제로 도는 곳: 로컬 H100×8 박스, GPU 0~3.** amlt/클러스터가 아니다.
+`scripts/local/`의 GPU 큐(`gpu_queue.py`)가 워커·잡을 관리하고, 체크포인트·데이터·큐
+전부 `/hdd_data`에만 둔다(`/scratch` 없음 — amlt 세대의 관례가 이 머신에는 적용 안 됨).
+실행 방법은 `scripts/local/README.md`, 아키텍처는 `ARCHITECTURE.md` (c). 아래 두 절
+(amlt VC 제약·현행 런처)은 **amlt 클러스터 복구 시에만** 유효하다 — 지금은 아무 잡도
+그리로 안 간다.
+
+### amlt VC 제약 (0727 기준 — 클러스터 복구 시에만 참조)
 
 **msrresrchbasicvc** — H100/H200/A100/MI300X 보유. **0726 05:49부터 우리 신원의 신규 제출을
 전부 거부**한다(`UserError: The virtual cluster does not exist`). 1-CPU echo 잡도 같은 메시지를
@@ -57,7 +66,8 @@ Standard 티어라 선점이 잦으므로 ckpt 릴레이/resume 배선은 여전
 - Image: mcr.microsoft.com/aifx/acpt/stable-ubuntu2204-cu126-py310-torch28x
 - Conda env: /scratch/conda_envs/simplerl (conda-pack)
 - AMLT project: skilldiscovery2
-- **현행 런처**(그 외 루트의 `h100std_rq3_*`, `h100std_sft_*`, `a100g1_*`, `a100g2_*`는 은퇴):
+- **클러스터 복구 시 재개할 런처**(그 외 루트의 `h100std_rq3_*`, `h100std_sft_*`,
+  `a100g1_*`, `a100g2_*`는 은퇴 — 아무것도 지금 돌고 있지 않다):
   - SFT2 쌍: `h100std_sft_b0p2_rvfull.yaml`(컨트롤) / `h100std_sft_b2p2_rvfull.yaml`(메타)
   - RL: `h100std_rq3v2f_{b0p,b2p,b3p}.yaml` — 이 3종이 현재 도는 arm
     (solid-gibbon / hip-hound / pure-stag)

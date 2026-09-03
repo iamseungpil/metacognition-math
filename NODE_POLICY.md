@@ -1,4 +1,6 @@
-> ⚠️ **DEPRECATED** (pre-rq3 V8/H200 세대 노드 정책): 현행 실험은 **rq3 매치드 래더** — `README.md` 및 `docs/redesign/` 참조.
+> ⚠️ **DEPRECATED** (pre-rq3 V8/H200 세대 노드 정책, AMLT 클러스터 전제): 현행 실험은
+> 로컬 H100 Countdown cd7 라운드이고 AMLT 노드를 쓰지 않는다 — `ARCHITECTURE.md`,
+> `README.md`, `scripts/local/README.md` 참조.
 
 # Node Allocation Policy (2026-04-15)
 

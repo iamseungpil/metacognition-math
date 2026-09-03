@@ -10,24 +10,55 @@
 습관을 심는 SFT2 코퍼스는 easy 870 · medium 893 · **hard 0건**이므로,
 **MATH500 level 4–5 (262문항)가 곧 그 "분포 밖" 축**이다.
 
-> **처음 오셨나요? 이 셋만 읽으면 됩니다.**
+> **처음 오셨나요? 이 넷만 읽으면 됩니다.**
 > 1. 이 파일 — 무엇을 왜 하는가 · **지금 어디인가**
-> 2. [`docs/CLAIMS.md`](docs/CLAIMS.md) — **무엇이 참이고 무엇이 닫혔는가**
-> 3. [`docs/CONSTITUTION.md`](docs/CONSTITUTION.md) — 진단 원칙 · 지표 대시보드 · 발사 게이트
+> 2. [`docs/PREREGISTRATION_countdown_sc_round.md`](docs/PREREGISTRATION_countdown_sc_round.md) — **현재 라운드**(cd7)의 설계·판정 기준
+> 3. [`docs/CLAIMS.md`](docs/CLAIMS.md) — 과거(instruct·base 복제) 세대에서 무엇이 참이고 무엇이 닫혔는가
+> 4. [`docs/CONSTITUTION.md`](docs/CONSTITUTION.md) — 진단 원칙 · 지표 대시보드 · 발사 게이트
+>
+> 아래 본문의 "메타-CoT 형식 + PMI-shift" 서술은 **instruct 세대**(2026-07)의 방법이다.
+> 그 방법을 Qwen3-8B-Base로 복제하는 시도, 그리고 그 다음 Countdown 과제로 전환해 모델
+> 내부 신호로 메타를 가려내려는 시도(cd6)는 모두 막혔다 — 자세한 경위는
+> [`docs/POSTMORTEM_cd6_rulers_2026-09-03.md`](docs/POSTMORTEM_cd6_rulers_2026-09-03.md).
 
 ---
 
-## 지금 어디인가 (2026-08-03)
+## 지금 어디인가 (2026-09-04 — cd7, Countdown SC 라운드)
 
-| arm | 무엇 | 상태 | 판정 |
-|---|---|---|---|
-| **b0p** | 메타 제거 쌍둥이 SFT2 + vanilla GRPO (**통제군**) | 🟢 `solid-gibbon` 진행 중 | — |
-| **b2p** | 메타 SFT2 + vanilla GRPO (**프라이밍만**) | 🟢 `hip-hound` gs300 재생성 중 | ✅ 정상 — 메타 구조 300스텝 내내 평평 |
-| **b3p** | 메타 SFT2 + PMI-shift 7헤드 패키지 | 🔴 완주했으나 **무효** | ❌ **Outcome C** — gs150 이후 발화율 1.00→0.018, **처치 소멸** |
+instruct 세대(§검증된 것)와 Qwen3-8B-Base 복제(§아래 한 줄)는 **모두 과거 라운드**다.
+base 복제가 처치 소멸로 막힌 뒤, 과제를 Countdown(다중해 산술 탐색)으로 바꾸고 "모델
+속 신호로 좋은 메타를 가려내는 자(ruler)" 25개를 검증했으나 **전부 탈락**했다
+(`docs/POSTMORTEM_cd6_rulers_2026-09-03.md`). 지금 도는 것은 그 다음 수:
+모델 **자신의** 신호(막힘·과신·행동)만으로 메타인지를 보상하는 **cd7 SC 라운드**다.
 
-**한 줄**: instruct 기질에서는 방법이 작동한다(검증 완료). **base 기질 복제는 처치가 스스로 사라져 아직 판정 불가.**
+- **머신**: 로컬 H100 80GB × 4 (GPU 0~3), 클러스터가 아니라 `scripts/local/` 큐.
+- **팔**: N0(맨 GRPO, 메타 없음) · A(메타 요구, 무채점) · **SC**(막힘→탐색·과신→검증
+  보상) · G(길이 위약) + SC_GH(정답 항 뺀 굿하트 압력시험, 20스텝, 학습 주장 미사용).
+- **규모**: Qwen3-4B, SFT 없음, GRPO 100스텝, 판정 지점 30/50/100, 씨앗 1~3.
+- **상태**: **결과 0건** — 아래는 학습 시작 전 gs0 기준선.
+
+| 프롬프트 | 정답률 | 발화율 | 발화 행 중 stuck | early | hi | novel | checked |
+|---|---|---|---|---|---|---|---|
+| plain (N0 기준) | 0.426 | 0 | — | — | — | — | — |
+| new (SC 기반) | 0.390 | 0.398 | 0.869 | 0.031 | 0.297 | 0.047 | 0.414 |
+| p3 (⛔ 부적합 — 메타가 시도 전) | 0.099 | 0.882 | 0.033 | 0.960 | 0.029 | 0.831 | 0.228 |
+
+new에서 explore 발동률 0.0145(발화 행 기준) — RL이 20스텝 안에 이걸 못 올리면
+"침묵 항" 판정(사전등록 §5). 전체 설계·판정 밴드는
+[`docs/PREREGISTRATION_countdown_sc_round.md`](docs/PREREGISTRATION_countdown_sc_round.md).
+
+**한 줄**: instruct 기질에서는 방법이 작동했다(아래 검증됨). **하지만 base 기질
+복제는 프라이밍이 널(C-026), 우리 보상 패키지는 통제군보다 음수(C-029)였고**, 그 다음
+Countdown으로 과제를 바꿔 모델 내부 신호로 메타를 가려내려 한 시도도 25개 전부
+탈락했다(cd6 postmortem). 지금 검증 중인 것은 근거-진리 없이 모델 **자신의** 신호만으로
+메타인지를 보상해도 정답률이 오르는가이며, 아직 답이 없다.
 
 ## 검증된 것 — 보존 산출물 독립 재채점 (전체는 [`docs/CLAIMS.md`](docs/CLAIMS.md))
+
+⚠ **아래는 instruct 세대(2026-07) 결과다.** 같은 방법을 Qwen3-8B-Base로 복제하자
+프라이밍은 널(+0.18pp, C-026), 보상 패키지는 음수(−2.48pp, C-029)였다 — instruct
+이득이 기질 고유의 성질이었을 가능성이 있다는 뜻. Countdown 자 탐색(cd6)도 전멸했다
+(위 "지금 어디인가" 참조). 아래 숫자를 "현재 방법이 낸 결과"로 인용하지 말 것.
 
 | 주장 | 값 |
 |---|---|
@@ -39,17 +70,7 @@
 
 ⚠ 전 arm **단일 학습 시드**. `seed43_*` 파일은 디코딩 시드다.
 
-## 다음 실험
-
-| 순위 | 실험 | 누가 | 상태 |
-|---|---|---|---|
-| 1 | **b3s** — base `shiftonly` 두 팔(`meta_floor` 0.0 vs 0.05), 통제군 b2p 공유 | 우리 | 승인 대기 |
-| 2 | **채점 격자 36셀** — 보존 산출물 독립 재채점 (**GPU 0**) | 협업자 | 착수 가능 |
-| 3 | b3p(구) gs300 + b2p gs300 **OOD eval** (L4–5 분할, 응답 로깅) | 우리 | b2p 완주 후 |
-| 4 | **instruct 사다리 전체 재현**(SFT1→SFT2→meta-GRPO→eval) — 삭제 체크포인트 복원 + **2번째 시드** | 협업자 | 2 이후 |
-| 5 | 스케일 축 (4B / 14B) | 협업자 | 1·4 이후 |
-
-## 판정 기준 (사전 선언)
+## 판정 기준 (사전 선언 — instruct 세대. cd7 판정 기준은 아래 별도)
 
 - **주 지표**: MATH500 **L4–5(n=262)**에서 `Δacc(L4–5) − Δacc(L1–2)`
   바닥 0.00 · 천장 +29.97 · **잡음바닥 ±3.08pp** (같은 모델 8샘플 4/4 분할 A-vs-A 실측)
@@ -59,44 +80,43 @@
 - 논문 eval: 16k tokens · avg@8 (AIME avg@16) · temp 0.7 · 두 arm을 같은 job·같은 seed로
 - 난이도 층화 **필수** — 집계만 보면 Simpson 함정
 
+cd7의 주/부 지표와 판정 밴드는
+[`docs/PREREGISTRATION_countdown_sc_round.md`](docs/PREREGISTRATION_countdown_sc_round.md)
+§4·§5에 별도로 동결돼 있다(held-out 500×8 정답률, 판정 30/50/100스텝, σ_run 2.89pp).
+
 ## 저장소 배치
 
 ```
 core/KNOBS.yaml          하중 노브 등록부 — dcpo_* 85개 전수 (live 38 / default-only 7 / dead 40)
-src/                     라이브러리 (학습·보상·평가)
-configs/                 Hydra 상속 체인: verl_sdc_e21r_shared → verl_e4_selfdistill → arm leaf
-h100std_rq3v2f_*.yaml    라이브 RL 런처 3개
+src/                     라이브러리 (학습·보상·평가) — 현재 라이브는 src/training/countdown_*.py
+scripts/local/           ★현재 실행 경로 — GPU 큐 워커·팔 러너·데이터 빌더·HF 업로드
+configs/countdown_6arm.yaml  cd7 RL config (arm은 run_arm.sh 가 CLI 로 고른다)
+h100std_rq3v2f_*.yaml    math-DCPO(instruct/base) 라이브 RL 런처 3개 — 클러스터 복구 시에만
 h100std_sft_b*2_rvfull.yaml  그 init을 만든 SFT2 런처 2개
-docs/                    CLAIMS · CONSTITUTION · PREREGISTRATION · reports/
+docs/                    CLAIMS · CONSTITUTION · PREREGISTRATION · POSTMORTEM · reports/
 archive/                 은퇴한 것 전부 — 각 디렉터리에 "왜 여기 있는지" README
+                         (예: archive/dead_code_2026_09_04/, archive/launchers_retired_0904/)
 paper/                   논문
 ```
 
 ⚠ **`--keep 1`이 판정 지점 체크포인트를 프루닝합니다.** b3p의 처치 살아있던 gs100–150이
 그렇게 사라져 이제 평가할 수 없습니다. 새 런은 `--keep 3` + 판정 지점 명시 보존.
 
-## 재현
+## 재현 (cd7, 로컬 H100)
 
 ```bash
-git clone https://github.com/iamseungpil/metacognition-math && cd metacognition-math
-cp .env.example .env                        # HF_TOKEN / GH_TOKEN / WANDB_API_KEY
-set -a; source .env; set +a
-
-# held-out eval (GSM8K 500 + MATH-500 500 + AIME 30) — 응답 텍스트를 parquet에 남긴다
-python scripts/eval_vllm_1030.py \
-    --model_path <ckpt_dir> --model_name my_eval --output_dir results/eval_1030_my_eval/ \
-    --max_tokens 16384 --temperature 0.7 --num_samples 8 --seed 42
-
-# 학습 (MSR amlt). 순서 필수: SFT2 쌍이 HF에 착지해야 RL이 init을 스테이징한다.
-amlt run h100std_sft_b0p2_rvfull.yaml sft2-b0p2-<날짜>   # 통제군
-amlt run h100std_sft_b2p2_rvfull.yaml sft2-b2p2-<날짜>   # 메타
-# models/{b0p2,b2p2}_rvfull_sft 가 4샤드 착지한 뒤에만:
-amlt run h100std_rq3v2f_b0p.yaml rq3v2f-b0p-<날짜>
-amlt run h100std_rq3v2f_b2p.yaml rq3v2f-b2p-<날짜>
-amlt run h100std_rq3v2f_b3p.yaml rq3v2f-b3p-<날짜>
+source scripts/local/env.sh                      # .env 로드 + simplerl 활성화 + Ray/vLLM 노브
+bash scripts/local/make_data.sh                   # countdown_{train,val}_4num_<variant>.parquet 생성
+python scripts/local/gpu_queue.py start-workers 0 1 2 3   # GPU당 워커 1개
+python scripts/local/gpu_queue.py submit --name cd7_SC_p3_s0 --priority 10 \
+    --cmd "bash scripts/local/run_arm.sh SC 0 100 p3"     # 팔 하나 = 잡 하나 = GPU 한 장
+python scripts/local/gpu_queue.py status          # pending/running/done/failed 확인
 ```
 
-발사 전 판정 기준은 [`docs/PREREGISTRATION_rq3v2_base_replication.md`](docs/PREREGISTRATION_rq3v2_base_replication.md)에 동결돼 있다.
+세부 사용법(디스크 가드·HF 업로드 경로·정지)은 [`scripts/local/README.md`](scripts/local/README.md).
+
+math-DCPO(클러스터 amlt) 재현은 아래 "HF 자산" 절 이전 세대 기준으로 여전히 유효하나
+**현재 두 amlt VC 모두 제약 상태**다 — `CLAUDE.md`의 Compute 절 참조.
 
 ## HF 자산 (전부 PUBLIC)
 
@@ -120,9 +140,11 @@ amlt run h100std_rq3v2f_b3p.yaml rq3v2f-b3p-<날짜>
 
 ## 더 보기
 
-- [`CLAUDE.md`](CLAUDE.md) — 에이전트·데이터 레지스트리
-- [`NODE_POLICY.md`](NODE_POLICY.md) — AMLT 노드 소유권 규칙
-- [`docs/CODE_MAP.md`](docs/CODE_MAP.md) — live vs legacy, 호출 사슬, rmeta config-flip 함정
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — 세 세대 요약 · 현재 라이브 경로 spine · 모듈 지도
+- [`CLAUDE.md`](CLAUDE.md) — 에이전트·데이터·컴퓨트 레지스트리
+- [`NODE_POLICY.md`](NODE_POLICY.md) — ⚠ DEPRECATED (pre-rq3 세대 AMLT 노드 소유권 규칙)
+- [`docs/CODE_MAP.md`](docs/CODE_MAP.md) — math-DCPO 호출 사슬·rmeta config-flip 함정(§1~8) + Countdown cd7 경로(§9)
+- [`scripts/local/README.md`](scripts/local/README.md) — cd7 실행 방법(큐·러너·평가·업로드)
 - [`experiments/README.md`](experiments/README.md) — 폴더 구조·협업자 트랙
 - 설명 사이트 — https://metacog-explainer.pages.dev (소스 `docs/site/`)
   ⚠ 사이트 수치는 인증 취소된 pre-rq3 세대다. 배너 참조.

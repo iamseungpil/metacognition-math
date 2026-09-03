@@ -1,11 +1,12 @@
-# CODE_MAP — 신규 인력용 코드 인벤토리 (read-only, 2026-07-17 · 런처 이름 0727 갱신)
+# CODE_MAP — 신규 인력용 코드 인벤토리 (read-only, 2026-07-17 · 0904 갱신)
 
-> **세대 주석(0727).** 이 문서가 쓰인 시점의 현행은 **RQ3 think-off**(B0/B2/B3,
-> `h100std_rq3_*`)였고, 지금은 **RQ3v2 think-on**(b0p/b2p/b3p, 2단 SFT 스택)이다.
-> **아래 메커니즘 서술 — 모드 분기, config 상속 순서, §2의 rmeta 함정, §3의 RGS 규칙 —
-> 은 전부 그대로 유효하다.** 같은 장치를 현행 런처가 쓴다. 바뀐 것은 런처 파일명과 arm
-> 이름뿐이며 본문의 이름은 현행으로 갱신했다. 구세대 런처는
-> `archive/launchers_retired_0727/`에 있다.
+> **세대 주석(0904).** 이 문서 본문(§1~§8)이 서술하는 것은 **math-DCPO 경로**
+> (instruct PMI-shift → Qwen3-8B-Base 복제, RQ3v2 세대)다. 이 경로는 **현재 도는 arm이
+> 아니다** — 현행 실험은 Countdown cd7 SC 라운드(`ARCHITECTURE.md` (c) 참조,
+> `src/training/verl_sdc.py --config-name=countdown_6arm`). 아래 메커니즘 서술 — 모드
+> 분기, config 상속 순서, §2의 rmeta 함정, §3의 RGS 규칙 — 은 math-DCPO 경로를 다시 돌릴
+> 때 여전히 유효하지만, Countdown 경로의 라이브 파일은 §4·§9를 볼 것. 구세대 런처는
+> `archive/launchers_retired_0727/`·`_0803/`·`_0818/`·`_0904/`에 있다.
 
 이 문서는 "지금 살아있는 코드가 무엇이고 어디서 불리는가"의 지도다. 수정
 지침이 아니다 — src/·configs/·h100std_*.yaml은 tarball(CODE_TAR_REVISION)과
@@ -78,15 +79,23 @@ rollout은 single_turn, 전 arm 매치드. **yaml만 읽으면 보상 소스를 
 
 ## 4. src/training/*.py
 
+> **LIVE 표시의 의미(0904).** 아래 표의 "LIVE"는 "math-DCPO 경로가 다시 돌 때 필요한
+> 파일"이다 — **지금 도는 arm은 Countdown cd7이고, verl_sdc.py를 공유하는 것을 빼면
+> 이 표의 나머지는 현재 어느 GPU에서도 실행되지 않는다.** 지금 실제로 도는 파일은
+> §9(Countdown cd7 경로)를 볼 것.
+
 | 파일 | 역할 | 상태 |
 |---|---|---|
-| verl_sdc.py | 메인 hydra 진입점(`-m src.training.verl_sdc`); RayPPOTrainer 래퍼, REWARD_CONFIGS 모드 디스패치, rmeta 라우팅 | **LIVE** (rq3 런처 5개 전부) |
-| dcpo_region.py | region 마스크(META_REGION/META_CONTENT/CONF/ANSWER), region 보상, advantage 조성 | **LIVE** (TRIOBJ arm) |
-| dcpo_pmi_shift.py | pmi_shift R_meta numpy 코어(save/derail 비대칭 보상) | **LIVE** (b3pkg; b3nopmi는 가중치 0) |
-| rewards.py | 정준 correctness 채점(math_verify + thread-safe SIGALRM 가드), format/cal 헬퍼 | **LIVE** (전 arm) |
-| verl_sdc_utils.py | region advantage 계산, 마스크 빌더, anchor-EMA 상태 | **LIVE** (TRIOBJ; import는 항상) |
-| sft.py | TRL SFT 트레이너(B0-gold·B23 meta-SFT init 생성) | **LIVE** (SFT 런처 2개) |
-| _decoy_utils.py | rule-based decoy 생성(pmi_shift용 gold-vs-decoy) | **LIVE** (전이적) |
+| verl_sdc.py | 메인 hydra 진입점(`-m src.training.verl_sdc`); RayPPOTrainer 래퍼, REWARD_CONFIGS 모드 디스패치, rmeta 라우팅 | **LIVE — 양쪽 경로 공유** (math-DCPO rq3 런처 5개 + Countdown `countdown_6arm`) |
+| countdown_rewards.py | Countdown 팔 정체(ARM_SPECS)·항(TERMS) 단일 정의처, `arm_reward` 조립 | **LIVE (Countdown cd7, 현재 도는 경로)** — §9 참조 |
+| countdown_selfcontrol.py | SC/SCg 팔의 행 특징(stuck·hi·novel·followed·checked) 계산 — `countdown_rewards`가 조립만, 원재료는 여기 | **LIVE (Countdown cd7)** |
+| countdown_task.py | Countdown 채점(`grade`, 완전열거 `_solvable`)·프롬프트 변형(`PROMPT_VARIANTS`: plain/new/p3) | **LIVE (Countdown cd7)** |
+| dcpo_region.py | region 마스크(META_REGION/META_CONTENT/CONF/ANSWER), region 보상, advantage 조성 | math-DCPO, 현재 미가동 (TRIOBJ arm 전용) |
+| dcpo_pmi_shift.py | pmi_shift R_meta numpy 코어(save/derail 비대칭 보상) | math-DCPO, 현재 미가동 (b3pkg; b3nopmi는 가중치 0) |
+| rewards.py | 정준 correctness 채점(math_verify + thread-safe SIGALRM 가드), format/cal 헬퍼 | math-DCPO, 현재 미가동 (수학 arm 전부) — Countdown은 `countdown_task.grade`를 씀 |
+| verl_sdc_utils.py | region advantage 계산, 마스크 빌더, anchor-EMA 상태 | math-DCPO, 현재 미가동 (TRIOBJ; import는 항상) |
+| sft.py | TRL SFT 트레이너(B0-gold·B23 meta-SFT init 생성) | math-DCPO, 현재 미가동 (SFT 런처 2개 — cd7은 SFT 없이 RL만) |
+| _decoy_utils.py | rule-based decoy 생성(pmi_shift용 gold-vs-decoy) | math-DCPO, 현재 미가동 (전이적) |
 | meta_close_processor.py | vLLM logits proc — `<\|/meta\|>` 강제 닫기 (b3 런처 env `DCPO_META_CLOSE_FORCE=1`) | 휴면 (env는 b3 런처가 설정하나 유일 소비처 cf_prefix_agent가 rq3 single_turn/pmi_shift 경로에서 미호출 — sdc_counterfactual=false·cf_group 아님) |
 | meta_quality.py | meta 품질 점수 헬퍼 (rewards.py가 import) | LIVE-전이적 |
 | tokenizer_utils.py / meta_token_init.py / meta_template.py | tokenizer 호환 / think→meta embedding 이식 / SFT용 meta 템플릿 | SFT 계보 LIVE |
@@ -104,16 +113,19 @@ cf_stats.py, redirect_* 등. **rq3 ckpt의 held-out eval은
 `scripts/eval_vllm_1030.py`**(SFT 런처 `*_sft_b?p2_rvfull.yaml`에서 참조)이며 src/eval이
 아니다.
 
-## 6. scripts/ (75개 — 그룹만)
+## 6. scripts/ (그룹만)
 
 | 그룹 | 파일 | 상태 |
 |---|---|---|
-| rq3 노드 라이프사이클 | bootstrap_sdc_node.sh, gpu_keeper.py, pull_parquets.py, pull_resume_ckpt.py, push_ckpts_to_hf.py | **LIVE** (전 rq3 yaml) |
-| SFT arm | push_models_hf.py, verify_eos_invariant.py, eval_vllm_1030.py | **LIVE** (SFT 런처) |
+| **Countdown cd7 로컬 러너 (현재 도는 경로)** | `scripts/local/gpu_queue.py`·`run_arm.sh`·`make_data.sh`·`hf_upload.py`·`disk_guard.py`·`env.sh` | **LIVE** — `scripts/local/README.md` 참조 |
+| **Countdown 평가** | `scripts/countdown_gs0_eval.py` — held-out 500×8, `run_arm.sh`가 판정 스텝마다 호출 | **LIVE** |
+| math-DCPO rq3 노드 라이프사이클 | bootstrap_sdc_node.sh, gpu_keeper.py, pull_parquets.py, pull_resume_ckpt.py, push_ckpts_to_hf.py | math-DCPO, 현재 미가동 (amlt 클러스터 복구 시) |
+| math-DCPO SFT arm | push_models_hf.py, verify_eos_invariant.py, eval_vllm_1030.py | math-DCPO, 현재 미가동 |
 | rq3 사이드 eval/smoke | run_rq3_side_eval.py 외 | SEMI-LIVE (로컬용, 런처 미참조) |
 | 구세대 launch/데이터/분석 | launch_*, build_*, analyze_*, s3b_retry_daemon.sh 등 | LEGACY |
 | env/지원 | check_runtime_env.py, patch_math_verify.py, install_verl.sh, setup_node.sh 등 | 지원 (일부 bootstrap이 호출) |
 | smoke/테스트 | smoke_*.py, test_*.py, format_parser_harness.py 등 | 개발용 |
+| 아카이브(2026-09-04) | `archive/dead_code_2026_09_04/scripts/` — 임포터 0건 확인된 24개 + retired/ | 이동됨, 코드 무수정 |
 
 ## 7. configs/ 와 루트 런처
 
@@ -155,3 +167,23 @@ common/, launch/run.sh + configs/{infra,science} — 전부 sec4 논문용 LEGAC
 단 `experiments/configs/science/eval_1030.yaml` + `launch/run.sh eval`은
 held-out eval 스테이징에 재사용되며, models 블록이 pre-rq3 arm을 가리키고
 있어 rq3 ckpt eval 시 그 블록 수정이 필요하다(LOCAL_RUN.md 참조).
+
+## 9. Countdown cd7 경로 (0904, 현재 실제로 도는 것)
+
+§1~§8은 math-DCPO(instruct PMI-shift → base 복제) 경로다. 그 경로는 지금 어느 GPU에서도
+돌지 않는다. **지금 도는 것**은 로컬 H100×4(GPUs 0-3)에서 실행되는 Countdown 자기제어
+RL이며, 호출 사슬은 `ARCHITECTURE.md` (c)에 있다. 요약:
+
+```
+scripts/local/gpu_queue.py (큐 워커) → scripts/local/run_arm.sh ARM SEED STEPS VARIANT
+  → python -m src.training.verl_sdc --config-name=countdown_6arm ++algorithm.countdown_arm=<ARM>
+  → src/training/countdown_rewards.py (ARM_SPECS/TERMS 정의처, arm_reward 조립)
+      ← src/training/countdown_selfcontrol.py (SC/SCg 행 특징)
+      ← src/training/countdown_task.py (채점 grade, 프롬프트 PROMPT_VARIANTS)
+  → verl.model_merger (판정 스텝 병합) → scripts/countdown_gs0_eval.py → scripts/local/hf_upload.py
+```
+
+이 경로의 config는 `configs/countdown_6arm.yaml` 하나이고, 런처 yaml이 아니라
+`run_arm.sh`가 CLI로 `++algorithm.countdown_arm`을 넘겨 팔을 고른다(math-DCPO의 "런처가
+config를 뒤집는다"는 §2 함정과 같은 종류의 함정 — **진실은 run_arm.sh**). 현재 팔 정의와
+판정 기준은 `docs/PREREGISTRATION_countdown_sc_round.md`.

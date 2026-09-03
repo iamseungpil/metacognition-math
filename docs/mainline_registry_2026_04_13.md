@@ -1,3 +1,7 @@
+> ⚠️ **DEPRECATED** (2026-04-13 snapshot, pre-rq3 generation): the files indexed below
+> are not the current spine. See `ARCHITECTURE.md` for the current live path (Countdown
+> cd7 on local H100) and the three-generation summary.
+
 # Mainline Registry
 
 This is the shortest route for locating the current claim-bearing files.
