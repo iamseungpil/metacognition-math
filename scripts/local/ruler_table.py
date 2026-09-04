@@ -71,6 +71,7 @@ def main():
     ap.add_argument("--out_dir", required=True)
     ap.add_argument("--rulers", default="all")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--device", default=None, help="cuda|cpu (기본: cuda 가 보이면 cuda)")
     ap.add_argument("--no-model", dest="no_model", action="store_true",
                     help="모델 forward 없이 model-free 자/기준선/오라클/시뮬레이션만 돈다")
     args = ap.parse_args()
@@ -94,7 +95,11 @@ def main():
         if not args.model_path:
             raise SystemExit("ruler_table.py: --no-model 이 아니면 --model_path 가 필요하다.")
         from src.rulers.hf_ctx import HfCtx
-        ctx = HfCtx(model_path=args.model_path)
+        # 0904: 기본값 cpu 로 돌린 첫 판이 48,000 이어쓰기에 며칠이 걸렸다. GPU 가 보이면 GPU·bf16.
+        import torch  # noqa: PLC0415
+        _dev = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+        ctx = HfCtx(model_path=args.model_path, device=_dev, dtype=("bfloat16" if _dev == "cuda" else None))
+        print(f"[ruler_table] device={_dev}", flush=True)
     else:
         print(f"[ruler_table] {MODEL_FREE_ONLY_MSG}", file=sys.stderr)
 
