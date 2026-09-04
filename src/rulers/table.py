@@ -15,6 +15,7 @@ import itertools
 import json
 import math
 import random
+import re
 from dataclasses import asdict
 from typing import Any, Optional, Sequence
 
@@ -48,11 +49,29 @@ def load_sites(sites_path: str) -> pd.DataFrame:
 
 
 def site_from_row(row) -> Site:
-    prompt_messages = row["prompt_json"]
-    if isinstance(prompt_messages, str):
-        prompt_messages = json.loads(prompt_messages) if prompt_messages else []
+    r"""`scripts/local/build_sites.py`가 실제로 내는 site parquet 스키마(확인함,
+    2026-09-04): 컬럼명은 `prompt_json`이 아니라 **`prompt`**이고,
+    `countdown_sites.build_site_row`(:390-406)가 그 안에 **prefix를 마지막
+    assistant 메시지로 이미 구운다**(`render_prefix_prompt`가
+    `msgs.append({"role":"assistant","content":prefix})`). `Site.prompt_messages`는
+    "prefix 없는 프롬프트"를 기대하므로(각 자가 `add_generation_prompt=True`로
+    렌더링한 뒤 `site.prefix`를 별도 텍스트로 이어붙인다), 여기서 그 마지막
+    assistant 메시지를 벗겨낸다 — 벗기지 않으면 prefix가 두 번(프롬프트 안 + 별도
+    텍스트) 들어간다.
+
+    구 스키마(`prompt_json`, 문자열 JSON, prefix 미포함)도 과제 지시문이 원래
+    명시한 대안 스키마이므로 폴백으로 계속 받는다.
+    """
+    raw = row["prompt"] if "prompt" in row and row.get("prompt") is not None else row.get("prompt_json")
+    if isinstance(raw, str):
+        prompt_messages = json.loads(raw) if raw else []
     else:
-        prompt_messages = list(prompt_messages) if prompt_messages is not None else []
+        prompt_messages = list(raw) if raw is not None else []
+    prefix = str(row.get("prefix", "") or "")
+    if (prompt_messages and isinstance(prompt_messages[-1], dict)
+            and prompt_messages[-1].get("role") == "assistant"
+            and prompt_messages[-1].get("content", "") == prefix and prefix):
+        prompt_messages = prompt_messages[:-1]
     nums = tuple(int(x) for x in row["nums"])
     return Site(
         prompt_messages=prompt_messages,
@@ -68,16 +87,53 @@ def site_from_row(row) -> Site:
     )
 
 
+_NEXT_FIELD_RE = re.compile(r"\bnext\s*:\s*(.*)", re.I)
+
+
 def sample_from_row(row) -> MetaSample:
+    r"""`scripts/local/gen_continuations.py:build_record`(확인함, 2026-09-04)가
+    실제로 내는 컬럼과 과제 지시문이 가정한 컬럼 사이에 두 군데 틈이 있다 —
+    둘 다 여기서 메운다(그 파일을 고치지 않는다):
+
+      meta_end       그 파일은 `meta_start_in_cont`만 낸다(끝 오프셋이 없다).
+                     `meta_start_in_cont + len(meta_raw)`로 복원한다 —
+                     `parse_meta`의 `raw`가 여는~닫는 태그를 전부 포함하는
+                     블록 원문이므로 길이를 더하면 끝 오프셋과 같다(태그
+                     내부에 멀티바이트 유니코드가 없는 한 문자 오프셋 산수로
+                     충분하다 — `find_meta_token_span`처럼 재-스캔하지 않는
+                     이유는 이 패키지가 그 파일의 재-토큰화 없이 문자 오프셋만
+                     복원하면 되기 때문).
+      next_move      그 파일에는 컬럼 자체가 없다. `meta_raw`의 `next:` 필드에서
+                     `countdown_rewards._NEXT_RE`와 같은 정규식으로 다시 뽑는다.
+    """
+    meta_raw = str(row.get("meta_raw", "") or "")
+    ms_raw = row.get("meta_start", row.get("meta_start_in_cont", None))
+    meta_start = int(ms_raw) if pd.notna(ms_raw) else -1
+    me_raw = row.get("meta_end", None)
+    if pd.notna(me_raw):
+        meta_end = int(me_raw)
+    elif meta_start >= 0 and meta_raw:
+        meta_end = meta_start + len(meta_raw)
+    else:
+        meta_end = -1
+
+    next_move = None
+    if "next_move" in row and pd.notna(row.get("next_move")):
+        next_move = str(row["next_move"])
+    elif meta_raw:
+        m = _NEXT_FIELD_RE.search(meta_raw)
+        if m:
+            next_move = m.group(1).strip()
+
     return MetaSample(
         continuation=str(row.get("continuation", "") or ""),
-        meta_raw=str(row.get("meta_raw", "") or ""),
-        meta_start=int(row["meta_start"]) if pd.notna(row.get("meta_start", None)) else -1,
-        meta_end=int(row["meta_end"]) if pd.notna(row.get("meta_end", None)) else -1,
+        meta_raw=meta_raw,
+        meta_start=meta_start,
+        meta_end=meta_end,
         decision=(str(row["decision"]) if pd.notna(row.get("decision", None)) else None),
         confidence=(float(row["confidence"]) if pd.notna(row.get("confidence", None)) else None),
         r_corr=(int(row["r_corr"]) if pd.notna(row.get("r_corr", None)) else None),
-        next_move=(str(row["next_move"]) if "next_move" in row and pd.notna(row.get("next_move")) else None),
+        next_move=next_move,
     )
 
 

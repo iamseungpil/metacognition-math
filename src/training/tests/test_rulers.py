@@ -282,6 +282,40 @@ def _synthetic_parquets(tmp_path):
     return sites_path, conts_path, sites_df, conts_df
 
 
+class TestRealGenContinuationsSchema:
+    """`scripts/local/gen_continuations.py:build_record`이 실제로 내는 컬럼
+    (meta_start_in_cont만 있고 meta_end/next_move가 없다) 위에서 sample_from_row가
+    죽지 않고 올바르게 복원하는지 — 이 스키마는 패키지 작성 도중 다른 세션이
+    만들었으므로 별도로 실측해 둔다."""
+
+    def test_meta_end_derived_from_start_and_raw_len(self):
+        from src.rulers.table import sample_from_row
+        meta_raw = "<meta>\nconfidence: 0.4\nnext: 2*6\ndecision: redirect\n</meta>"
+        row = pd.Series({
+            "continuation": meta_raw + "\nLet me try.",
+            "meta_raw": meta_raw, "meta_start_in_cont": 0,
+            "decision": "redirect", "confidence": 0.4, "r_corr": 1,
+        })
+        sample = sample_from_row(row)
+        assert sample.meta_start == 0
+        assert sample.meta_end == len(meta_raw)
+        assert sample.next_move == "2*6"
+
+    def test_prompt_column_strips_baked_in_prefix(self):
+        from src.rulers.table import site_from_row
+        prefix = "Let me start.\n"
+        row = pd.Series({
+            "site_id": "s9", "prompt": [{"role": "user", "content": "Target: 24"},
+                                       {"role": "assistant", "content": prefix}],
+            "prefix": prefix, "nums": [5, 19, 25, 3], "target": 24,
+            "witness": "5+19", "decoy": "5-19", "pairs_pre": "[]",
+            "family_dead": 0, "live_new_moves": "[]",
+        })
+        site = site_from_row(row)
+        assert site.prompt_messages == [{"role": "user", "content": "Target: 24"}]
+        assert site.prefix == prefix
+
+
 class TestTableEndToEnd:
     def test_build_scores_no_model(self, tmp_path):
         _, _, sites_df, conts_df = _synthetic_parquets(tmp_path)
