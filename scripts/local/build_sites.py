@@ -2,7 +2,8 @@
 r"""CLI — prefix-anchored site 데이터셋 빌드 (`src/training/countdown_sites.py` 사용).
 
     python scripts/local/build_sites.py --out_dir $WORK/data/sites_v1 \
-        --n_train 3000 --n_judge 1000 --seed 7
+        --n_train 3000 --n_judge 1000 --seed 7 \
+        --max_sites_per_problem_train 12 --max_sites_per_problem_judge 8
 
 산출물 (모두 `--out_dir` 아래):
   sites_train.parquet   재개 학습용 site 3000행(기본)
@@ -10,6 +11,13 @@ r"""CLI — prefix-anchored site 데이터셋 빌드 (`src/training/countdown_si
                         family_dead∈{0,1} × n_att 버킷으로 층화
   mixed_train.parquet   normal 50% + site(=sites_train) 50%, 섞은 것
   summary.json          컷 종류·family_dead·버킷별 개수 + 템플릿 왕복 검사 결과
+
+★0904 수리(문제-클러스터 CI 결함): `--n_judge 1000` 하나만 있을 때 judge 가 단 24개
+  문제에서만 뽑혔다(한 문제가 롤아웃 8개 × 3소스 × 2컷 ≈ 최대 48개 site 를 낸다 —
+  층화 목표를 채우는 데 문제 몇 개면 충분했다). 문제 수가 적으면 "문제 단위" 신뢰구간이
+  사실상 표본 24개짜리라 무의미하다. `--max_sites_per_problem_judge`(기본 8)·
+  `--max_sites_per_problem_train`(기본 12) 로 문제당 site 수를 상한 걸어, 같은
+  `--n_judge`/`--n_train` 을 채우려면 **더 많은 서로 다른 문제**를 끌어와야 하게 만든다.
 
 CPU 전용 — GPU 를 만지지 않는다(학습이 GPU 를 쓰고 있으므로).
 """
@@ -124,13 +132,22 @@ def stratum_of(site: dict) -> tuple:
     return (fam_key, cs.bucket_of(site["n_att_pre"]))
 
 
-def split_train_judge(sites: list[dict], n_train: int, n_judge: int, seed: int):
+def split_train_judge(sites: list[dict], n_train: int, n_judge: int, seed: int, *,
+                     max_sites_per_problem_train: int = 12,
+                     max_sites_per_problem_judge: int = 8):
     """문제(nums,target) 단위로 disjoint 하게 나누고, judge 는 층화로 채운다.
 
-    전략: 문제를 무작위 순서로 훑으며, 그 문제의 site 들이 "아직 부족한 층"을
+    전략: 문제를 무작위 순서로 훑으며, 그 문제의 site 들(문제당 최대
+    `max_sites_per_problem_judge`개로 미리 잘라 둔다) 이 "아직 부족한 층"을
     채우는 데 도움이 되는 동안은 judge 로, 그 뒤로는 train 후보 풀로 돌린다.
     엄격한 최적 배분(정수계획법)은 하지 않는다 — 이 자리는 "대략 고르게"면
     충분하고, 실제 분포는 `summary.json` 에 정직하게 남긴다.
+
+    ★문제당 상한이 왜 필요한가(0904 수리): 상한 없이는 한 문제가 최대 48개
+    (롤아웃 8 × 소스 3 × 컷 2) site 를 낼 수 있어, `n_judge` 를 채우는 데 문제
+    몇 개면 충분했다(실측: 1000행이 문제 24개에서만 나왔다) — "문제 단위"
+    신뢰구간을 표본 24개로 좁혀버린다. 상한을 걸면 같은 `n_judge`/`n_train` 을
+    채우기 위해 반드시 더 많은 서로 다른 문제를 끌어와야 한다.
     """
     rng = random.Random(seed)
     by_problem: dict[tuple, list[dict]] = defaultdict(list)
@@ -144,24 +161,34 @@ def split_train_judge(sites: list[dict], n_train: int, n_judge: int, seed: int):
     judge_counts: Counter = Counter()
     judge_problems: set[tuple] = set()
     train_problems: set[tuple] = set()
+    judge_pool: list[dict] = []
 
     judge_total = 0
     for p in problems:
         if judge_total >= n_judge:
             train_problems.add(p)
             continue
-        p_sites = by_problem[p]
-        helps = any(judge_counts[stratum_of(s)] < target_per_stratum for s in p_sites)
+        p_sites = list(by_problem[p])
+        rng.shuffle(p_sites)
+        capped = p_sites[:max_sites_per_problem_judge]   # ★문제당 상한 — judge
+        helps = any(judge_counts[stratum_of(s)] < target_per_stratum for s in capped)
         if helps:
             judge_problems.add(p)
-            for s in p_sites:
+            for s in capped:
+                if judge_total >= n_judge:
+                    break
                 judge_counts[stratum_of(s)] += 1
                 judge_total += 1
+                judge_pool.append(s)
         else:
             train_problems.add(p)
 
-    judge_pool = [s for p in judge_problems for s in by_problem[p]]
-    train_pool = [s for p in train_problems for s in by_problem[p]]
+    train_pool: list[dict] = []
+    for p in train_problems:
+        p_sites = list(by_problem[p])
+        rng.shuffle(p_sites)
+        train_pool.extend(p_sites[:max_sites_per_problem_train])  # ★문제당 상한 — train
+
     rng.shuffle(judge_pool)
     rng.shuffle(train_pool)
 
@@ -214,6 +241,10 @@ def main():
     ap.add_argument("--n_train", type=int, default=3000)
     ap.add_argument("--n_judge", type=int, default=1000)
     ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--max_sites_per_problem_train", type=int, default=12,
+                    help="train 문제 하나가 최대 몇 개의 site 를 낼 수 있나 (0904 수리)")
+    ap.add_argument("--max_sites_per_problem_judge", type=int, default=8,
+                    help="judge 문제 하나가 최대 몇 개의 site 를 낼 수 있나 (0904 수리)")
     ap.add_argument("--work", default=None, help="WORK 루트 (기본: $WORK 환경변수)")
     args = ap.parse_args()
 
@@ -228,7 +259,10 @@ def main():
           f"boundary 없음 {extract_stats['n_no_boundary']})")
 
     print("[2/5] train/judge 문제 단위 분할 중...", flush=True)
-    train_sites, judge_sites = split_train_judge(sites, args.n_train, args.n_judge, args.seed)
+    train_sites, judge_sites = split_train_judge(
+        sites, args.n_train, args.n_judge, args.seed,
+        max_sites_per_problem_train=args.max_sites_per_problem_train,
+        max_sites_per_problem_judge=args.max_sites_per_problem_judge)
     train_problems = {s["_problem"] for s in train_sites}
     judge_problems = {s["_problem"] for s in judge_sites}
     overlap = train_problems & judge_problems
@@ -263,16 +297,29 @@ def main():
             c[(fam, cs.bucket_of(r["n_att_pre"]))] += 1
         return {f"{k[0]}|{k[1]}": v for k, v in sorted(c.items())}
 
+    def stratum_problem_counts(pre_row_sites):
+        """층(stratum)별 **서로 다른 문제 수** — site 개수가 아니라, 0904 수리가
+        직접 겨냥한 지표(문제-클러스터 CI 는 이 수가 표본 크기다).
+        """
+        d: dict[tuple, set] = defaultdict(set)
+        for s in pre_row_sites:
+            d[stratum_of(s)].add(s["_problem"])
+        return {f"{k[0]}|{k[1]}": len(v) for k, v in sorted(d.items())}
+
     summary = {
         "n_candidate_sites": len(sites),
         "extract_stats": extract_stats,
         "n_train": len(train_rows), "n_judge": len(judge_rows),
         "n_mixed": len(mixed_rows),
         "n_train_problems": len(train_problems), "n_judge_problems": len(judge_problems),
+        "max_sites_per_problem_train": args.max_sites_per_problem_train,
+        "max_sites_per_problem_judge": args.max_sites_per_problem_judge,
         "train_cut_type_counts": counts_by(train_rows, "cut_type"),
         "judge_cut_type_counts": counts_by(judge_rows, "cut_type"),
         "train_family_dead_bucket_counts": fam_bucket_counts(train_rows),
         "judge_family_dead_bucket_counts": fam_bucket_counts(judge_rows),
+        "train_stratum_problem_counts": stratum_problem_counts(train_sites),
+        "judge_stratum_problem_counts": stratum_problem_counts(judge_sites),
         "template_roundtrip_check": template_check,
         "seed": args.seed,
     }
