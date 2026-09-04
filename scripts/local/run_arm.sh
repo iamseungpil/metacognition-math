@@ -103,7 +103,7 @@ CONFIG_NAME="${CONFIG_NAME:-countdown_6arm}"
 if [ "${DATA_HINT}" = "mixed" ]; then
   # site(3000, 프리픽스가 이미 프롬프트에 접합) + normal(3000, 빈 assistant 메시지
   # 부착) 를 섞은 고정 자리 학습 parquet. countdown_sites.py 헤더 참조.
-  DATA_TRAIN="${WORK}/data/sites_v1/mixed_train.parquet"
+  DATA_TRAIN="${WORK}/data/sites_v1/${MIXED_DATA:-mixed_train_v2}.parquet"
 else
   DATA_TRAIN="${WORK}/data/countdown_train_4num_${DATA_VARIANT}.parquet"
 fi
