@@ -476,3 +476,17 @@ class TestHiddenProbe:
         result = probe_grouped_cv(X, y, groups, n_folds=5)
         assert result["n_folds_used"] >= 3
         assert result["auc"] > 0.6
+
+
+def test_novel_mask_and_mass_shift_direction():
+    from src.rulers.move_kl import _novel_mask, enumerate_candidate_moves
+    cands = enumerate_candidate_moves([25, 3, 7, 8])
+    mask = _novel_mask(cands, frozenset({(3, 25)}))
+    assert len(mask) == len(cands) == 24
+    assert sum(1 for c, m in zip(cands, mask) if not m) == 4      # 25∘3 네 연산만 «이미 시도»
+    assert all(m for c, m in zip(cands, mask) if "7" in c and "8" in c)
+
+
+def test_move_novel_shift_registered_in_cli():
+    src = open("scripts/local/ruler_table.py", encoding="utf-8").read()
+    assert "MoveNovelShift()" in src and "MoveNovelShiftStuck()" in src

@@ -24,6 +24,7 @@ softmax해 분포로 만들고, KL(after ‖ before)을 낸다.
 from __future__ import annotations
 
 import itertools
+import re
 import math
 
 from src.rulers.base import MetaSample, Site
@@ -101,12 +102,13 @@ def _prompt_ids(ctx, site: Site):
     return list(ctx.encode(text)) if text else []
 
 
-def _kl_for(site: Site, sample: MetaSample, ctx) -> float:
+def _dists_for(site: Site, sample: MetaSample, ctx):
+    """(candidates, p_before, p_after, ms) — 메타 시작 직전/끝 직후의 «다음 수» 분포. 못 재면 None."""
     if ctx is None or not sample.meta_raw:
-        return _NAN
+        return None
     candidates = enumerate_candidate_moves(site.nums)
     if len(candidates) < 2:
-        return _NAN
+        return None
     cont = sample.continuation or ""
     ms = sample.meta_start if sample.meta_start is not None and sample.meta_start >= 0 else len(cont)
     me = sample.meta_end if sample.meta_end is not None and sample.meta_end >= 0 else ms
@@ -116,9 +118,78 @@ def _kl_for(site: Site, sample: MetaSample, ctx) -> float:
     before_logits = candidate_logits(ctx, p_ids, before_ids, candidates)
     after_logits = candidate_logits(ctx, p_ids, after_ids, candidates)
     if any(not math.isfinite(v) for v in before_logits + after_logits):
+        return None
+    return candidates, softmax(before_logits), softmax(after_logits), ms
+
+
+def _kl_for(site: Site, sample: MetaSample, ctx) -> float:
+    d = _dists_for(site, sample, ctx)
+    if d is None:
         return _NAN
-    p_before, p_after = softmax(before_logits), softmax(after_logits)
+    _, p_before, p_after, _ = d
     return kl_divergence(p_after, p_before)
+
+
+_PAIR_IN_CAND = re.compile(r"^(\d+)[+\-*/](\d+)$")
+
+
+def _novel_mask(candidates: list[str], pairs_pre) -> list[bool]:
+    out = []
+    for c in candidates:
+        m = _PAIR_IN_CAND.match(c)
+        if not m:
+            out.append(False); continue
+        a, b = int(m.group(1)), int(m.group(2))
+        out.append((min(a, b), max(a, b)) not in set(pairs_pre))
+    return out
+
+
+def novel_mass_shift(site: Site, sample: MetaSample, ctx) -> float:
+    r"""★«행동 변화» 자 — 메타가 «아직 안 시도한 쌍»으로 옮긴 확률 질량.
+
+    전체 KL 은 «아무 데로나 흔들기»에 뚫린다(방향이 없다). 우리 의도는 «막히면 새 길»
+    이므로, 프리픽스에서 이미 결합해 본 쌍(`pairs_pre`, 모델 자신의 글에서 읽음 — 정답표
+    불필요)을 뺀 후보들에 실린 질량이 메타 앞→뒤로 얼마나 늘었는지만 센다.
+    값 = Σ_{새 쌍} p_after − Σ_{새 쌍} p_before ∈ [−1, 1].
+    """
+    d = _dists_for(site, sample, ctx)
+    if d is None:
+        return _NAN
+    candidates, p_before, p_after, _ = d
+    mask = _novel_mask(candidates, site.pairs_pre)
+    if not any(mask):
+        return 0.0
+    return float(sum(pa for pa, m in zip(p_after, mask) if m) - sum(pb for pb, m in zip(p_before, mask) if m))
+
+
+class MoveNovelShift:
+    """Σ(새 쌍) p_after − Σ(새 쌍) p_before. 정답표 불필요, 방향 있는 행동 변화."""
+    name = "move_novel_shift"
+    needs_model = True
+
+    def score(self, site: Site, sample: MetaSample, ctx) -> float:
+        return novel_mass_shift(site, sample, ctx)
+
+
+class MoveNovelShiftStuck:
+    r"""막힘 게이트 변형: `novel_mass_shift × 1[메타 앞 시도 ≥ K_S]` (K_S=4, SC 와 동일).
+
+    막힘은 프리픽스(site.prefix + 메타 앞 이어쓰기)의 등식 수로 읽는다 — 자기 보고가
+    아니라 모델 자신의 글에서 센 것이며 정답표는 쓰지 않는다.
+    """
+    name = "move_novel_shift_stuck"
+    needs_model = True
+    K_S = 4
+
+    def score(self, site: Site, sample: MetaSample, ctx) -> float:
+        v = novel_mass_shift(site, sample, ctx)
+        if not math.isfinite(v):
+            return _NAN
+        cont = sample.continuation or ""
+        ms = sample.meta_start if sample.meta_start is not None and sample.meta_start >= 0 else len(cont)
+        from src.training.countdown_selfcontrol import prefix_features  # noqa: PLC0415
+        pf = prefix_features(site.prefix + cont[:ms] + "<meta>", site.nums)
+        return v if int(pf.get("n_att_pre", 0)) >= self.K_S else 0.0
 
 
 class MoveKl:

@@ -47,9 +47,10 @@ def _all_rulers():
     from src.rulers.osd import OsdSigned, OsdUnsigned
     from src.rulers.inv import InvMean, InvMin
     from src.rulers.dcont import DCont
-    from src.rulers.move_kl import MoveKl, MoveKlSigned
+    from src.rulers.move_kl import MoveKl, MoveKlSigned, MoveNovelShift, MoveNovelShiftStuck
     return [PmiShiftSum(), PmiShiftLast(), PmiShiftMean(), OsdUnsigned(), OsdSigned(),
-           InvMin(), InvMean(), DCont(), MoveKl(), MoveKlSigned()]
+           InvMin(), InvMean(), DCont(), MoveKl(), MoveKlSigned(),
+           MoveNovelShift(), MoveNovelShiftStuck()]
 
 
 def _select_rulers(names: str):
