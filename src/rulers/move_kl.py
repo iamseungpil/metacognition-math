@@ -146,5 +146,7 @@ class MoveKlSigned:
         kl = _kl_for(site, sample, ctx)
         if not math.isfinite(kl):
             return _NAN
+        if site.family_dead is None:
+            return 0.0
         sign = 1.0 if int(site.family_dead) else -1.0
         return float(kl * sign)

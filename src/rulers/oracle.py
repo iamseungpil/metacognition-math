@@ -93,7 +93,8 @@ def oracle_score(site: Site, sample: MetaSample, site_success_rate: Optional[flo
         return OracleScore(0, 0, 0)
 
     decision = (sample.decision or "").strip().lower()
-    state_ok = int((decision == "redirect") == bool(int(site.family_dead)))
+    # family_dead=None(메타 앞 시도 없음) 이면 상태 판단의 정답이 없다 → 0 점(맞힌 것으로 치지 않는다).
+    state_ok = 0 if site.family_dead is None else int((decision == "redirect") == bool(int(site.family_dead)))
 
     pair = _plan_pair(site, sample)
     plan_ok = int(pair is not None and _pair_in_live(pair, site.live_new_moves))

@@ -48,6 +48,18 @@ def load_sites(sites_path: str) -> pd.DataFrame:
     return pd.read_parquet(sites_path)
 
 
+
+def _int_or_none(v):
+    try:
+        if v is None:
+            return None
+        f = float(v)
+        if f != f:  # NaN
+            return None
+        return int(f)
+    except (TypeError, ValueError):
+        return None
+
 def site_from_row(row) -> Site:
     r"""`scripts/local/build_sites.py`가 실제로 내는 site parquet 스키마(확인함,
     2026-09-04): 컬럼명은 `prompt_json`이 아니라 **`prompt`**이고,
@@ -81,7 +93,9 @@ def site_from_row(row) -> Site:
         witness=str(row.get("witness", "") or ""),
         decoy=str(row.get("decoy", "") or ""),
         pairs_pre=pairs_pre_from_json(row.get("pairs_pre")),
-        family_dead=int(row.get("family_dead", 0) or 0),
+        # family_dead 는 «메타 앞 시도 없음» 자리에서 NaN/None 이다(정답표 없음). 0 으로 뭉개면
+        # «살아 있는 계열»로 잘못 읽히므로 None 을 유지한다(오라클·타이밍 자는 None 을 0 점으로 본다).
+        family_dead=_int_or_none(row.get("family_dead")),
         live_new_moves=live_new_moves_from_json(row.get("live_new_moves")),
         site_id=str(row.get("site_id")),
     )

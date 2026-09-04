@@ -40,7 +40,7 @@ class Site:
     witness: str
     decoy: str
     pairs_pre: frozenset[tuple[int, int]] = field(default_factory=frozenset)
-    family_dead: int = 0
+    family_dead: int | None = 0   # None = 메타 앞 시도 없음(정답표 없음)
     live_new_moves: tuple[str, ...] = field(default_factory=tuple)
     site_id: Optional[str] = None
     # 채점표(table.py)가 성공률 통계에 쓰는 부가 필드. Site 자체의 정의에는 없지만
