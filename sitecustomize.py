@@ -191,4 +191,88 @@ def _patch_verl_agent_loop() -> None:
     DataProto._metacognition_concat_patched = True
 
 
+def _patch_verl_agent_loop_chat_template() -> None:
+    r"""고정 자리(site) 롤아웃 — `AgentLoopBase.apply_chat_template` 이 어시스턴트
+    프리픽스 이어붙이기(`continue_final_message=True, add_generation_prompt=False`)를
+    **무시하는 게 아니라 그 조합에서 즉사한다**는 것을 확인했다(0904 조사).
+
+    verl 0.7.1, `verl/experimental/agent_loop/agent_loop.py`
+    (`/hdd_data/seungpil/envs/simplerl/lib/python3.10/site-packages/verl/...`),
+    `AgentLoopBase.apply_chat_template` 의 비-processor 분기(347-349행, processor
+    분기는 318-320행도 같은 결함):
+
+        tokenized_prompt = await self.loop.run_in_executor(
+            None,
+            lambda: apply_chat_template(
+                self.tokenizer, messages, tools=tools,
+                add_generation_prompt=True,      # ← 하드코딩
+                tokenize=True,
+                **self.apply_chat_template_kwargs,   # ← data.apply_chat_template_kwargs
+            ),
+        )
+
+    `data.apply_chat_template_kwargs.add_generation_prompt=false` 를 hydra override 로
+    넘기면 `self.apply_chat_template_kwargs` 에 `add_generation_prompt` 키가 들어가고,
+    위 호출은 그 이름을 **명시 키워드로 두 번** 받는다 — 즉 무시가 아니라
+    `TypeError: apply_chat_template() got multiple values for keyword argument
+    'add_generation_prompt'` 로 배치 전체가 죽는다(agent-loop 워커 안이라 스택이
+    Ray 로그에 묻히기 쉽다). `continue_final_message` 는 하드코딩 충돌이 없어 그대로
+    통과하지만, 위 크래시가 먼저 나므로 site 프롬프트(마지막 메시지가 assistant 인
+    프리픽스 이어붙이기)는 이 경로로 **아예 롤아웃되지 않는다**.
+
+    최소 패치점: `AgentLoopBase.apply_chat_template` 그 자체. 마지막 메시지가
+    assistant 면 `continue_final_message=True, add_generation_prompt=False` 를
+    **기본값으로**(설정이 이미 명시했으면 그 값을 존중 — `setdefault`) 주고,
+    `add_generation_prompt` 를 호출부에 하드코딩하지 않는다 — 그래야 `**kwargs` 와
+    충돌할 자리가 애초에 없다. `initialize_system_prompt`(같은 파일 267행)는
+    시스템 프롬프트 하나만 인코딩하는 별개 호출이라 손대지 않는다.
+    """
+    try:
+        from verl.experimental.agent_loop import agent_loop as ag
+        from verl.utils.chat_template import apply_chat_template as _verl_apply_chat_template
+    except Exception:
+        return
+
+    if getattr(ag.AgentLoopBase, "_metacognition_chat_template_patched", False):
+        return
+
+    _orig_apply_chat_template = ag.AgentLoopBase.apply_chat_template
+
+    async def _patched_apply_chat_template(self, messages, tools=None, images=None,
+                                            videos=None, remove_system_prompt=False):
+        # processor(비전) 경로는 건드리지 않는다 — Countdown site 는 텍스트 전용이고,
+        # 이 저장소가 검증한 것은 텍스트 토크나이저 경로뿐이다.
+        if self.processor is not None:
+            return await _orig_apply_chat_template(
+                self, messages, tools=tools, images=images, videos=videos,
+                remove_system_prompt=remove_system_prompt)
+
+        kwargs = dict(self.apply_chat_template_kwargs)
+        last_role = messages[-1]["role"] if messages else None
+        if last_role == "assistant":
+            # ★site 프리픽스: 마지막 메시지가 이미 assistant 텍스트라, 그 뒤에 새
+            #   assistant 턴을 여는 generation prompt 를 또 붙이면 안 된다 — 이미
+            #   assistant 턴 **안**이다. `setdefault`/`.get` 이라 launcher/config 가
+            #   명시적으로 다른 값을 줬으면 그쪽을 존중한다(조용히 덮어쓰지 않는다).
+            kwargs.setdefault("continue_final_message", True)
+            kwargs["add_generation_prompt"] = kwargs.get("add_generation_prompt", False)
+        else:
+            kwargs.setdefault("add_generation_prompt", True)
+
+        tokenized_prompt = await self.loop.run_in_executor(
+            None,
+            lambda: _verl_apply_chat_template(
+                self.tokenizer, messages, tools=tools, tokenize=True, **kwargs),
+        )
+        from verl.utils.tokenizer import normalize_token_ids
+        prompt_ids = normalize_token_ids(tokenized_prompt)
+        if remove_system_prompt:
+            prompt_ids = prompt_ids[len(self.system_prompt):]
+        return prompt_ids
+
+    ag.AgentLoopBase.apply_chat_template = _patched_apply_chat_template
+    ag.AgentLoopBase._metacognition_chat_template_patched = True
+
+
 _patch_verl_agent_loop()
+_patch_verl_agent_loop_chat_template()

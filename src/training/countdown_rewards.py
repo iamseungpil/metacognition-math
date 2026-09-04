@@ -85,6 +85,7 @@ __all__ = [
     "r_osd", "plan_next", "plan_followed",
     "SC_K_STUCK", "SC_CONF_HI", "W_EXPLORE", "W_VERIFY", "W_EARLY",
     "r_explore", "r_explore_g", "r_verify", "r_early",
+    "W_TIMING", "W_LIVE_NEW", "r_timing", "r_live_new",
     "OSD_TERM", "OSD_C", "OSD_C_PROVISIONAL", "OSD_W_MAX", "OSD_LEAK_NGRAM",
     "INV_TERM", "INV_SCOPE", "INV_FORM", "INV_AGG", "INV_TAU", "INV_C",
     "INV_TAU_PROVISIONAL", "INV_MIN_PROSE_TOK", "INV_FALSE_CLAIM_PEN", "r_meta_inv",
@@ -150,6 +151,18 @@ SC_CONF_HI = 0.8     # 과신 임계. INV_TAU 류와 달리 confidence 는 [0,1]
 W_EXPLORE = 1.0      # SC_DESIGN.md: w_x = 1.0
 W_VERIFY = 0.5       # SC_DESIGN.md: w_v = 0.5
 W_EARLY = 0.25       # SC_DESIGN.md: w_e = 0.25
+
+# ── 고정 자리(site-anchored) 팔 FT/M0/MT — 2026-09-04 「고정 자리 학습 배선」 ──────
+# 왜 새 항인가. SC/SCg 는 프리픽스 **상태**(시도수·확신)만 보고 완전열거(오라클)를
+# 안 쓴다. FT/MT 는 반대로 `countdown_sites` 의 오라클 라벨(family_dead·live_new_moves —
+# "이 계열이 죽었는가", "이 첫수가 새로 산 살아있는 해로 이어지는가")을 직접 보상에
+# 태운다 — SC 의 "모델 자기 신호만"과 대조되는 "근거-진리를 아는 고정 자리에서
+# 재개했을 때" 조건이다. `family_dead`/`live_new_moves`/`first_move_after_meta` 는
+# 이 파일이 계산하지 않는다 — site 행은 `countdown_sites.oracle_for_site`(빌드 시점,
+# parquet 컬럼), normal 행은 `verl_sdc._compute_countdown_arm_stash`(런타임, 같은
+# `countdown_sites` 함수를 응답 프리픽스에 호출)가 채운다. 여기는 그 결과만 읽는다.
+W_TIMING = 0.5       # 사용자 지시. warmup 대상.
+W_LIVE_NEW = 1.0     # 사용자 지시. warmup 대상.
 
 # ── OSD (Outcome-Signed Surprisal Drop) — PMI-shift 의 대체 항 (2026-08-25) ──
 # 왜 새 항인가. PMI-shift 는 오프라인 판별력 **AUC 0.52(=우연)** 로 측정돼 폐기됐다.
@@ -294,6 +307,10 @@ TERM_MAX_ABS: dict = {
     "explore_g":  1.0,   # explore × plan_ok ∈ {0,1}
     "verify":     1.0,   # hi×(dec_verify×checked − (1−checked)×1[y<0]) ∈ [-1,1]
     "early_cost": 1.0,   # −early ∈ {-1,0}
+    # ── FT/M0/MT (고정 자리) — 정의상 이미 각 범위 안이다. osd/meta_inv 와 같은 이유로
+    #   `.get(t, 1.0)` 기본값에 기대지 않고 명시한다.
+    "timing":     1.0,   # r_timing ∈ {-1,0,+1}
+    "live_new":   1.0,   # r_live_new ∈ {0,1}
 }
 
 # sign(adv_corr) == 0 일 때의 정책. 아래 `r_meta_mul` 주석 참조.
@@ -711,6 +728,46 @@ def r_early(row: Mapping) -> float:
     return float(-_bool01(row["early"]))
 
 
+def r_timing(row: Mapping) -> float:
+    r"""FT/MT 팔. 고정 자리 개입의 **타이밍** 보상 — `family_dead`(마지막 두 시도의
+    첫수 계열이 이미 죽었는가, `countdown_sites.family_dead_label`) 와 decision
+    (redirect/verify) 의 정합. 범위 {-1,0,+1}.
+
+        family_dead is None (시도가 아예 없었다 — 판정 불가)        → 0
+        family_dead==1 (계열 죽음) ∧ redirect                       → +1  (옳은 타이밍)
+        family_dead==0 (계열 생존) ∧ redirect                       → −1  (성급한 포기)
+        family_dead==1 ∧ (verify ∨ redirect 아님)                   → −1  (죽은 계열에서 안 갈아탐)
+        그 외 (family_dead==0 ∧ verify 또는 무결정)                  →  0
+
+    `dec_redirect`/`dec_verify` 는 `countdown_selfcontrol.sc_row` 와 같은 이름 —
+    `decision` 문자열을 여기서 다시 파싱하지 않는다(복제 금지 규약).
+    """
+    fd = row["family_dead"]
+    if fd is None:
+        return 0.0
+    fd = _bool01(fd)
+    redirect = _bool01(row["dec_redirect"])
+    verify = _bool01(row["dec_verify"])
+    if fd == 1:
+        return 1.0 if redirect else -1.0
+    # fd == 0
+    return -1.0 if redirect else 0.0
+
+
+def r_live_new(row: Mapping) -> float:
+    r"""FT/MT 팔. 메타 뒤 **첫 결합**이 새로 산(=`live_new_moves`, 프리픽스에 없던 쌍이며
+    실제로 해로 이어지는) 수이고 실제로 그것을 이었는가(followed). 범위 {0,1}.
+
+    `first_move_after_meta` 는 `countdown_sites.canon_move`/`move_key_str` 과 같은
+    정규형 문자열("a+b" 류)이다 — site 행은 빌드 시점(`countdown_sites`), normal 행은
+    런타임(`verl_sdc._compute_countdown_arm_stash`)이 같은 함수로 채운다.
+    """
+    fm = row["first_move_after_meta"]
+    live = row["live_new_moves"] or ()
+    followed = _bool01(row["followed"])
+    return 1.0 if (fm is not None and fm in live and followed) else 0.0
+
+
 def warmup_scale(step, warmup_steps: int = 20) -> float:
     """0→1 선형 워밍업. step 0 에서 0.0, step ≥ warmup_steps 에서 1.0.
 
@@ -778,6 +835,13 @@ TERMS: dict[str, dict] = {
     #   이다. 워밍업을 받으면 초반 스텝에 그 가드가 꺼진 채로 조기발화 습관이 굳을 수
     #   있고, 처음부터 걸려 있어야 "시작하자마자 메타부터 내지 마라"가 스텝 0부터 성립한다.
     "early_cost": {"needs": ("early",), "warmup": False, "weight": W_EARLY},
+    # ── FT/M0/MT (고정 자리, 2026-09-04) — needs 는 site 행(빌드 시점,
+    #   `countdown_sites.oracle_for_site`) 과 normal 행(런타임,
+    #   `verl_sdc._compute_countdown_arm_stash`) 이 **같은 이름**으로 채운다.
+    "timing":     {"needs": ("emitted", "family_dead", "dec_redirect", "dec_verify"),
+                   "warmup": True, "weight": W_TIMING},
+    "live_new":   {"needs": ("emitted", "first_move_after_meta", "live_new_moves", "followed"),
+                   "warmup": True, "weight": W_LIVE_NEW},
 }
 
 _COMMON = ("corr", "format", "meta_floor")   # 공통 = 처치 아님. 여덟 팔 전부 동일.
@@ -840,6 +904,29 @@ ARM_SPECS: dict[str, dict] = {
     "SC_GH": {"label": "selfctrl_goodhart", "terms": ("format", "meta_floor", "explore", "verify", "early_cost"),
               "meta_form": "new",
               "note": "★굿하트 압력시험. corr 없음. 20스텝 뒤 메타 텍스트 퇴화 여부만 본다. 데이터 _4num_new."},
+    # ★FT/M0/MT (2026-09-04, 「고정 자리 학습 배선」): 오라클(완전 열거)로 라벨링한
+    #   "고정 자리"(site — 부분 응답 접합점) 롤아웃에서 재개해 타이밍·새 수 처치를 준다.
+    #   `data_hint` 는 이 파일이 읽지 않는다 — `scripts/local/run_arm.sh` 가 이 값으로
+    #   train/val parquet 을 고른다("normal"=일반 롤아웃 전용, "mixed"=site+normal 섞음,
+    #   `$WORK/data/sites_v1/mixed_train.parquet`). SC/SCg 와 달리 근거-진리
+    #   (`countdown_sites` 완전열거)를 **쓴다** — SC 의 "모델 자기 신호만"과의 대조가
+    #   여기서는 "일반 롤아웃에서 재개(FT)" 대 "고정 자리에서 재개(MT)"로 바뀐다.
+    "FT": {"label": "fixedtiming", "terms": _COMMON + ("timing", "live_new"), "meta_form": "new",
+           "data_hint": "normal",
+           "note": "★고정 자리 처치, 일반 데이터. family_dead×decision 정합(timing) + "
+                   "메타 뒤 첫수가 새로 산 살아있는 수인가(live_new). 응답은 처음부터 "
+                   "생성한다(재개 없음) — data_hint=normal."},
+    "M0": {"label": "mixed_ctrl", "terms": _COMMON, "meta_form": "new",
+           "data_hint": "mixed",
+           "note": "★대조군. 항은 A(=_COMMON) 와 **동일** — 이름이 다른 이유는 데이터가 다르기 "
+                   "때문이다(FT/MT 와 같은 mixed_train.parquet, site 3000+normal 3000). "
+                   "M0 를 A 의 로그와 섞어 읽지 마라 — 반드시 mixed 데이터로 발사해야 "
+                   "FT/MT 와 같은 데이터 위에서 처치 유무만 갈린다."},
+    "MT": {"label": "mixed_timing", "terms": _COMMON + ("timing", "live_new"), "meta_form": "new",
+           "data_hint": "mixed",
+           "note": "★FT 의 처치를 고정 자리(mixed_train.parquet) 데이터에서 반복. site 행은 "
+                   "프리픽스가 이미 프롬프트에 접합돼 있으므로 family_dead/live_new_moves 는 "
+                   "빌드 시점 오라클(parquet 컬럼)에서, normal 행은 런타임에 같은 함수로 계산한다."},
 }
 
 
@@ -1005,6 +1092,10 @@ def arm_reward(
         #   아니라 "프리픽스 시도 수가 0"이라는 뜻이고, 이 비용은 meta_floor 처럼
         #   워밍업도 없이 스텝 0부터 늘 걸려 있어야 하는 바닥형 가드다(TERMS 주석 참조).
         raw["early_cost"] = r_early(row)
+    if "timing" in terms:
+        raw["timing"] = r_timing(row) if emitted else 0.0
+    if "live_new" in terms:
+        raw["live_new"] = r_live_new(row) if emitted else 0.0
 
     comps: dict[str, float] = {}
     for t, v in raw.items():
@@ -1561,7 +1652,8 @@ def component_means(components: Sequence[Mapping[str, float]], *, dead_eps: floa
 #   통째로 사라져 "쟀는데 0" 과 "안 쟀다" 가 구별되지 않는다.
 META_TERMS: tuple = ("meta_pos", "meta_mul", "meta_ctx", "gate", "len", "osd",
                      "meta_pos_full", "plan", INV_TERM,
-                     "explore", "explore_g", "verify", "early_cost")
+                     "explore", "explore_g", "verify", "early_cost",
+                     "timing", "live_new")
 
 
 def rmeta_magnitude(components: Sequence[Mapping[str, float]],

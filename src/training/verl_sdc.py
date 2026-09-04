@@ -1036,7 +1036,10 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
     from src.training import countdown_pmi as _cdp
     from src.training import countdown_rewards as _cdr
     from src.training import countdown_selfcontrol as _cdsc
+    from src.training import countdown_sites as _cds
     from src.training import countdown_task as _cdt
+    # ★복제 금지: "시도"(등식, `=` 로 매듭지은 것)의 정의는 countdown_selfcontrol 한 곳뿐.
+    from src.training.countdown_selfcontrol import _ARITH_EQ as _CD_ARITH_EQ
 
     arm = str(getattr(getattr(self.config, "algorithm", None),
                       "countdown_arm", "") or "").upper()
@@ -1103,6 +1106,17 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
     witnesses, decoys = _col("witness"), _col("decoy")
     nums_col, target_col = _col("nums"), _col("target")
 
+    # ── site 행 프리픽스 (고정 자리, 2026-09-04). ★`mixed_train.parquet` 만 이 컬럼을
+    #   가진다 — normal 전용 parquet(FT 의 data_hint=normal)은 이 컬럼이 아예 없다.
+    #   `_col` 은 없으면 즉사(fail-loud)라 여기서만 관용적으로 처리한다: 없으면
+    #   전부 빈 문자열(=`prefix+response == response`, "지금까지" 와 바이트 동일).
+    try:
+        prefix_col = _col("prefix")
+    except RuntimeError:
+        prefix_col = None
+    prefix_col = [(p or "") for p in prefix_col] if prefix_col is not None else [""] * bs
+    n_site_rows = sum(1 for p in prefix_col if p)
+
     prompt_texts = [
         _decode_prompt_only(self.tokenizer, data[i].batch["prompts"],
                             data[i].batch["attention_mask"], prompt_length)
@@ -1165,10 +1179,20 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
         #   조 내 분산의 큰 몫이므로 이 누수는 무해하지 않다.
         return int(_cdt.parse_ok(t))
 
+    _arm_terms = _cdr.ARM_SPECS[arm]["terms"]
     for i, r in enumerate(rows):
         text = decoded_responses[i]
+        prefix_i = prefix_col[i]
+        # ★site 행의 `prefix` 는 응답 **이전**에 이미 굳은 텍스트(프롬프트에 접합된
+        #   assistant 프리픽스). `decoded_responses[i]` 는 그 뒤 롤아웃이 새로 생성한
+        #   연속분뿐이다 — 채점·프리픽스-상태 특징은 둘을 이어 붙인 전체를 봐야 한다.
+        #   normal 행은 prefix_i=="" 라 `full_text_i == text` (바이트 동일, "지금까지" 그대로).
+        full_text_i = prefix_i + text
         r["text"] = text
-        r["r_corr"] = int(_cdt.grade(text, nums_col[i], int(target_col[i])))
+        # ★수리(고정 자리 0904): `prefix` 컬럼이 있으면(mixed 데이터) r_corr 는
+        #   prefix+response 전체를 채점한다. 컬럼이 없으면(normal 전용 parquet)
+        #   prefix_i=="" 라 이 줄은 "지금까지"(text 만 채점)와 바이트 동일하다.
+        r["r_corr"] = int(_cdt.grade(full_text_i, nums_col[i], int(target_col[i])))
         r["format_ok"] = _cdr.format_ok_row(text, arm, parse_expr_ok=_parse_ok)
         # ⚠`or ""` 를 지우지 마라. answer_leak 은 None 을 받으면 **예외를 던진다**
         #   (조용한 0 이 누출 중단조건을 무력화하는 것을 막는 의도적 설계다). 그런데
@@ -1177,17 +1201,56 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
         #   누출도 없으므로 "" 가 정직한 값이다(빈 식은 어떤 메타에도 안 들어 있다).
         r["final_expr"] = _cdt.extract_expr(text) or ""
         r["arm"] = arm
-        _terms_i = _cdr.ARM_SPECS[arm]["terms"]
+        # ★불변량(고정 자리 설계): site 프리픽스는 **첫 <meta> 전**에서 잘린다
+        #   (`countdown_sites.cut_own_meta`/`cut_attempt_boundary` 둘 다 — B 컷은
+        #   `\\boxed{` 이후를 제외하는데, 정상 롤아웃에서 <meta> 는 boxed 이전에
+        #   나오므로 B 컷의 후보 구간도 구조적으로 boxed·meta 이전이다). 이 불변이
+        #   깨지면(=프리픽스 안에 이미 완결된 메타가 있으면) "emitted 는 응답만 본다"는
+        #   아래 규약이 site 행의 첫 메타를 놓치게 되어 조용히 틀린 emit_rate 를 낸다 —
+        #   조용히 넘기지 않고 즉사한다.
+        if prefix_i and int(_cdr.parse_meta(prefix_i, _cdr.ARM_SPECS[arm]["meta_form"])["emitted"]):
+            raise RuntimeError(
+                f"[COUNTDOWN] site row i={i}: prefix 안에 이미 완결된 <meta> 가 있다 — "
+                "site 는 첫 meta **앞**에서 잘린다는 불변이 깨졌다(countdown_sites 컷 결함 "
+                "또는 parquet 오손). prefix[:200]=" + repr(prefix_i[:200]))
         # ★0904 SC/SCg: 상태 조건부 메타 항(explore·explore_g·verify·early_cost)의
         #   원재료는 `countdown_selfcontrol.sc_row`가 텍스트에서 직접 뽑는다(PMI/OSD/INV
         #   와 달리 GPU forward 가 필요 없다 — 전부 정규식·완전열거 기반 순수 함수).
-        if {"explore", "explore_g", "verify", "early_cost"} & set(_terms_i):
-            r.update(_cdsc.sc_row(text, nums_col[i], int(target_col[i]), r["r_corr"],
+        #   ★고정 자리: "프리픽스 안 시도 수"(n_att_pre) 같은 상태는 site 의 접합
+        #   프리픽스까지 포함해야 정직하다 — `full_text_i` 를 넘긴다(normal 행은
+        #   full_text_i==text 라 바이트 동일, 기존 동작 보존).
+        if {"explore", "explore_g", "verify", "early_cost"} & set(_arm_terms):
+            r.update(_cdsc.sc_row(full_text_i, nums_col[i], int(target_col[i]), r["r_corr"],
                                   _cdr.SC_K_STUCK, _cdr.SC_CONF_HI))
         # ★explore_g 도 plan_ok(근거-진리, 완전열거)가 필요하다 — "plan" 항(PL 팔)과
         #   같은 계산이므로 조건에 함께 넣는다(복제 금지 규약).
-        if {"plan", "explore_g"} & set(_terms_i):      # ★0902 P 팔: next 첫수 해 생존 · 이행
-            r["plan_ok"], r["plan_followed"] = _cdr.plan_next(text, nums_col[i], int(target_col[i]))
+        if {"plan", "explore_g"} & set(_arm_terms):      # ★0902 P 팔: next 첫수 해 생존 · 이행
+            r["plan_ok"], r["plan_followed"] = _cdr.plan_next(full_text_i, nums_col[i], int(target_col[i]))
+        # ★FT/M0/MT (고정 자리, 0904): family_dead/live_new_moves 는 "첫 메타 앞" 텍스트
+        #   전체(프리픽스+메타 이전 응답)에 대한 오라클 라벨이다. site 행은 이미 프리픽스가
+        #   응답에 접합돼 있으므로 "메타 앞" = prefix + response[:meta_start]. normal 행은
+        #   prefix_i=="" 라 그냥 response[:meta_start] 다(런타임 계산, `countdown_sites`
+        #   가 CPU 로 4수 완전열거하므로 싸다).
+        if {"timing", "live_new"} & set(_arm_terms):
+            _m = _cdr.parse_meta(text, _cdr.ARM_SPECS[arm]["meta_form"])
+            _resp_pre_meta = text[: int(_m["start"])] if _m.get("start") is not None else text
+            _oracle = _cds.oracle_for_site(prefix_i + _resp_pre_meta, nums_col[i], int(target_col[i]))
+            r["family_dead"] = _oracle["family_dead"]
+            r["live_new_moves"] = _oracle["live_new_moves"]
+            r["dec_redirect"] = 1 if _m.get("decision") == "redirect" else 0
+            r["dec_verify"] = 1 if _m.get("decision") == "verify" else 0
+            # 메타 **뒤** 첫 결합 — countdown_selfcontrol 의 "시도"(등식, `=` 로 매듭지은
+            # 것) 정의를 그대로 쓴다(복제 금지 규약: `_CD_ARITH_EQ` 는
+            # `countdown_selfcontrol._ARITH_EQ` 그대로 재사용). 못 찾으면 이행 안 한 것.
+            _after = text[int(_m["end"]):] if _m.get("end") is not None else ""
+            _mv = _CD_ARITH_EQ.search(_after)
+            if _mv:
+                _a, _op, _b, _c_ = _mv.group(1), _mv.group(2), _mv.group(3), _mv.group(4)
+                r["first_move_after_meta"] = _cds.move_key_str(_cds.canon_move(int(_a), _op, int(_b)))
+                r["followed"] = 1
+            else:
+                r["first_move_after_meta"] = None
+                r["followed"] = 0
 
     # ── ★수리(0904, 감사결함3): `emitted` 의 정의를 하나로 통일한다. ─────────────
     #   위에서 `rows`(PMI 경로 또는 그 자리표시자)가 채운 `emitted` 는 "증인/오답
@@ -1439,7 +1502,8 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
           f"phat_groups={len(groups)} "
           f"pmi_scored={diag.get('scored', 0)}/{diag.get('B', 0)} "
           f"osd_scored={osd_diag.get('scored', 0)}/{osd_diag.get('B', 0)} "
-          f"inv_scored={inv_diag.get('scored', 0)}/{inv_diag.get('B', 0)}", flush=True)
+          f"inv_scored={inv_diag.get('scored', 0)}/{inv_diag.get('B', 0)} "
+          f"n_site_rows={n_site_rows}", flush=True)
 
     # ★0902 관측: 보상 구성 요소별 평균 · 발화율 · 계획 항(해 생존/이행) 비율 · 응답 표본 8개 → wandb (실패해도 학습은 계속)
     try:
@@ -1574,6 +1638,15 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
         _resc = _countdown_rescue_stats(rows, nums_col, target_col)
         _rep.update(_resc)
         _rep["arith_in_meta"] = _cdr.arithmetic_in_meta_rate(rows)
+        # ★고정 자리(0904) — mixed 배치(FT/M0/MT 의 M0/MT)는 site 행이 이미 프리픽스
+        #   너머로 재개돼 있어 "메타를 내기 쉬운" 지점에서 시작한다. emit_rate 를 전체
+        #   행으로만 재면 이 편향이 숨는다. `check_abort` 는 위 고정 키 집합만 읽으므로
+        #   이 키를 추가해도 중단 판정은 바뀌지 않는다(측정만, 새 중단 규칙 없음).
+        if n_site_rows:
+            _normal_idx = [i for i, p in enumerate(prefix_col) if not p]
+            _rep["emit_rate_normal_only"] = (
+                sum(int(rows[i].get("emitted", 0)) for i in _normal_idx)
+                / max(1, len(_normal_idx)))
         # ★0904 SC/SCg — **측정만** 한다. ABORT_RULES 에는 안 넣는다(사전등록에 없는
         #   중단 규칙을 여기서 새로 만들지 않는다는 지시). `check_abort` 는 미리 정한
         #   여섯 지표만 읽으므로 `_rep["sc"]` 를 추가해도 중단 판정은 한 글자도 안 바뀐다
