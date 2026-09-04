@@ -72,6 +72,7 @@ def cmd_submit(args: argparse.Namespace) -> int:
         "name": args.name,
         "gpus": args.gpus,
         "priority": args.priority,
+        "need_mb": args.need_mb,
         "submitted_at": _now(),
     }
     path = QUEUE_ROOT / "pending" / f"{job_id}.json"
@@ -162,21 +163,46 @@ def _disk_ok() -> tuple[bool, str]:
 
 
 # ── worker ────────────────────────────────────────────────────────────────
-def _pick_job() -> Path | None:
-    """Return a pending job file sorted by (-priority, submitted order), or None."""
+def _gpu_free_mb(gpu: int) -> int | None:
+    """nvidia-smi 로 이 카드의 남은 메모리(MiB). 못 읽으면 None(필터 안 함)."""
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits", "-i", str(gpu)],
+            text=True, timeout=20)
+        return int(out.strip().splitlines()[0])
+    except Exception:
+        return None
+
+
+def _pick_job(gpu: int | None = None) -> Path | None:
+    """Return a pending job file sorted by (-priority, submitted order), or None.
+
+    ★0904: 타인의 프로세스가 같은 카드에 상주할 수 있다(GPU 2 에 14GB). 잡의 `need_mb` 보다
+    카드의 남은 메모리가 작으면 그 잡은 이 워커가 집지 않는다(다른 카드의 워커가 집는다).
+    need_mb 가 없는 옛 잡은 필터하지 않는다.
+    """
     pending = sorted((QUEUE_ROOT / "pending").glob("*.json"))
     if not pending:
         return None
+    free = _gpu_free_mb(gpu) if gpu is not None else None
 
-    def sort_key(p: Path):
+    def load(p: Path):
         try:
-            job = json.loads(p.read_text())
-            return (-int(job.get("priority", 0)), p.name)
+            return json.loads(p.read_text())
         except Exception:
-            return (0, p.name)
+            return {}
 
-    pending.sort(key=sort_key)
-    return pending[0]
+    cands = []
+    for p in pending:
+        job = load(p)
+        need = int(job.get("need_mb", 0) or 0)
+        if free is not None and need and need > free:
+            continue
+        cands.append((-int(job.get("priority", 0)), p.name, p))
+    if not cands:
+        return None
+    cands.sort()
+    return cands[0][2]
 
 
 def _claim(job_path: Path) -> Path | None:
@@ -257,7 +283,7 @@ def _worker_loop(gpu: int, use_lock: bool, poll_s: float) -> None:
             time.sleep(poll_s)
             continue
 
-        job_path = _pick_job()
+        job_path = _pick_job(gpu)
         if job_path is None:
             time.sleep(poll_s)
             continue
@@ -338,6 +364,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--cmd", required=True)
     sp.add_argument("--gpus", type=int, default=1)
     sp.add_argument("--priority", type=int, default=0)
+    sp.add_argument("--need-mb", dest="need_mb", type=int, default=0,
+                    help="이 잡이 필요로 하는 GPU 여유 메모리(MiB). 학습 70000, 생성/채점 40000 권장")
     sp.set_defaults(func=cmd_submit)
 
     sp = sub.add_parser("status", help="table of pending/running/done/failed + GPU memory")
