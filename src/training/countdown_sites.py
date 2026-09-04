@@ -213,7 +213,9 @@ def cut_attempt_boundary(text: str, rng: random.Random) -> Optional[str]:
         if boundary <= 0 or boundary >= len(text):
             continue
         cand_prefix = text[:boundary]
-        if "\\boxed{" in cand_prefix:
+        # ★0904 스모크 실측: 첫 <meta> 뒤에서 잘린 B 컷 142/3000 이 학습 스태시의 «site 는
+        #   첫 meta 앞에서 잘린다» 불변 검사에 걸려 런이 죽었다. 여기서 원천 차단한다.
+        if "\\boxed{" in cand_prefix or "<meta" in cand_prefix:
             continue
         n_att = len(_ARITH_EQ.findall(cand_prefix))
         boundaries.add((boundary, n_att))
