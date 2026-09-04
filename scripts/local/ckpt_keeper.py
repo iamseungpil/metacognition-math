@@ -33,7 +33,7 @@ REPO = Path(os.environ.get("REPO_ROOT", "/home/ubuntu/seungpil/metacognition-mat
 JUDGMENT = (30, 50, 100)
 KEEP_LATEST = 2
 LOG = WORK / "logs" / "ckpt_keeper.log"
-_LIN = re.compile(r"^cd7_(?P<arm>[A-Z0-9_]+)_(?P<variant>[a-z0-9]+)_s(?P<seed>\d+)$")
+_LIN = re.compile(r"^cd7_(?P<arm>[A-Z0-9_]+)_(?P<variant>[a-z0-9]+)_s(?P<seed>\d+)(?P<mixed>_mixed)?$")
 
 
 def log(msg: str) -> None:
@@ -55,7 +55,8 @@ def running_lineages() -> set[str]:
         if m:
             arm, seed, _steps, variant = m.groups()
             eff = "plain" if arm == "N0" else variant
-            out.add(f"cd7_{arm}_{eff}_s{seed}")
+            suffix = "_mixed" if arm in ("M0", "MT") else ""   # run_arm.sh 의 data_hint=mixed 계보 접미사
+            out.add(f"cd7_{arm}_{eff}_s{seed}{suffix}")
     return out
 
 
