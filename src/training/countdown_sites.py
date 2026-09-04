@@ -390,6 +390,13 @@ def build_site_row(*, site_id: str, source: str, nums, target, oracle: dict,
         "index": index, "split": split, "nums": nums, "target": target,
         "witness": witness, "decoy": decoy, "prompt_variant": variant,
         "search_budget": ct.SEARCH_BUDGET,
+        # ★0904 실측: verl 의 agent-loop 경로는 평평한 컬럼을 non_tensor_batch 로 나르지 않고
+        #   extra_info 만 나른다(verl_sdc._col 의 폴백). 여기 안 넣으면 스태시가 자리 행을
+        #   못 보고(n_site_rows=0) 프리픽스 없이 채점한다 — 스모크에서 확인된 결함.
+        "site_id": site_id, "cut_type": cut_type, "prefix": prefix,
+        "family_dead": oracle["family_dead"],
+        "live_new_moves": oracle["live_new_moves"],
+        "pairs_pre": oracle["pairs_pre"],
     }
     return {
         "data_source": "countdown",
