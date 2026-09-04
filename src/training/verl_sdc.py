@@ -1647,6 +1647,13 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
             _rep["emit_rate_normal_only"] = (
                 sum(int(rows[i].get("emitted", 0)) for i in _normal_idx)
                 / max(1, len(_normal_idx)))
+            # 자리 행이 «프리픽스+응답»으로 채점되는지 사후 확인용 — 자리 행 정답률은 학습 전
+            #   같은 자리 성공률(중앙값 0.31)과 같은 자리수여야 한다. 0 이나 1 에 붙으면 배선 의심.
+            _site_idx = [i for i, p in enumerate(prefix_col) if p]
+            _rep["corr_rate_site_only"] = (
+                sum(int(rows[i].get("r_corr", 0)) for i in _site_idx) / max(1, len(_site_idx)))
+            _rep["corr_rate_normal_only"] = (
+                sum(int(rows[i].get("r_corr", 0)) for i in _normal_idx) / max(1, len(_normal_idx)))
         # ★0904 SC/SCg — **측정만** 한다. ABORT_RULES 에는 안 넣는다(사전등록에 없는
         #   중단 규칙을 여기서 새로 만들지 않는다는 지시). `check_abort` 는 미리 정한
         #   여섯 지표만 읽으므로 `_rep["sc"]` 를 추가해도 중단 판정은 한 글자도 안 바뀐다

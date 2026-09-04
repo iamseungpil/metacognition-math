@@ -122,6 +122,17 @@ def submit_eval(lineage: str, step: int, dry: bool) -> None:
         marker.write_text(time.strftime("%Y-%m-%dT%H:%M:%S"))
     else:
         log(f"  submit FAILED: {r.stderr[-300:]}")
+    # ★cd8 1차 지표: 판정 자리 1,000곳 × 16 이어쓰기(메타 허용) — 모든 팔이 같은 자리를 받는다.
+    jcmd = (f"source scripts/local/env.sh >/dev/null 2>&1; python scripts/local/gen_continuations.py "
+            f"--sites $WORK/data/sites_v1/sites_judge.parquet --model_path {merged} --policy_tag {lineage}_s{step} "
+            f"--modes meta --k 16 --max_tokens 2048 --seed 11 --gpu_util 0.45 "
+            f"--out $WORK/conts_v1/judge_{lineage}_step{step}.parquet")
+    log(f"submit judge-site continuations {lineage} step {step}")
+    r2 = subprocess.run([sys.executable, "scripts/local/gpu_queue.py", "submit", "--name",
+                         f"jsite_{lineage}_step{step}", "--priority", "90", "--cmd", jcmd],
+                        cwd=str(REPO), capture_output=True, text=True)
+    if r2.returncode != 0:
+        log(f"  judge-site submit FAILED: {r2.stderr[-300:]}")
 
 
 def rm_step(lineage: str, step: int, dry: bool, why: str) -> None:
