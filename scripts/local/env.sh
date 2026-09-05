@@ -67,3 +67,6 @@ export TRITON_CACHE_DIR="${WORK}/triton_cache"; mkdir -p "${TRITON_CACHE_DIR}"
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
 echo "[env.sh] REPO_ROOT=${REPO_ROOT} WORK=${WORK} HF_TOKEN=$([ -n "${HF_TOKEN:-}" ] && echo set || echo unset) WANDB_MODE=${WANDB_MODE:-online}"
+# 0905: 루트 디스크(200GB)를 타 프로젝트가 채워 12MB 까지 떨어짐 → ~/.cache 계열(vLLM 컴파일·torch inductor)도 /hdd_data 로.
+export XDG_CACHE_HOME="/hdd_data/seungpil/xdg_cache"; mkdir -p "${XDG_CACHE_HOME}"
+export VLLM_CACHE_ROOT="${XDG_CACHE_HOME}/vllm"; export TORCHINDUCTOR_CACHE_DIR="${XDG_CACHE_HOME}/torchinductor"; export FLASHINFER_WORKSPACE_BASE="${XDG_CACHE_HOME}/flashinfer"
