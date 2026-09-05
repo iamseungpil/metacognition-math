@@ -285,7 +285,10 @@ def test_common_terms_are_identical_across_all_arms():
             assert cr.ARM_SPECS[arm]["meta_form"] == "none"
             continue
         if arm in ("OPT", "OPT_M", "OPT_T", "OPT_MT"):
-            assert tuple(cr.ARM_SPECS[arm]["terms"]) == ("corr", "format")
+            # OPT 사다리: corr+format 위에 지도 항(timing/live_new)만 얹을 수 있고, meta_floor 는 절대 없다.
+            _t = tuple(cr.ARM_SPECS[arm]["terms"])
+            assert _t[:2] == ("corr", "format") and "meta_floor" not in _t
+            assert set(_t[2:]) <= {"timing", "live_new"}
             assert cr.ARM_SPECS[arm]["meta_form"] == "new"
             assert cr.ARM_SPECS[arm]["require_meta"] is False
             continue
