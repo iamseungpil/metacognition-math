@@ -19,8 +19,8 @@
 # VARIANT  prompt/data variant for non-N0/OPT/OPT_M arms (default p3); ignored for
 #          N0, which always uses the `plain` variant (countdown_rewards.ARM_SPECS["N0"]
 #          note: "메타 지시문 없음... variant plain, DATA_SUFFIX=_4num_plain"), and
-#          ignored for OPT/OPT_M, which always use the `opt` variant (permission,
-#          not mandate — countdown_task.PROMPT_VARIANTS["opt"]).
+#          ignored for OPT/OPT_M/OPT_T/OPT_MT/OPT_OPD, which always use the `opt`
+#          variant (permission, not mandate — countdown_task.PROMPT_VARIANTS["opt"]).
 #
 # LINEAGE = cd7_<ARM>_<VARIANT>_s<SEED>   (VARIANT here is the EFFECTIVE data variant,
 #           i.e. "plain" for N0, so lineages stay unambiguous.)
@@ -82,10 +82,13 @@ fi
 
 if [ "${ARM}" = "N0" ]; then
   DATA_VARIANT="plain"
-elif [ "${ARM}" = "OPT" ] || [ "${ARM}" = "OPT_M" ] || [ "${ARM}" = "OPT_T" ] || [ "${ARM}" = "OPT_MT" ]; then
+elif [ "${ARM}" = "OPT" ] || [ "${ARM}" = "OPT_M" ] || [ "${ARM}" = "OPT_T" ] || [ "${ARM}" = "OPT_MT" ] || [ "${ARM}" = "OPT_OPD" ]; then
   # ★OPT/OPT_M (2026-09-05): 메타 허용·비요구 팔은 항상 `opt` 프롬프트(허가 문장)로
   #   발사한다 — N0 가 항상 `plain` 인 것과 같은 이유다. VARIANT_ARG 를 그대로 두면
   #   호출자가 실수로 p3/new 데이터를 붙여 강제 프롬프트로 발사할 수 있다.
+  #   ★OPT_OPD(0906, docs/DESIGN_opd_hint_teacher.md §4): 힌트 교사 항도 OPT 계열과
+  #   같은 «허용·비요구» 프롬프트 위에서 돈다 — data_hint 는 (기본값) "normal" 이라
+  #   아래 mixed 분기는 안 탄다(고정 자리 배치 없음, §6 스모크는 일반 롤아웃 전용).
   DATA_VARIANT="opt"
 else
   DATA_VARIANT="${VARIANT_ARG}"

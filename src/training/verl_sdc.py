@@ -1448,6 +1448,76 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
                   f"leak={inv_diag.get('leak_reasons', {})} "
                   f"terms_on={bool(_inv_terms)}", flush=True)
 
+    # ── OPD (힌트 교사) — «오라클 상태-요약 조건화» 문맥의 온폴리시 KL. ────────────
+    #   PMI·OSD·INV 와 **병렬**이다(별도 배치, 별도 ref 호출 — `base=2*k`, OSD/INV 와
+    #   같은 스트라이드이지만 서로 다른 배치이므로 안 섞인다). docs/DESIGN_opd_hint_teacher.md.
+    #
+    #   켜짐 조건 두 가지(OSD/INV 와 같은 규약):
+    #     · 팔이 opd_meta 항을 쓰면 **무조건** 켜지고, 실패는 fail-loud 다.
+    #     · 아니면 `COUNTDOWN_OPD` 환경변수로 켤 수 있다("측정 모드").
+    #   ⚠비용: 발화 행마다 forward 2팔(행당 teacher 1 + student 1 — §4.1 의 비용
+    #   편차는 `_compute_countdown_opd` 위 모듈 헤더 주석 참조).
+    _opd_terms = {_cdr.OPD_TERM} & set(_cdr.ARM_SPECS[arm].get("terms", ()))
+    _opd_on = bool(_opd_terms) or os.environ.get("COUNTDOWN_OPD", "0") == "1"
+    opd_diag: dict = {"enabled": bool(_opd_on)}
+    if not _opd_on:
+        for r in rows:
+            r.update({"opd_kl": None, "opd_n_tok": 0, "opd_status": "off"})
+    else:
+        # ★prompt_messages 는 `prompt_variant` 컬럼(있으면)으로 새로 렌더링한다 — 힌트를
+        #   user 턴 안에 넣으려면 원 chat 메시지가 필요하고(설계 §1.2), 이미 템플릿
+        #   적용된 `prompt_texts` 문자열에서 그 자리를 문자열로 되찾는 것보다 이쪽이
+        #   `scripts/local/opd_probe.py`(§7 프로브)가 이미 검증한 경로다.
+        try:
+            variant_col = [(v or "new") for v in _col("prompt_variant")]
+        except RuntimeError:
+            variant_col = ["new"] * bs
+        prompt_messages = [
+            _cdt.build_prompt({"nums": nums_col[i], "target": int(target_col[i])},
+                              variant_col[i])
+            for i in range(bs)
+        ]
+        try:
+            opd_rows, _od = _compute_countdown_opd(
+                tokenizer=self.tokenizer,
+                trainer=_ACTIVE_SDC_CONTEXT.get("trainer", None),
+                prompt_texts=prompt_texts,
+                prompt_messages=prompt_messages,
+                response_texts=list(decoded_responses),
+                nums=nums_col, targets=[int(t) for t in target_col],
+                prefixes=prefix_col, step=step)
+            opd_diag.update(_od)
+            for i, r in enumerate(rows):
+                r.update(opd_rows[i])
+        except Exception as _pexc:
+            if _opd_terms:
+                raise                       # 항을 쓰는 팔이면 즉사(무음 0 = A/OPT 팔 위장)
+            opd_diag["error"] = f"{type(_pexc).__name__}: {_pexc}"
+            for r in rows:
+                r.update({"opd_kl": None, "opd_n_tok": 0, "opd_status": "error"})
+            print(f"[COUNTDOWN][OPD][FAIL] step={step} arm={arm} "
+                  f"{opd_diag['error']}", flush=True)
+            if _OPD_FAIL_SEEN["n"] == 0:
+                traceback.print_exc()
+            _OPD_FAIL_SEEN["n"] += 1
+        if opd_diag.get("ref_error") and _opd_terms:
+            raise RuntimeError(
+                f"[COUNTDOWN] arm={arm} step={step}: OPD ref 스코어링 실패 "
+                f"({opd_diag['ref_error']}) — {_cdr.OPD_TERM} 항이 무음 0 이 되어 이 팔이 "
+                f"OPT 팔과 같아진다. 조용히 진행하지 않는다.")
+        if "error" not in opd_diag:
+            print(f"[COUNTDOWN][OPD] step={step} arm={arm} B={opd_diag.get('B', bs)} "
+                  f"n_no_meta={opd_diag.get('no_meta', 0)} "
+                  f"n_no_hint={opd_diag.get('no_hint', 0)} "
+                  f"n_no_span={opd_diag.get('no_span', 0)} "
+                  f"n_scored={opd_diag.get('scored', 0)} "
+                  f"n_nan={opd_diag.get('nan_rows', 0)} "
+                  f"n_tok_mean={(opd_diag.get('n_tok_sum', 0) / max(1, opd_diag.get('attempted', 0))):.1f} "
+                  f"fwd_calls={opd_diag.get('fwd_calls', 0)} "
+                  f"fwd_rows={opd_diag.get('fwd_rows', 0)}(+pad{opd_diag.get('fwd_rows_pad', 0)}) "
+                  f"fwd_tokens={opd_diag.get('fwd_tokens', 0)} "
+                  f"terms_on={bool(_opd_terms)}", flush=True)
+
     # ── 그룹 단위 두 수: p̂(자가검증률) 와 sign(A_corr). uid 없으면 계산 불가. ─────
     uid = nt.get("uid", None)
     if uid is None:
@@ -1503,6 +1573,7 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
           f"pmi_scored={diag.get('scored', 0)}/{diag.get('B', 0)} "
           f"osd_scored={osd_diag.get('scored', 0)}/{osd_diag.get('B', 0)} "
           f"inv_scored={inv_diag.get('scored', 0)}/{inv_diag.get('B', 0)} "
+          f"opd_scored={opd_diag.get('scored', 0)}/{opd_diag.get('B', 0)} "
           f"n_site_rows={n_site_rows}", flush=True)
 
     # ★0902 관측: 보상 구성 요소별 평균 · 발화율 · 계획 항(해 생존/이행) 비율 · 응답 표본 8개 → wandb (실패해도 학습은 계속)
@@ -2434,6 +2505,7 @@ def _dcpo_v4_ref_logprobs(trainer, tensors):
 
 _OSD_FAIL_SEEN = {"n": 0}      # fail-soft 경로에서 traceback 을 한 번만 찍기 위한 카운터
 _INV_FAIL_SEEN = {"n": 0}      # 같은 이유(도치 자 스코어러)
+_OPD_FAIL_SEEN = {"n": 0}      # 같은 이유(힌트 교사 스코어러)
 _ARM_SIG_SEEN: dict = {}       # 팔 정체 서명을 런당 한 번만 찍기 위한 부기(검수 0831)
 # ★자체 선언 금지 — arm_signature 가 서명에 새기는 값과 실제로 도는 값이 갈리면
 #   서명이 거짓말한다. 정의처는 countdown_rewards 하나다(0825 적대검증).
@@ -2802,6 +2874,223 @@ def _osd_delta_stats(vals) -> dict:
         "d_pos_frac": sum(1.0 for v in xs if v > 0) / n,
         "n_delta": n,
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OPD — 힌트 교사 (메타 구간 on-policy distillation). docs/DESIGN_opd_hint_teacher.md.
+# ══════════════════════════════════════════════════════════════════════════════
+# 왜 여기에 있나 (OSD 와 같은 자리, 같은 이유). OPD 는 PMI/OSD/INV 와 **병렬**이다 —
+#   여기서만 GPU 를 쓴다(teacher/student forward, 행당 2팔). 재사용하는 것은
+#   `_build_pmi_score_batches`(좌측패딩 정렬 수리 포함)와 `_dcpo_v4_ref_logprobs`
+#   (T=1.0 + use_legacy_worker_impl fail-closed assert) — OSD 와 완전히 같은 두 함수,
+#   무수정. 순수 힌트/스팬/보상 계산은 `countdown_opd.py`(순수, CPU 로 테스트됨) —
+#   여기는 그 함수들을 실제 롤아웃 텍스트·토크나이저·ref forward 에 잇는 배선뿐이다.
+#
+# ★설계 §4.1 이 제안한 비용 절감("student 쪽은 GRPO 의 old_log_prob 재사용, teacher
+#   쪽만 forward 1회 추가")은 **여기서 적용하지 않는다** — 위 OSD 헤더 주석(§2429-2432,
+#   `ray_trainer.py:1343/1382` 에서 보상이 계산되고 `old_log_prob` 은 그 뒤인
+#   `:1404`)이 이미 실측·기록한 사실대로, `_compute_countdown_arm_stash` 가 도는
+#   시점(보상 계산 시점)에는 이번 배치의 `old_log_probs` 가 **아직 존재하지 않는다**.
+#   그래서 student 쪽도 teacher 쪽과 같은 자리에서 fresh forward 를 한다 — OSD 의
+#   "행당 2팔" 과 바이트 동일한 비용 구조가 된다(설계가 기대한 "teacher 1회 추가"보다
+#   비싸다 — 이것이 이 구현이 설계에서 벗어나는 유일한 지점이고, 보고서에 명시한다).
+#
+#   teacher/student 는 **같은 정책**(actor)이어야 한다는 설계 §4.1 의 요구는
+#   `trainer._compute_ref_log_prob` 자체가 채운다 — verl 0.7.1 `ray_trainer.py`
+#   (`/hdd_data/seungpil/envs/simplerl/.../verl/trainer/ppo/ray_trainer.py:1105-1127`)
+#   를 읽고 확인: `ref_in_actor` 가 참인 통상 설정에서는 이 호출이 내부적으로
+#   `self.actor_rollout_wg.compute_log_prob(...)` 를 그대로 호출한다 — 즉 별도 동결
+#   네트워크가 아니라 **현재 정책 가중치 위의 forward**다. OSD/INV 와 E.4 self-distill
+#   (`_build_teacher_logprob_batch` 의 "teacher" 조건도 같은 호출을 쓴다, :3327)이
+#   이미 이 경로를 "teacher forward" primitive 로 쓰고 있다 — OPD 도 그 전례를 따른다.
+#
+#   토큰화 방식은 `scripts/local/opd_probe.py`(설계 §7 오프라인 프로브, 이미 실측
+#   결과가 이 문서를 지지한다)의 검증된 패턴을 그대로 따른다: 프롬프트(+힌트)는
+#   `apply_chat_template(...,continue_final_message=True)` 로 렌더링해 문자열로
+#   얻고, 프리픽스/스팬 텍스트는 **별도로** 토큰화해 이어 붙인다(프롬프트와 한 문자열로
+#   합쳐 재인코딩하지 않는다) — teacher/student 두 팔이 스팬에 대해 정확히 같은
+#   토큰열(target_ids)을 teacher-force 하도록 보장하는 가장 단순한 방법이고, 프로브가
+#   이미 이 방법으로 §7 의 결과(메타 특이적 KL 5.7배, 방향 일치 98.3%)를 냈다.
+
+def _build_opd_arms(tokenizer, prompt_messages, response_texts, prefixes, nums, targets):
+    r"""점수를 매길 **2n 개** (문맥, target) 팔. GPU 를 잡지 않는다.
+
+    행 하나당 팔 둘, **고정 순서**: `hint`(teacher), `plain`(student). 두 팔의
+    target 토큰열은 **바이트 동일**하다(같은 `target_text` 를 한 번만 토큰화해
+    양쪽에 재사용 — OSD 의 "두 팔의 응답 토큰열은 바이트 동일" 전제와 같다).
+
+    Returns (arm_prompts, arm_resps, attempts, per_row, diag).
+    """
+    from src.training import countdown_opd as _cdo          # noqa: PLC0415
+
+    B = len(response_texts)
+    if not (len(prompt_messages) == len(prefixes) == len(nums) == len(targets) == B):
+        raise ValueError(
+            f"_build_opd_arms: 길이 불일치 prompt_messages={len(prompt_messages)} "
+            f"resp={B} prefixes={len(prefixes)} nums={len(nums)} targets={len(targets)}")
+
+    arm_prompts, arm_resps, attempts = [], [], []
+    per_row = [{"opd_kl": None, "opd_n_tok": 0, "opd_status": "no_meta"} for _ in range(B)]
+    diag = {"B": B, "no_meta": 0, "no_hint": 0, "no_span": 0, "attempted": 0,
+            "n_tok_sum": 0, "fwd_tokens": 0}
+
+    for i in range(B):
+        text = response_texts[i] or ""
+        prefix_i = prefixes[i] or ""
+        meta_start, meta_end, span_end = _cdo.opd_spans(text)
+        if meta_start is None:
+            diag["no_meta"] += 1
+            continue
+        target_text = text[meta_start:span_end]
+        if not target_text:
+            per_row[i] = {"opd_kl": None, "opd_n_tok": 0, "opd_status": "empty_span"}
+            diag["no_span"] += 1
+            continue
+
+        # ★상태(=오라클 조건화 대상)는 "메타 시작 **앞**" 까지다 — FT/MT 가 family_dead 를
+        #   계산할 때 쓰는 것과 같은 경계(`_resp_pre_meta = text[:meta_start]`,
+        #   verl_sdc.py 위쪽 `_compute_countdown_arm_stash` 참조) — 메타 자신은
+        #   "아직 나오지 않은 상태"로 조건화해야 한다(메타를 이미 본 힌트는 순환논리).
+        state_text = prefix_i + text[:meta_start]
+        hint = _cdo.build_hint(nums[i], targets[i], state_text)
+        if not hint:
+            # family_dead is None(시도 이력이 아예 없다) — 만들 판정이 없다(설계 §1.1).
+            per_row[i] = {"opd_kl": None, "opd_n_tok": 0, "opd_status": "no_hint"}
+            diag["no_hint"] += 1
+            continue
+
+        hint_msgs = _cdo.hinted_messages(prompt_messages[i], hint, "")
+        plain_msgs = _cdo.hinted_messages(prompt_messages[i], "", "")
+        prompt_hint_str = tokenizer.apply_chat_template(
+            hint_msgs, tokenize=False, continue_final_message=True,
+            add_generation_prompt=False)
+        prompt_plain_str = tokenizer.apply_chat_template(
+            plain_msgs, tokenize=False, continue_final_message=True,
+            add_generation_prompt=False)
+
+        pre_text = prefix_i + text[:meta_start]
+        pre_ids = list(tokenizer(pre_text, add_special_tokens=False)["input_ids"])
+        target_ids = list(tokenizer(target_text, add_special_tokens=False)["input_ids"])
+        if not target_ids:
+            per_row[i] = {"opd_kl": None, "opd_n_tok": 0, "opd_status": "empty_span"}
+            diag["no_span"] += 1
+            continue
+        p_ids_hint = list(tokenizer(prompt_hint_str, add_special_tokens=False)["input_ids"])
+        p_ids_plain = list(tokenizer(prompt_plain_str, add_special_tokens=False)["input_ids"])
+
+        ctx_hint = p_ids_hint + pre_ids
+        ctx_plain = p_ids_plain + pre_ids
+        arm_prompts.append(ctx_hint); arm_resps.append(target_ids)
+        arm_prompts.append(ctx_plain); arm_resps.append(list(target_ids))
+        attempts.append(_OsdAttempt(row=i, w_len=len(target_ids)))
+        per_row[i] = {"opd_kl": None, "opd_n_tok": len(target_ids), "opd_status": "pending"}
+        diag["n_tok_sum"] += len(target_ids)
+        diag["fwd_tokens"] += len(ctx_hint) + len(ctx_plain) + 2 * len(target_ids)
+
+    diag["attempted"] = len(attempts)
+    return arm_prompts, arm_resps, attempts, per_row, diag
+
+
+def _read_opd_from_ref_logprobs(ref_lp, attempts):
+    r"""ref 토큰별 logp → 행별 `opd_kl` = mean_t(lp_teacher_t − lp_student_t).
+
+    `base = 2*k`, 팔 순서 `hint(teacher), plain(student)`. 설계 §2.2 의 온폴리시
+    표본 KL 근사(`KL̂ = mean_{t∈span}(lp_teacher − lp_student)`, 과제 지시 그대로) —
+    전체 분포 KL(vocab 전체 log_softmax)이 아니라 **실현 토큰 하나의 logprob 차이**만
+    쓴다(OSD/PMI 와 같은 "gather, not full softmax" 계약). 유한하지 않으면 그 행만
+    NaN 으로 fail-closed(OSD `_read_osd_from_ref_logprobs` 와 같은 규약).
+    """
+    from src.training.countdown_pmi import _row_sum          # noqa: PLC0415
+
+    out = []
+    for k, at in enumerate(attempts):
+        base = 2 * k
+        L = at.w_len
+        try:
+            lp_teacher = _row_sum(ref_lp, base + 0, L, slice(0, L))
+            lp_student = _row_sum(ref_lp, base + 1, L, slice(0, L))
+        except Exception:
+            out.append(float("nan"))
+            continue
+        kl_mean = (lp_teacher - lp_student) / L
+        out.append(float(kl_mean) if math.isfinite(kl_mean) else float("nan"))
+    return out
+
+
+def _compute_countdown_opd(*, tokenizer, trainer, prompt_texts, prompt_messages,
+                           response_texts, nums, targets, prefixes, step: int = 0,
+                           _ref_scorer=None):
+    r"""행별 `opd_kl`(+ `opd_n_tok`) + 진단. **여기서만 GPU 를 쓴다**(ref forward 1회,
+    행당 2팔 — 힌트 조건화 teacher, 힌트 없는 student. §4.1 의 비용 편차는 위 모듈
+    헤더 주석 참조).
+
+    `prompt_texts` 는 시그니처 호환을 위해 받지만 이 함수는 쓰지 않는다 —
+    `prompt_messages`(원 chat 메시지 리스트, `countdown_task.build_prompt` 출력)를
+    다시 렌더링해야 힌트를 **user 턴 안**에 넣을 수 있다(설계 §1.2). 이미 렌더링된
+    `prompt_texts` 문자열에 힌트를 끼워 넣으려면 템플릿의 assistant 여는 마커를
+    문자열로 찾아야 하는데, 그 마커는 토크나이저·버전마다 달라 깨지기 쉽다 —
+    `prompt_messages` 로 처음부터 다시 렌더링하는 쪽이 `scripts/local/opd_probe.py`
+    (설계 §7 프로브)가 이미 검증한 경로다.
+
+    Returns (per_row, diag). `_ref_scorer` 는 테스트 주입구(OSD 와 같은 규약).
+    """
+    from src.training import countdown_pmi as _cdp          # noqa: PLC0415
+
+    arm_prompts, arm_resps, attempts, per_row, diag = _build_opd_arms(
+        tokenizer, prompt_messages, response_texts, prefixes, nums, targets)
+    diag["scored"] = 0
+    diag["nan_rows"] = 0
+    diag["ref_error"] = None
+    diag["fwd_calls"] = 0
+    diag["fwd_rows"] = 0
+    diag["fwd_rows_pad"] = 0
+
+    if not attempts:
+        for r in per_row:
+            if r.get("opd_status") == "pending":
+                r["opd_status"] = "unscored"
+        return per_row, diag
+
+    if _ref_scorer is None:
+        _cdp.assert_pmi_config(trainer)             # config 위반은 진입 즉시 깨진다
+        tensors, real_n = _build_pmi_score_batches(
+            arm_prompts, arm_resps, _cdp._pad_unit(trainer))
+        if real_n != 2 * len(attempts):
+            raise AssertionError(
+                f"OPD 팔 부기가 깨졌다: {real_n} != 2*{len(attempts)}")
+        diag["fwd_calls"] = 1
+        diag["fwd_rows"] = real_n
+        diag["fwd_rows_pad"] = int(tensors["input_ids"].shape[0]) - real_n
+        try:
+            ref_lp = _dcpo_v4_ref_logprobs(trainer, tensors)
+        except AssertionError:
+            raise                                   # config 위반은 절대 삼키지 않는다
+        except Exception as e:
+            diag["ref_error"] = f"{type(e).__name__}: {e}"
+            for at in attempts:
+                per_row[at.row]["opd_status"] = "ref_error"
+            print(f"[COUNTDOWN][OPD][FAIL] step={step}: ref 스코어링 실패 "
+                  f"({diag['ref_error']}) — 이 배치의 opd_kl 은 전부 None.", flush=True)
+            return per_row, diag
+    else:
+        diag["fwd_calls"] = 1
+        diag["fwd_rows"] = 2 * len(attempts)
+        ref_lp = _ref_scorer(arm_prompts, arm_resps)
+
+    kls = _read_opd_from_ref_logprobs(ref_lp, attempts)
+    good = []
+    for at, kl in zip(attempts, kls):
+        r = per_row[at.row]
+        if math.isfinite(kl):
+            r["opd_kl"] = float(kl)
+            r["opd_status"] = "ok"
+            good.append(float(kl))
+        else:
+            r["opd_kl"] = float("nan")          # 조용한 None 이 아니다(OSD 와 같은 규약)
+            r["opd_status"] = "nan"
+            diag["nan_rows"] += 1
+    diag["scored"] = len(good)
+    return per_row, diag
 
 
 def _pmi_position_scalar(logp_gold, logp_decoy, divergent_mask) -> float:

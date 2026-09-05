@@ -255,7 +255,7 @@ SPEC_TABLE = {   # 사양 §보상 을 손으로 옮긴 것. 코드가 아니라
 #   이지만 meta_form 은 "new"(파싱은 여전히 새 형식) + require_meta=False(형식 점수는
 #   메타를 요구하지 않음)로 N0 와도 갈린다 — 아래 공통항 예외 테스트에서 함께 다룬다.
 ADDED_ARMS = ["OSD", "P", "R", "N0", "PL", "SC", "SCg", "SC_GH", "FT", "M0", "MT",
-              "OPT", "OPT_M", "OPT_T", "OPT_MT"]
+              "OPT", "OPT_M", "OPT_T", "OPT_MT", "OPT_OPD"]
 
 
 def test_arm_specs_match_spec_table():
@@ -284,11 +284,12 @@ def test_common_terms_are_identical_across_all_arms():
             assert tuple(cr.ARM_SPECS[arm]["terms"]) == ("corr", "format")
             assert cr.ARM_SPECS[arm]["meta_form"] == "none"
             continue
-        if arm in ("OPT", "OPT_M", "OPT_T", "OPT_MT"):
-            # OPT 사다리: corr+format 위에 지도 항(timing/live_new)만 얹을 수 있고, meta_floor 는 절대 없다.
+        if arm in ("OPT", "OPT_M", "OPT_T", "OPT_MT", "OPT_OPD"):
+            # OPT 사다리: corr+format 위에 지도 항(timing/live_new) **또는** 힌트 교사
+            # 항(opd_meta, 2026-09-06)만 얹을 수 있고, meta_floor 는 절대 없다.
             _t = tuple(cr.ARM_SPECS[arm]["terms"])
             assert _t[:2] == ("corr", "format") and "meta_floor" not in _t
-            assert set(_t[2:]) <= {"timing", "live_new"}
+            assert set(_t[2:]) <= {"timing", "live_new", cr.OPD_TERM}
             assert cr.ARM_SPECS[arm]["meta_form"] == "new"
             assert cr.ARM_SPECS[arm]["require_meta"] is False
             continue
@@ -320,7 +321,7 @@ def test_warmup_applies_to_meta_and_gate_only():
     assert warmed == {"meta_pos", "meta_mul", "meta_ctx", "gate", "len", "osd",
                       "meta_pos_full", "plan", cr.INV_TERM,
                       "explore", "explore_g", "verify",
-                      "timing", "live_new"}
+                      "timing", "live_new", cr.OPD_TERM}
     for t in ("corr", "format", "meta_floor", "early_cost"):
         assert not cr.TERMS[t]["warmup"]
 
@@ -909,3 +910,100 @@ def test_inv_ruler_identity_is_in_the_arm_signature():
     for arm in cr.ARM_SPECS:
         if arm != "R":
             assert "inv=" not in cr.arm_signature(arm), arm
+
+
+# ══════════════════════════════════════════════════════════ 12. OPT_OPD (힌트 교사)
+
+def test_r_opd_meta_truth_table():
+    """단측 벌 진리표 — `countdown_opd.opd_reward` 와 같은 식(§2.2/§4)."""
+    assert cr.r_opd_meta(None) == 0.0                       # 잴 스팬이 없었다 — 침묵
+    assert cr.r_opd_meta(-5.0) == 0.0                        # 음수는 0 에서 클립
+    assert cr.r_opd_meta(0.0) == 0.0
+    assert cr.r_opd_meta(cr.OPD_C) == pytest.approx(-1.0)    # C 에서 포화
+    assert cr.r_opd_meta(cr.OPD_C * 10) == pytest.approx(-1.0)  # C 초과도 포화
+    half = cr.r_opd_meta(cr.OPD_C / 2.0)
+    assert half == pytest.approx(-0.5)
+    for kl in (-1.0, 0.0, cr.OPD_C / 4, cr.OPD_C, cr.OPD_C * 5):
+        assert -1.0 <= cr.r_opd_meta(kl) <= 0.0
+
+
+def test_r_opd_meta_rejects_nonpositive_c():
+    with pytest.raises(ValueError):
+        cr.r_opd_meta(0.5, c=0.0)
+    with pytest.raises(ValueError):
+        cr.r_opd_meta(0.5, c=-1.0)
+
+
+def test_opt_opd_arm_spec():
+    spec = cr.ARM_SPECS["OPT_OPD"]
+    assert tuple(spec["terms"]) == ("corr", "format", cr.OPD_TERM)
+    assert spec["meta_form"] == "new"
+    assert spec["require_meta"] is False
+    assert spec.get("data_hint", "normal") == "normal"
+
+
+def test_arm_OPT_OPD_hand_computed():
+    """corr=1·format=1·emitted=1·opd_kl=OPD_C/2 → total = 1.0 + 0.35 + (−0.5)*W_META.
+
+    (meta_floor 는 OPT 계열처럼 없다 — 발화가 선택이므로 하한을 주지 않는다.)
+    """
+    row = dict(r_corr=1, format_ok=1, emitted=1, opd_kl=cr.OPD_C / 2.0)
+    total, comps = cr.arm_reward("OPT_OPD", row, step=999)
+    assert set(comps) == {"corr", "format", cr.OPD_TERM}
+    expected_opd = _expect(cr.OPD_TERM, -0.5 * cr.W_META)
+    # r_opd_meta(OPD_C/2) = -0.5 exactly; TERM_MAX_ABS[opd_meta]=1.0 so normalization
+    # is a no-op and the weight (W_META) applies directly.
+    assert comps[cr.OPD_TERM] == pytest.approx(-0.5 * cr.W_META)
+    assert total == pytest.approx(1.0 + 0.35 + comps[cr.OPD_TERM])
+
+
+def test_arm_OPT_OPD_term_is_off_without_emitted():
+    row = dict(r_corr=1, format_ok=1, emitted=0, opd_kl=cr.OPD_C)
+    _total, comps = cr.arm_reward("OPT_OPD", row, step=999)
+    assert comps[cr.OPD_TERM] == 0.0
+
+
+def test_arm_OPT_OPD_none_kl_is_silent_not_a_wire_failure():
+    """opd_kl=None(잴 스팬이 없었다)은 KeyError 가 아니라 0.0 — «못 쟀다» 는 정상 값이다."""
+    row = dict(r_corr=0, format_ok=1, emitted=1, opd_kl=None)
+    _total, comps = cr.arm_reward("OPT_OPD", row, step=999)
+    assert comps[cr.OPD_TERM] == 0.0
+
+
+def test_arm_OPT_OPD_missing_material_dies_loud():
+    row = dict(r_corr=1, format_ok=1, emitted=1)     # opd_kl 없음
+    with pytest.raises(KeyError):
+        cr.arm_reward("OPT_OPD", row, step=999)
+
+
+def test_arm_OPT_OPD_is_not_arm_OPT():
+    """«선언된 레버, 배선 0» 방지: 같은 행에서 OPT_OPD 와 OPT 의 총보상이 달라야 한다."""
+    row = dict(r_corr=1, format_ok=1, emitted=1, opd_kl=cr.OPD_C)
+    opt_total, _ = cr.arm_reward("OPT", row, step=999)
+    opd_total, _ = cr.arm_reward("OPT_OPD", row, step=999)
+    assert opd_total != opt_total
+    assert opd_total < opt_total          # 벌만 주므로 항상 OPT 이하다
+
+
+def test_opd_c_is_in_the_arm_signature():
+    sig = cr.arm_signature("OPT_OPD")
+    assert f"opd_c={cr.OPD_C:g}" in sig
+    assert ("?" in sig) == bool(cr.OPD_C_PROVISIONAL)
+    # 다른 팔의 서명에는 한 조각도 안 들어간다(조건부 추가 규약).
+    for arm in cr.ARM_SPECS:
+        if arm != "OPT_OPD":
+            assert "opd_c=" not in cr.arm_signature(arm), arm
+
+
+def test_opt_opd_warmup_scale_applies():
+    row = dict(r_corr=0, format_ok=1, emitted=1, opd_kl=cr.OPD_C)
+    total0, comps0 = cr.arm_reward("OPT_OPD", row, step=0, warmup_steps=20)
+    total_full, comps_full = cr.arm_reward("OPT_OPD", row, step=20, warmup_steps=20)
+    assert comps0[cr.OPD_TERM] == pytest.approx(0.0)     # 워밍업 0 스텝 = 무게 0
+    assert comps_full[cr.OPD_TERM] == pytest.approx(-1.0 * cr.W_META)
+
+
+def test_check_abort_skips_emit_rate_for_opt_opd_too():
+    low_emit = _abort_report(emit_rate=0.05)
+    got = {v["metric"] for v in cr.check_abort(low_emit, arm="OPT_OPD")}
+    assert "emit_rate" not in got

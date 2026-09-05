@@ -86,6 +86,7 @@ __all__ = [
     "SC_K_STUCK", "SC_CONF_HI", "W_EXPLORE", "W_VERIFY", "W_EARLY",
     "r_explore", "r_explore_g", "r_verify", "r_early",
     "W_TIMING", "W_LIVE_NEW", "r_timing", "r_live_new",
+    "OPD_TERM", "OPD_C", "OPD_C_PROVISIONAL", "r_opd_meta",
     "OSD_TERM", "OSD_C", "OSD_C_PROVISIONAL", "OSD_W_MAX", "OSD_LEAK_NGRAM",
     "INV_TERM", "INV_SCOPE", "INV_FORM", "INV_AGG", "INV_TAU", "INV_C",
     "INV_TAU_PROVISIONAL", "INV_MIN_PROSE_TOK", "INV_FALSE_CLAIM_PEN", "r_meta_inv",
@@ -256,8 +257,24 @@ INV_TAU_PROVISIONAL = True   # 실측 전이면 서명에 '?' 가 박힌다(OSD_
 #   1.0 이면 거짓선언 하나로 이 항이 포화(−1)한다.
 INV_FALSE_CLAIM_PEN = 1.0
 
+# ── OPD (힌트 교사, on-policy distillation) — OPT 사다리의 「무엇을」 항 (2026-09-06) ──
+# 왜 새 항인가. FT/MT(timing/live_new)는 오라클 판정(옳은 타이밍으로 갈아탔는가)만
+# 주고, cd8 판정표가 보여준 실패(OPT_M v3: 판정 자리 성공률 +6pp 지만 새 쌍 시도율은
+# 4.4%→2.6%로 되레 줄었다)는 "결과를 흉내내는 지름길"에 취약하다는 뜻이다. OPD 는
+# 결과 판정이 아니라 **분포**를 준다 — 오라클(family_dead·live_new_moves, 정답 식은
+# 절대 안 준다)로 조건화한 문맥에서 정책 자신이 얼마나 다르게 말했을지를 재는
+# on-policy KL 이다. 힌트·삽입·스팬 정의는 `countdown_opd.py`(순수 함수). 실제
+# teacher forward 는 `verl_sdc._compute_countdown_opd`(GPU) — 상세는
+# docs/DESIGN_opd_hint_teacher.md.
+OPD_TERM = "opd_meta"   # ★항 이름의 **단일 정의처**. verl_sdc 의 fail-loud 가드가 이것을
+                        #   읽는다(OSD_TERM/INV_TERM 과 같은 "문자열 두 곳 갈림" 방지 규약).
+OPD_C = 0.075           # ⚠**잠정**. `scripts/local/opd_probe.py`(2026-09-06, judge_cd7_OPT
+                        #   30사이트) 의 `kl_meta_mean` p95(0.0753, 설계 §7 표)를 반올림한
+                        #   값 — 학습 온폴리시 KL 분포가 아니라 오프라인 판정 자리 표본이라
+                        #   OSD_C/INV_TAU 와 같은 이유로 **잠정**이다. 발사 전 학습 조건
+                        #   실측(COUNTDOWN_OPD=1 측정 모드)으로 교체한다.
+OPD_C_PROVISIONAL = True
 
-# 위치대조(shift) 파라미터. B 는 사양 그대로.
 SHIFT_PARAMS = dict(scale=1.0, clip=2.0, reversal_save=1.0, reversal_derail=2.0,
                     reversal_min_magnitude=0.0)
 # C·F·H 가 sign 을 곱하기 전에 쓰는 파라미터. 위 ⚠사양 충돌 참조 —
@@ -311,6 +328,9 @@ TERM_MAX_ABS: dict = {
     #   `.get(t, 1.0)` 기본값에 기대지 않고 명시한다.
     "timing":     1.0,   # r_timing ∈ {-1,0,+1}
     "live_new":   1.0,   # r_live_new ∈ {0,1}
+    # r_opd_meta 가 이미 [−1, 0] 이라 정규화는 항등이다. osd/meta_inv 와 같은 이유로
+    # `.get(t, 1.0)` 기본값에 기대지 않고 명시한다.
+    "opd_meta":   1.0,
 }
 
 # sign(adv_corr) == 0 일 때의 정책. 아래 `r_meta_mul` 주석 참조.
@@ -768,6 +788,27 @@ def r_live_new(row: Mapping) -> float:
     return 1.0 if (fm is not None and fm in live and followed) else 0.0
 
 
+def r_opd_meta(opd_kl, *, c: float | None = None) -> float:
+    r"""OPT_OPD 팔. R_opd_meta = −clip(opd_kl, 0, C) / C ∈ [−1, 0]. 단측 벌만(설계 §2.2/§4).
+
+    `opd_kl` 은 `verl_sdc._compute_countdown_opd` 가 잰 `mean_{t∈span}(lp_teacher−
+    lp_student)`(온폴리시 표본 KL 추정, `countdown_opd.opd_reward` 와 **같은 공식** —
+    거기는 순수 헬퍼로 테스트 전용이고, 팔의 정체는 이 파일이 유일한 정의처라는 규약을
+    지키기 위해 여기서 다시 한 번 짧게 정의한다. `r_osd`/`r_meta_inv` 도 같은 이유로
+    자기 스코어러 모듈의 공식을 복제한다).
+
+    `opd_kl is None`(잴 스팬이 없었다 — 메타 없음 또는 힌트를 만들 시도 이력이 없음)
+    이면 **0.0**(침묵, `r_timing` 의 `family_dead is None → 0` 과 같은 관례).
+    """
+    if opd_kl is None:
+        return 0.0
+    cc = float(OPD_C if c is None else c)
+    if not (cc > 0):
+        raise ValueError(f"r_opd_meta: c={cc!r} 는 0보다 커야 한다.")
+    x = max(0.0, min(float(opd_kl), cc))
+    return -x / cc
+
+
 def warmup_scale(step, warmup_steps: int = 20) -> float:
     """0→1 선형 워밍업. step 0 에서 0.0, step ≥ warmup_steps 에서 1.0.
 
@@ -842,6 +883,10 @@ TERMS: dict[str, dict] = {
                    "warmup": True, "weight": W_TIMING},
     "live_new":   {"needs": ("emitted", "first_move_after_meta", "live_new_moves", "followed"),
                    "warmup": True, "weight": W_LIVE_NEW},
+    # ── OPD (힌트 교사, 2026-09-06) — needs 는 `verl_sdc._compute_countdown_opd` 가
+    #   채우는 행 필드명 그대로다. `opd_n_tok` 은 진단용(구간 길이)일 뿐 보상 계산에는
+    #   안 쓰므로 needs 에 안 넣는다(design §4: "보상 계산엔 안 쓴다 — 로그·중단 규칙 전용").
+    OPD_TERM:     {"needs": ("emitted", "opd_kl"), "warmup": True, "weight": W_META},
 }
 
 _COMMON = ("corr", "format", "meta_floor")   # 공통 = 처치 아님. 여덟 팔 전부 동일.
@@ -952,6 +997,18 @@ ARM_SPECS: dict[str, dict] = {
     "OPT_MT": {"label": "optional_timing_mixed", "terms": ("corr", "format", "timing", "live_new"),
                "meta_form": "new", "require_meta": False, "data_hint": "mixed",
                "note": "★OPT_T + 같은 자리 배치 절반(mixed_train_v2_opt)."},
+    # ★OPT_OPD (2026-09-06, docs/DESIGN_opd_hint_teacher.md §4/§10): 힌트 교사
+    #   on-policy distillation. OPT 와 항이 같고(corr·format, meta_floor 없음,
+    #   require_meta=False) opd_meta 하나만 더한다 — FT/MT/OPT_T 의 "결과 판정"과
+    #   달리 "이 상태를 알았다면 정책 자신이 다음에 뭐라고 썼을지"의 분포(온폴리시 KL)를
+    #   준다. data_hint 는 (기본값) "normal" — OPT/OPT_T 와 같은 일반 롤아웃, opt
+    #   프롬프트(허가문, `run_arm.sh` 의 OPT 계열 분기가 그대로 적용된다). §10 조건부
+    #   GO: 20스텝 스모크런으로 §6 1차 지표(판정 자리 새 쌍 이행률)·3차(누출률)를 본다.
+    "OPT_OPD": {"label": "optional_opd", "terms": ("corr", "format", OPD_TERM),
+                "meta_form": "new", "require_meta": False, "data_hint": "normal",
+                "note": "★힌트 교사(오라클 상태-요약 조건화) 메타 구간 on-policy 증류. "
+                        "OPT 와 항 동일 + opd_meta. 오라클은 family_dead/live_new_moves만 "
+                        "쓴다 — 정답 식(witness)은 절대 안 준다."},
 }
 
 
@@ -992,6 +1049,10 @@ def arm_signature(arm: str) -> str:
         extra += (f"|inv=scope={INV_SCOPE},form={INV_FORM},agg={INV_AGG},"
                   f"tau={INV_TAU:g}{_q},c={INV_C:g}{_q},"
                   f"fcpen={INV_FALSE_CLAIM_PEN:g},minprose={INV_MIN_PROSE_TOK:d}")
+    # ★c 를 서명에 박는 이유는 OSD_C/INV_TAU 와 같다 — "선언된 판정식 = 채택된 수치"를
+    #   사후에 한 줄로 확인해야 한다. 실측 전 잠정값이면 '?' 가 붙는다.
+    if OPD_TERM in spec["terms"]:
+        extra += f"|opd_c={OPD_C:g}{'?' if OPD_C_PROVISIONAL else ''}"
     # ★SC/SCg 정체 — K_S(막힘 임계)·conf_hi(과신 임계)·세 항의 무게가 이 팔의 전부다.
     #   하나라도 안 박으면 "어느 K_S 로 돌았나"가 로그에서 사라진다(OSD_C/INV_TAU 와
     #   같은 규약). 무게는 위 `parts` 루프가 이미 `t@weight` 로 찍으므로 여기서는
@@ -1125,6 +1186,8 @@ def arm_reward(
         raw["timing"] = r_timing(row) if emitted else 0.0
     if "live_new" in terms:
         raw["live_new"] = r_live_new(row) if emitted else 0.0
+    if OPD_TERM in terms:
+        raw[OPD_TERM] = r_opd_meta(row["opd_kl"]) if emitted else 0.0
 
     comps: dict[str, float] = {}
     for t, v in raw.items():
@@ -1691,7 +1754,7 @@ def component_means(components: Sequence[Mapping[str, float]], *, dead_eps: floa
 META_TERMS: tuple = ("meta_pos", "meta_mul", "meta_ctx", "gate", "len", "osd",
                      "meta_pos_full", "plan", INV_TERM,
                      "explore", "explore_g", "verify", "early_cost",
-                     "timing", "live_new")
+                     "timing", "live_new", OPD_TERM)
 
 
 def rmeta_magnitude(components: Sequence[Mapping[str, float]],
