@@ -29,8 +29,8 @@ import math
 
 from src.rulers.base import MetaSample, Site
 
-__all__ = ["enumerate_candidate_moves", "candidate_logits", "softmax", "kl_divergence",
-           "MoveKl", "MoveKlSigned"]
+__all__ = ["enumerate_candidate_moves", "candidate_logits", "_candidate_logits_sequential",
+           "candidate_logits_batched", "softmax", "kl_divergence", "MoveKl", "MoveKlSigned"]
 
 _OPS = ("+", "-", "*", "/")
 _NAN = float("nan")
@@ -79,9 +79,24 @@ def kl_divergence(p_after, p_before) -> float:
     return float(total)
 
 
-def candidate_logits(ctx, prompt_ids, prefix_ids, candidates: list[str]) -> list[float]:
-    """각 후보 "\n{candidate}"의 합산 로그확률 — `pair_rulers.gather_logp`와 같은
-    teacher-forced 정의를 `HfCtx.token_logprobs`로 재구현."""
+def _candidate_logits_sequential(ctx, prompt_ids, prefix_ids, candidates: list[str]) -> list[float]:
+    """원래 구현(0904 이전) — 후보마다 forward 한 번, 보통 24회 순차 호출.
+
+    ★0905 성능 수리에서 이 함수를 `HfCtx.batched_logprobs`(오른쪽 패딩 배치)로
+    바꿔봤으나, 실제 `models/Qwen3-4B` bf16 GPU forward로 200행을 재현 채점해
+    비교한 결과 **바이트 동일이 아니었다**(개별 후보 로그확률 합에서 최대 ~1.16,
+    `move_kl` 최종 점수에서 최대 0.227 차이 — `move_novel_shift`의 AUC까지
+    0.708→0.625로 갈릴 만큼 사소하지 않았다). `_lp_cache` 캐시 코드나 왼쪽-절단은
+    무관하다는 것도 같은 실측에서 확인했다(pmi_shift/osd/inv/dcont — 전부 이
+    캐시·절단 경로를 타지만 diff=0). 즉 오른쪽 패딩 자체가 아니라 배치 크기가
+    바뀌면 이 모델의 bf16 어텐션/행렬곱 수치가 달라진다(원인 미확정 — RoPE 동적
+    스케일링이 배치 내 최대 길이에 반응하는지, 커널 선택이 배치 크기로 바뀌는지
+    등은 특정하지 않았다). §목표(c)="현존 자와 바이트 동일"을 배치 속도보다
+    우선해 이 함수를 정본으로 되돌린다 — `candidate_logits`가 다시 이 함수의
+    별칭이다. 배치판은 `candidate_logits_batched`로 남겨 두되(합성 스텁에서는
+    이 함수와 일치함을 `test_rulers.py`가 여전히 확인한다) **`_dists_for`는
+    부르지 않는다** — 실제 모델에서 검증되기 전에는 실사용 금지.
+    """
     out = []
     ctx_ids = prompt_ids + prefix_ids
     for cand in candidates:
@@ -94,6 +109,34 @@ def candidate_logits(ctx, prompt_ids, prefix_ids, candidates: list[str]) -> list
     return out
 
 
+# 정본 진입점 — `_dists_for`가 이 이름을 부른다. 위 docstring 사유로 순차 구현
+# 그대로다(배치 아님).
+candidate_logits = _candidate_logits_sequential
+
+
+def candidate_logits_batched(ctx, prompt_ids, prefix_ids, candidates: list[str],
+                             batch: int = 8) -> list[float]:
+    r"""실험적 배치 경로 — **실사용 금지**(위 `_candidate_logits_sequential`
+    docstring 참조: 실제 bf16 모델에서 순차 경로와 다른 숫자를 냈다). 순수
+    CPU 스텁(결정적 로짓)에서는 순차 경로와 일치함을 `test_rulers.py`가 확인
+    하지만, 그게 실제 GPU/bf16 모델에서의 일치를 보장하지 않는다는 것이 이번에
+    실측으로 드러났다 — 이후 KV-cache 프리픽스 재사용(진짜로 같은 forward를
+    재사용하는 방식, 배치 축을 늘리지 않는 방식) 등 더 안전한 대안이 나오기
+    전까지는 참고용으로만 남겨 둔다."""
+    ctx_ids = prompt_ids + prefix_ids
+    cand_ids = [list(ctx.encode("\n" + c)) for c in candidates]
+    valid = [i for i, ids in enumerate(cand_ids) if ids]
+    out = [_NAN] * len(candidates)
+    if not valid:
+        return out
+    contexts = [ctx_ids for _ in valid]
+    targets = [cand_ids[i] for i in valid]
+    lps = ctx.batched_logprobs(contexts, targets, batch=batch)
+    for i, lp in zip(valid, lps):
+        out[i] = float(lp.sum()) if lp.size else _NAN
+    return out
+
+
 def _prompt_ids(ctx, site: Site):
     text = ""
     if hasattr(ctx.tokenizer, "apply_chat_template"):
@@ -103,23 +146,48 @@ def _prompt_ids(ctx, site: Site):
 
 
 def _dists_for(site: Site, sample: MetaSample, ctx):
-    """(candidates, p_before, p_after, ms) — 메타 시작 직전/끝 직후의 «다음 수» 분포. 못 재면 None."""
+    """(candidates, p_before, p_after, ms) — 메타 시작 직전/끝 직후의 «다음 수» 분포. 못 재면 None.
+
+    0905 성능 수리: `MoveKl`/`MoveKlSigned`/`MoveNovelShift`/`MoveNovelShiftStuck`
+    네 자가 전부 이 함수를 호출하는데, 같은 (site, sample)이면 입력이 완전히
+    같다(집계만 다르다) — `ctx`에 매단 소형 캐시로 4배 중복 forward를 없앤다.
+    키는 (site_id, meta_start, meta_end, continuation) — 공격 배터리가 만드는
+    가짜 continuation도 서로 다른 문자열이라 자연히 캐시 미스로 갈린다(정답은
+    그대로 재계산된다, 근사 아님).
+    """
     if ctx is None or not sample.meta_raw:
-        return None
-    candidates = enumerate_candidate_moves(site.nums)
-    if len(candidates) < 2:
         return None
     cont = sample.continuation or ""
     ms = sample.meta_start if sample.meta_start is not None and sample.meta_start >= 0 else len(cont)
     me = sample.meta_end if sample.meta_end is not None and sample.meta_end >= 0 else ms
-    p_ids = _prompt_ids(ctx, site)
-    before_ids = list(ctx.encode(site.prefix + cont[:ms]))
-    after_ids = list(ctx.encode(site.prefix + cont[:me]))
-    before_logits = candidate_logits(ctx, p_ids, before_ids, candidates)
-    after_logits = candidate_logits(ctx, p_ids, after_ids, candidates)
-    if any(not math.isfinite(v) for v in before_logits + after_logits):
-        return None
-    return candidates, softmax(before_logits), softmax(after_logits), ms
+
+    cache = getattr(ctx, "_move_kl_dist_cache", None)
+    if cache is None:
+        cache = {}
+        try:
+            ctx._move_kl_dist_cache = cache
+        except Exception:
+            cache = None
+    key = (site.site_id, ms, me, cont) if cache is not None else None
+    if key is not None and key in cache:
+        return cache[key]
+
+    candidates = enumerate_candidate_moves(site.nums)
+    if len(candidates) < 2:
+        result = None
+    else:
+        p_ids = _prompt_ids(ctx, site)
+        before_ids = list(ctx.encode(site.prefix + cont[:ms]))
+        after_ids = list(ctx.encode(site.prefix + cont[:me]))
+        before_logits = candidate_logits(ctx, p_ids, before_ids, candidates)
+        after_logits = candidate_logits(ctx, p_ids, after_ids, candidates)
+        if any(not math.isfinite(v) for v in before_logits + after_logits):
+            result = None
+        else:
+            result = (candidates, softmax(before_logits), softmax(after_logits), ms)
+    if key is not None:
+        cache[key] = result
+    return result
 
 
 def _kl_for(site: Site, sample: MetaSample, ctx) -> float:

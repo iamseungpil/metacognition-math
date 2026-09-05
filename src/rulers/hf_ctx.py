@@ -27,7 +27,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional, Sequence
 
-__all__ = ["HfCtx", "TokenSpan"]
+__all__ = ["HfCtx", "TokenSpan", "MAX_CTX_TOKENS"]
+
+# 0905 성능 수리(자 표 87분/200행 → 목표 ≤3 GPU시간/48,000행). 문맥이 이보다 길면
+# **왼쪽(오래된 쪽)을 잘라** 최근 MAX_CTX_TOKENS 토큰만 forward 에 넣는다 — 자기 자신
+# (target_ids/W)은 자르지 않는다, 오직 그 앞의 문맥(ctx_ids)만. Countdown 사이트는
+# 보통 이 상한보다 훨씬 짧아 실측 영향은 거의 없고, 드문 긴 프리픽스에서만 발동한다
+# (발동하면 그 자리는 "정의상" 근사가 됨 — VERDICT 재현 대상 수식과 달라질 수 있다는
+# 뜻이므로 문서화해 둔다). 3,072 는 사양 상수(과제 지시문 그대로).
+MAX_CTX_TOKENS = 3072
 
 
 @dataclass(frozen=True)
@@ -63,6 +71,15 @@ class HfCtx:
         self._model = _model
         self._tokenizer = _tokenizer
         self._loaded = _model is not None and _tokenizer is not None
+        # 0905 성능 수리: 여러 자(pmi_shift의 sum/last/mean, osd의 unsigned/signed,
+        # inv의 min/mean)가 **바이트 동일한** (ctx_ids, target_ids) 쌍으로
+        # `token_logprobs`를 반복 호출한다(집계만 다르다) — 이 캐시가 그 중복
+        # forward를 없앤다. 키는 정확한 토큰 id 튜플이므로 결과는 캐시 없을 때와
+        # 완전히 동일하다(근사 아님, 순수 메모이제이션). 무한 성장을 막으려고
+        # 상한(entries)에서 통째로 비운다 — LRU 보다 단순하고 이 워크로드(한 프로세스
+        # 수명 안에서 같은 (site,sample) 조합이 자마다 반복)에 충분하다.
+        self._lp_cache: dict[tuple, Any] = {}
+        self._lp_cache_cap = 50_000
 
     # ── 지연 로드 ──────────────────────────────────────────────────────────
     def _ensure_loaded(self):
@@ -130,15 +147,25 @@ class HfCtx:
         ctx_ids, target_ids = list(ctx_ids), list(target_ids)
         if not target_ids:
             return _np_zeros(0)
+        if len(ctx_ids) > MAX_CTX_TOKENS:
+            ctx_ids = ctx_ids[-MAX_CTX_TOKENS:]              # 왼쪽(오래된 쪽) 절단
+        key = (tuple(ctx_ids), tuple(target_ids))
+        cached = self._lp_cache.get(key)
+        if cached is not None:
+            return cached.copy()
         full = ctx_ids + target_ids
-        with torch.no_grad():
+        with torch.inference_mode():
             x = torch.tensor([full], device=self.model.device)
             logits = self.model(input_ids=x).logits[0]
         s = len(ctx_ids)
         part = torch.log_softmax(logits[s - 1:s - 1 + len(target_ids)].float(), dim=-1)
         tgt = torch.tensor(target_ids, device=logits.device)
         lp = part.gather(1, tgt[:, None])[:, 0]
-        return lp.double().cpu().numpy()
+        out = lp.double().cpu().numpy()
+        if len(self._lp_cache) >= self._lp_cache_cap:
+            self._lp_cache.clear()
+        self._lp_cache[key] = out
+        return out.copy()
 
     def batched_logprobs(self, contexts: Sequence[Sequence[int]],
                          targets: Sequence[Sequence[int]], batch: int = 8) -> list:
@@ -154,7 +181,8 @@ class HfCtx:
             pad_id = self._tokenizer.eos_token_id
         out: list = []
         for lo in range(0, len(contexts), batch):
-            cs = [list(c) for c in contexts[lo:lo + batch]]
+            cs = [list(c)[-MAX_CTX_TOKENS:] if len(c) > MAX_CTX_TOKENS else list(c)
+                 for c in contexts[lo:lo + batch]]
             ts = [list(t) for t in targets[lo:lo + batch]]
             seqs = [c + t for c, t in zip(cs, ts)]
             L = max(len(s) for s in seqs) if seqs else 0
@@ -163,7 +191,10 @@ class HfCtx:
             for j, s in enumerate(seqs):
                 ids[j, :len(s)] = torch.tensor(s)
                 att[j, :len(s)] = 1
-            with torch.no_grad():
+            # 오른쪽 패딩(:len(s) 뒤가 pad) — 인과 어텐션에서 패딩은 실제 토큰의 미래에만
+            # 있으므로 실토큰 구간 logits는 패딩이 전혀 없는 단일-시퀀스 forward(위
+            # `token_logprobs`)와 바이트 동일하다(포지션 id 도 0..len(s)-1로 같다).
+            with torch.inference_mode():
                 logits = self.model(input_ids=ids.to(self.model.device),
                                     attention_mask=att.to(self.model.device)).logits
             for j, (c, t) in enumerate(zip(cs, ts)):
@@ -183,7 +214,9 @@ class HfCtx:
         import torch                                  # noqa: PLC0415
         self._ensure_loaded()
         ids = list(ids)
-        with torch.no_grad():
+        if len(ids) > MAX_CTX_TOKENS:
+            ids = ids[-MAX_CTX_TOKENS:]
+        with torch.inference_mode():
             x = torch.tensor([ids], device=self.model.device)
             logits = self.model(input_ids=x).logits[0]
         idx = -1 if upto is None else upto
@@ -200,7 +233,11 @@ class HfCtx:
         import torch                                  # noqa: PLC0415
         self._ensure_loaded()
         ids = list(ids)
-        with torch.no_grad():
+        if len(ids) > MAX_CTX_TOKENS:
+            drop = len(ids) - MAX_CTX_TOKENS
+            ids = ids[-MAX_CTX_TOKENS:]
+            token_index = max(0, token_index - drop)          # 절단만큼 인덱스도 이동
+        with torch.inference_mode():
             x = torch.tensor([ids], device=self.model.device)
             out = self.model(input_ids=x, output_hidden_states=True)
         hs = out.hidden_states                          # tuple(len=n_layer+1) of [1,T,H]

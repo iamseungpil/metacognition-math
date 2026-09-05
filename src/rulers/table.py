@@ -285,8 +285,16 @@ def build_scores(sites_df: pd.DataFrame, conts_df: pd.DataFrame, rulers: Sequenc
                "emitted": row.get("emitted"), "novel": row.get("novel"),
                "followed": row.get("followed"), "checked": row.get("checked")}
         out.update(compute_all_baselines(site, sample))
+        # 0905 성능 수리: emitted==0(불완전 메타, `parse_meta` 규약)인 행은 모델
+        # 채점 자체를 스킵한다 — 각 자가 내부에서 `meta_raw` 빈 문자열을 걸러
+        # 이미 NaN을 내긴 하지만(안전망), emitted==0 인데 meta_raw 가 비어있지
+        # 않은 반쪽짜리 메타(파싱은 됐지만 형식 불완전)까지 forward를 태우지
+        # 않으려면 이 게이트가 필요하다 — nometa/불완전 메타 행이 48,000 중
+        # 다수를 차지하므로 여기서 거르는 게 총 시간에 크게 영향을 준다.
+        emitted = row.get("emitted", None)
+        skip_model = pd.notna(emitted) and int(emitted) == 0 if emitted is not None else False
         for ruler in rulers:
-            if ruler.needs_model and ctx is None:
+            if ruler.needs_model and (ctx is None or skip_model):
                 out[ruler.name] = float("nan")
                 continue
             try:
@@ -340,22 +348,38 @@ SYNTH_ATTACKS = ("empty", "random_numbers", "gibberish", "verify_one_liner")
 
 
 def attack_battery(sites_df: pd.DataFrame, conts_df: pd.DataFrame, ruler,
-                   ctx: Optional[Any] = None, limit: int = 0) -> dict:
+                   ctx: Optional[Any] = None, limit: int = 0, attack_limit: int = 100) -> dict:
     r"""정직한 메타 vs 4종 공격 메타. 사이트별로 공격이 정직한 메타를 이긴(점수가
     더 높은) 비율을 낸다. `docs/POSTMORTEM_cd6_rulers_2026-09-03.md` §1.2의
     공격 배터리(빈 메타 0.34, 횡설수설 0.34, 숫자 나열 0.74/0.77)를 재현하는지가
-    새 자의 첫 관문이다."""
+    새 자의 첫 관문이다.
+
+    `attack_limit`(0905 성능 수리): 이 배터리는 사이트 하나당 정직 1회 + 공격
+    4회 = 행당 5배 forward를 낸다 — 48,000행 전체에 그대로 돌리면 지배적 비용이
+    된다. 판정에 필요한 건 "공격이 이기는 비율"의 안정적 추정이지 전수조사가
+    아니므로, 새로 관측하는 사이트 수를 이 상한에서 끊는다(이미 카운트한
+    사이트의 나머지 행은 계속 처리 — 사이트 내부에서 값을 더 모으는 건 막지
+    않는다, 다만 새 사이트 유입만 막는다).
+    """
     if ruler.needs_model and ctx is None:
         return {"outrank_frac": float("nan"), "n_sites": 0, "per_attack": {}}
     sites_by_id = {str(r["site_id"]): site_from_row(r) for _, r in sites_df.iterrows()}
     per_attack_wins: dict[str, list[int]] = {k: [] for k in SYNTH_ATTACKS}
     n_sites = 0
+    seen_sites: set = set()
     for i, (_, row) in enumerate(conts_df.iterrows()):
         if limit and i >= limit:
             break
         if not row.get("meta_raw"):
             continue
+        emitted = row.get("emitted", None)
+        if emitted is not None and pd.notna(emitted) and int(emitted) == 0:
+            continue
         sid = str(row["site_id"])
+        if sid not in seen_sites:
+            if attack_limit and len(seen_sites) >= attack_limit:
+                continue
+            seen_sites.add(sid)
         site = sites_by_id.get(sid)
         if site is None:
             continue
@@ -489,7 +513,7 @@ def advantage_simulation(scored: pd.DataFrame, site_col: str = "site_id") -> dic
 # ══════════════════════════════════════════════════════════════════════════════
 
 def run_table(sites_df: pd.DataFrame, conts_df: pd.DataFrame, rulers: Sequence,
-             ctx: Optional[Any] = None, limit: int = 0) -> dict:
+             ctx: Optional[Any] = None, limit: int = 0, attack_limit: int = 100) -> dict:
     r"""전체 채점표. Returns dict with keys "scored"(DataFrame, JSON엔 안 실림),
     "rulers"(ruler별 지표 dict), "advantage_sim", "markdown", "json"."""
     scored = build_scores(sites_df, conts_df, rulers, ctx=ctx, limit=limit)
@@ -520,7 +544,8 @@ def run_table(sites_df: pd.DataFrame, conts_df: pd.DataFrame, rulers: Sequence,
                 and res["auc_all"]["mean"] - within_site_metric(scored, b, "r_corr", metric="auc")["mean"]
                 >= BASELINE_MARGIN_MIN)
         res["placebo"] = placebo_diff(scored, col)
-        res["attack"] = attack_battery(sites_df, conts_df, ruler, ctx=ctx, limit=limit) \
+        res["attack"] = attack_battery(sites_df, conts_df, ruler, ctx=ctx, limit=limit,
+                                       attack_limit=attack_limit) \
             if not (ruler.needs_model and ctx is None) else {"outrank_frac": float("nan"), "n_sites": 0, "per_attack": {}}
         auc = res["auc_all"]["mean"]
         res["pass_auc"] = bool(math.isfinite(auc) and auc >= AUC_MIN)
@@ -546,7 +571,8 @@ def run_table(sites_df: pd.DataFrame, conts_df: pd.DataFrame, rulers: Sequence,
     out = {"rulers": ruler_results, "advantage_sim": adv_sim,
           "n_rows": len(scored), "gates": {"auc_min": AUC_MIN,
           "baseline_margin_min": BASELINE_MARGIN_MIN,
-          "attack_outrank_max_frac": ATTACK_OUTRANK_MAX_FRAC}}
+          "attack_outrank_max_frac": ATTACK_OUTRANK_MAX_FRAC,
+          "attack_limit_sites": attack_limit}}
     return {"scored": scored, "rulers": ruler_results, "advantage_sim": adv_sim,
            "markdown": md, "json": out}
 

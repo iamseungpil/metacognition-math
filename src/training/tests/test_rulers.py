@@ -490,3 +490,240 @@ def test_novel_mask_and_mass_shift_direction():
 def test_move_novel_shift_registered_in_cli():
     src = open("scripts/local/ruler_table.py", encoding="utf-8").read()
     assert "MoveNovelShift()" in src and "MoveNovelShiftStuck()" in src
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 0905 성능 수리 회귀 테스트 — 자 표가 87분/200행 → ≤3 GPU시간/48,000행 목표로
+# 바뀌면서 건드린 세 자리(HfCtx 캐시/절단, move_kl 배치화, attack_limit/limit_sites)
+# 가 **숫자를 안 바꿨는지** 실측한다. 전부 CPU 스텁(_FakeModelPositional)만 쓴다 —
+# 진짜 모델의 숫자 품질이 아니라 "옛 경로와 새 경로가 바이트 동일하다"만 확인하면
+# 되기 때문이다(과제 지시문 §목표 (c)).
+# ══════════════════════════════════════════════════════════════════════════════
+
+class _FakeModelPositional:
+    r"""`_FakeModel`(균등분포)과 달리 **위치·문맥에 의존하는** 로짓을 낸다 — 배치화
+    (오른쪽 패딩)가 실토큰 위치의 logits를 조금이라도 바꾸면 이 스텁이 잡아낸다
+    (균등분포 스텁은 패딩 버그를 절대 못 잡는다: 모든 위치가 이미 같은 값이라서).
+    실제 토큰 id(0..999, `_FakeTokenizer`가 낸다)에 대해서만 정의되게 vocab=1000.
+    인과적(각 위치는 그 위치까지의 id만으로 결정) — 패딩은 항상 실토큰 뒤에만
+    오므로 실토큰 위치의 값은 패딩 유무와 무관해야 하고, 이 스텁은 정확히 그렇게
+    구현된다(뒤쪽 패딩을 아예 안 본다)."""
+    device = "cpu"
+    vocab = 1000
+
+    def __call__(self, input_ids, attention_mask=None, output_hidden_states=False):
+        import torch
+        b, t = input_ids.shape
+        logits = torch.zeros(b, t, self.vocab)
+        ids = input_ids.tolist()
+        for bi in range(b):
+            running = 0
+            for ti in range(t):
+                running = (running * 7 + ids[bi][ti] + 1) % 997
+                center = running % self.vocab
+                # 뾰족한(peaky) 분포 — 배치/순차 경로가 갈리면 gather 값이 눈에
+                # 띄게 달라지도록 값 차이를 크게 둔다.
+                for v in range(self.vocab):
+                    logits[bi, ti, v] = -abs(v - center) * 0.37
+        return _FakeLogits(logits)
+
+    def to(self, device):
+        return self
+
+    def eval(self):
+        return self
+
+
+@pytest.fixture
+def positional_ctx():
+    from src.rulers.hf_ctx import HfCtx
+    return HfCtx(_model=_FakeModelPositional(), _tokenizer=_FakeTokenizer())
+
+
+class TestMoveKlBatching:
+    r"""0905: `candidate_logits_batched`(오른쪽 패딩 배치)를 실제 `models/Qwen3-4B`
+    bf16 GPU에서 200행 재현 채점으로 검증했더니 순차 경로와 바이트 동일하지
+    **않았다**(개별 후보 로그확률 합 최대 diff ~1.16, `move_kl` 점수 최대 diff
+    0.227 — `move_novel_shift`의 AUC가 0.708→0.625로 갈렸다). 그래서 정본
+    `candidate_logits`는 순차 구현의 별칭으로 되돌렸다(`move_kl.py` 주석 참조).
+
+    이 테스트는 그 배치판이 **결정적 CPU 스텁에서는** 순차판과 일치한다는 것만
+    확인한다 — "스텁 일치 ⇏ 실기 일치"라는 이번에 배운 교훈을 코드로 남겨 두는
+    회귀 테스트다(배치판을 다시 정본으로 승격하려면 이 테스트가 통과하는 것만으론
+    부족하고, 실제 모델 재현 비교가 다시 필요하다)."""
+
+    SITES_AND_SAMPLES = [
+        (make_site(nums=(5, 19, 25, 3), witness="5+19", decoy="5-19"),
+         make_sample(meta_start=0, meta_end=40)),
+        (make_site(site_id="s1", nums=(2, 3, 4, 6), witness="2*6", decoy="2+6"),
+         make_sample(meta_start=5, meta_end=55,
+                    continuation="hello<meta>\nconfidence: 0.3\nnext: 2*6\ndecision: verify\n</meta> world")),
+        (make_site(site_id="s2", nums=(7, 7, 1, 1), witness="7+1", decoy="7-1"),
+         make_sample(meta_start=2, meta_end=20, continuation="ab" + "c" * 40)),
+    ]
+
+    @pytest.mark.parametrize("site,sample", SITES_AND_SAMPLES)
+    def test_batched_matches_sequential_on_fake_stub_only(self, positional_ctx, site, sample):
+        from src.rulers.move_kl import (_candidate_logits_sequential, candidate_logits_batched,
+                                        candidate_logits, enumerate_candidate_moves)
+        assert candidate_logits is _candidate_logits_sequential, (
+            "정본 candidate_logits는 순차 구현이어야 한다 — 배치판을 다시 기본으로 "
+            "돌리려면 실제 모델 재현 비교부터 다시 하라(위 클래스 docstring).")
+        candidates = enumerate_candidate_moves(site.nums)
+        p_ids = list(positional_ctx.encode(
+            positional_ctx.tokenizer.apply_chat_template(
+                site.prompt_messages, tokenize=False, add_generation_prompt=True)))
+        prefix_ids = list(positional_ctx.encode(site.prefix + (sample.continuation or "")[:sample.meta_start]))
+
+        seq = _candidate_logits_sequential(positional_ctx, p_ids, prefix_ids, candidates)
+        # 순차 경로가 방금 self._lp_cache 를 채웠으니, 배치 경로가 "캐시라서
+        # 우연히 같다"로 통과하지 않게 캐시를 비우고 잰다.
+        positional_ctx._lp_cache.clear()
+        batched = candidate_logits_batched(positional_ctx, p_ids, prefix_ids, candidates, batch=8)
+
+        assert len(seq) == len(batched) == len(candidates)
+        for a, b in zip(seq, batched):
+            if math.isnan(a):
+                assert math.isnan(b)
+            else:
+                assert abs(a - b) < 1e-4, f"{a} vs {b}"
+
+    def test_dists_for_cache_matches_uncached(self, positional_ctx):
+        """캐시가 값을 바꾸지 않는지 — 캐시 없는(매번 새 ctx) 계산과 비교."""
+        from src.rulers.move_kl import MoveKl, MoveKlSigned, MoveNovelShift, MoveNovelShiftStuck
+        from src.rulers.hf_ctx import HfCtx
+        site = make_site(nums=(5, 19, 25, 3), witness="5+19", decoy="5-19", family_dead=1)
+        sample = make_sample(meta_start=0, meta_end=40)
+
+        cached_scores = {}
+        for ruler in (MoveKl(), MoveKlSigned(), MoveNovelShift(), MoveNovelShiftStuck()):
+            cached_scores[ruler.name] = ruler.score(site, sample, positional_ctx)
+
+        for ruler in (MoveKl(), MoveKlSigned(), MoveNovelShift(), MoveNovelShiftStuck()):
+            fresh_ctx = HfCtx(_model=_FakeModelPositional(), _tokenizer=_FakeTokenizer())
+            fresh = ruler.score(site, sample, fresh_ctx)
+            if math.isnan(cached_scores[ruler.name]):
+                assert math.isnan(fresh)
+            else:
+                assert abs(cached_scores[ruler.name] - fresh) < 1e-6
+
+
+class TestHfCtxCacheAndTruncation:
+    def test_token_logprobs_cache_hits_return_identical_values(self, positional_ctx):
+        ctx_ids = list(positional_ctx.encode("the quick brown fox"))
+        target_ids = list(positional_ctx.encode("jumps"))
+        first = positional_ctx.token_logprobs(ctx_ids, target_ids)
+        assert len(positional_ctx._lp_cache) == 1
+        second = positional_ctx.token_logprobs(ctx_ids, target_ids)
+        assert np.allclose(first, second)
+        # 캐시가 반환하는 배열이 원본과 별개 사본이어야(호출자가 실수로 캐시를
+        # 오염시키는 걸 막는다).
+        second[0] = 12345.0
+        third = positional_ctx.token_logprobs(ctx_ids, target_ids)
+        assert third[0] != 12345.0
+
+    def test_long_context_is_truncated_from_the_left(self, positional_ctx):
+        from src.rulers.hf_ctx import MAX_CTX_TOKENS
+        long_ctx = list(range(MAX_CTX_TOKENS + 500))
+        short_ctx = long_ctx[-MAX_CTX_TOKENS:]
+        target = [1, 2, 3]
+        lp_long = positional_ctx.token_logprobs(long_ctx, target)
+        positional_ctx._lp_cache.clear()
+        lp_short = positional_ctx.token_logprobs(short_ctx, target)
+        assert np.allclose(lp_long, lp_short)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 자 표 CLI — --limit_sites (사이트 단위 층화 표집) 및 attack_battery attack_limit
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestLimitSitesAndAttackLimit:
+    def test_select_sites_stratified_counts_and_columns_preserved(self, tmp_path):
+        import sys
+        sys.path.insert(0, "scripts/local")
+        from ruler_table import select_sites_stratified
+
+        sites_rows = []
+        for i in range(20):
+            sites_rows.append({"site_id": f"site{i}", "nums": [1, 2, 3, 4], "target": 10,
+                              "witness": "1+2", "decoy": "1-2", "prefix": "", "prompt": "[]",
+                              "pairs_pre": "[]", "family_dead": 1 if i % 2 == 0 else 0,
+                              "live_new_moves": "[]"})
+        sites_df = pd.DataFrame(sites_rows)
+        conts_rows = []
+        for i in range(20):
+            for k in range(3):
+                conts_rows.append({"site_id": f"site{i}", "mode": "meta", "k_index": k,
+                                  "continuation": "x", "meta_raw": "<meta>\n</meta>",
+                                  "decision": "verify", "confidence": 0.5, "r_corr": 0,
+                                  "emitted": 1, "meta_start_in_cont": 0})
+        conts_df = pd.DataFrame(conts_rows)
+
+        picked_sites, picked_conts = select_sites_stratified(sites_df, conts_df, 10, seed=0)
+        assert len(picked_sites) == 10
+        assert sum(picked_sites["family_dead"] == 1) == 5
+        assert sum(picked_sites["family_dead"] == 0) == 5
+        # 사이트를 골랐으면 그 사이트의 행을 전부(3개씩) 남겨야 한다 — row-limit처럼
+        # 사이트 하나를 반토막 내지 않는다.
+        assert len(picked_conts) == 10 * 3
+        assert set(picked_conts["site_id"]) == set(picked_sites["site_id"])
+
+    def test_select_sites_stratified_noop_when_n_ge_total(self):
+        import sys
+        sys.path.insert(0, "scripts/local")
+        from ruler_table import select_sites_stratified
+        sites_df = pd.DataFrame({"site_id": ["a", "b"], "family_dead": [1, 0]})
+        conts_df = pd.DataFrame({"site_id": ["a", "b"]})
+        out_sites, out_conts = select_sites_stratified(sites_df, conts_df, 5)
+        assert len(out_sites) == 2
+
+    def test_attack_battery_caps_distinct_sites(self):
+        from src.rulers.table import attack_battery
+
+        class _CountingRuler:
+            name = "counting"
+            needs_model = False
+            calls = 0
+
+            def score(self, site, sample, ctx):
+                _CountingRuler.calls += 1
+                return 0.5
+
+        sites_rows, conts_rows = [], []
+        for i in range(10):
+            sites_rows.append({"site_id": f"s{i}", "nums": [1, 2, 3, 4], "target": 10,
+                              "witness": "1+2", "decoy": "1-2", "prefix": "", "prompt": "[]",
+                              "pairs_pre": "[]", "family_dead": 0, "live_new_moves": "[]"})
+            conts_rows.append({"site_id": f"s{i}", "mode": "meta", "k_index": 0,
+                              "continuation": "x", "meta_raw": "<meta>\n</meta>",
+                              "decision": "verify", "confidence": 0.5, "r_corr": 0,
+                              "emitted": 1, "meta_start_in_cont": 0})
+        sites_df = pd.DataFrame(sites_rows)
+        conts_df = pd.DataFrame(conts_rows)
+
+        res = attack_battery(sites_df, conts_df, _CountingRuler(), ctx=None, attack_limit=3)
+        assert res["n_sites"] == 3
+
+    def test_build_scores_skips_model_when_emitted_zero(self):
+        from src.rulers.table import build_scores
+
+        class _AlwaysCalledRuler:
+            name = "always"
+            needs_model = True
+            calls = 0
+
+            def score(self, site, sample, ctx):
+                _AlwaysCalledRuler.calls += 1
+                return 1.0
+
+        sites_df = pd.DataFrame([{"site_id": "s0", "nums": [1, 2, 3, 4], "target": 10,
+                                 "witness": "1+2", "decoy": "1-2", "prefix": "", "prompt": "[]",
+                                 "pairs_pre": "[]", "family_dead": 0, "live_new_moves": "[]"}])
+        conts_df = pd.DataFrame([{"site_id": "s0", "mode": "meta", "k_index": 0,
+                                 "continuation": "<meta>\nx\n</meta>", "meta_raw": "<meta>\nx\n</meta>",
+                                 "decision": None, "confidence": None, "r_corr": 0,
+                                 "emitted": 0, "meta_start_in_cont": 0}])
+        ruler = _AlwaysCalledRuler()
+        out = build_scores(sites_df, conts_df, [ruler], ctx=object(), limit=0)
+        assert math.isnan(out.loc[0, "always"])
+        assert _AlwaysCalledRuler.calls == 0
