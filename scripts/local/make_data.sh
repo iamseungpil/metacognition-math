@@ -30,7 +30,7 @@ TRAIN_SEED=1
 VAL_N=500
 VAL_SEED=2
 N_NUMS=4
-VARIANTS=(plain new p3)
+VARIANTS=(plain new p3 opt)
 
 mkdir -p "${WORK}/data"
 

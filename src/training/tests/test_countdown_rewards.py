@@ -251,7 +251,11 @@ SPEC_TABLE = {   # 사양 §보상 을 손으로 옮긴 것. 코드가 아니라
 #   N0 = 맨 GRPO 기준선(메타 자체가 없다) · PL = 계획 항(근거-진리) 처치.
 #   SC/SCg = 자기제어 팔(2026-09-04, SC_DESIGN.md) — 상태 조건부 메타(막힘→탐색,
 #   과신→검산) 보상. SCg 는 SC 의 explore 에 근거-진리(plan_ok)를 곱한 대조점.
-ADDED_ARMS = ["OSD", "P", "R", "N0", "PL", "SC", "SCg", "SC_GH", "FT", "M0", "MT"]
+#   OPT/OPT_M(2026-09-05) = 메타 허용·비요구 팔. N0 처럼 terms = ("corr", "format")
+#   이지만 meta_form 은 "new"(파싱은 여전히 새 형식) + require_meta=False(형식 점수는
+#   메타를 요구하지 않음)로 N0 와도 갈린다 — 아래 공통항 예외 테스트에서 함께 다룬다.
+ADDED_ARMS = ["OSD", "P", "R", "N0", "PL", "SC", "SCg", "SC_GH", "FT", "M0", "MT",
+              "OPT", "OPT_M"]
 
 
 def test_arm_specs_match_spec_table():
@@ -266,14 +270,24 @@ def test_arm_specs_match_spec_table():
 def test_common_terms_are_identical_across_all_arms():
     """공통(처치 아님)이 팔마다 다르면 그 실험은 팔 비교가 아니다.
 
-    ★예외는 N0 하나뿐이다. N0 는 메타를 «요구하지 않는» 맨 GRPO 기준선이라
+    ★예외는 N0/OPT/OPT_M 셋이다. N0 는 메타를 «요구하지 않는» 맨 GRPO 기준선이라
       meta_floor(발화 하한)를 주면 기준선이 아니게 된다. 그 대신 N0 는 어떤 메타
       처치 항도 갖지 않는다 — 아래에서 그것을 함께 못 박는다.
+      OPT/OPT_M 도 같은 이유로 meta_floor 가 없다(발화가 선택인데 하한을 주면
+      "허용"이 아니라 "약한 강제"가 된다) — 다만 `meta_form` 은 "new" 를 그대로
+      써서 발화가 나오면 다른 팔과 같은 계기로 파싱된다는 점이 N0(meta_form="none")
+      와 다르다. `require_meta: False` 가 그 결합("new"면 형식점수에 메타가 필요)
+      을 끊는 것을 여기서 함께 확인한다.
     """
     for arm in cr.ARM_SPECS:
         if arm == "N0":
             assert tuple(cr.ARM_SPECS[arm]["terms"]) == ("corr", "format")
             assert cr.ARM_SPECS[arm]["meta_form"] == "none"
+            continue
+        if arm in ("OPT", "OPT_M"):
+            assert tuple(cr.ARM_SPECS[arm]["terms"]) == ("corr", "format")
+            assert cr.ARM_SPECS[arm]["meta_form"] == "new"
+            assert cr.ARM_SPECS[arm]["require_meta"] is False
             continue
         if arm == "SC_GH":
             # 굿하트 압력시험(관문 G-F): corr 를 일부러 뺀다. 비교 팔이 아니라 검사 도구다.
@@ -517,6 +531,39 @@ def test_format_ok_row_combines_expr_and_meta_form():
     assert cr.format_ok_row(NEW_META, "F", parse_expr_ok=no) == 0   # 식 형식 불통과
 
 
+def test_format_ok_row_unaffected_by_require_meta_flag_for_existing_arms():
+    """★회귀: `require_meta` 플래그를 넣기 전 팔(A/F/H/N0)의 채점이 한 글자도 안 바뀐다.
+
+    `require_meta` 는 기본값 True 이므로 이 팔들은 `spec.get("require_meta", True)`
+    분기를 타지 않고 예전 그대로 `meta_form_ok`(또는 N0 의 "none" 우회)를 거쳐야 한다.
+    """
+    ok = lambda t: 1            # noqa: E731
+    no = lambda t: 0            # noqa: E731
+    for arm in ("A", "F", "H"):
+        assert "require_meta" not in cr.ARM_SPECS[arm]
+    assert "require_meta" not in cr.ARM_SPECS["N0"]
+    meta = NEW_META if cr.ARM_SPECS["A"]["meta_form"] == "new" else OLD_META
+    assert cr.format_ok_row(meta, "A", parse_expr_ok=ok) == 1
+    assert cr.format_ok_row("no meta block here", "A", parse_expr_ok=ok) == 0
+    assert cr.format_ok_row("no meta block here", "N0", parse_expr_ok=ok) == 1
+    assert cr.format_ok_row("no meta block here", "N0", parse_expr_ok=no) == 0
+
+
+def test_format_ok_row_opt_does_not_require_meta_but_still_scores_expr():
+    """OPT/OPT_M: 메타가 있든 없든 식 형식만 통과하면 format_ok=1."""
+    ok = lambda t: 1            # noqa: E731
+    no = lambda t: 0            # noqa: E731
+    for arm in ("OPT", "OPT_M"):
+        assert cr.ARM_SPECS[arm]["meta_form"] == "new"
+        assert cr.ARM_SPECS[arm]["require_meta"] is False
+        assert cr.format_ok_row("no meta block here", arm, parse_expr_ok=ok) == 1
+        assert cr.format_ok_row(NEW_META, arm, parse_expr_ok=ok) == 1
+        assert cr.format_ok_row(NEW_META, arm, parse_expr_ok=no) == 0
+        # 형식이 어긋난 메타(옛 한 줄 형식)를 내도 식만 맞으면 여전히 통과한다 —
+        # OPT 는 메타 형식을 채점하지 않기 때문이다.
+        assert cr.format_ok_row(OLD_META, arm, parse_expr_ok=ok) == 1
+
+
 # ══════════════════════════════════════════════════════════ 10. 텔레메트리
 
 def _trow(text, phat, **kw):
@@ -672,6 +719,32 @@ def test_check_abort_thresholds():
                         false_claim_rate=0.03, confidence={"mean": 0.81})
     got = {v["metric"] for v in cr.check_abort(bad)}
     assert got == set(cr.ABORT_RULES)
+
+
+def test_check_abort_without_arm_is_unchanged_regression():
+    """★회귀: `arm=` 을 안 주면 `verl_sdc.py` 의 기존 호출부와 동작이 한 글자도 안
+    다르다 — 이 파일만 고쳐도 되는 이유가 이것이다(그 파일은 손대지 않는다)."""
+    assert cr.check_abort(_abort_report()) == []
+    bad = _abort_report(emit_rate=0.1)
+    got = {v["metric"] for v in cr.check_abort(bad)}
+    assert got == {"emit_rate"}
+
+
+def test_check_abort_skips_emit_rate_only_for_require_meta_false_arms():
+    low_emit = _abort_report(emit_rate=0.05)
+    # 보통 팔(A) 은 emit_rate<0.2 를 여전히 잡는다.
+    got_a = {v["metric"] for v in cr.check_abort(low_emit, arm="A")}
+    assert "emit_rate" in got_a
+    # OPT/OPT_M 은 발화가 선택이므로 emit_rate 규칙만 안 잡는다.
+    for arm in ("OPT", "OPT_M"):
+        got = {v["metric"] for v in cr.check_abort(low_emit, arm=arm)}
+        assert "emit_rate" not in got
+    # 다른 다섯 규칙은 OPT 에서도 여전히 산다 — 발화된 행의 게이밍은 계속 감시한다.
+    bad_rest = _abort_report(emit_rate=0.05, boilerplate={"boilerplate_rate": 0.51},
+                             answer_leak_rate=0.11, arith_in_meta_rate=0.03,
+                             false_claim_rate=0.03, confidence={"mean": 0.81})
+    got_opt = {v["metric"] for v in cr.check_abort(bad_rest, arm="OPT")}
+    assert got_opt == set(cr.ABORT_RULES) - {"emit_rate"}
 
 
 def test_check_abort_boundaries_are_strict():

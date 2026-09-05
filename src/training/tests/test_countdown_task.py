@@ -18,10 +18,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))  # repo root
 
 from src.training.countdown_task import (  # noqa: E402
-    DEFAULT_N_NUMS, SEARCH_BUDGET, SOLVE_SYS_NEW, SOLVE_SYS_OLD,
-    build_parquet, build_prompt, eval_countdown, eval_exact, expr_numbers,
-    gen_instances, grade, grade_from_gt, make_ground_truth, n_attempts,
-    oracle_metas, parse_ground_truth, parse_ok, swap_op_decoy,
+    DEFAULT_N_NUMS, PROMPT_VARIANTS, SEARCH_BUDGET, SOLVE_SYS_NEW, SOLVE_SYS_OLD,
+    SOLVE_SYS_OPT, build_parquet, build_prompt, eval_countdown, eval_exact,
+    expr_numbers, gen_instances, grade, grade_from_gt, make_ground_truth,
+    n_attempts, oracle_metas, parse_ground_truth, parse_ok, swap_op_decoy,
 )
 
 N_ROWS = 200
@@ -265,6 +265,49 @@ def test_new_prompt_is_block_format_and_bans_arithmetic():
 def test_old_prompt_is_one_line_format():
     assert "<meta>" not in SOLVE_SYS_OLD
     assert "confidence: 0.6 | " in SOLVE_SYS_OLD
+
+
+# ─────────────────────────────────────── OPT: 메타 허용·비요구 (2026-09-05)
+
+def test_opt_variant_registered_and_parses_as_new_form():
+    assert "opt" in PROMPT_VARIANTS
+    assert PROMPT_VARIANTS["opt"] is SOLVE_SYS_OPT
+    # ★블록 서식(<meta>...confidence...decision...</meta>)은 new 와 바이트 동일해야
+    #   parse_meta(form="new") 가 계속 이 팔의 발화를 잡는다.
+    from src.training.countdown_rewards import parse_meta
+    text = ("search text\n<meta>\nconfidence: 0.55\njudging my approach so far\n"
+            "decision: verify\n</meta>\nmore search\n\\boxed{1+2}")
+    p = parse_meta(text, form="new")
+    assert p["emitted"] == 1 and p["confidence"] == 0.55 and p["decision"] == "verify"
+
+
+def test_opt_prompt_is_permission_not_mandate():
+    assert "You MAY" in SOLVE_SYS_OPT
+    assert "At least once during your search, stop and write a metacognitive block" \
+        not in SOLVE_SYS_OPT
+    # new 는 여전히 강제 문장을 쓴다 — opt 만 바뀐 것을 함께 못 박는다.
+    assert "At least once during your search, stop and write a metacognitive block" \
+        in SOLVE_SYS_NEW
+
+
+def test_opt_diff_from_new_is_confined_to_the_mandate_paragraph():
+    """new → opt 의 diff 는 강제→허가 문장 한 줄에만 있어야 한다.
+
+    규칙(_RULES)·boxed 종결 지시(_CLOSING)·산수 금지 문구·블록 서식·예시 줄은
+    전부 byte-identical 이어야 opt 가 «허용 vs 강제»만 재는 대조가 된다. 줄 집합
+    비교로 확인한다 — 한 줄이 옮겨 다니는 리팩터는 통과시키되, 내용이 달라지는
+    변화는 잡는다.
+    """
+    new_lines = SOLVE_SYS_NEW.splitlines()
+    opt_lines = SOLVE_SYS_OPT.splitlines()
+    assert len(new_lines) == len(opt_lines)
+    diff_idx = [i for i, (n, o) in enumerate(zip(new_lines, opt_lines)) if n != o]
+    assert len(diff_idx) == 1, f"OPT 가 new 와 한 줄 이상 다르다: {diff_idx}"
+    i = diff_idx[0]
+    assert "At least once during your search" in new_lines[i]
+    assert "You MAY" in opt_lines[i]
+    # 나머지는 순서까지 포함해 완전히 같아야 한다(집합 비교 + 위치 비교 둘 다).
+    assert set(new_lines) - {new_lines[i]} == set(opt_lines) - {opt_lines[i]}
 
 
 def test_build_prompt_shape(rows):

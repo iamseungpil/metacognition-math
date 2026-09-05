@@ -483,8 +483,30 @@ SOLVE_SYS_SHOT = SOLVE_SYS_NEW + SOLVE_SHOT
 SOLVE_SYS_PLAIN = _RULES + _CLOSING.lstrip("\n")
 assert "<meta>" not in SOLVE_SYS_PLAIN and "metacognitive" not in SOLVE_SYS_PLAIN
 
+# ★2026-09-05 OPT 팔: 메타를 «허용하되 요구하지 않는다». `new` 의 강제 문장("At least
+#   once … stop and write")만 허가 문장으로 바꾸고 그 뒤 블록 서식·예시·규칙·종결은
+#   전부 `new` 와 바이트 동일하게 둔다 — `parse_meta(form="new")` 가 그대로 파싱해야
+#   OPT 의 텔레메트리(발화율 등)가 다른 팔과 같은 계기로 잡힌다. 강제 대신 허가만 주면
+#   ①메타 형식은 여전히 파싱 가능하고 ②쓸지 말지, 언제 쓸지를 모델이 스스로 고른다
+#   — N0(메타 지시문 자체가 없음)와 다르고 new(강제)와도 다른 세 번째 대조점이다.
+_NEW_MANDATE_SENTENCE = (
+    "At least once during your search, stop and write a metacognitive block in "
+    "EXACTLY this form, on its own lines:\n\n"
+)
+_OPT_PERMISSION_SENTENCE = (
+    "You MAY, when you judge it useful (for example when you feel stuck), pause and "
+    "write ONE metacognitive block in exactly this format, on its own lines:\n\n"
+)
+if _NEW_MANDATE_SENTENCE not in SOLVE_SYS_NEW:
+    raise ValueError(
+        "opt 프롬프트 조립 실패: SOLVE_SYS_NEW 에서 강제 문장을 찾지 못했다 — "
+        "new 프롬프트가 바뀌어 opt 조립이 더 이상 원본과 같지 않다.")
+SOLVE_SYS_OPT = SOLVE_SYS_NEW.replace(_NEW_MANDATE_SENTENCE, _OPT_PERMISSION_SENTENCE, 1)
+assert "<meta>" in SOLVE_SYS_OPT and "You MAY" in SOLVE_SYS_OPT
+assert "At least once during your search, stop and write a metacognitive block" not in SOLVE_SYS_OPT
+
 PROMPT_VARIANTS = {"new": SOLVE_SYS_NEW, "old": SOLVE_SYS_OLD, "shot": SOLVE_SYS_SHOT,
-                   "plain": SOLVE_SYS_PLAIN}
+                   "plain": SOLVE_SYS_PLAIN, "opt": SOLVE_SYS_OPT}
 
 # ─────────────────────────────────────────────────────── P3 조향 프롬프트 (0904) ──
 # ★수리(감사결함10): `scripts/steer_prompts.py` 가 이 조립(P0→P1→P2→P3)을 자기

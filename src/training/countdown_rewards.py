@@ -927,6 +927,23 @@ ARM_SPECS: dict[str, dict] = {
            "note": "★FT 의 처치를 고정 자리(mixed_train.parquet) 데이터에서 반복. site 행은 "
                    "프리픽스가 이미 프롬프트에 접합돼 있으므로 family_dead/live_new_moves 는 "
                    "빌드 시점 오라클(parquet 컬럼)에서, normal 행은 런타임에 같은 함수로 계산한다."},
+    # ★OPT/OPT_M (2026-09-05): 메타를 **허용하되 요구하지 않는다**. N0(사양의 진짜
+    #   대조군)와 terms 는 같다(정답·형식만, meta_floor 없음) — «강제된 메타의 −7pp
+    #   비용이 사라지는가, 그리고 모델이 스스로 «언제» 메타를 쓸지 배우는가»를 재는
+    #   것이 요점이지 새 보상 항을 더하는 것이 아니다. 프롬프트만 `opt`(허가 문장,
+    #   `countdown_task.PROMPT_VARIANTS["opt"]`)로 바꾼다. `meta_form` 은 "new" 로
+    #   두어 발화가 나오면 다른 팔과 같은 계기(`parse_meta`/텔레메트리)로 잡히게 하되,
+    #   `require_meta: False` 로 `format_ok_row` 의 형식 점수에서 메타 요구를 뗀다
+    #   (N0 처럼 `meta_form: "none"` 을 쓰면 파싱 계기까지 꺼져 발화율을 못 잰다).
+    "OPT": {"label": "optional", "terms": ("corr", "format"), "meta_form": "new",
+            "require_meta": False, "data_hint": "normal",
+            "note": "★메타 허용·비요구. N0 와 항은 같고 프롬프트만 opt(강제→허가). "
+                    "emit_rate<0.2 중단 규칙은 이 팔에서 끈다(발화가 선택이므로) — "
+                    "check_abort 참고."},
+    "OPT_M": {"label": "optional_mixed", "terms": ("corr", "format"), "meta_form": "new",
+              "require_meta": False, "data_hint": "mixed",
+              "note": "★OPT 의 데이터만 mixed(고정 자리 배치, opt 프롬프트). 데이터 파일은 "
+                      "나중에 빌드한다 — 지금은 사양 등록만."},
 }
 
 
@@ -980,6 +997,10 @@ def arm_signature(arm: str) -> str:
     #   전체 팔 서명이 다 바뀌어 로그 연속성이 끊긴다(OSD/INV 항과 같은 규약).
     if _abort_arith_overridden():
         extra += f"|abort_arith={_resolved_arith_threshold():g}"
+    # ★OPT/OPT_M — `require_meta: False` 는 `format_ok_row` 의 채점을 바꾸므로 서명에
+    #   박는다. 조건부다(다른 팔은 전부 True 기본값이라 안 붙어야 기존 서명이 안 깨진다).
+    if not spec.get("require_meta", True):
+        extra += "|require_meta=0"
     return (f"{SPEC_VERSION}|{arm}={spec['label']}|form={spec['meta_form']}"
             f"|{'+'.join(parts)}{extra}")
 
@@ -1342,9 +1363,18 @@ def format_ok_row(text: str, arm: str, *, parse_expr_ok: Callable[[str], int]) -
 
     ⚠H 는 이 항에서도 F 와 달라진다(옛 형식을 지켜야 1 을 받는다). 그것이 "형식의
     값어치"를 재는 팔의 설계 의도다 — 보상식은 F 와 같고 형식만 다르다.
+
+    ★OPT/OPT_M (2026-09-05): `meta_form` 은 "new" 지만(파싱·텔레메트리는 다른 팔과
+    같은 계기로 잡아야 한다) 메타 블록 자체는 선택이라 **형식 점수에 요구하면 안
+    된다**. `spec["require_meta"]` 가 그 결합을 끊는다 — N0 처럼 `meta_form == "none"`
+    으로 우회하면 파싱 계기까지 같이 꺼지므로(사양이 요구하는 텔레메트리를 잃는다)
+    별도 플래그가 필요했다. 기존 팔은 전부 `require_meta` 를 안 적으므로 기본값
+    True 로 지금까지의 동작이 한 글자도 안 바뀐다.
     """
     spec = _require_arm(arm)
     if spec["meta_form"] == "none":        # ★N0 맨 GRPO: 메타 형식을 요구하지 않는다 (메타 발화에 형식 점수를 주면 대조군이 아니다)
+        return 1 if _bool01(parse_expr_ok(text)) else 0
+    if not spec.get("require_meta", True):  # ★OPT/OPT_M: 메타는 허용이지 요구가 아니다
         return 1 if _bool01(parse_expr_ok(text)) else 0
     return 1 if (_bool01(parse_expr_ok(text)) and meta_form_ok(text, spec["meta_form"])) else 0
 
@@ -2077,11 +2107,18 @@ def get_abort_patience() -> int:
     return 3 if v is None else int(v)
 
 
-def check_abort(report: Mapping) -> list[dict]:
+def check_abort(report: Mapping, *, arm: str | None = None) -> list[dict]:
     r"""사양의 중단 조건을 재고, **위반 목록**을 돌려준다(빈 리스트 = 통과).
 
     지표가 없거나 NaN 이면 `missing` 로 보고한다 — 조용히 통과시키지 않는다.
     "상시 WARN 은 소음이 아니다"(원장 0731): 4건 중 2건이 실질이었다.
+
+    ★OPT/OPT_M (2026-09-05): `arm` 을 주면 그 팔의 사양을 본다. `require_meta: False`
+    인 팔은 `emit_rate < 0.2` 중단 규칙만 끈다 — 발화가 **선택**이므로 낮은 emit_rate
+    가 붕괴가 아니라 "안 쓰기로 골랐다"일 수 있다. boilerplate/answer_leak/arith 규칙은
+    그대로 둔다(발화된 행에 한해 조건부로 계산되는 지표라 emit_rate 와 성격이 다르다).
+    `arm` 을 생략하면(기본값) 지금까지와 완전히 같게 여섯 규칙을 전부 본다 — 기존
+    호출부(`verl_sdc.py`)를 건드리지 않아도 회귀가 없다.
     """
     out = []
     vals = {
@@ -2092,7 +2129,12 @@ def check_abort(report: Mapping) -> list[dict]:
         "false_claim_rate": report.get("false_claim_rate"),
         "confidence_mean": (report.get("confidence") or {}).get("mean"),
     }
+    skip = set()
+    if arm is not None and not _require_arm(arm).get("require_meta", True):
+        skip.add("emit_rate")
     for name, rule in ABORT_RULES.items():
+        if name in skip:
+            continue
         v = vals.get(name)
         if v is None or not _finite(v):
             out.append({"metric": name, "status": "missing", "value": v,
