@@ -141,7 +141,7 @@ fi
 
 # ★0904: AF_UNIX 소켓 경로 107바이트 제한 — /hdd_data/…/<긴 계보명>/session_…/sockets/plasma_store 가 넘쳤다.
 #   Ray 임시 디렉터리는 소켓·로그뿐이라(객체 저장소는 /dev/shm) 루트 디스크의 짧은 경로로 둔다.
-export RAY_TMPDIR="/tmp/ray_$(printf '%s' "${LINEAGE}" | md5sum | cut -c1-8)"
+export RAY_TMPDIR="/hdd_data/seungpil/r/$(printf '%s' "${LINEAGE}" | md5sum | cut -c1-8)"   # 0905: 루트 디스크(200GB)가 찼다 — 짧은 경로(소켓 107B 제한)로 /hdd_data 에 둔다
 mkdir -p "${RAY_TMPDIR}"
 mkdir -p "${RAY_TMPDIR}" "${CKPT_DIR}" "${WORK}/logs"
 unset RAY_ADDRESS || true
