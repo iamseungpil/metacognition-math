@@ -197,6 +197,30 @@ def split_train_judge(sites: list[dict], n_train: int, n_judge: int, seed: int, 
     return train_sites, judge_sites
 
 
+def drop_overlong_rows(rows: list[dict], work: Path, cap: int) -> list[dict]:
+    """E-131(2026-09-06): 렌더링 후 프롬프트가 `cap` 토큰을 넘는 자리 행을 버린다.
+
+    학습 시 `data.max_prompt_length`(2048) 를 넘는 행이 배치에 하나만 있어도 verl agent-loop 가
+    배치 폭을 늘려 **모든 행**의 응답 꼬리가 채점에서 사라진다. 그래서 한도보다 넉넉히 아래(기본 1900)
+    에서 자른다. 토크나이저가 없으면 실측 불가 → 명시적으로 실패한다(조용히 통과 금지).
+    """
+    tok_dir = work / TOKENIZER_DIR
+    if not tok_dir.exists():
+        raise RuntimeError(f"[build_sites] 토크나이저가 없어 프롬프트 길이 상한({cap})을 검사할 수 없다: {tok_dir}")
+    from transformers import AutoTokenizer
+    tok = AutoTokenizer.from_pretrained(str(tok_dir))
+    kept, dropped = [], []
+    for r in rows:
+        text = tok.apply_chat_template(list(r["prompt"]), tokenize=False, continue_final_message=True,
+                                       add_generation_prompt=False, enable_thinking=False)
+        n = len(tok(text).input_ids)
+        (kept if n <= cap else dropped).append((r, n))
+    if dropped:
+        print(f"  E-131 상한 {cap} 초과로 {len(dropped)}행 제거: "
+              + ", ".join(f"{r['site_id']}({n})" for r, n in dropped[:8]))
+    return [r for r, _ in kept]
+
+
 def to_rows(sites: list[dict], split: str) -> list[dict]:
     rows = []
     for i, s in enumerate(sites):
@@ -246,6 +270,8 @@ def main():
     ap.add_argument("--max_sites_per_problem_judge", type=int, default=8,
                     help="judge 문제 하나가 최대 몇 개의 site 를 낼 수 있나 (0904 수리)")
     ap.add_argument("--work", default=None, help="WORK 루트 (기본: $WORK 환경변수)")
+    ap.add_argument("--max_prompt_tokens", type=int, default=1900,
+                    help="E-131: 렌더링 후 프롬프트 토큰 상한(학습 max_prompt_length 2048 보다 넉넉히 아래)")
     args = ap.parse_args()
 
     import os
@@ -272,8 +298,8 @@ def main():
           f"judge site {len(judge_sites)} (문제 {len(judge_problems)}개)")
 
     print("[3/5] parquet 행 조립 중...", flush=True)
-    train_rows = to_rows(train_sites, "train")
-    judge_rows = to_rows(judge_sites, "judge")
+    train_rows = drop_overlong_rows(to_rows(train_sites, "train"), work, args.max_prompt_tokens)
+    judge_rows = drop_overlong_rows(to_rows(judge_sites, "judge"), work, args.max_prompt_tokens)
 
     import pandas as pd
     pd.DataFrame(train_rows).to_parquet(out_dir / "sites_train.parquet", index=False)
