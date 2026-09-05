@@ -1674,7 +1674,7 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
                   f"checked|hi={_scs['checked_rate']:.3f} "
                   f"explore_hit|stuck={_scs['explore_hit_rate']:.3f} "
                   f"verify_pos|hi={_scs['verify_pos_rate']:.3f}", flush=True)
-        _all = _cdr.check_abort(_rep)
+        _all = _cdr.check_abort(_rep, arm=arm)
         # ★두 상태를 절대 섞지 않는다.
         #   abort  = 지표를 쟀고 **선을 넘었다** → 연속 위반이면 학습을 죽인다.
         #   missing= 지표가 **안 찍혔다** → 죽이지 않는다. 계기 하나가 빠졌다고 정상
