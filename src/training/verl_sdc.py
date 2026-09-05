@@ -1022,6 +1022,30 @@ def _osd_demote_check(step, auc, arm, *, n_pos=None, n_neg=None, n_unique=None) 
 
 
 
+def _countdown_batch_geometry_guard(*, prompts_width: int, expected_width: int,
+                                    response_valid_lengths: list, step) -> None:
+    """E-131 배치 기하 가드 — 순수 함수(테스트 가능).
+
+    * `prompts_width != expected_width`: 어떤 행의 프롬프트가 `data.max_prompt_length` 를 넘어
+      verl agent-loop 가 배치 폭을 늘렸다. 이때 attention_mask 가 밀려 **모든 행**의 응답 꼬리가
+      채점에서 사라진다(2026-09-06 OPT_M/OPT_MT/MT 에서 스텝의 ~13% 가 corr≈0). 즉시 죽인다.
+    * 길이 0 응답(abort) 이 있으면 같은 사건의 다른 얼굴이다 — 역시 죽인다. 정상 학습에서는
+      길이 0 응답이 나올 수 없다(모델은 최소 EOS 한 토큰을 낸다).
+    expected_width 가 0 이면(설정을 못 읽음) 폭 검사는 건너뛴다 — 단 abort 검사는 항상 한다.
+    """
+    if expected_width and prompts_width != expected_width:
+        raise RuntimeError(
+            f"[COUNTDOWN][E-131] step={step}: 배치 프롬프트 폭 {prompts_width} != "
+            f"data.max_prompt_length {expected_width}. 프롬프트가 한도를 넘는 행이 데이터에 있다 "
+            "(scripts/local/build_sites.py 의 토큰 상한 또는 mixed_train_v3c 참조). 이 배치는 "
+            "모든 행의 응답 꼬리가 잘려 채점되므로 학습을 계속하면 안 된다.")
+    n_abort = sum(1 for v in response_valid_lengths if int(v) <= 0)
+    if n_abort:
+        raise RuntimeError(
+            f"[COUNTDOWN][E-131] step={step}: 길이 0 응답(abort) {n_abort}/{len(response_valid_lengths)} 행. "
+            "verl 롤아웃이 요청을 중단했다 — 과장 프롬프트 행 또는 엔진 재시작. 조용히 채점하지 않는다.")
+
+
 def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_length, step):
     r"""COUNTDOWN_6ARM 의 **유일한 발전기**. 배치당 한 번 돌며 `_COUNTDOWN_STASH` 를 채운다.
 
@@ -1048,6 +1072,17 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
             f"[COUNTDOWN] algorithm.countdown_arm={arm!r} 가 ARM_SPECS "
             f"{sorted(_cdr.ARM_SPECS)} 에 없다 — 팔이 배선되지 않았다. 런처가 "
             "++algorithm.countdown_arm 을 넘겼는지 확인하라.")
+
+    # ★E-131(2026-09-06): 프롬프트가 data.max_prompt_length 를 넘는 행이 하나라도 배치에 들면
+    #   verl agent-loop 가 배치 폭을 그 행에 맞춰 늘리고 attention_mask 가 밀린다 → 모든 행의
+    #   응답 꼬리(\boxed 포함)가 잘려 배치 전체가 corr≈0·format≈0 으로 채점된다(스텝의 ~13%).
+    #   동시에 롤아웃 일부가 길이 0 으로 abort 된다. 조용히 망가지느니 여기서 죽는다.
+    _countdown_batch_geometry_guard(
+        prompts_width=int(data.batch["prompts"].shape[-1]),
+        expected_width=int(getattr(getattr(self.config, "data", None), "max_prompt_length", 0) or 0),
+        response_valid_lengths=data.batch["attention_mask"][:, data.batch["prompts"].shape[-1]:].sum(-1).tolist(),
+        step=step,
+    )
 
     nt = data.non_tensor_batch
 
@@ -3497,7 +3532,10 @@ def _countdown_populate_token_rewards(data, algo_config):
             item.batch["attention_mask"], prompt_length)
         decoded.append(text)
 
-    shim = _NS(tokenizer=tok, config=_NS(algorithm=algo_config))
+    # E-131 가드가 data.max_prompt_length 를 읽도록 trainer 의 data 설정도 실어 보낸다.
+    shim = _NS(tokenizer=tok, config=_NS(
+        algorithm=algo_config,
+        data=getattr(getattr(trainer, "config", None), "data", None)))
     step = int(getattr(trainer, "global_steps", 0) or 0)
     totals = _compute_countdown_arm_stash(shim, data, decoded, bs, prompt_length, step)
 

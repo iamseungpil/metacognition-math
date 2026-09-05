@@ -149,3 +149,10 @@ Countdown 은 살아있는 경로가 여럿이라 «정답 닮음 = 좋음»이 
 
 원자료·전체 로그는 `cd6_work/FINDINGS.md` (§1~§26), 자 채점표는 `cd6_work/probe_t4/`,
 적대 검증 전문은 `cd6_work/probe_t4/pair_rulers_verdict.md`.
+
+## 6. 추가 결함 (2026-09-06) — E-131 과장 프롬프트 행이 배치 전체를 0점으로 만든다
+- **증상**: 고정 자리(mixed) 팔 전부(MT·OPT_M·OPT_MT)에서 한 스텝짜리 `corr≈0.004 · format≈0.005` 이상치가 스텝의 ~13% 에서 반복(OPT_MT s1: 3·9·21·26·29·41·46·54·60). 같은 씨앗의 OPT_M 과 스텝 번호가 일치 → 데이터 순서가 원인.
+- **원인**: `mixed_train_v3(_opt)` 의 자리 행 `train-gs0-own-meta-669` 가 렌더링 후 2,205 토큰으로 `data.max_prompt_length=2048` 을 넘는다(`filter_overlong_prompts=false` 로 걸러지지 않았고 `truncation=error` 도 agent-loop 경로에서 발동하지 않았다). 그 행이 든 배치에서 verl 이 배치 프롬프트 폭을 2,205 로 늘리고(`prompt_length/max=2205`, 그 외 스텝 ≤1,924) attention_mask 가 밀려 **모든 행**의 응답 꼬리(`\boxed`) 가 채점에서 사라진다. 동시에 롤아웃 8~15% 가 길이 0 으로 abort(`response/aborted_ratio`). 검증: abort>0 스텝 집합 == corr<0.05 스텝 집합(4개 팔, 예외 0).
+- **영향**: 해당 스텝은 보상이 거의 0 이라 GRPO 이점이 대부분 0 이지만 timing/format 조각으로 grad_norm 11 짜리 잘못된 갱신이 들어갔다(정상 48~105). OPT_MT s1(스텝 30 판정 포함)·OPT_M·MT 결과는 이 오염을 안고 있다. N0·OPT·OPT_OPD(자리 행 없음) 는 무관.
+- **수리**: ① `mixed_train_v3c(_opt)` = 렌더링 1,900 토큰 초과 5행 제거(478→473) ② `verl_sdc._countdown_batch_geometry_guard` — 배치 폭 ≠ max_prompt_length 또는 길이 0 응답이 있으면 즉시 RuntimeError(테스트 `tests/test_countdown_batch_geometry_guard.py`) ③ OPT_MT 씨앗 2 를 스텝 14 에서 폐기하고 v3c 로 재시작, 씨앗 3 추가. 오염된 씨앗 1 은 «pre-fix» 로 표시한 채 100 스텝까지 두어 깨끗한 씨앗과 비교한다.
+- **교훈**: 데이터 빌더에 토큰 상한이 없었고, 트레이너는 배치 기하를 검사하지 않았다. «한 스텝 0 이상치, 다음 스텝 회복» 을 세 번(MT 10, OPT_M 3·46) 보고도 «회복했으니 무해» 로 넘긴 것이 실수다 — 반복되는 이상치는 첫 관측에서 원인을 잡는다.
