@@ -255,7 +255,7 @@ SPEC_TABLE = {   # 사양 §보상 을 손으로 옮긴 것. 코드가 아니라
 #   이지만 meta_form 은 "new"(파싱은 여전히 새 형식) + require_meta=False(형식 점수는
 #   메타를 요구하지 않음)로 N0 와도 갈린다 — 아래 공통항 예외 테스트에서 함께 다룬다.
 ADDED_ARMS = ["OSD", "P", "R", "N0", "PL", "SC", "SCg", "SC_GH", "FT", "M0", "MT",
-              "OPT", "OPT_M"]
+              "OPT", "OPT_M", "OPT_T", "OPT_MT"]
 
 
 def test_arm_specs_match_spec_table():
@@ -284,7 +284,7 @@ def test_common_terms_are_identical_across_all_arms():
             assert tuple(cr.ARM_SPECS[arm]["terms"]) == ("corr", "format")
             assert cr.ARM_SPECS[arm]["meta_form"] == "none"
             continue
-        if arm in ("OPT", "OPT_M"):
+        if arm in ("OPT", "OPT_M", "OPT_T", "OPT_MT"):
             assert tuple(cr.ARM_SPECS[arm]["terms"]) == ("corr", "format")
             assert cr.ARM_SPECS[arm]["meta_form"] == "new"
             assert cr.ARM_SPECS[arm]["require_meta"] is False
@@ -553,7 +553,7 @@ def test_format_ok_row_opt_does_not_require_meta_but_still_scores_expr():
     """OPT/OPT_M: 메타가 있든 없든 식 형식만 통과하면 format_ok=1."""
     ok = lambda t: 1            # noqa: E731
     no = lambda t: 0            # noqa: E731
-    for arm in ("OPT", "OPT_M"):
+    for arm in ("OPT", "OPT_M", "OPT_T", "OPT_MT"):
         assert cr.ARM_SPECS[arm]["meta_form"] == "new"
         assert cr.ARM_SPECS[arm]["require_meta"] is False
         assert cr.format_ok_row("no meta block here", arm, parse_expr_ok=ok) == 1
@@ -736,7 +736,7 @@ def test_check_abort_skips_emit_rate_only_for_require_meta_false_arms():
     got_a = {v["metric"] for v in cr.check_abort(low_emit, arm="A")}
     assert "emit_rate" in got_a
     # OPT/OPT_M 은 발화가 선택이므로 emit_rate 규칙만 안 잡는다.
-    for arm in ("OPT", "OPT_M"):
+    for arm in ("OPT", "OPT_M", "OPT_T", "OPT_MT"):
         got = {v["metric"] for v in cr.check_abort(low_emit, arm=arm)}
         assert "emit_rate" not in got
     # 다른 다섯 규칙은 OPT 에서도 여전히 산다 — 발화된 행의 게이밍은 계속 감시한다.

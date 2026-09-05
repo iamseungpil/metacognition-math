@@ -942,8 +942,16 @@ ARM_SPECS: dict[str, dict] = {
                     "check_abort 참고."},
     "OPT_M": {"label": "optional_mixed", "terms": ("corr", "format"), "meta_form": "new",
               "require_meta": False, "data_hint": "mixed",
-              "note": "★OPT 의 데이터만 mixed(고정 자리 배치, opt 프롬프트). 데이터 파일은 "
-                      "나중에 빌드한다 — 지금은 사양 등록만."},
+              "note": "★OPT 의 데이터만 mixed(고정 자리 배치, opt 프롬프트, mixed_train_v2_opt)."},
+    # ★OPT 사다리(0905): 메모는 허용만 하고, 지도(정답표) 두 줄로 «상태에 맞는 행동»만 상벌한다.
+    #   좋은 메모 = 죽은 계열에서 redirect + 안 가본 출구 있는 길로 이행(상). 나쁜 메모 = 산 계열에서
+    #   redirect, 죽은 계열에서 빈말(벌). 안 쓰면 0 — «불필요할 땐 안 쓴다»는 결과 보상만으로 수렴.
+    "OPT_T": {"label": "optional_timing", "terms": ("corr", "format", "timing", "live_new"),
+              "meta_form": "new", "require_meta": False, "data_hint": "normal",
+              "note": "★OPT + 지도 항(timing 0.5·w, live_new 1.0·w). 메모 강제 없음, 발화 바닥 없음."},
+    "OPT_MT": {"label": "optional_timing_mixed", "terms": ("corr", "format", "timing", "live_new"),
+               "meta_form": "new", "require_meta": False, "data_hint": "mixed",
+               "note": "★OPT_T + 같은 자리 배치 절반(mixed_train_v2_opt)."},
 }
 
 
