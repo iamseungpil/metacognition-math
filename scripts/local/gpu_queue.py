@@ -19,7 +19,7 @@ Design notes:
   * Disk guard: before starting a job, check shutil.disk_usage on /hdd_data and
     on / ; refuse to start (log "[DISK] waiting", requeue via not consuming the
     job — i.e. leave it in pending, actually since we already renamed it into
-    running we move it BACK to pending) if /hdd_data usage > 85% or / free < 15GB.
+    running we move it BACK to pending) if /hdd_data usage > 85% or / free < 1GB (0905: 루트 200GB 를 타 프로젝트가 채워 15GB 기준은 상시 차단이 됨; 우리 잡은 /hdd_data 에만 씀).
   * A file named <queue_dir>/STOP pauses ALL workers (they poll and sleep)
     without killing them, so `start-workers` doesn't need to be re-run after
     unpausing.
@@ -48,7 +48,7 @@ LOG_DIR = WORK / "logs"
 PIDS_DIR = QUEUE_ROOT / "pids"
 
 DISK_USAGE_PCT_MAX = 85.0
-ROOT_FREE_GB_MIN = 15.0
+ROOT_FREE_GB_MIN = 1.0   # 0905: 루트 200GB 를 타 프로젝트(/tmp/ttso 55GB, envs 79GB)가 채움. 우리 잡은 /hdd_data 에만 쓴다
 
 
 def _ensure_dirs() -> None:
