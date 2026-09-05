@@ -144,3 +144,20 @@ def test_hint_builder_never_contains_witness_across_random_instances():
         assert witness not in hint
         assert "\\boxed" not in hint
     assert n_checked > 20, "표본이 너무 적다 — 무작위 시드/범위를 다시 보라."
+
+
+def test_opd_kl_sign_penalizes_student_tokens_that_hint_finds_unlikely():
+    """E-132: 학생이 뽑은 토큰 위에서 (lp_student − lp_teacher) 평균이어야 한다.
+    학생이 확신한 토큰을 힌트 교사가 낯설어하면(lp_s > lp_t) 양의 KL → 벌.
+    힌트 교사가 더 좋아하면(lp_t > lp_s) 음 → 클립 0(벌 없음). 첫 구현은 반대였다."""
+    from types import SimpleNamespace as NS
+    from src.training.verl_sdc import _read_opd_from_ref_logprobs
+    from src.training.countdown_rewards import r_opd_meta
+    # 행 0: teacher(hint) 팔, 행 1: student(plain) 팔 — 학생이 더 확신(−0.5 vs −2.0)
+    ref_lp = [[-2.0, -2.0, -2.0, 0.0], [-0.5, -0.5, -0.5, 0.0]]
+    kl = _read_opd_from_ref_logprobs(ref_lp, [NS(w_len=3)])
+    assert kl[0] > 0 and abs(kl[0] - 1.5) < 1e-9
+    assert r_opd_meta(kl[0], c=0.075) == -1.0
+    # 반대: 교사가 학생 토큰을 더 좋아함 → 음 → 벌 없음
+    kl2 = _read_opd_from_ref_logprobs([[-0.5, -0.5, -0.5], [-2.0, -2.0, -2.0]], [NS(w_len=3)])
+    assert kl2[0] < 0 and r_opd_meta(kl2[0], c=0.075) == 0.0

@@ -791,8 +791,8 @@ def r_live_new(row: Mapping) -> float:
 def r_opd_meta(opd_kl, *, c: float | None = None) -> float:
     r"""OPT_OPD 팔. R_opd_meta = −clip(opd_kl, 0, C) / C ∈ [−1, 0]. 단측 벌만(설계 §2.2/§4).
 
-    `opd_kl` 은 `verl_sdc._compute_countdown_opd` 가 잰 `mean_{t∈span}(lp_teacher−
-    lp_student)`(온폴리시 표본 KL 추정, `countdown_opd.opd_reward` 와 **같은 공식** —
+    `opd_kl` 은 `verl_sdc._compute_countdown_opd` 가 잰 `mean_{t∈span}(lp_student−
+    lp_teacher)`(학생 표본 위 KL(student‖teacher) 추정 ≥0 기대; E-132 로 부호 확정, `countdown_opd.opd_reward` 와 **같은 공식** —
     거기는 순수 헬퍼로 테스트 전용이고, 팔의 정체는 이 파일이 유일한 정의처라는 규약을
     지키기 위해 여기서 다시 한 번 짧게 정의한다. `r_osd`/`r_meta_inv` 도 같은 이유로
     자기 스코어러 모듈의 공식을 복제한다).

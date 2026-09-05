@@ -3027,13 +3027,16 @@ def _build_opd_arms(tokenizer, prompt_messages, response_texts, prefixes, nums, 
 
 
 def _read_opd_from_ref_logprobs(ref_lp, attempts):
-    r"""ref 토큰별 logp → 행별 `opd_kl` = mean_t(lp_teacher_t − lp_student_t).
+    r"""ref 토큰별 logp → 행별 `opd_kl` = mean_t(lp_student_t − lp_teacher_t).
 
-    `base = 2*k`, 팔 순서 `hint(teacher), plain(student)`. 설계 §2.2 의 온폴리시
-    표본 KL 근사(`KL̂ = mean_{t∈span}(lp_teacher − lp_student)`, 과제 지시 그대로) —
-    전체 분포 KL(vocab 전체 log_softmax)이 아니라 **실현 토큰 하나의 logprob 차이**만
-    쓴다(OSD/PMI 와 같은 "gather, not full softmax" 계약). 유한하지 않으면 그 행만
-    NaN 으로 fail-closed(OSD `_read_osd_from_ref_logprobs` 와 같은 규약).
+    `base = 2*k`, 팔 순서 `hint(teacher), plain(student)`. 실현 토큰은 **학생이 뽑은**
+    토큰이므로, 그 위의 `lp_student − lp_teacher` 평균은 역방향 KL(student‖teacher) 의
+    온폴리시 표본 추정(≥0 기대)이다. 설계 §2.2 는 정방향 KL(teacher‖student) 을 적었지만
+    정방향은 교사 표본 또는 vocab 전체 log_softmax 가 있어야 추정된다 — gather 계약
+    (OSD/PMI 와 같은 "gather, not full softmax") 아래서는 역방향만 편향 없이 잰다.
+    ⚠E-132(2026-09-06 스모크): 첫 구현은 부호가 반대(`lp_teacher − lp_student`) 였고, 그
+    기대값은 −KL(s‖t) ≤ 0 이라 `clip(·,0,C)` 에서 98% 가 0 으로 죽었다(항이 사실상 꺼짐).
+    유한하지 않으면 그 행만 NaN 으로 fail-closed(OSD `_read_osd_from_ref_logprobs` 와 같은 규약).
     """
     from src.training.countdown_pmi import _row_sum          # noqa: PLC0415
 
@@ -3047,7 +3050,7 @@ def _read_opd_from_ref_logprobs(ref_lp, attempts):
         except Exception:
             out.append(float("nan"))
             continue
-        kl_mean = (lp_teacher - lp_student) / L
+        kl_mean = (lp_student - lp_teacher) / L      # E-132: 학생 표본 위 KL(s‖t) 추정, ≥0 기대
         out.append(float(kl_mean) if math.isfinite(kl_mean) else float("nan"))
     return out
 
