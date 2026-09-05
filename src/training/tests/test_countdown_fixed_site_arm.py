@@ -187,3 +187,17 @@ def test_runtime_no_meta_uses_whole_text_as_prefix():
     fd_runtime, _ = _runtime_family_dead_and_live_new(text, "new", NUMS, TARGET)
     oracle_direct = cs.oracle_for_site(text, NUMS, TARGET)
     assert fd_runtime == oracle_direct["family_dead"]
+
+
+def test_check_abort_rate_rules_need_enough_emitted_rows_for_optional_meta():
+    from src.training import countdown_rewards as cr
+    rep = {"n_rows": 512, "emit_rate": 0.06, "arith_in_meta_rate": 0.056, "boilerplate_rate": 0.0,
+           "answer_leak_rate": 0.0, "false_claim_rate": 0.0, "confidence": {"mean": 0.5}}
+    res = cr.check_abort(rep, arm="OPT")
+    st = {r["metric"]: r["status"] for r in res}
+    assert st["arith_in_meta_rate"] == "missing"            # 발화 행 31개 → 판정 보류
+    rep2 = dict(rep, emit_rate=0.5)                          # 발화 행 256개 → 정상 판정
+    st2 = {r["metric"]: r["status"] for r in cr.check_abort(rep2, arm="OPT")}
+    assert st2["arith_in_meta_rate"] == "abort"
+    st3 = {r["metric"]: r["status"] for r in cr.check_abort(rep, arm="A")}   # 요구 팔은 불변
+    assert st3["arith_in_meta_rate"] == "abort"

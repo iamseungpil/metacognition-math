@@ -2115,6 +2115,9 @@ def get_abort_patience() -> int:
     return 3 if v is None else int(v)
 
 
+MIN_EMITTED_FOR_RATE_RULES = 64   # 선택 발화(require_meta=False) 팔에서 비율 중단 규칙을 판정할 최소 발화 행 수
+
+
 def check_abort(report: Mapping, *, arm: str | None = None) -> list[dict]:
     r"""사양의 중단 조건을 재고, **위반 목록**을 돌려준다(빈 리스트 = 통과).
 
@@ -2138,10 +2141,24 @@ def check_abort(report: Mapping, *, arm: str | None = None) -> list[dict]:
         "confidence_mean": (report.get("confidence") or {}).get("mean"),
     }
     skip = set()
-    if arm is not None and not _require_arm(arm).get("require_meta", True):
+    optional_meta = arm is not None and not _require_arm(arm).get("require_meta", True)
+    if optional_meta:
         skip.add("emit_rate")
+    # ★0905 OPT 실측: 발화가 6% 면 스텝당 발화 행이 ~30개라 «발화 행 기준 비율»(메타 내 산수·
+    #   정형문·답 누출·거짓 주장·확신 평균)이 메타 1~2개로 임계를 넘나든다(0.056 > 0.02).
+    #   비율 규칙은 표본이 충분할 때만 판정한다 — 그렇지 않으면 «못 쟀다»로 기록하고 죽이지 않는다.
+    #   메타를 요구하는 팔은 발화 행이 수백이라 이 가드가 사실상 작동하지 않는다(행동 불변).
+    _RATE_RULES = {"boilerplate_rate", "answer_leak_rate", "arith_in_meta_rate", "false_claim_rate", "confidence_mean"}
+    try:
+        n_emit = float(report.get("emit_rate") or 0.0) * float(report.get("n_rows") or 0)
+    except (TypeError, ValueError):
+        n_emit = 0.0
     for name, rule in ABORT_RULES.items():
         if name in skip:
+            continue
+        if optional_meta and name in _RATE_RULES and n_emit < MIN_EMITTED_FOR_RATE_RULES:
+            out.append({"metric": name, "status": "missing", "value": vals.get(name),
+                        "why": f"발화 행 {n_emit:.0f} < {MIN_EMITTED_FOR_RATE_RULES} — 비율 판정 표본 부족(선택 발화 팔)"})
             continue
         v = vals.get(name)
         if v is None or not _finite(v):
