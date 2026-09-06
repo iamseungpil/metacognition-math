@@ -255,7 +255,7 @@ SPEC_TABLE = {   # 사양 §보상 을 손으로 옮긴 것. 코드가 아니라
 #   이지만 meta_form 은 "new"(파싱은 여전히 새 형식) + require_meta=False(형식 점수는
 #   메타를 요구하지 않음)로 N0 와도 갈린다 — 아래 공통항 예외 테스트에서 함께 다룬다.
 ADDED_ARMS = ["OSD", "P", "R", "N0", "PL", "SC", "SCg", "SC_GH", "FT", "M0", "MT",
-              "OPT", "OPT_M", "OPT_T", "OPT_MT", "OPT_OPD", "OPT_OPDC", "OPT_MTC"]
+              "OPT", "OPT_M", "OPT_T", "OPT_MT", "OPT_MT2", "OPT_OPD", "OPT_OPDC", "OPT_MTC"]
 
 
 def test_arm_specs_match_spec_table():
@@ -284,12 +284,13 @@ def test_common_terms_are_identical_across_all_arms():
             assert tuple(cr.ARM_SPECS[arm]["terms"]) == ("corr", "format")
             assert cr.ARM_SPECS[arm]["meta_form"] == "none"
             continue
-        if arm in ("OPT", "OPT_M", "OPT_T", "OPT_MT", "OPT_OPD", "OPT_OPDC", "OPT_MTC"):
-            # OPT 사다리: corr+format 위에 지도 항(timing/live_new) **또는** 힌트 교사
-            # 항(opd_meta/opd_meta_c, 2026-09-06)만 얹을 수 있고, meta_floor 는 절대 없다.
+        if arm in ("OPT", "OPT_M", "OPT_T", "OPT_MT", "OPT_MT2", "OPT_OPD", "OPT_OPDC", "OPT_MTC"):
+            # OPT 사다리: corr+format 위에 지도 항(timing/timing2/live_new) **또는** 힌트
+            # 교사 항(opd_meta/opd_meta_c, 2026-09-06)만 얹을 수 있고, meta_floor 는 절대
+            # 없다. timing2(0906) 는 OPT_MT2 전용 — timing 의 무시도-redirect 무효 레버 수리.
             _t = tuple(cr.ARM_SPECS[arm]["terms"])
             assert _t[:2] == ("corr", "format") and "meta_floor" not in _t
-            assert set(_t[2:]) <= {"timing", "live_new", cr.OPD_TERM, cr.OPD_TERM_C}
+            assert set(_t[2:]) <= {"timing", "timing2", "live_new", cr.OPD_TERM, cr.OPD_TERM_C}
             assert cr.ARM_SPECS[arm]["meta_form"] == "new"
             assert cr.ARM_SPECS[arm]["require_meta"] is False
             continue
@@ -321,7 +322,7 @@ def test_warmup_applies_to_meta_and_gate_only():
     assert warmed == {"meta_pos", "meta_mul", "meta_ctx", "gate", "len", "osd",
                       "meta_pos_full", "plan", cr.INV_TERM,
                       "explore", "explore_g", "verify",
-                      "timing", "live_new", cr.OPD_TERM, cr.OPD_TERM_C}
+                      "timing", "timing2", "live_new", cr.OPD_TERM, cr.OPD_TERM_C}
     for t in ("corr", "format", "meta_floor", "early_cost"):
         assert not cr.TERMS[t]["warmup"]
 
@@ -1116,3 +1117,100 @@ def test_check_abort_skips_emit_rate_for_opt_opdc_too():
     low_emit = _abort_report(emit_rate=0.05)
     got = {v["metric"] for v in cr.check_abort(low_emit, arm="OPT_OPDC")}
     assert "emit_rate" not in got
+
+
+# ══════════════════════════════════════════════════ 9. timing2 / OPT_MT2 (2026-09-06)
+#
+# 동기(`docs/RESULTS_cd7.md` "OPT_MT v3 s1(pre-fix) 스텝 100"): `r_timing` 은
+# family_dead is None(아직 아무 시도도 안 해봤다) 일 때 항상 0 을 준다 — 정책은
+# 그 무효 레버로 응답 첫 토큰부터 "redirect" 메타를 100% 냈다(비용 0, 운 좋으면 +1).
+# `r_timing2` 는 그 칸의 redirect 만 -1 로 막는다. OPT_MT2 는 OPT_MT 와 timing 항목
+# 하나만(timing→timing2) 다른 새 팔이다.
+
+def _timing_row(family_dead, dec_redirect, dec_verify):
+    return {"family_dead": family_dead, "dec_redirect": dec_redirect, "dec_verify": dec_verify}
+
+
+def test_r_timing2_truth_table_all_six_cases():
+    """`r_timing` 과 다른 칸은 family_dead=None ∧ redirect 하나뿐(0 → -1)."""
+    # family_dead is None
+    assert cr.r_timing2(_timing_row(None, 1, 0)) == -1.0   # ★신규: 무시도 redirect = 벌
+    assert cr.r_timing2(_timing_row(None, 0, 1)) == 0.0    # verify — 변화 없음(판정 근거 없음)
+    assert cr.r_timing2(_timing_row(None, 0, 0)) == 0.0    # 무결정 — 변화 없음
+    # family_dead == 1 (계열 죽음) — r_timing 과 완전히 동일
+    assert cr.r_timing2(_timing_row(1, 1, 0)) == 1.0       # redirect — 옳은 타이밍
+    assert cr.r_timing2(_timing_row(1, 0, 1)) == -1.0      # verify — 안 갈아탐
+    assert cr.r_timing2(_timing_row(1, 0, 0)) == -1.0      # 무결정 — 안 갈아탐
+    # family_dead == 0 (계열 생존) — r_timing 과 완전히 동일
+    assert cr.r_timing2(_timing_row(0, 1, 0)) == -1.0      # redirect — 성급한 포기
+    assert cr.r_timing2(_timing_row(0, 0, 1)) == 0.0       # verify — 정상
+    assert cr.r_timing2(_timing_row(0, 0, 0)) == 0.0       # 무결정 — 정상
+
+
+def test_r_timing2_matches_r_timing_everywhere_except_no_attempt_redirect():
+    """진리표 6칸(+None) 중 딱 한 칸만 갈린다 — 그 밖은 `r_timing` 과 바이트 동일."""
+    cases = [(None, 1, 0), (None, 0, 1), (None, 0, 0),
+             (1, 1, 0), (1, 0, 1), (1, 0, 0),
+             (0, 1, 0), (0, 0, 1), (0, 0, 0)]
+    diffs = []
+    for fd, dr, dv in cases:
+        row = _timing_row(fd, dr, dv)
+        if cr.r_timing(row) != cr.r_timing2(row):
+            diffs.append((fd, dr, dv))
+    assert diffs == [(None, 1, 0)], diffs
+
+
+def _opt_mt2_row(**kw):
+    base = dict(r_corr=1, format_ok=1, emitted=1,
+                family_dead=None, dec_redirect=1, dec_verify=0,
+                first_move_after_meta=None, live_new_moves=(), followed=0)
+    base.update(kw)
+    return base
+
+
+def test_arm_OPT_MT2_registered_and_differs_from_OPT_MT_only_by_timing_term():
+    assert "OPT_MT2" in cr.ARM_SPECS
+    mt = tuple(cr.ARM_SPECS["OPT_MT"]["terms"])
+    mt2 = tuple(cr.ARM_SPECS["OPT_MT2"]["terms"])
+    assert mt == ("corr", "format", "timing", "live_new")
+    assert mt2 == ("corr", "format", "timing2", "live_new")
+    for k in ("meta_form", "require_meta", "data_hint"):
+        assert cr.ARM_SPECS["OPT_MT"][k] == cr.ARM_SPECS["OPT_MT2"][k]
+
+
+def test_arm_OPT_MT2_matches_OPT_MT_except_on_a_no_attempt_redirect_row():
+    """손계산: 무시도-redirect 행에서 OPT_MT 의 timing 기여는 0, OPT_MT2 는 -1×warmup."""
+    row = _opt_mt2_row()
+    step, warmup_steps = 10, 20   # 워밍업 절반 지점 — 스케일이 눈에 보이게
+    scale = cr.warmup_scale(step, warmup_steps)
+    assert 0.0 < scale < 1.0
+
+    total_mt, comps_mt = cr.arm_reward("OPT_MT", row, step=step, warmup_steps=warmup_steps)
+    total_mt2, comps_mt2 = cr.arm_reward("OPT_MT2", row, step=step, warmup_steps=warmup_steps)
+
+    assert comps_mt["timing"] == pytest.approx(0.0)
+    assert comps_mt2["timing2"] == pytest.approx(-1.0 * scale * cr.W_TIMING)
+    # corr/format/live_new 는 완전히 같아야 한다 — 갈리는 것은 timing 항 하나뿐.
+    assert comps_mt["corr"] == comps_mt2["corr"]
+    assert comps_mt["format"] == comps_mt2["format"]
+    assert comps_mt["live_new"] == comps_mt2["live_new"]
+    assert total_mt2 == pytest.approx(total_mt - 1.0 * scale * cr.W_TIMING)
+
+    # 계열이 죽어있는 행(오라클 상 옳은 타이밍)에서는 두 **원값**(r_timing/r_timing2)이
+    # 완전히 같아야 한다 — `r_timing2` 는 family_dead=None 칸만 고친다. 무게도 같은
+    # W_TIMING 이라 comps 까지 일치해야 한다(차이를 그 한 칸으로 격리).
+    alive_row = _opt_mt2_row(family_dead=1)
+    _, comps_mt_alive = cr.arm_reward("OPT_MT", alive_row, step=step, warmup_steps=warmup_steps)
+    _, comps_mt2_alive = cr.arm_reward("OPT_MT2", alive_row, step=step, warmup_steps=warmup_steps)
+    assert cr.r_timing(alive_row) == cr.r_timing2(alive_row) == 1.0
+    assert comps_mt_alive["timing"] == pytest.approx(1.0 * scale * cr.W_TIMING)
+    assert comps_mt2_alive["timing2"] == pytest.approx(1.0 * scale * cr.W_TIMING)
+    assert comps_mt2_alive["timing2"] == pytest.approx(comps_mt_alive["timing"])
+
+
+def test_arm_signature_OPT_MT2_differs_from_OPT_MT():
+    sig_mt = cr.arm_signature("OPT_MT")
+    sig_mt2 = cr.arm_signature("OPT_MT2")
+    assert sig_mt != sig_mt2
+    assert "timing2@" in sig_mt2 and "timing2@" not in sig_mt
+    assert "timing@" in sig_mt and "timing@" not in sig_mt2

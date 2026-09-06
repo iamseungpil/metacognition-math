@@ -85,7 +85,7 @@ __all__ = [
     "r_osd", "plan_next", "plan_followed",
     "SC_K_STUCK", "SC_CONF_HI", "W_EXPLORE", "W_VERIFY", "W_EARLY",
     "r_explore", "r_explore_g", "r_verify", "r_early",
-    "W_TIMING", "W_LIVE_NEW", "r_timing", "r_live_new",
+    "W_TIMING", "W_LIVE_NEW", "r_timing", "r_timing2", "r_live_new",
     "OPD_TERM", "OPD_C", "OPD_C_PROVISIONAL", "r_opd_meta",
     "OPD_TERM_C", "opd_center_rows", "r_opd_meta_c",
     "OSD_TERM", "OSD_C", "OSD_C_PROVISIONAL", "OSD_W_MAX", "OSD_LEAK_NGRAM",
@@ -344,6 +344,9 @@ TERM_MAX_ABS: dict = {
     # ── FT/M0/MT (고정 자리) — 정의상 이미 각 범위 안이다. osd/meta_inv 와 같은 이유로
     #   `.get(t, 1.0)` 기본값에 기대지 않고 명시한다.
     "timing":     1.0,   # r_timing ∈ {-1,0,+1}
+    # timing2 (OPT_MT2, 0906): r_timing2 도 같은 범위 {-1,0,+1} — family_dead=None
+    # 칸의 redirect 만 0→-1 로 바뀐 것 뿐(위 timing2 항목/`r_timing2` docstring 참조).
+    "timing2":    1.0,   # r_timing2 ∈ {-1,0,+1} (weight 는 TERMS 에서 W_TIMING)
     "live_new":   1.0,   # r_live_new ∈ {0,1}
     # r_opd_meta 가 이미 [−1, 0] 이라 정규화는 항등이다. osd/meta_inv 와 같은 이유로
     # `.get(t, 1.0)` 기본값에 기대지 않고 명시한다.
@@ -794,6 +797,45 @@ def r_timing(row: Mapping) -> float:
     return -1.0 if redirect else 0.0
 
 
+def r_timing2(row: Mapping) -> float:
+    r"""OPT_MT2 팔. `r_timing` 과 완전히 같되 **판정불가(family_dead is None) 칸을 없앤다**.
+
+    동기(cd7 실측, 0906, `docs/RESULTS_cd7.md` "OPT_MT v3 s1(pre-fix) 스텝 100"): `r_timing`
+    은 `family_dead is None`(아직 아무 시도도 안 해봤다 — 계열 생사를 판정할 근거가 없다)
+    일 때 **0**을 준다. 정책은 이것을 착취했다 — 스텝 100에 이르면 문제의 ~100%에서 응답의
+    **첫 토큰부터** "redirect" 메타를 낸다. 시도를 하나도 안 했으니 비용이 0이고, 우연히
+    계열이 죽어 있던(운 좋은) 문제에서는 +1까지 받는다. "언제 포기할지 판단"이라는 처치의
+    취지 자체가 무의미해진다 — 판단할 시도가 없는데 포기부터 하는 것.
+
+    수리: 시도 없이 낸 redirect 는 "성급한 포기"의 극단이므로, 계열이 살아있는데 낸
+    redirect(fd==0 ∧ redirect → −1)와 **같은 벌**을 준다. `family_dead is None` 이고
+    redirect 가 **아니면**(verify 를 냈거나 무결정) 여전히 판정 근거가 없으므로 0 —
+    "아직 아무것도 안 해봤다"는 사실 자체를 벌하지 않는다, 벌하는 것은 어디까지나
+    "아무것도 안 해보고 포기(redirect)한 것"이다.
+
+    truth table (범위 {-1,0,+1}, `r_timing` 과 다른 칸만 ★표):
+        family_dead is None ∧ redirect                              → −1  ★(신규, 구식은 0)
+        family_dead is None ∧ not redirect(verify 또는 무결정)         →  0  (변화 없음)
+        family_dead==1 (계열 죽음) ∧ redirect                        → +1  (변화 없음, 옳은 타이밍)
+        family_dead==0 (계열 생존) ∧ redirect                        → −1  (변화 없음, 성급한 포기)
+        family_dead==1 ∧ (verify ∨ redirect 아님)                    → −1  (변화 없음, 죽은 계열에서 안 갈아탐)
+        family_dead==0 ∧ (verify ∨ redirect 아님)                    →  0  (변화 없음)
+
+    `r_timing` 은 이 실험과 무관하게 그대로 둔다(OPT_MT 는 손대지 않는다) — 이 함수는
+    OPT_MT2 전용 새 항이다.
+    """
+    fd = row["family_dead"]
+    redirect = _bool01(row["dec_redirect"])
+    if fd is None:
+        return -1.0 if redirect else 0.0
+    fd = _bool01(fd)
+    verify = _bool01(row["dec_verify"])
+    if fd == 1:
+        return 1.0 if redirect else -1.0
+    # fd == 0
+    return -1.0 if redirect else 0.0
+
+
 def r_live_new(row: Mapping) -> float:
     r"""FT/MT 팔. 메타 뒤 **첫 결합**이 새로 산(=`live_new_moves`, 프리픽스에 없던 쌍이며
     실제로 해로 이어지는) 수이고 실제로 그것을 이었는가(followed). 범위 {0,1}.
@@ -954,6 +996,11 @@ TERMS: dict[str, dict] = {
     #   `verl_sdc._compute_countdown_arm_stash`) 이 **같은 이름**으로 채운다.
     "timing":     {"needs": ("emitted", "family_dead", "dec_redirect", "dec_verify"),
                    "warmup": True, "weight": W_TIMING},
+    # ── timing2 (OPT_MT2, 2026-09-06) — `timing` 과 needs/warmup/**weight(W_TIMING)** 전부
+    #   동일. 다른 것은 `r_timing2` 의 한 칸(`family_dead is None ∧ redirect → -1`) 뿐이라
+    #   OPT_MT 와의 차이가 그 칸 하나로 격리된다.
+    "timing2":    {"needs": ("emitted", "family_dead", "dec_redirect", "dec_verify"),
+                   "warmup": True, "weight": W_TIMING},
     "live_new":   {"needs": ("emitted", "first_move_after_meta", "live_new_moves", "followed"),
                    "warmup": True, "weight": W_LIVE_NEW},
     # ── OPD (힌트 교사, 2026-09-06) — needs 는 `verl_sdc._compute_countdown_opd` 가
@@ -1077,6 +1124,19 @@ ARM_SPECS: dict[str, dict] = {
     "OPT_MT": {"label": "optional_timing_mixed", "terms": ("corr", "format", "timing", "live_new"),
                "meta_form": "new", "require_meta": False, "data_hint": "mixed",
                "note": "★OPT_T + 같은 자리 배치 절반(mixed_train_v2_opt)."},
+    # ★OPT_MT2 (2026-09-06, `docs/RESULTS_cd7.md` "OPT_MT v3 s1(pre-fix) 스텝 100"):
+    #   OPT_MT 와 완전히 같되 timing → timing2 하나만 바뀐다. 동기는 OPT_MT 가 스텝
+    #   100 에 이르러 착취한 무효 레버다 — `r_timing` 은 `family_dead is None`(아직
+    #   아무 시도도 안 해봤다)일 때 항상 0 을 주므로, 정책은 응답 첫 토큰부터 "redirect"
+    #   메타를 내고(비용 0) 계열이 우연히 죽어 있던 문제에서는 +1 까지 챙겼다 —
+    #   판정 대상인 「~100% 첫 토큰 redirect」 자체가 이 레버의 산물이다. `r_timing2`
+    #   는 그 칸(판정불가 ∧ redirect)을 계열 생존 중 redirect(−1)와 같은 벌로 막는다
+    #   (`r_timing2` docstring 의 truth table 참조). OPT_MT 는 이 실험과 무관하게
+    #   손대지 않는다 — `timing` 항·`r_timing` 함수 둘 다 그대로다.
+    "OPT_MT2": {"label": "optional_timing2_mixed", "terms": ("corr", "format", "timing2", "live_new"),
+                "meta_form": "new", "require_meta": False, "data_hint": "mixed",
+                "note": "★OPT_MT 와 동일(같은 자리 배치 절반, mixed_train_v2_opt) + timing→timing2"
+                        "(무시도 redirect 를 더는 공짜로 두지 않는다 — 위 note 참조)."},
     # ★OPT_OPD (2026-09-06, docs/DESIGN_opd_hint_teacher.md §4/§10): 힌트 교사
     #   on-policy distillation. OPT 와 항이 같고(corr·format, meta_floor 없음,
     #   require_meta=False) opd_meta 하나만 더한다 — FT/MT/OPT_T 의 "결과 판정"과
@@ -1286,6 +1346,8 @@ def arm_reward(
         raw["early_cost"] = r_early(row)
     if "timing" in terms:
         raw["timing"] = r_timing(row) if emitted else 0.0
+    if "timing2" in terms:
+        raw["timing2"] = r_timing2(row) if emitted else 0.0
     if "live_new" in terms:
         raw["live_new"] = r_live_new(row) if emitted else 0.0
     if OPD_TERM in terms:
@@ -1861,7 +1923,7 @@ def component_means(components: Sequence[Mapping[str, float]], *, dead_eps: floa
 META_TERMS: tuple = ("meta_pos", "meta_mul", "meta_ctx", "gate", "len", "osd",
                      "meta_pos_full", "plan", INV_TERM,
                      "explore", "explore_g", "verify", "early_cost",
-                     "timing", "live_new", OPD_TERM, OPD_TERM_C)
+                     "timing", "timing2", "live_new", OPD_TERM, OPD_TERM_C)
 
 
 def rmeta_magnitude(components: Sequence[Mapping[str, float]],

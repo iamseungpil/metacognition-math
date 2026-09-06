@@ -1266,7 +1266,7 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
         #   응답에 접합돼 있으므로 "메타 앞" = prefix + response[:meta_start]. normal 행은
         #   prefix_i=="" 라 그냥 response[:meta_start] 다(런타임 계산, `countdown_sites`
         #   가 CPU 로 4수 완전열거하므로 싸다).
-        if {"timing", "live_new"} & set(_arm_terms):
+        if {"timing", "timing2", "live_new"} & set(_arm_terms):
             _m = _cdr.parse_meta(text, _cdr.ARM_SPECS[arm]["meta_form"])
             _resp_pre_meta = text[: int(_m["start"])] if _m.get("start") is not None else text
             _oracle = _cds.oracle_for_site(prefix_i + _resp_pre_meta, nums_col[i], int(target_col[i]))

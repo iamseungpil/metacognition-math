@@ -55,7 +55,12 @@ def running_lineages() -> set[str]:
         if m:
             arm, seed, _steps, variant = m.groups()
             eff = "plain" if arm == "N0" else variant
-            suffix = "_mixed" if arm in ("M0", "MT") else ""   # run_arm.sh 의 data_hint=mixed 계보 접미사
+            # run_arm.sh 의 data_hint=mixed 계보 접미사 — ARM_SPECS[arm]["data_hint"]=="mixed"
+            # 인 팔이면 전부 이 접미사가 붙는다(run_arm.sh 의 DATA_HINT 분기와 동일 규약).
+            # 여기서 매번 import 하지 않고 명시 목록으로 고정한다(ARM_SPECS 를 이 경량
+            # 사이드카가 매 폴링마다 다시 import 하게 만들지 않기 위해서다 — OPT_MT2 는
+            # 2026-09-06 추가, 나머지는 기존과 동일).
+            suffix = "_mixed" if arm in ("M0", "MT", "OPT_M", "OPT_MT", "OPT_MTC", "OPT_MT2") else ""
             out.add(f"cd7_{arm}_{eff}_s{seed}{suffix}")
     return out
 

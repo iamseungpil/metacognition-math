@@ -46,3 +46,19 @@
 
 ## 6. 자원
 GPU 0·1·2 각 한 팔(M0·MT·FT). 판정 자리 이어쓰기는 사이드카가 판정 지점마다 큐에 넣는다(`gen_continuations.py --sites sites_judge --modes meta --k 16`). MR 은 자 표 합격 시 첫 팔 완료 후 발사.
+
+## 7. 개정 — timing2 / OPT_MT2 (2026-09-06)
+
+`docs/RESULTS_cd7.md`("OPT_MT v3 s1(pre-fix) 스텝 100"): `timing` 항은 `family_dead is
+None`(아직 시도가 없다 — 판정 불가)일 때 항상 0 이라, 정책이 스텝 100 께 응답 첫
+토큰부터 redirect 메타를 ~100%로 내는 무효 레버를 팠다(비용 0, 운 좋으면 +1). 신규 항
+`timing2`(=`r_timing2`)는 이 한 칸만 고친다: `family_dead is None ∧ redirect → −1`
+(계열 생존 중 redirect 와 같은 벌), `family_dead is None ∧ ¬redirect → 0`(변화 없음).
+나머지 다섯 칸은 `timing` 과 바이트 동일. `timing`/`OPT_MT` 는 손대지 않는다 — 새 팔
+`OPT_MT2`(=OPT_MT 의 timing→timing2 치환, 그 외 동일)로만 이 수정을 싣는다.
+
+판정: 1차/2차/3차 지표는 위 §3 과 동일선상(같은 자리표, 같은 held-out). Positive =
+같은 자리(사이트) 정합 지표가 OPT_MT s1 스텝 50 (0.647) − 1pp 이상이면서, 스텝 100의
+`frac_meta_first`(응답 첫 토큰 메타 비율)가 0.2 미만 **그리고** held-out 발화율이 0.5
+미만으로 유지될 때. 어느 한쪽이 깨지면(정합 하락 또는 여전히 첫 토큰 메타 지배) 착취가
+형태만 바꿨다고 읽고 기각.
