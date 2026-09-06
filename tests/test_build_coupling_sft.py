@@ -25,18 +25,27 @@ sys.path.insert(0, str(ROOT))
 
 from scripts.local.build_coupling_sft import (  # noqa: E402
     build_sft_row, cap_per_key, compute_site_gain_ok, compute_site_success_rate,
+    continuation_mentions_hint, meta_before_solve_ok, meta_text_is_template,
     row_passes_filters, summarize_stages,
 )
 
+# 0907 감사(세 오염 수리) 이후 기본(clean) full_text — 힌트 언급 없음, 메타는 실제
+# 판단 문장(템플릿 아님), </meta> 뒤에 시도 등식이 있고 그 앞에는 "이미 풀렸다" 신호가
+# 없다. 세 새 필터가 기본 True 로 켜져도 기존(pre-0907) 스테이지 테스트들이 여전히
+# 통과하도록 이 문자열을 모든 기존 테스트의 기본값으로 쓴다.
+_CLEAN_FULL_TEXT = ("PREFIX. 5+3=8, too low.\n<meta>\nconfidence: 0.4\nThe additive family "
+                    "keeps landing short, so it may not be worth continuing.\n"
+                    "decision: verify\n</meta>\n9-1=8\n\\boxed{9-1}")
+
 
 def _cont_row(site_id="s1", *, r_corr=1, emitted=1, novel=1, followed=1, truncated=0,
-             decision="redirect", mode="hint", k_index=0, full_text="PREFIX. cont",
-             n_tokens=10):
+             decision="redirect", mode="hint", k_index=0, full_text=_CLEAN_FULL_TEXT,
+             n_tokens=10, prefix="PREFIX. ", target=None):
     return {
         "site_id": site_id, "mode": mode, "k_index": k_index, "r_corr": r_corr,
         "emitted": emitted, "novel": novel, "followed": followed, "truncated": truncated,
         "decision": decision, "full_text": full_text, "hint_text": "Hint: ...",
-        "n_tokens": n_tokens,
+        "n_tokens": n_tokens, "prefix": prefix, "target": target,
     }
 
 
@@ -287,3 +296,131 @@ def test_summarize_stages_redirect_share():
     ]
     summ = summarize_stages(rows, require_redirect_for_dead=False)
     assert summ["redirect_share"] == pytest.approx(2 / 3)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 0907 감사 — 오염① no_hint_mention: continuation_mentions_hint / 필터 배선
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_continuation_mentions_hint_detects_the_word():
+    assert continuation_mentions_hint("as the hint suggests, try 9-1", "Hint: try 9 minus 1.")
+    assert continuation_mentions_hint("Hinted at nothing new here", None)
+    assert not continuation_mentions_hint("try 9-1=8 next", "Hint: try 9 minus 1.")
+
+
+def test_continuation_mentions_hint_detects_verbatim_hint_sentence():
+    hint_text = "Try subtracting one from nine first. Then add the rest."
+    assert continuation_mentions_hint(
+        "So I will do this: Try subtracting one from nine first.", hint_text)
+    assert not continuation_mentions_hint("So I will try something else entirely.", hint_text)
+    # too-short fragments don't count as a verbatim match (accidental overlap risk)
+    assert not continuation_mentions_hint("Then.", "Then.")
+
+
+def test_row_passes_filters_no_hint_mention_stage():
+    bad_text = ("PREFIX. as the hint suggests, 9-1=8\n<meta>\nconfidence: 0.4\n"
+                "This looks promising.\ndecision: verify\n</meta>\n5+3=8\n\\boxed{5+3}")
+    row = {**_cont_row(full_text=bad_text), "family_dead": 0}
+    ok, stage = row_passes_filters(row, require_redirect_for_dead=False)
+    assert ok is False and stage == "no_hint_mention"
+
+    ok2, stage2 = row_passes_filters(
+        row, require_redirect_for_dead=False, require_no_hint_mention=False)
+    assert ok2 is True and stage2 == ""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 0907 감사 — 오염② no_template_meta: meta_text_is_template / 필터 배선
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_meta_text_is_template_detects_literal_instruction_phrases():
+    assert meta_text_is_template(
+        "<meta>\nconfidence: 0.4\nOne or two sentences judging your own approach so far.\n"
+        "decision: verify\n</meta>")
+    assert meta_text_is_template("<meta>\nconfidence: X\ngood\ndecision: verify\n</meta>")
+    assert not meta_text_is_template(
+        "<meta>\nconfidence: 0.4\nThe multiply-first family keeps overshooting badly.\n"
+        "decision: redirect\n</meta>")
+
+
+def test_meta_text_is_template_detects_six_word_verbatim_copy():
+    copied = ("<meta>\nconfidence: 0.5\nWhich family of groupings you are exploring, and "
+              "whether that family is worth continuing here.\ndecision: verify\n</meta>")
+    assert meta_text_is_template(copied)
+
+
+def test_row_passes_filters_no_template_meta_stage():
+    bad_text = ("PREFIX. 5+3=8.\n<meta>\nconfidence: X\njudging your own approach so far\n"
+                "decision: verify\n</meta>\n9-1=8\n\\boxed{9-1}")
+    row = {**_cont_row(full_text=bad_text), "family_dead": 0}
+    ok, stage = row_passes_filters(row, require_redirect_for_dead=False)
+    assert ok is False and stage == "no_template_meta"
+
+    ok2, stage2 = row_passes_filters(
+        row, require_redirect_for_dead=False, require_no_template_meta=False)
+    assert ok2 is True and stage2 == ""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 0907 감사 — 오염③ meta_before_solve: meta_before_solve_ok / 필터 배선
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_meta_before_solve_ok_requires_attempt_between_meta_and_boxed():
+    good = "PREFIX. <meta>\nconfidence: 0.4\ngood\ndecision: verify\n</meta>\n9-1=8\n\\boxed{9-1}"
+    assert meta_before_solve_ok(good, target=10)
+
+    no_attempt = "PREFIX. <meta>\nconfidence: 0.4\ngood\ndecision: verify\n</meta>\n\\boxed{9-1}"
+    assert not meta_before_solve_ok(no_attempt, target=10)
+
+    no_meta = "PREFIX. 9-1=8\n\\boxed{9-1}"
+    assert not meta_before_solve_ok(no_meta, target=10)
+
+
+def test_meta_before_solve_ok_rejects_post_solve_meta():
+    # target(10) already reached in an equation BEFORE </meta> -> trailing verify, not a redirect
+    already_hit_target = ("PREFIX. 9+1=10. <meta>\nconfidence: 0.9\ngood\n"
+                          "decision: verify\n</meta>\n9+1=10\n\\boxed{9+1}")
+    assert not meta_before_solve_ok(already_hit_target, target=10)
+
+    # "works" signals the line before the meta already solved it, regardless of target
+    already_worked = ("PREFIX. 4*3=12, close. This works! <meta>\nconfidence: 0.9\ngood\n"
+                      "decision: verify\n</meta>\n4*3=12\n\\boxed{4*3}")
+    assert not meta_before_solve_ok(already_worked, target=12)
+
+
+def test_row_passes_filters_meta_before_solve_stage():
+    bad_text = "PREFIX. <meta>\nconfidence: 0.4\ngood\ndecision: verify\n</meta>\n\\boxed{5+3}"
+    row = {**_cont_row(full_text=bad_text), "family_dead": 0}
+    ok, stage = row_passes_filters(row, require_redirect_for_dead=False)
+    assert ok is False and stage == "meta_before_solve"
+
+    ok2, stage2 = row_passes_filters(
+        row, require_redirect_for_dead=False, require_meta_before_solve=False)
+    assert ok2 is True and stage2 == ""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 0907 감사 — summarize_stages 배선 + 전부 끄면 v1 이전 동작과 동일
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_summarize_stages_counts_new_pollution_stages():
+    bad_hint_text = ("PREFIX. hint says try 9-1.\n<meta>\nconfidence: 0.4\ngood\n"
+                     "decision: verify\n</meta>\n5+3=8\n\\boxed{5+3}")
+    rows = [
+        {**_cont_row(site_id="s1"), "family_dead": 0},                          # clean, passes
+        {**_cont_row(site_id="s2", full_text=bad_hint_text), "family_dead": 0},  # dies at no_hint_mention
+    ]
+    summ = summarize_stages(rows, require_redirect_for_dead=False)
+    assert summ["kept_by_stage"]["no_hint_mention"] == 1
+    assert summ["final_kept"] == 1
+
+
+def test_all_three_new_filters_disabled_matches_pre_0907_behavior():
+    contaminated = ("PREFIX. hint says try 9-1.\n<meta>\nconfidence: X\n"
+                    "judging your own approach so far\ndecision: verify\n</meta>\n\\boxed{5+3}")
+    row = {**_cont_row(full_text=contaminated), "family_dead": 0}
+    ok, stage = row_passes_filters(
+        row, require_redirect_for_dead=False,
+        require_no_hint_mention=False, require_no_template_meta=False,
+        require_meta_before_solve=False)
+    assert ok is True and stage == ""

@@ -1,0 +1,46 @@
+# coupling_sft_v2 — v1 과 같은 결합("메타(힌트) → 구체적으로 다른 다음 수 → 정답")을
+# 가르치지만, 0907 감사에서 나온 세 오염을 걷어낸 corpus 로 다시 뽑았다
+# (`scripts/local/build_coupling_sft.py` 신규 필터: no_hint_mention·no_template_meta·
+# meta_before_solve, 기본 켜짐). v1(834행)의 119행은 힌트를 직접 언급했고(학생은
+# 힌트 없이 배우므로 재현 불가능한 근거), 38행은 메타가 프롬프트 지시문 템플릿을
+# 그대로 베낀 placeholder였고, 다수가 이미 푼 뒤에 붙는 사후 검산이었다(막힌 지점에서
+# 방향을 트는 것을 가르치지 못함). 세 필터를 다 켠 채로 v1 과 같은 커맨드
+# (`--min_site_gain 0.1 --no_require_novel --no_require_followed --max_per_site 3
+# --max_per_problem 6`)를 돌리면 45,504 힌트 이어쓰기 중 267행/147 site 만 남는다
+# (오염 필터가 6,856(emitted)행을 637행까지 줄인 게 지배적 병목 — meta_before_solve
+# 하나가 6,444 → 637). --min_site_gain 0.05 로 완화하면 381행/237 site
+# (data/sites_v1/coupling_sft_v2r.parquet) — 300행에 못 미치면 이쪽을 쓴다.
+#
+# wrong_prefix/scenario="redirect" 라 sft.py 가 자동으로 (원 프롬프트 + 학생의
+# flawed prefix) 를 loss-mask 하고 메타+구체 수+정답만 학습하게 만든다
+# (src/training/sft.py::_should_mask_prefix).
+#
+# init: $WORK/models/Qwen3-4B (countdown RL 이 쓰는 것과 같은 base — run_arm.sh 의
+# actor_rollout_ref.model.path 와 동일 모델). SFT2 스타일 배치(bs1 x ga4 x 4gpu=16)를
+# 1-GPU 로 재현하려면 ga=16 (accelerate_sft_1gpu_cpuoff.yaml 은 num_processes=1).
+model_name_or_path: /hdd_data/seungpil/scratch/models/Qwen3-4B
+dataset_path: /hdd_data/seungpil/scratch/data/sites_v1/coupling_sft_v2.parquet
+output_dir: /hdd_data/seungpil/scratch/models/coupling_sft_v2   # ABSOLUTE (0708 stranded-ckpt guard)
+run_name: coupling-sft-v2
+wandb_project: metacot-countdown-local
+
+num_train_epochs: 3   # v2 는 267행 (<500) — v1(834행, 2ep)보다 한 epoch 더
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 16   # x num_processes=1 (1gpu cpuoff) = effective batch 16
+learning_rate: 1.0e-5
+max_length: 3072
+save_strategy: steps
+save_steps: 25
+save_total_limit: 2
+eval_strategy: "no"
+
+# Preemption survival: on a resubmission that lands on a node where output_dir
+# still holds checkpoint-*, resume from the newest COMPLETE one (sft.py
+# _resolve_resume_checkpoint). On a first/fresh node the dir is absent and this
+# degrades silently to a normal cold start, so the SAME config is correct for
+# both the first submission and every relaunch.
+
+# accelerate_sft_1gpu_cpuoff.yaml sets deepspeed zero3_save_16bit_model: true,
+# so trainer.save_model(output_dir) in src/training/sft.py:run_sft already
+# writes MERGED bf16 safetensors (not per-rank shards) + tokenizer.save_pretrained
+# alongside it — no separate merge step needed (unlike verl's FSDP checkpoints).

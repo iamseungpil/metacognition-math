@@ -50,6 +50,7 @@ r"""CLI — hint 모드 이어쓰기(Task A `gen_continuations.py --modes hint` 
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 from typing import Mapping, Optional, Sequence
@@ -61,9 +62,139 @@ sys.path.insert(0, str(REPO_ROOT))
 # "prefix 그대로"라는 불변식이 깨지면(예: 나중에 다른 사람이 hint 모드도 donor 처럼
 # 뭔가를 덧붙이게 바꾸면) 여기서 즉시 어긋난다(복제 대신 재사용 — 규약).
 from scripts.local.gen_continuations import build_fed_prefix_text  # noqa: E402
+# 0907 감사(세 오염 수리) — `_ARITH_EQ`/`parse_meta` 는 이미 있는 파서를 그대로 쓴다
+# (복제 금지 규약). 새 정규식은 hint 언급·템플릿 문구 탐지처럼 이 파일 고유의 것만 만든다.
+from src.training.countdown_selfcontrol import _ARITH_EQ  # noqa: E402
+from src.training.countdown_rewards import parse_meta  # noqa: E402
 
 FILTER_STAGES = ("mode_hint", "r_corr", "emitted", "novel", "followed", "not_truncated",
+                 "no_hint_mention", "no_template_meta", "meta_before_solve",
                  "site_gain", "redirect_for_dead")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 0907 감사 — 세 오염 필터 (독립적 순수 함수, dict 없이 텍스트만으로 테스트 가능)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_HINT_WORD_RE = re.compile(r"\bhint(s|ed)?\b", re.IGNORECASE)
+
+
+def continuation_mentions_hint(continuation: str, hint_text: Optional[str]) -> bool:
+    r"""오염①: continuation(사이트 프리픽스 **이후** 텍스트)이 힌트를 언급하는가.
+
+    학생은 힌트 **없이** 학습되므로, 이어쓰기가 "as the hint suggests…"처럼 힌트
+    자체를 참조하면 학생이 재현할 수 없는 근거를 배운다. 두 신호를 본다:
+      (1) "hint"/"hints"/"hinted" 단어 자체(대소문자 무관).
+      (2) `hint_text` 의 문장 중 하나라도 continuation 안에 축자로 나타나는가
+          (학생이 힌트 문장을 그대로 베껴 썼다는 뜻). 8자 미만의 조각은 우연 일치
+          위험이 커서 건너뛴다.
+    """
+    continuation = continuation or ""
+    if _HINT_WORD_RE.search(continuation):
+        return True
+    hint_text = hint_text or ""
+    for sent in re.split(r"(?<=[.!?])\s+", hint_text):
+        sent = sent.strip()
+        if len(sent) >= 8 and sent in continuation:
+            return True
+    return False
+
+
+# 오염② — `src/training/countdown_task.py::SOLVE_SYS_NEW` 의 메타 지시문 문단에서
+# 뽑은 리터럴 문구. 학생이 이 지시문 자체를 베껴 "판단"인 척한 경우를 잡는다.
+_TEMPLATE_PHRASES = (
+    "one or two sentences",
+    "judging your own approach",
+    "<confidence>",
+)
+_CONF_PLACEHOLDER_RE = re.compile(r"confidence\s*:\s*x\b", re.IGNORECASE)
+
+# SOLVE_SYS_NEW 의 메타 판단 문단 원문(구두점을 단어 경계로만 씀 — 6-gram 비교는
+# 단어 시퀀스만 본다). 이 문단과 6단어 이상 축자로 겹치면 지시문을 복사한 것으로 본다.
+_META_INSTRUCTION_TEXT = (
+    "One or two sentences judging YOUR OWN APPROACH so far which family of "
+    "groupings you are exploring and whether that family is worth continuing "
+    "Do NOT do arithmetic in here no expressions no equalities no combining "
+    "of numbers no candidate answer Assess the approach do not solve the puzzle"
+)
+
+
+def _word_ngrams(text: str, n: int) -> set:
+    words = re.findall(r"[a-z0-9']+", (text or "").lower())
+    if len(words) < n:
+        return set()
+    return {tuple(words[i:i + n]) for i in range(len(words) - n + 1)}
+
+
+_META_INSTR_6GRAMS = _word_ngrams(_META_INSTRUCTION_TEXT, 6)
+
+
+def meta_text_is_template(meta_text: str) -> bool:
+    r"""오염②: `meta_text`(<meta>...</meta> 블록 원문)가 프롬프트의 지시문 템플릿을
+    그대로 베낀 placeholder 인가(실제 판단이 아니라).
+
+    세 신호: 리터럴 문구 포함, `confidence: x` 형태의 placeholder, 그리고 지시문
+    문단과 6단어 이상 연속으로 축자 일치.
+    """
+    t = meta_text or ""
+    low = t.lower()
+    for phrase in _TEMPLATE_PHRASES:
+        if phrase in low:
+            return True
+    if _CONF_PLACEHOLDER_RE.search(low):
+        return True
+    if _word_ngrams(t, 6) & _META_INSTR_6GRAMS:
+        return True
+    return False
+
+
+def meta_before_solve_ok(full_text: str, target=None) -> bool:
+    r"""오염③: 메타가 "막힌 지점"에서 다음 수를 트는 역할을 하는가, 아니면 이미
+    푼 뒤에 붙는 사후 검산인가.
+
+    통과 조건: `</meta>` 뒤 마지막 `\boxed{` 앞 구간에 산술 시도(등식, `_ARITH_EQ`
+    재사용)가 최소 1개 있고, `</meta>` **앞** 텍스트에 이미 정답에 도달했다는 신호
+    (문자열 "works", 또는 `= <target>`)가 없다. 메타가 아예 없으면(끝 오프셋 없음)
+    탈락 — "메타 뒤에 시도가 있다"를 확인할 경계 자체가 없기 때문이다.
+    """
+    text = full_text or ""
+    m = parse_meta(text, "new")
+    end = m.get("end")
+    if end is None:
+        return False
+    end = int(end)
+    boxed_idx = text.rfind("\\boxed{")   # post_meta_checked 와 같은 관례: 마지막 boxed.
+    if boxed_idx < 0 or boxed_idx <= end:
+        return False
+    between = text[end:boxed_idx]
+    if not _ARITH_EQ.search(between):
+        return False
+    before = text[:end]
+    if "works" in before.lower():
+        return False
+    if target is not None:
+        tgt_str = str(int(target)) if isinstance(target, (int, float)) else str(target)
+        if re.search(r"=\s*" + re.escape(tgt_str) + r"\b", before):
+            return False
+    return True
+
+
+def _row_continuation(row: Mapping) -> str:
+    """`row["full_text"]` 에서 site prefix(`row.get("prefix")`)를 뗀 나머지.
+
+    `prefix` 가 없거나 `full_text` 가 그걸로 시작하지 않으면(합성 테스트 행처럼
+    prefix 를 안 붙였을 때) 방어적으로 `full_text` 전체를 continuation 으로 본다."""
+    full_text = row.get("full_text") or ""
+    prefix = row.get("prefix")
+    if prefix and full_text.startswith(prefix):
+        return full_text[len(prefix):]
+    return full_text
+
+
+def _row_meta_raw(row: Mapping) -> str:
+    full_text = row.get("full_text") or ""
+    m = parse_meta(full_text, "new")
+    return m.get("raw") or ""
 
 
 def _is_dead(family_dead) -> bool:
@@ -122,7 +253,10 @@ def compute_site_gain_ok(hint_rates: Mapping[str, float], baseline_rates: Mappin
 
 def row_passes_filters(row: Mapping, *, require_redirect_for_dead: bool,
                         require_novel: bool = True, require_followed: bool = True,
-                        site_gain_ok: Optional[Mapping[str, bool]] = None) -> tuple[bool, str]:
+                        site_gain_ok: Optional[Mapping[str, bool]] = None,
+                        require_no_hint_mention: bool = True,
+                        require_no_template_meta: bool = True,
+                        require_meta_before_solve: bool = True) -> tuple[bool, str]:
     """행 하나가 필터를 통과하는가. (통과여부, 실패한 첫 단계 이름) — 통과하면
     두번째 값은 `""`.
 
@@ -131,6 +265,12 @@ def row_passes_filters(row: Mapping, *, require_redirect_for_dead: bool,
     끄면 해당 단계를 건너뛴다(기본은 기존 동작과 바이트 동일하게 True).
     `site_gain_ok` 를 주면(= `--min_site_gain` 사용) site 가 그 매핑에서 True 여야
     통과한다 — 매핑에 없거나 값이 False 면 탈락.
+
+    0907 감사(세 오염 수리) — `require_no_hint_mention`/`require_no_template_meta`/
+    `require_meta_before_solve` (기본 전부 True) 가 각각 continuation 의 힌트
+    언급, 메타의 템플릿 placeholder, 메타-뒤-시도 순서를 검사한다. 셋 다 끄면
+    (`--allow_hint_mentions`/`--allow_template_meta`/`--allow_post_solve_meta`)
+    v1 이전 동작과 바이트 동일하다.
     """
     if row.get("mode") != "hint":
         return False, "mode_hint"
@@ -144,6 +284,14 @@ def row_passes_filters(row: Mapping, *, require_redirect_for_dead: bool,
         return False, "followed"
     if int(row.get("truncated") or 0) != 0:
         return False, "not_truncated"
+    if require_no_hint_mention and continuation_mentions_hint(
+            _row_continuation(row), row.get("hint_text")):
+        return False, "no_hint_mention"
+    if require_no_template_meta and meta_text_is_template(_row_meta_raw(row)):
+        return False, "no_template_meta"
+    if require_meta_before_solve and not meta_before_solve_ok(
+            row.get("full_text"), row.get("target")):
+        return False, "meta_before_solve"
     if site_gain_ok is not None and not site_gain_ok.get(row.get("site_id"), False):
         return False, "site_gain"
     if require_redirect_for_dead:
@@ -226,7 +374,10 @@ def build_sft_row(cont_row: Mapping, site_row: Mapping) -> dict:
 
 def summarize_stages(rows: Sequence[Mapping], *, require_redirect_for_dead: bool,
                       require_novel: bool = True, require_followed: bool = True,
-                      site_gain_ok: Optional[Mapping[str, bool]] = None) -> dict:
+                      site_gain_ok: Optional[Mapping[str, bool]] = None,
+                      require_no_hint_mention: bool = True,
+                      require_no_template_meta: bool = True,
+                      require_meta_before_solve: bool = True) -> dict:
     """단계별 kept/total (누적 통과), family_dead 별 최종 kept 분포, 최종 kept 의
     평균 n_tokens, redirect 비중."""
     total = len(rows)
@@ -242,6 +393,16 @@ def summarize_stages(rows: Sequence[Mapping], *, require_redirect_for_dead: bool
     if require_followed:
         checks.append(("followed", lambda r: int(r.get("followed") or 0) == 1))
     checks.append(("not_truncated", lambda r: int(r.get("truncated") or 0) == 0))
+    if require_no_hint_mention:
+        checks.append(("no_hint_mention",
+                       lambda r: not continuation_mentions_hint(
+                           _row_continuation(r), r.get("hint_text"))))
+    if require_no_template_meta:
+        checks.append(("no_template_meta",
+                       lambda r: not meta_text_is_template(_row_meta_raw(r))))
+    if require_meta_before_solve:
+        checks.append(("meta_before_solve",
+                       lambda r: meta_before_solve_ok(r.get("full_text"), r.get("target"))))
     if site_gain_ok is not None:
         checks.append(("site_gain", lambda r: bool(site_gain_ok.get(r.get("site_id"), False))))
     if require_redirect_for_dead:
@@ -302,6 +463,15 @@ def parse_args() -> argparse.Namespace:
                     help="novel==1 필터를 끈다(기본은 켜짐 — 기존 동작과 동일)")
     ap.add_argument("--no_require_followed", action="store_true",
                     help="followed==1 필터를 끈다(기본은 켜짐 — 기존 동작과 동일)")
+    ap.add_argument("--allow_hint_mentions", action="store_true",
+                    help="0907 감사(오염①) — continuation 이 'hint' 를 언급하거나 "
+                         "hint_text 문장을 축자 인용해도 남긴다(기본은 걸러냄, v1 이전 동작).")
+    ap.add_argument("--allow_template_meta", action="store_true",
+                    help="0907 감사(오염②) — 메타가 프롬프트 지시문 템플릿의 placeholder "
+                         "여도 남긴다(기본은 걸러냄, v1 이전 동작).")
+    ap.add_argument("--allow_post_solve_meta", action="store_true",
+                    help="0907 감사(오염③) — 메타가 이미 푼 뒤의 사후 검산이어도, 또는 "
+                         "메타 뒤에 시도 등식이 없어도 남긴다(기본은 걸러냄, v1 이전 동작).")
     args = ap.parse_args()
     if args.min_site_gain is not None and not args.baseline_conts:
         ap.error("--min_site_gain 은 --baseline_conts 없이는 쓸 수 없다.")
@@ -318,10 +488,19 @@ def main() -> None:
 
     all_rows = cont_df.to_dict(orient="records")
     for r in all_rows:
-        r["family_dead"] = site_lookup.get(r.get("site_id"), {}).get("family_dead")
+        site_info = site_lookup.get(r.get("site_id"), {})
+        r["family_dead"] = site_info.get("family_dead")
+        # 0907 감사(세 오염 수리) 용 — no_hint_mention 은 prefix 를 알아야 continuation
+        # 을 뗄 수 있고, meta_before_solve 는 target 을 알아야 "이미 정답에 도달했다"
+        # 신호(= <target>)를 판정할 수 있다.
+        r["prefix"] = site_info.get("prefix")
+        r["target"] = site_info.get("target")
 
     require_novel = not args.no_require_novel
     require_followed = not args.no_require_followed
+    require_no_hint_mention = not args.allow_hint_mentions
+    require_no_template_meta = not args.allow_template_meta
+    require_meta_before_solve = not args.allow_post_solve_meta
 
     site_gain_ok = None
     if args.min_site_gain is not None:
@@ -341,14 +520,20 @@ def main() -> None:
     summary = summarize_stages(
         all_rows, require_redirect_for_dead=args.require_redirect_for_dead,
         require_novel=require_novel, require_followed=require_followed,
-        site_gain_ok=site_gain_ok)
+        site_gain_ok=site_gain_ok,
+        require_no_hint_mention=require_no_hint_mention,
+        require_no_template_meta=require_no_template_meta,
+        require_meta_before_solve=require_meta_before_solve)
 
     kept = []
     for r in all_rows:
         ok, _ = row_passes_filters(
             r, require_redirect_for_dead=args.require_redirect_for_dead,
             require_novel=require_novel, require_followed=require_followed,
-            site_gain_ok=site_gain_ok)
+            site_gain_ok=site_gain_ok,
+            require_no_hint_mention=require_no_hint_mention,
+            require_no_template_meta=require_no_template_meta,
+            require_meta_before_solve=require_meta_before_solve)
         if ok:
             kept.append(r)
     kept.sort(key=lambda r: (r["site_id"], int(r.get("k_index") or 0)))
@@ -379,6 +564,40 @@ def main() -> None:
     summary["after_caps_redirect_share"] = final_redirect_share
     summary["after_caps_mean_n_tokens"] = (sum(r.get("n_tokens") or 0 for r in sft_rows) / len(sft_rows)
                                             if sft_rows else float("nan"))
+    summary["require_no_hint_mention"] = require_no_hint_mention
+    summary["require_no_template_meta"] = require_no_template_meta
+    summary["require_meta_before_solve"] = require_meta_before_solve
+
+    # 0907 감사 — 최종(after_caps) 셋의 decision 분포와 메타 위치(continuation 안
+    # 문자 오프셋 / continuation 길이) 분포. `kept`(cap 이전 dict, full_text/prefix
+    # 보유) 로 계산한다 — `sft_rows` 에는 이미 prefix 가 안 남는다(wrong_prefix 로만).
+    decision_counts: dict = {}
+    for r in kept:
+        d = r.get("decision") or "none"
+        decision_counts[d] = decision_counts.get(d, 0) + 1
+    summary["after_caps_decision_counts"] = decision_counts
+
+    meta_fracs = []
+    for r in kept:
+        full_text = r.get("full_text") or ""
+        prefix = r.get("prefix") or ""
+        continuation = full_text[len(prefix):] if full_text.startswith(prefix) else full_text
+        m = parse_meta(continuation, "new")
+        start = m.get("start")
+        if start is not None and len(continuation) > 0:
+            meta_fracs.append(int(start) / len(continuation))
+    if meta_fracs:
+        meta_fracs_sorted = sorted(meta_fracs)
+        n = len(meta_fracs_sorted)
+        summary["after_caps_meta_position_frac"] = {
+            "n": n,
+            "mean": sum(meta_fracs_sorted) / n,
+            "median": meta_fracs_sorted[n // 2],
+            "min": meta_fracs_sorted[0],
+            "max": meta_fracs_sorted[-1],
+        }
+    else:
+        summary["after_caps_meta_position_frac"] = {"n": 0}
     summary["out_path"] = str(out_path)
 
     print(f"[build_coupling_sft] {summary['total_rows']} input rows -> "
@@ -392,6 +611,9 @@ def main() -> None:
     print(f"n_sites_after_caps: {summary['n_sites_after_caps']}")
     print(f"after_caps redirect_share: {summary['after_caps_redirect_share']:.3f}  "
           f"mean_n_tokens: {summary['after_caps_mean_n_tokens']:.1f}")
+    print(f"after_caps decision_counts: {summary['after_caps_decision_counts']}")
+    print(f"after_caps meta_position_frac (chars into continuation / len): "
+          f"{summary['after_caps_meta_position_frac']}")
     print(f"wrote {len(sft_rows)} rows -> {out_path}")
 
 
