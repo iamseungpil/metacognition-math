@@ -94,13 +94,13 @@ def check_template_roundtrip(work: Path) -> dict:
     return result
 
 
-def collect_all_sites(work: Path, seed: int) -> list[dict]:
+def collect_all_sites(work: Path, seed: int, rollout_sources=None) -> list[dict]:
     """세 소스 전부를 훑어 site 후보 전부를 뽑는다. (nums,target,prefix) 로 전역 중복 제거."""
     seen: set[tuple] = set()
     sites: list[dict] = []
     n_incomplete_meta_skipped = 0
     n_no_boundary = 0
-    for source, relpath in ROLLOUT_SOURCES:
+    for source, relpath in (rollout_sources or ROLLOUT_SOURCES):
         path = work / relpath
         rows = _load_jsonl(path)
         for ridx, row in enumerate(rows):
@@ -264,6 +264,19 @@ def build_mixed_train(work: Path, site_rows: list[dict], seed: int,
     return mixed
 
 
+def _parse_rollouts(spec):
+    """'tag=relpath,tag2=relpath2' → [(tag, relpath), ...]; None 이면 None(기본 목록)."""
+    if not spec:
+        return None
+    out = []
+    for item in spec.split(","):
+        tag, _, rel = item.partition("=")
+        if not tag or not rel:
+            raise ValueError(f"--rollouts 항목 형식 오류: {item!r} (tag=relpath)")
+        out.append((tag.strip(), rel.strip()))
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out_dir", required=True)
@@ -275,6 +288,9 @@ def main():
     ap.add_argument("--max_sites_per_problem_judge", type=int, default=8,
                     help="judge 문제 하나가 최대 몇 개의 site 를 낼 수 있나 (0904 수리)")
     ap.add_argument("--work", default=None, help="WORK 루트 (기본: $WORK 환경변수)")
+    ap.add_argument("--rollouts", default=None,
+                    help="롤아웃 출처 덮어쓰기: 'tag=eval/.../texts.jsonl,tag2=...' (기본 ROLLOUT_SOURCES — 4수). "
+                         "5수 자리 빌드 시 gs0_5num=eval/gs0_5num_opt_train/texts.jsonl 처럼 준다.")
     ap.add_argument("--max_prompt_tokens", type=int, default=1900,
                     help="E-131: 렌더링 후 프롬프트 토큰 상한(학습 max_prompt_length 2048 보다 넉넉히 아래)")
     ap.add_argument("--train_parquet", default=TRAIN_PARQUET,
@@ -290,7 +306,7 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print("[1/5] 롤아웃 세 소스에서 site 후보 수집 중...", flush=True)
-    sites, extract_stats = collect_all_sites(work, args.seed)
+    sites, extract_stats = collect_all_sites(work, args.seed, rollout_sources=_parse_rollouts(args.rollouts))
     print(f"  후보 site {len(sites)}개 (own-meta 스킵 {extract_stats['n_incomplete_meta_skipped']}, "
           f"boundary 없음 {extract_stats['n_no_boundary']})")
 
