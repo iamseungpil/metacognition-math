@@ -64,6 +64,16 @@ SEED="${2:?SEED required}"
 STEPS="${3:-100}"
 VARIANT_ARG="${4:-p3}"
 
+# ── RESP_LEN (0906, OPT_MT-L): 응답 길이 예산 knob. 기본 2048 = 지금까지와 바이트
+#    동일(고정 자리 mixed 분기의 기존 하드코딩 값). OPT_MT 계열은 메모 뒤 재시도가
+#    길어져 응답의 31~38% 가 잘린다(docs/RESULTS_cd7.md OPT_MT-L 절) — 잘림이
+#    held-out 손실의 원인인지 직접 검사하려면 예산만 키운 짝 실험이 필요하다.
+#    명시적으로 설정됐는지(값이 아니라 존재 여부)를 RESP_LEN_SET 로 따로 기억해
+#    둔다 — non-mixed 분기는 "건드리지 않음"이 기본이고, 사용자가 RESP_LEN 을
+#    직접 준 경우에만 그쪽에도 유사한 override 를 적용한다.
+if [ -n "${RESP_LEN+x}" ]; then RESP_LEN_SET=1; else RESP_LEN_SET=0; fi
+RESP_LEN="${RESP_LEN:-2048}"
+
 # shellcheck disable=SC1091
 source "${_SCRIPT_DIR}/env.sh"
 cd "${REPO_ROOT}"
@@ -107,10 +117,14 @@ from src.training.countdown_rewards import ARM_SPECS
 print(ARM_SPECS['${ARM}'].get('data_hint', 'normal'))
 ")
 
+LINEAGE="cd7_${ARM}_${DATA_VARIANT}_s${SEED}"
 if [ "${DATA_HINT}" = "mixed" ]; then
-  LINEAGE="cd7_${ARM}_${DATA_VARIANT}_s${SEED}_mixed"
-else
-  LINEAGE="cd7_${ARM}_${DATA_VARIANT}_s${SEED}"
+  LINEAGE="${LINEAGE}_mixed"
+fi
+# ★RESP_LEN suffix는 _mixed 뒤에 붙인다 — 값이 기본(2048)과 다를 때만, 체크포인트/
+#   merged/eval/logs 가 2048 계보와 절대 충돌하지 않게.
+if [ "${RESP_LEN}" != "2048" ]; then
+  LINEAGE="${LINEAGE}_r${RESP_LEN}"
 fi
 CONFIG_NAME="${CONFIG_NAME:-countdown_6arm}"
 if [ "${DATA_HINT}" = "mixed" ]; then
@@ -135,14 +149,25 @@ LOG_FILE="${WORK}/logs/${LINEAGE}.log"
 #    경로는 이 분기가 없어도 원래 기본값 그대로다).
 if [ "${DATA_HINT}" = "mixed" ]; then
   MAX_PROMPT="${MAX_PROMPT:-2048}"
-  MAX_RESP="${MAX_RESP:-2048}"
-  MAX_MODEL_LEN="${MAX_MODEL_LEN:-4352}"
-  MAX_BATCHED_TOKENS="${MAX_BATCHED_TOKENS:-4352}"
+  # ★RESP_LEN(0906): 기본값 2048 이면 이 세 줄은 예전 하드코딩(2048/4352/4352)과
+  #   바이트 동일하다. RESP_LEN 을 올리면(예: 3072) model_len/batched_tokens 도
+  #   같이 늘려 예산 전체가 일관되게 커지게 한다(2048 프롬프트 + RESP_LEN + 256 여유).
+  MAX_RESP="${MAX_RESP:-${RESP_LEN}}"
+  MAX_MODEL_LEN="${MAX_MODEL_LEN:-$((MAX_PROMPT + RESP_LEN + 256))}"
+  MAX_BATCHED_TOKENS="${MAX_BATCHED_TOKENS:-$((MAX_PROMPT + RESP_LEN + 256))}"
 else
   MAX_PROMPT="${MAX_PROMPT:-1024}"
-  MAX_RESP="${MAX_RESP:-2560}"
-  MAX_MODEL_LEN="${MAX_MODEL_LEN:-4096}"
-  MAX_BATCHED_TOKENS="${MAX_BATCHED_TOKENS:-4096}"
+  if [ "${RESP_LEN_SET}" = "1" ]; then
+    # RESP_LEN 을 명시적으로 준 경우에만 non-mixed 분기도 건드린다 — "지금까지"
+    # 경로(RESP_LEN 미지정)는 원래 기본값 그대로 유지한다.
+    MAX_RESP="${MAX_RESP:-${RESP_LEN}}"
+    MAX_MODEL_LEN="${MAX_MODEL_LEN:-$((MAX_PROMPT + RESP_LEN + 256))}"
+    MAX_BATCHED_TOKENS="${MAX_BATCHED_TOKENS:-$((MAX_PROMPT + RESP_LEN + 256))}"
+  else
+    MAX_RESP="${MAX_RESP:-2560}"
+    MAX_MODEL_LEN="${MAX_MODEL_LEN:-4096}"
+    MAX_BATCHED_TOKENS="${MAX_BATCHED_TOKENS:-4096}"
+  fi
 fi
 
 # ★0904: AF_UNIX 소켓 경로 107바이트 제한 — /hdd_data/…/<긴 계보명>/session_…/sockets/plasma_store 가 넘쳤다.
@@ -219,7 +244,7 @@ if [ "${DATA_HINT}" = "mixed" ]; then
   )
 fi
 
-echo "[run_arm] LINEAGE=${LINEAGE} ARM=${ARM} SEED=${SEED} STEPS=${STEPS} DATA_VARIANT=${DATA_VARIANT} DATA_HINT=${DATA_HINT}"
+echo "[run_arm] LINEAGE=${LINEAGE} ARM=${ARM} SEED=${SEED} STEPS=${STEPS} DATA_VARIANT=${DATA_VARIANT} DATA_HINT=${DATA_HINT} RESP_LEN=${RESP_LEN}"
 echo "[run_arm] data.train_files=${DATA_TRAIN}"
 echo "[run_arm] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset! queue should have set this>}"
 echo "[run_arm] exact train command:"
@@ -304,6 +329,9 @@ for STEP in "${JUDGMENT_STEPS[@]}"; do
   # countdown_gs0_eval.py CLI confirmed at scripts/countdown_gs0_eval.py:108-123.
   # 500 problems x 8 rollouts per task spec: val parquet already has 500 rows
   # (scripts/local/make_data.sh), so --limit 0 (= all) x --num_samples 8.
+  # ★RESP_LEN(0906): held-out eval 예산도 학습 예산에 맞춰 늘린다 — 512 여유는
+  #   기존 하드코딩(2048 학습 → 2560 eval)과 같은 비율. RESP_LEN 기본값(2048)에서는
+  #   2560 으로 예전과 바이트 동일.
   python scripts/countdown_gs0_eval.py \
     --model_path "${MERGED_DIR}" \
     --data "${DATA_VAL}" \
@@ -311,6 +339,7 @@ for STEP in "${JUDGMENT_STEPS[@]}"; do
     --num_samples 8 \
     --seed 11 \
     --limit 0 \
+    --max_tokens "$((RESP_LEN + 512))" \
     --out_dir "${EVAL_OUT}" \
     >> "${LOG_FILE}" 2>&1 || echo "[run_arm] step ${STEP}: eval FAILED (see ${LOG_FILE}), continuing to upload anyway" >&2
 

@@ -33,7 +33,10 @@ REPO = Path(os.environ.get("REPO_ROOT", "/home/ubuntu/seungpil/metacognition-mat
 JUDGMENT = (30, 50, 100)
 KEEP_LATEST = 2
 LOG = WORK / "logs" / "ckpt_keeper.log"
-_LIN = re.compile(r"^cd7_(?P<arm>[A-Z0-9_]+)_(?P<variant>[a-z0-9]+)_s(?P<seed>\d+)(?P<mixed>_mixed)?$")
+_LIN = re.compile(
+    r"^cd7_(?P<arm>[A-Z0-9_]+)_(?P<variant>[a-z0-9]+)_s(?P<seed>\d+)"
+    r"(?P<mixed>_mixed)?(?:_r(?P<resp>\d+))?$"
+)
 
 
 def log(msg: str) -> None:
@@ -61,7 +64,15 @@ def running_lineages() -> set[str]:
             # 사이드카가 매 폴링마다 다시 import 하게 만들지 않기 위해서다 — OPT_MT2 는
             # 2026-09-06 추가, 나머지는 기존과 동일).
             suffix = "_mixed" if arm in ("M0", "MT", "OPT_M", "OPT_MT", "OPT_MTC", "OPT_MT2") else ""
-            out.add(f"cd7_{arm}_{eff}_s{seed}{suffix}")
+            # ★RESP_LEN(0906, OPT_MT-L): run_arm.sh 는 큐 cmd 문자열 앞쪽에
+            #   `RESP_LEN=NNNN bash scripts/local/run_arm.sh ...` 형태로 env var 를
+            #   붙인다 — 값이 2048(기본)이 아니면 _r{RESP_LEN} 이 _mixed 뒤에 붙는다
+            #   (run_arm.sh 의 LINEAGE 접미사 규약과 동일해야 이 계보가 "running" 으로
+            #   잡혀 keeper 가 step 100 을 run_arm.sh 와 경합하지 않는다).
+            resp_m = re.search(r"\bRESP_LEN=(\d+)\b", cmd)
+            resp = resp_m.group(1) if resp_m else "2048"
+            resp_suffix = f"_r{resp}" if resp != "2048" else ""
+            out.add(f"cd7_{arm}_{eff}_s{seed}{suffix}{resp_suffix}")
     return out
 
 
@@ -113,11 +124,15 @@ def submit_eval(lineage: str, step: int, dry: bool) -> None:
         return
     m = _LIN.match(lineage)
     variant = m.group("variant") if m else "new"
+    # ★RESP_LEN(0906, OPT_MT-L): 학습 예산이 커진 계보(_r{N} 접미사)는 eval/이어쓰기
+    #   예산도 run_arm.sh 와 같은 비율로 늘린다 — resp 기본값(접미사 없음) 2048 에서는
+    #   아래 두 숫자(2560/2048)가 예전 하드코딩과 바이트 동일하다.
+    resp = int(m.group("resp")) if (m and m.group("resp")) else 2048
     merged = WORK / "merged" / lineage / f"step_{step}"
     out = WORK / "eval" / lineage / f"step_{step}"
     cmd = (f"source scripts/local/env.sh >/dev/null 2>&1; python scripts/countdown_gs0_eval.py "
            f"--model_path {merged} --data $WORK/data/countdown_val_4num_{variant}.parquet "
-           f"--meta_format {variant} --num_samples 8 --seed 11 --max_tokens 2560 --gpu_util 0.6 --out_dir {out}")
+           f"--meta_format {variant} --num_samples 8 --seed 11 --max_tokens {resp + 512} --gpu_util 0.6 --out_dir {out}")
     log(f"submit eval {lineage} step {step}")
     if dry:
         return
@@ -131,7 +146,7 @@ def submit_eval(lineage: str, step: int, dry: bool) -> None:
     # ★cd8 1차 지표: 판정 자리 1,000곳 × 16 이어쓰기(메타 허용) — 모든 팔이 같은 자리를 받는다.
     jcmd = (f"source scripts/local/env.sh >/dev/null 2>&1; python scripts/local/gen_continuations.py "
             f"--sites $WORK/data/sites_v1/sites_judge.parquet --model_path {merged} --policy_tag {lineage}_s{step} "
-            f"--modes meta --k 16 --max_tokens 2048 --seed 11 --gpu_util 0.45 "
+            f"--modes meta --k 16 --max_tokens {resp} --seed 11 --gpu_util 0.45 "
             f"--out $WORK/conts_v1/judge_{lineage}_step{step}.parquet")
     log(f"submit judge-site continuations {lineage} step {step}")
     r2 = subprocess.run([sys.executable, "scripts/local/gpu_queue.py", "submit", "--name",
