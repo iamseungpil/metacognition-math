@@ -108,6 +108,12 @@ def build_cf_twins(df):
     #   자리 절반·일반 절반이 되게 한다(64 는 4 의 배수라 쌍이 배치 경계를 넘지 않는다). 남는 쪽은 뒤에 붙인다.
     out_rows = []
     pairs = [pair_rows[i:i + 2] for i in range(0, len(pair_rows), 2)]
+    # 일반 행이 2×쌍 수보다 적으면(v3c: 239 < 468) 일반 행을 되풀이해 채운다 — 자리 문제는 main+twin 으로
+    #   에폭당 두 번 나오므로 일반 문제도 두 번 나오게 하는 것이 문제 단위로 균형이다(OPT_MT 와 같은 50% 자리).
+    need = 2 * len(pairs)
+    if len(normal_rows) < need and normal_rows:
+        reps = -(-need // len(normal_rows))
+        normal_rows = [dict(r) for r in (normal_rows * reps)[:need]]
     ni = 0
     for pr in pairs:
         out_rows.extend(pr)
