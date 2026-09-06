@@ -78,6 +78,33 @@ def test_enumerate_solutions_all_moves_sum_to_total():
     assert sum(counts.values()) > 0
 
 
+def test_enumerate_solutions_matches_brute_force_5num_instance():
+    """★2026-09-07 (더 어려운 Countdown — 5수): `enumerate_solutions` 는 `pair_moves`
+    로 매 스텝 두 값을 접을 뿐 n_nums 를 하드코딩하지 않으므로 5수에서도 그대로
+    맞아야 한다 — 작은 수로 브루트포스와 직접 대조해 못 박는다."""
+    nums, target = [1, 2, 3, 4, 5], 20
+    counts, witness = cs.enumerate_solutions(nums, target)
+    total = sum(counts.values())
+    brute = _brute_force_total_solutions(nums, target)
+    assert total == brute
+    assert total > 0
+    assert witness is not None
+    assert ct.grade(r"\boxed{%s}" % witness, nums, target) == 1
+    assert ct.expr_numbers(witness) == sorted(nums)
+
+
+def test_oracle_for_site_5num():
+    """`oracle_for_site` 도 5수 문제에서 정상 동작하는지 — 실측 오라클 비용은
+    별도로 쟀지만(mean ~30ms/instance, 500개), 여기선 기능만 못 박는다."""
+    nums, target = [7, 19, 20, 19, 7], 2394
+    prefix = "Let's try 7+19=26.\n"
+    oracle = cs.oracle_for_site(prefix, nums, target)
+    assert oracle["total_solutions"] > 0
+    assert oracle["witness"] is not None
+    assert ct.grade(r"\boxed{%s}" % oracle["witness"], nums, target) == 1
+    assert ct.expr_numbers(oracle["witness"]) == sorted(nums)
+
+
 def test_pair_moves_no_illegal_intermediate():
     """`pair_moves` 가 뱉는 값은 전부 Countdown 규칙(양의 정수)을 지킨다."""
     for a, b in itertools.product(range(1, 10), repeat=2):

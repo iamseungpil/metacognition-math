@@ -377,3 +377,52 @@ def test_parquet_train_val_disjoint(tmp_path):
     tr = {(tuple(r["nums"]), r["target"]) for r in gen_instances(200, 1)}
     va = {(tuple(r["nums"]), r["target"]) for r in gen_instances(200, 2)}
     assert len(tr & va) <= 2, f"unexpected overlap: {len(tr & va)}"
+
+
+# ──────────────────────────────────────────────── n_nums=5 (harder Countdown)
+# ★2026-09-07: `--n_nums` 를 `make_data.sh` 에 얹어 5수 래더를 실제로 빌드하면서
+#   추가한 자리. `DEFAULT_N_NUMS`(=5) 라서 위의 `rows` 픽스처는 이미 5수로 도는
+#   중이었지만, "4수와 5수 둘 다 명시적으로 맞는지"는 아무 테스트도 못 박지
+#   않았다 — 아래는 그 자리를 4/5 양쪽으로 파라미터화해 채운다.
+
+@pytest.mark.parametrize("n_nums", [4, 5])
+def test_gen_instances_respects_n_nums(n_nums):
+    rows_n = gen_instances(50, SEED + 1000 + n_nums, n_nums=n_nums)
+    assert len(rows_n) == 50
+    for r in rows_n:
+        assert len(r["nums"]) == n_nums
+        assert grade(boxed(r["witness"]), r["nums"], r["target"]) == 1
+        assert expr_numbers(r["witness"]) == sorted(r["nums"])
+        if r["decoy"]:
+            assert grade(boxed(r["decoy"]), r["nums"], r["target"]) == 0
+            assert expr_numbers(r["decoy"]) == sorted(r["nums"])
+
+
+@pytest.mark.parametrize("n_nums", [4, 5])
+def test_build_prompt_user_message_lists_all_numbers(n_nums):
+    """user 메시지가 `n_nums` 개의 수를 **전부** 그대로 나열하는지 — 4수 프롬프트를
+    5수로 바꿨을 때 목록이 조용히 잘리거나 안 늘어나는 회귀를 잡는다."""
+    inst = gen_instances(1, SEED + 2000 + n_nums, n_nums=n_nums)[0]
+    msgs = build_prompt(inst, "plain")
+    user_content = msgs[1]["content"]
+    assert f"Target: {inst['target']}" in user_content
+    m = re.search(r"Numbers: (\[.*\])", user_content)
+    assert m, user_content
+    import ast as _ast
+    listed = _ast.literal_eval(m.group(1))
+    assert len(listed) == n_nums
+    assert sorted(listed) == sorted(inst["nums"])
+
+
+def test_build_parquet_5num(tmp_path):
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    out = tmp_path / "cd_5num.parquet"
+    info = build_parquet(16, 5, out, variant="plain", n_nums=5)
+    assert info["rows"] == 16 and info["n_nums"] == 5
+    df = pd.read_parquet(out)
+    assert all(len(n) == 5 for n in df["nums"])
+    row = df.iloc[0]
+    nums, target = parse_ground_truth(row["reward_model"]["ground_truth"])
+    assert len(nums) == 5
+    assert grade(boxed(row["witness"]), nums, target) == 1

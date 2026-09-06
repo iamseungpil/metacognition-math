@@ -232,13 +232,18 @@ def to_rows(sites: list[dict], split: str) -> list[dict]:
     return rows
 
 
-def build_mixed_train(work: Path, site_rows: list[dict], seed: int) -> list[dict]:
+def build_mixed_train(work: Path, site_rows: list[dict], seed: int,
+                      train_parquet: str = TRAIN_PARQUET) -> list[dict]:
     """normal 50% + site(=sites_train) 50%, 섞는다. normal 쪽도 빈 assistant 메시지를
     붙여 `apply_chat_template_kwargs` 가 배치 전체에 균일하게 먹도록 맞춘다.
+
+    `train_parquet` 은 site 를 뽑은 롤아웃과 같은 n_nums 여야 한다(예: 5수 site 를
+    빌드하면서 4수 normal 행을 섞으면 `mixed_train.parquet` 안에서 문제 난이도가
+    행마다 달라진다) — 기본값은 기존 4수 배선과 바이트 동일하다.
     """
     import pandas as pd
     rng = random.Random(seed + 1)
-    df = pd.read_parquet(work / TRAIN_PARQUET)
+    df = pd.read_parquet(work / train_parquet)
     n = len(site_rows)
     idx = rng.sample(range(len(df)), min(n, len(df)))
     normal_rows = []
@@ -272,6 +277,11 @@ def main():
     ap.add_argument("--work", default=None, help="WORK 루트 (기본: $WORK 환경변수)")
     ap.add_argument("--max_prompt_tokens", type=int, default=1900,
                     help="E-131: 렌더링 후 프롬프트 토큰 상한(학습 max_prompt_length 2048 보다 넉넉히 아래)")
+    ap.add_argument("--train_parquet", default=TRAIN_PARQUET,
+                    help="mixed_train.parquet 의 normal 절반을 뽑을 원본 parquet "
+                         "($WORK 기준 상대경로). site 를 뽑은 롤아웃과 같은 n_nums 여야 "
+                         "한다 — 예: 5수 site 라면 data/countdown_train_5num_<variant>.parquet. "
+                         f"기본값({TRAIN_PARQUET})은 기존 배선과 바이트 동일.")
     args = ap.parse_args()
 
     import os
@@ -306,7 +316,7 @@ def main():
     pd.DataFrame(judge_rows).to_parquet(out_dir / "sites_judge.parquet", index=False)
 
     print("[4/5] mixed_train.parquet 조립 중...", flush=True)
-    mixed_rows = build_mixed_train(work, train_rows, args.seed)
+    mixed_rows = build_mixed_train(work, train_rows, args.seed, train_parquet=args.train_parquet)
     pd.DataFrame(mixed_rows).to_parquet(out_dir / "mixed_train.parquet", index=False)
 
     print("[5/5] 템플릿 왕복 검사 + summary.json 기록 중...", flush=True)

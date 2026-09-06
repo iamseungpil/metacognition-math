@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # scripts/local/make_data.sh — build local Countdown train/val parquets, once.
 #
-# Output: $WORK/data/countdown_{train,val}_4num_<variant>.parquet
+# Output: $WORK/data/countdown_{train,val}_<n_nums>num_<variant>.parquet
 #   train: n=8000 seed=1   (matches the "8000/500" scale used in prior rounds —
 #          see docs/PREREGISTRATION_countdown_osd_round2.md §5 and FINDINGS)
 #   val:   n=500  seed=2
-#   n_nums=4 (per task spec; countdown_task.py's own default is 5 — DEFAULT_N_NUMS
-#             — so --n_nums 4 must be passed explicitly every time this data is
-#             regenerated or reused elsewhere)
+#   n_nums default=4 (per original task spec; countdown_task.py's own default is
+#             5 — DEFAULT_N_NUMS — so --n_nums 4 is passed explicitly whenever
+#             this script builds the 4-number ladder). Pass `--n_nums 5` (or any
+#             other value) to build a different-arity ladder into the matching
+#             `_<n_nums>num_` filenames — nothing else about the script changes.
 #
 # Variants requested: plain, new, p3. `p3` does not exist in the countdown_task.py
 # checked out at the time this script was written (PROMPT_VARIANTS = new/old/shot/
@@ -17,6 +19,10 @@
 # fix lands picks up p3 without edits.
 #
 # Idempotent: skips a file that already exists. Delete the file to force a rebuild.
+#
+# Usage:
+#   scripts/local/make_data.sh                                  # n_nums=4, all variants
+#   scripts/local/make_data.sh --n_nums 5 --variants plain,opt   # 5-number, plain+opt only
 set -euo pipefail
 
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -30,7 +36,17 @@ TRAIN_SEED=1
 VAL_N=500
 VAL_SEED=2
 N_NUMS=4
-VARIANTS=(plain new p3 opt)
+VARIANTS_CSV="plain,new,p3,opt"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --n_nums) N_NUMS="$2"; shift 2 ;;
+    --variants) VARIANTS_CSV="$2"; shift 2 ;;
+    *) echo "[make_data] unknown arg: $1" >&2; exit 1 ;;
+  esac
+done
+
+IFS=',' read -r -a VARIANTS <<< "${VARIANTS_CSV}"
 
 mkdir -p "${WORK}/data"
 
@@ -48,8 +64,8 @@ for variant in "${VARIANTS[@]}"; do
     continue
   fi
 
-  train_out="${WORK}/data/countdown_train_4num_${variant}.parquet"
-  val_out="${WORK}/data/countdown_val_4num_${variant}.parquet"
+  train_out="${WORK}/data/countdown_train_${N_NUMS}num_${variant}.parquet"
+  val_out="${WORK}/data/countdown_val_${N_NUMS}num_${variant}.parquet"
 
   if [ -f "${train_out}" ]; then
     echo "[make_data] train exists, skip: ${train_out}"
