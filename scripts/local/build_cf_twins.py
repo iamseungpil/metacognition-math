@@ -103,7 +103,16 @@ def build_cf_twins(df):
             r["extra_info"] = ei
             normal_rows.append(r)
 
-    out_rows = pair_rows + normal_rows
+    # ★배치 조성(2026-09-07 감사): 쌍을 앞에 몰아두면 shuffle=false 배치 64개가 «자리만」/«일반만」 으로
+    #   갈려 OPT_MT(자리 절반) 와 비교가 안 된다. (main, twin, normal, normal) 주기 4 로 엮어 모든 배치가
+    #   자리 절반·일반 절반이 되게 한다(64 는 4 의 배수라 쌍이 배치 경계를 넘지 않는다). 남는 쪽은 뒤에 붙인다.
+    out_rows = []
+    pairs = [pair_rows[i:i + 2] for i in range(0, len(pair_rows), 2)]
+    ni = 0
+    for pr in pairs:
+        out_rows.extend(pr)
+        out_rows.extend(normal_rows[ni:ni + 2]); ni += 2
+    out_rows.extend(normal_rows[ni:])
     return pd.DataFrame(out_rows), {
         "n_in": len(df), "n_site": n_site, "n_normal": len(normal_rows),
         "n_pairs": n_site, "n_out": len(out_rows),
