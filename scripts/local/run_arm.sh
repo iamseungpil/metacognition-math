@@ -19,9 +19,11 @@
 # VARIANT  prompt/data variant for non-N0/OPT/OPT_M arms (default p3); ignored for
 #          N0, which always uses the `plain` variant (countdown_rewards.ARM_SPECS["N0"]
 #          note: "메타 지시문 없음... variant plain, DATA_SUFFIX=_4num_plain"), and
-#          ignored for OPT/OPT_M/OPT_T/OPT_MT/OPT_MT2/OPT_OPD/OPT_OPDC/OPT_MTC, which
-#          always use the `opt` variant (permission, not mandate —
-#          countdown_task.PROMPT_VARIANTS["opt"]).
+#          ignored for OPT/OPT_M/OPT_T/OPT_MT/OPT_MT2/OPT_OPD/OPT_OPDC/OPT_MTC/OPT_CF,
+#          which always use the `opt` variant (permission, not mandate —
+#          countdown_task.PROMPT_VARIANTS["opt"]). OPT_CF's twin rows carry the
+#          `plain` system message inside the parquet itself (build_cf_twins.py) —
+#          VARIANT/DATA_VARIANT here only pick the val file for OPT_CF.
 #
 # LINEAGE = cd7_<ARM>_<VARIANT>_s<SEED>   (VARIANT here is the EFFECTIVE data variant,
 #           i.e. "plain" for N0, so lineages stay unambiguous.)
@@ -241,7 +243,7 @@ TRAIN_CMD=(python -u -m src.training.verl_sdc
   "++hydra.searchpath=[pkg://verl/trainer/config]"
 )
 
-if [ "${DATA_HINT}" = "mixed" ]; then
+if [ "${IS_MIXED_LIKE}" = "1" ]; then
   # ★고정 자리 재개(site 행) — 마지막 메시지가 이미 assistant(프리픽스)다. 이 두
   #   키가 verl 0.7.1 agent-loop 로 실제 도달하려면 sitecustomize.py 의
   #   `_patch_verl_agent_loop_chat_template` 이 걸려 있어야 한다 — 패치 없이 이
@@ -260,6 +262,19 @@ if [ "${DATA_HINT}" = "mixed" ]; then
     #   없다(이미 2048 로 넉넉히 키웠다).
     "data.filter_overlong_prompts=false"
   )
+fi
+
+# ★OPT_CF(§8) 전용 셔플 오버라이드. `configs/countdown_6arm.yaml` 의 `data.shuffle`
+#   기본값은 True — verl 은 매 에폭 **데이터셋 자체**를 섞은 뒤 `train_batch_size`
+#   (64) 로 순서대로 자른다. `build_cf_twins.py` 는 main/twin 쌍을 (main,twin,
+#   main,twin,...) 로 인접 배치해 뒀는데, 셔플이 켜져 있으면 그 인접성이 에폭마다
+#   깨져 `cf_center_rows`(배치 전체에서 cf_key 로 짝짓는다)가 짝을 못 찾는 행이
+#   늘어난다 — 처치가 조용히 무효 레버가 된다. 그래서 OPT_CF 만 셔플을 끈다: 쌍은
+#   항상 짝수 인덱스(0,2,4,...)에서 시작하고 배치 크기(64)도 짝수라, 셔플이 꺼져
+#   있으면 어떤 쌍도 배치 경계에 걸리지 않는다(파일 순서가 고정되므로). 다른 팔은
+#   이 분기를 안 타 "지금까지"(shuffle=True)와 바이트 동일하다.
+if [ "${ARM}" = "OPT_CF" ]; then
+  TRAIN_CMD+=("data.shuffle=false")
 fi
 
 echo "[run_arm] LINEAGE=${LINEAGE} ARM=${ARM} SEED=${SEED} STEPS=${STEPS} DATA_VARIANT=${DATA_VARIANT} DATA_HINT=${DATA_HINT} RESP_LEN=${RESP_LEN}"
