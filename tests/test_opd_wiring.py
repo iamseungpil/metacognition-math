@@ -89,9 +89,9 @@ def test_stash_calls_compute_countdown_opd_gated_on_opd_term():
     from src.training import verl_sdc as vs
 
     src = inspect.getsource(vs._compute_countdown_arm_stash)
-    assert "_opd_terms = {_cdr.OPD_TERM} & set(" in src, (
-        "opd_meta 항 게이트(_opd_terms)가 없다 — 스코어러가 팔과 무관하게 항상/전혀 "
-        "안 돌 수 있다.")
+    assert "_opd_terms = {_cdr.OPD_TERM, _cdr.OPD_TERM_C} & set(" in src, (
+        "opd_meta/opd_meta_c 항 게이트(_opd_terms)가 없다 — 스코어러가 팔과 무관하게 "
+        "항상/전혀 안 돌 수 있다.")
     assert "_compute_countdown_opd(" in src
     # ★핵심: `_compute_countdown_opd(` 호출이 `if not _opd_on:` 의 **else** 분기
     # (즉 `_opd_on` 이 참일 때)에서만 나타나야 한다 — OSD 의 `_osd_on`/`_compute_
@@ -161,3 +161,81 @@ def test_opd_kl_sign_penalizes_student_tokens_that_hint_finds_unlikely():
     # 반대: 교사가 학생 토큰을 더 좋아함 → 음 → 벌 없음
     kl2 = _read_opd_from_ref_logprobs([[-0.5, -0.5, -0.5], [-2.0, -2.0, -2.0]], [NS(w_len=3)])
     assert kl2[0] < 0 and r_opd_meta(kl2[0], c=0.075) == 0.0
+
+
+# ══════════════════════════════════════════════════════════ 13. OPT_OPDC (그룹 중심화)
+
+def test_opd_c_term_name_is_single_sourced():
+    """OPD_TERM 과 같은 회귀 — OPD_TERM_C 가 OPT_OPDC 의 terms 와 META_TERMS 에 없으면
+    fail-loud 가드와 텔레메트리 집계기가 영영 안 돈다."""
+    assert {cr.OPD_TERM_C} & set(cr.ARM_SPECS["OPT_OPDC"]["terms"]), (
+        f"OPD_TERM_C={cr.OPD_TERM_C!r} 이 ARM_SPECS['OPT_OPDC']['terms']"
+        f"={cr.ARM_SPECS['OPT_OPDC']['terms']} 에 없다 — fail-loud 가드가 죽는다.")
+    assert cr.OPD_TERM_C in cr.TERMS
+    assert cr.OPD_TERM_C in cr.META_TERMS
+
+
+def test_opt_opdc_arm_is_not_bit_identical_to_opt_or_opt_opd():
+    """OPT_OPDC 가 OPT/OPT_OPD 와 같은 총보상을 내면 처치가 배선되지 않은 것이다."""
+    row = _row(opd_kl=0.02)
+    row["opd_kl_c"] = 0.4   # 그룹 중심화 결과(verl_sdc 가 그룹 단위로 미리 채우는 값)
+    opt, _ = cr.arm_reward("OPT", row, step=30)
+    opd, _ = cr.arm_reward("OPT_OPD", row, step=30)
+    opdc, comp = cr.arm_reward("OPT_OPDC", row, step=30)
+    assert comp.get(cr.OPD_TERM_C, 0.0) != 0.0, f"opd_meta_c 성분이 0 이다: {comp}"
+    assert abs(opt - opdc) > 1e-9, "OPT_OPDC 와 OPT 총보상이 동일 — 배선 0."
+    assert abs(opd - opdc) > 1e-9, "OPT_OPDC 와 OPT_OPD 총보상이 동일 — 항이 안 갈린다."
+
+
+def test_opd_c_missing_material_dies_loud():
+    """`opd_kl_c` 가 행에 아예 없으면(그룹 중심화가 배선 안 됐다는 사고) KeyError."""
+    with pytest.raises(KeyError):
+        cr.arm_reward("OPT_OPDC", {"r_corr": 1, "format_ok": 1, "emitted": 1}, step=30)
+
+
+def test_opd_c_none_placeholder_is_silent_zero():
+    _tot, comp = cr.arm_reward("OPT_OPDC", _row(opd_kl_c=None), step=30)
+    assert comp[cr.OPD_TERM_C] == 0.0
+
+
+def test_opd_center_rows_single_scored_row_is_all_zero():
+    """비교 상대가 없는(채점 대상 1개) 그룹은 전원 0 — 발화했어도 상벌이 없다."""
+    out = cr.opd_center_rows([0.05, None, None], c=0.075)
+    assert out == [0.0, 0.0, 0.0]
+
+
+def test_opd_center_rows_group_mean_is_zero_and_clips():
+    """3 행 그룹, NaN 하나 제외 — 평균은 남은 둘로만 잡고, 합은 0(기대값 중립),
+    큰 편차는 ±1 에서 클립된다."""
+    c = 0.075
+    out = cr.opd_center_rows([0.0, float("nan"), c * 10], c=c)
+    assert out[1] == 0.0                                  # NaN 은 채점·평균 모두 제외
+    assert out[0] == pytest.approx(1.0)                    # (mean-0)/c 가 1 을 넘어 클립
+    assert out[2] == pytest.approx(-1.0)                   # (mean-10c)/c 가 -1 미만이라 클립
+    scored = [out[0], out[2]]
+    # 실제 클립 전 값들의 합은 0(대칭 평균 정의) — 클립이 안 걸리는 완만한 예로 재확인.
+    out2 = cr.opd_center_rows([0.01, 0.03], c=c)
+    assert sum(out2) == pytest.approx(0.0)
+    assert out2[0] > 0 and out2[1] < 0    # 평균보다 낮은 kl(0.01)이 +를 받는다
+
+
+def test_opd_center_rows_none_and_group_lt2_stay_zero():
+    assert cr.opd_center_rows([], c=0.075) == []
+    assert cr.opd_center_rows([None] * 5, c=0.075) == [0.0] * 5
+
+
+def test_stash_gate_covers_both_opd_terms_and_centers_before_reward_assembly():
+    """소스텍스트 가드: ①게이트가 opd_meta·opd_meta_c 둘 다 커버, ②그룹 중심화
+    (`opd_center_rows` 호출)가 per-row `arm_reward` 조립 **전**에 있다."""
+    from src.training import verl_sdc as vs
+
+    src = inspect.getsource(vs._compute_countdown_arm_stash)
+    assert "{_cdr.OPD_TERM, _cdr.OPD_TERM_C}" in src, (
+        "OPD 게이트가 opd_meta_c 를 커버하지 않는다 — OPT_OPDC 에서 opd_kl 이 안 채워질 "
+        "수 있다.")
+    assert "opd_center_rows(" in src, "그룹 중심화 호출이 없다."
+    center_idx = src.index("opd_center_rows(")
+    reward_loop_idx = src.index('_cdr.arm_reward(arm, r, step=step, phat=phat_of[uid[i]])')
+    assert center_idx < reward_loop_idx, (
+        "그룹 중심화가 per-row arm_reward 조립보다 뒤에 있다 — opd_kl_c 가 그 행의 "
+        "arm_reward 호출 시점에 아직 없을 수 있다.")

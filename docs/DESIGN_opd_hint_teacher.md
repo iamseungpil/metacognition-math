@@ -357,3 +357,65 @@ forward 1회 추가, §4.1). **본 실험(강제팔 포함, 여러 시드)으로
 §2.2 의 방향 논거(다중 후보 보전)는 시퀀스 스칼라 보상에서는 부차적이므로 역방향으로 바꾼다.
 의미는 유지된다: 학생이 힌트 없이 쓴 메모 토큰이 «힌트를 가진 자신» 에게 얼마나 낯선가를
 벌한다. `C=0.075` 는 여전히 잠정 — 수정판 스모크의 행별 분포(p50/p95)로 다시 정한다.
+
+## 10. 그룹 중심화 OPD(`opd_meta_c`) — OPT_OPDC (2026-09-06)
+
+E-132 수리 뒤에도 §9 의 근본 구조는 그대로였다: `opd_meta`(= `r_opd_meta`, 위 §4)는
+**절대 기준 0** 과 비교하는 단측 벌 `−clip(kl,0,C)/C ∈ [−1,0]`이고, 이 벌은 **메타를
+낸 행에만** 걸린다. 미발화 행은 항이 0 이므로, "메타를 냈다 → (거의 항상 어느 정도)
+벌을 받는다, 안 냈다 → 0"이라는 비대칭이 구조적으로 내장돼 있다. cd7 20스텝 스모크
+(`docs/RESULTS_cd7.md` "그룹 중심화 OPD" 항목)가 그 결과를 그대로 보여줬다 —
+발화율이 15 스텝 만에 7%→0.8%로 무너졌다. 벌의 **부호**나 **크기**(C)가 아니라 벌의
+**기준선**이 문제였다: 모든 발화 행이 같은 절대 0 과 비교되므로, 평균 수준의(딱히
+나쁘지 않은) 메타조차 "안 내는 것보다 손해"가 되고, 정책은 가장 싼 해법(발화 중단)
+으로 수렴한다.
+
+**해법.** 결과가 아니라 **분포**를 주자는 OPD 의 원래 취지(§0)를 절대 벌이 아니라
+**상대 순위**로 구현한다. 같은 GRPO 그룹(같은 프롬프트의 8 롤아웃, `uid` 로 식별
+— `verl_sdc._compute_countdown_arm_stash` 의 `groups = {uid: [row idx, ...]}`) 안에서,
+메타를 내고 힌트에 대해 `opd_kl` 을 잰 행끼리만 서로 비교한다:
+
+```
+scored = {i in group : opd_kl_i is finite}         # None/NaN 은 제외
+if |scored| < 2: r_i = 0 for all i in group          # 비교 상대가 없다
+else:
+    m = mean_{i in scored}(opd_kl_i)
+    r_i = clip((m − opd_kl_i) / C, −1, +1)   for i in scored
+    r_i = 0                                   for i not in scored
+```
+
+`sum_{i in scored}(m − opd_kl_i) = 0` 이 정의상 성립하므로 이 항은 그룹 안에서
+**기댓값 0** — "메타를 낸다" 자체에는 중립이고, "메타를 냈다면 그중 어느 것이
+힌트 교사와 더 가까운가"만 순위를 매긴다. 미발화·미채점·NaN(포이즌) 행은 여전히
+`r_opd_meta` 와 같은 fail-closed 규약대로 0. `C`(=`OPD_C`, 여전히 잠정)는 그대로
+재사용한다 — 바뀌는 것은 기준선이지 스케일의 원천이 아니다.
+
+**배선.**
+- 순수 함수 `countdown_rewards.opd_center_rows(kls, c) -> list[float]` — 한 그룹의
+  `opd_kl` 리스트를 받아 위 식을 그대로 계산한다(순서 보존, 그룹 크기 그대로 반환).
+  `r_opd_meta_c(opd_kl_c)` 는 이미 그룹 중심화가 끝난 스칼라를 그대로 통과시키는
+  얇은 함수 — `arm_reward` 의 "행 하나 → 값 하나" 호출 패턴을 지키기 위해서다
+  (실제 그룹 문맥 계산은 `verl_sdc` 쪽에서 한다, `phat`/`adv_corr` 와 같은 패턴).
+- `TERMS[OPD_TERM_C]`(`OPD_TERM_C = "opd_meta_c"`) 는 `needs=("emitted","opd_kl_c")`,
+  `warmup=True`, `weight=W_META` — `opd_meta` 와 무게·워밍업이 동일하다.
+- `ARM_SPECS["OPT_OPDC"]` 는 `ARM_SPECS["OPT_OPD"]` 와 **항 하나만** 다르다
+  (`opd_meta` → `opd_meta_c`) — `require_meta=False`, `data_hint="normal"` 등 나머지는
+  전부 같다. `arm_signature` 는 term 이름 자체가 갈리므로 자동으로 다른 서명을 내고,
+  `opdc_c=` 조각(OPD_C 값, 잠정이면 `?`)을 조건부로 더 붙인다.
+- `verl_sdc._compute_countdown_arm_stash`: OPD 게이트를 `{OPD_TERM} & ...` 에서
+  `{OPD_TERM, OPD_TERM_C} & ...` 로 넓혀 OPT_OPDC 에서도 `opd_kl`(원재료, OPT_OPD 와
+  공유)이 계산되게 한다. `uid` 그룹이 만들어진 뒤(`phat`/`adv_corr` 계산 직후),
+  **per-row `arm_reward` 조립보다 먼저** 그룹별로 `opd_center_rows` 를 돌려
+  `row["opd_kl_c"]` 를 채운다 — 이 순서가 깨지면 `arm_reward` 가 아직 없는 필드를
+  읽어 KeyError 로 즉사한다(무효 레버 대신 fail-loud). `[COUNTDOWN][WIRED]` 로그에
+  `opd_c_scored`(0 아닌 값을 받은 행 수)와 `opd_c_groups>=2`(채점 대상 2개 이상인
+  그룹 수 / 전체 그룹 수)를 추가해 사후에 "센터링이 실제로 뭔가를 채점했는가"를
+  한 줄로 확인한다.
+- `scripts/local/run_arm.sh`: `OPT_OPDC` 를 `OPT`/`OPT_M`/`OPT_T`/`OPT_MT`/`OPT_OPD`
+  와 같은 `opt` 프롬프트 분기에 추가했다 — 프롬프트·data_hint 는 OPT_OPD 와 완전히
+  같다.
+
+**아직 확인 안 된 것.** 이 절은 배선만 마쳤다 — §6 의 온라인 판정(20스텝 스모크로
+발화 유지 여부와 항 분산)은 아직 안 돌았다. 원래 GO 조건(§10 Go/No-Go, OPT_OPD 기준)
+이 요구한 것과 같은 최소 다음 단계: 짧은 스모크 하나로 opd_meta 가 실패한 바로 그
+지표(발화율 붕괴)가 이번엔 안 일어나는지 확인한다.

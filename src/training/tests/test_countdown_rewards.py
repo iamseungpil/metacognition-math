@@ -255,7 +255,7 @@ SPEC_TABLE = {   # 사양 §보상 을 손으로 옮긴 것. 코드가 아니라
 #   이지만 meta_form 은 "new"(파싱은 여전히 새 형식) + require_meta=False(형식 점수는
 #   메타를 요구하지 않음)로 N0 와도 갈린다 — 아래 공통항 예외 테스트에서 함께 다룬다.
 ADDED_ARMS = ["OSD", "P", "R", "N0", "PL", "SC", "SCg", "SC_GH", "FT", "M0", "MT",
-              "OPT", "OPT_M", "OPT_T", "OPT_MT", "OPT_OPD"]
+              "OPT", "OPT_M", "OPT_T", "OPT_MT", "OPT_OPD", "OPT_OPDC"]
 
 
 def test_arm_specs_match_spec_table():
@@ -284,12 +284,12 @@ def test_common_terms_are_identical_across_all_arms():
             assert tuple(cr.ARM_SPECS[arm]["terms"]) == ("corr", "format")
             assert cr.ARM_SPECS[arm]["meta_form"] == "none"
             continue
-        if arm in ("OPT", "OPT_M", "OPT_T", "OPT_MT", "OPT_OPD"):
+        if arm in ("OPT", "OPT_M", "OPT_T", "OPT_MT", "OPT_OPD", "OPT_OPDC"):
             # OPT 사다리: corr+format 위에 지도 항(timing/live_new) **또는** 힌트 교사
-            # 항(opd_meta, 2026-09-06)만 얹을 수 있고, meta_floor 는 절대 없다.
+            # 항(opd_meta/opd_meta_c, 2026-09-06)만 얹을 수 있고, meta_floor 는 절대 없다.
             _t = tuple(cr.ARM_SPECS[arm]["terms"])
             assert _t[:2] == ("corr", "format") and "meta_floor" not in _t
-            assert set(_t[2:]) <= {"timing", "live_new", cr.OPD_TERM}
+            assert set(_t[2:]) <= {"timing", "live_new", cr.OPD_TERM, cr.OPD_TERM_C}
             assert cr.ARM_SPECS[arm]["meta_form"] == "new"
             assert cr.ARM_SPECS[arm]["require_meta"] is False
             continue
@@ -321,7 +321,7 @@ def test_warmup_applies_to_meta_and_gate_only():
     assert warmed == {"meta_pos", "meta_mul", "meta_ctx", "gate", "len", "osd",
                       "meta_pos_full", "plan", cr.INV_TERM,
                       "explore", "explore_g", "verify",
-                      "timing", "live_new", cr.OPD_TERM}
+                      "timing", "live_new", cr.OPD_TERM, cr.OPD_TERM_C}
     for t in ("corr", "format", "meta_floor", "early_cost"):
         assert not cr.TERMS[t]["warmup"]
 
@@ -1006,4 +1006,113 @@ def test_opt_opd_warmup_scale_applies():
 def test_check_abort_skips_emit_rate_for_opt_opd_too():
     low_emit = _abort_report(emit_rate=0.05)
     got = {v["metric"] for v in cr.check_abort(low_emit, arm="OPT_OPD")}
+    assert "emit_rate" not in got
+
+
+# ═════════════════════════════════════════════════════ 13. OPT_OPDC (그룹 중심화 OPD)
+# docs/DESIGN_opd_hint_teacher.md §10, docs/RESULTS_cd7.md "그룹 중심화 OPD" — OPT_OPD
+# 의 절대 기준(0) 단측 벌이 «메타를 그만 낸다»로만 수렴한 실패를 고치는 판.
+
+def test_opd_center_rows_group_with_one_scored_row_is_all_zero():
+    """비교 상대가 없으면(채점 대상 <2) 발화 여부와 무관하게 전원 0."""
+    assert cr.opd_center_rows([0.05], c=0.075) == [0.0]
+    assert cr.opd_center_rows([0.05, None, None], c=0.075) == [0.0, 0.0, 0.0]
+
+
+def test_opd_center_rows_group_with_three_rows_mean_zero_clipped_nan_excluded():
+    c = 0.075
+    # NaN 은 평균에도 자기 값에도 안 들어간다 — 남은 둘(0.0, 10c)만으로 평균을 잡는다.
+    out = cr.opd_center_rows([0.0, float("nan"), c * 10], c=c)
+    assert out[1] == 0.0
+    assert out[0] == pytest.approx(1.0)     # (5c-0)/c = 5 → clip +1
+    assert out[2] == pytest.approx(-1.0)    # (5c-10c)/c = -5 → clip -1
+    # 클립이 안 걸리는 완만한 예 — 그룹 안에서 기댓값 0(대칭)임을 직접 확인한다.
+    mild = cr.opd_center_rows([0.01, 0.02, 0.03], c=c)
+    assert sum(mild) == pytest.approx(0.0)
+    assert mild[0] > mild[1] > mild[2]      # kl 이 낮을수록(교사와 더 가깝다) + 크다
+
+
+def test_opd_center_rows_rejects_nonpositive_c():
+    with pytest.raises(ValueError):
+        cr.opd_center_rows([0.01, 0.02], c=0.0)
+
+
+def test_r_opd_meta_c_is_a_thin_passthrough():
+    assert cr.r_opd_meta_c(None) == 0.0
+    assert cr.r_opd_meta_c(0.4) == pytest.approx(0.4)
+    assert cr.r_opd_meta_c(-1.0) == pytest.approx(-1.0)
+
+
+def test_opt_opdc_arm_spec():
+    spec = cr.ARM_SPECS["OPT_OPDC"]
+    assert tuple(spec["terms"]) == ("corr", "format", cr.OPD_TERM_C)
+    assert spec["meta_form"] == "new"
+    assert spec["require_meta"] is False
+    assert spec.get("data_hint", "normal") == "normal"
+
+
+def test_arm_OPT_OPDC_hand_computed():
+    """corr=1·format=1·emitted=1·opd_kl_c=0.4 → total = 1.0 + 0.35 + 0.4*W_META.
+
+    (opd_kl 자체는 이 항의 needs 가 아니다 — 그룹 중심화는 verl_sdc 가 이미 끝내
+    `opd_kl_c` 로 얹어 준다는 전제다.)
+    """
+    row = dict(r_corr=1, format_ok=1, emitted=1, opd_kl_c=0.4)
+    total, comps = cr.arm_reward("OPT_OPDC", row, step=999)
+    assert set(comps) == {"corr", "format", cr.OPD_TERM_C}
+    assert comps[cr.OPD_TERM_C] == pytest.approx(0.4 * cr.W_META)
+    assert total == pytest.approx(1.0 + 0.35 + comps[cr.OPD_TERM_C])
+
+
+def test_arm_OPT_OPDC_term_is_off_without_emitted():
+    row = dict(r_corr=1, format_ok=1, emitted=0, opd_kl_c=0.9)
+    _total, comps = cr.arm_reward("OPT_OPDC", row, step=999)
+    assert comps[cr.OPD_TERM_C] == 0.0
+
+
+def test_arm_OPT_OPDC_none_kl_c_is_silent_not_a_wire_failure():
+    row = dict(r_corr=0, format_ok=1, emitted=1, opd_kl_c=None)
+    _total, comps = cr.arm_reward("OPT_OPDC", row, step=999)
+    assert comps[cr.OPD_TERM_C] == 0.0
+
+
+def test_arm_OPT_OPDC_missing_material_dies_loud():
+    row = dict(r_corr=1, format_ok=1, emitted=1)     # opd_kl_c 없음
+    with pytest.raises(KeyError):
+        cr.arm_reward("OPT_OPDC", row, step=999)
+
+
+def test_arm_OPT_OPDC_is_not_arm_OPT_or_OPT_OPD():
+    """«선언된 레버, 배선 0» 방지: OPT_OPDC 는 OPT·OPT_OPD 어느 쪽과도 같지 않다."""
+    row = dict(r_corr=1, format_ok=1, emitted=1, opd_kl=cr.OPD_C, opd_kl_c=-0.6)
+    opt_total, _ = cr.arm_reward("OPT", row, step=999)
+    opd_total, _ = cr.arm_reward("OPT_OPD", row, step=999)
+    opdc_total, _ = cr.arm_reward("OPT_OPDC", row, step=999)
+    assert opdc_total != opt_total
+    assert opdc_total != opd_total
+
+
+def test_opdc_c_is_in_the_arm_signature_and_differs_from_opt_opd():
+    sig_opdc = cr.arm_signature("OPT_OPDC")
+    sig_opd = cr.arm_signature("OPT_OPD")
+    assert f"opdc_c={cr.OPD_C:g}" in sig_opdc
+    assert ("?" in sig_opdc) == bool(cr.OPD_C_PROVISIONAL)
+    assert sig_opdc != sig_opd
+    # 다른 팔의 서명에는 한 조각도 안 들어간다(조건부 추가 규약).
+    for arm in cr.ARM_SPECS:
+        if arm != "OPT_OPDC":
+            assert "opdc_c=" not in cr.arm_signature(arm), arm
+
+
+def test_opt_opdc_warmup_scale_applies():
+    row = dict(r_corr=0, format_ok=1, emitted=1, opd_kl_c=1.0)
+    total0, comps0 = cr.arm_reward("OPT_OPDC", row, step=0, warmup_steps=20)
+    total_full, comps_full = cr.arm_reward("OPT_OPDC", row, step=20, warmup_steps=20)
+    assert comps0[cr.OPD_TERM_C] == pytest.approx(0.0)     # 워밍업 0 스텝 = 무게 0
+    assert comps_full[cr.OPD_TERM_C] == pytest.approx(1.0 * cr.W_META)
+
+
+def test_check_abort_skips_emit_rate_for_opt_opdc_too():
+    low_emit = _abort_report(emit_rate=0.05)
+    got = {v["metric"] for v in cr.check_abort(low_emit, arm="OPT_OPDC")}
     assert "emit_rate" not in got

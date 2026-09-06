@@ -1488,11 +1488,13 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
     #   같은 스트라이드이지만 서로 다른 배치이므로 안 섞인다). docs/DESIGN_opd_hint_teacher.md.
     #
     #   켜짐 조건 두 가지(OSD/INV 와 같은 규약):
-    #     · 팔이 opd_meta 항을 쓰면 **무조건** 켜지고, 실패는 fail-loud 다.
+    #     · 팔이 opd_meta **또는** opd_meta_c(그룹 중심화, 2026-09-06 §10) 항을 쓰면
+    #       **무조건** 켜지고, 실패는 fail-loud 다 — 원재료(opd_kl)는 두 항이 공유한다,
+    #       달라지는 것은 그 뒤 보상식(절대 기준 벌 vs 그룹 중심화)뿐이다.
     #     · 아니면 `COUNTDOWN_OPD` 환경변수로 켤 수 있다("측정 모드").
     #   ⚠비용: 발화 행마다 forward 2팔(행당 teacher 1 + student 1 — §4.1 의 비용
     #   편차는 `_compute_countdown_opd` 위 모듈 헤더 주석 참조).
-    _opd_terms = {_cdr.OPD_TERM} & set(_cdr.ARM_SPECS[arm].get("terms", ()))
+    _opd_terms = {_cdr.OPD_TERM, _cdr.OPD_TERM_C} & set(_cdr.ARM_SPECS[arm].get("terms", ()))
     _opd_on = bool(_opd_terms) or os.environ.get("COUNTDOWN_OPD", "0") == "1"
     opd_diag: dict = {"enabled": bool(_opd_on)}
     if not _opd_on:
@@ -1538,7 +1540,7 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
         if opd_diag.get("ref_error") and _opd_terms:
             raise RuntimeError(
                 f"[COUNTDOWN] arm={arm} step={step}: OPD ref 스코어링 실패 "
-                f"({opd_diag['ref_error']}) — {_cdr.OPD_TERM} 항이 무음 0 이 되어 이 팔이 "
+                f"({opd_diag['ref_error']}) — {sorted(_opd_terms)} 항이 무음 0 이 되어 이 팔이 "
                 f"OPT 팔과 같아진다. 조용히 진행하지 않는다.")
         if "error" not in opd_diag:
             print(f"[COUNTDOWN][OPD] step={step} arm={arm} B={opd_diag.get('B', bs)} "
@@ -1571,6 +1573,29 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
         r["adv_corr"] = float(r["r_corr"]) - mean_of[uid[i]]
         r["phat"] = phat_of[uid[i]]
         r["group_id"] = uid[i]
+
+    # ── OPD 그룹 중심화(opd_meta_c, OPT_OPDC 전용, §10) — 배치 한 번에 한 번, per-row
+    #   보상 조립(아래 arm_reward 루프) **전에** 끝낸다. `opd_kl`(위 OPD 블록이 이미
+    #   채웠다 — OPT_OPD 와 원재료를 공유한다, `_opd_terms` 확장 참조)을 그룹(uid)별로
+    #   묶어 `countdown_rewards.opd_center_rows` 에 넘긴다. 이 팔을 안 쓰는 배치에서도
+    #   `opd_kl` 이 이미 계산돼 있으면(측정 모드 COUNTDOWN_OPD=1, 또는 OPT_OPD 가 채운
+    #   경우) 공짜로 채워 둔다 — 다른 팔의 `arm_reward` 는 이 필드를 안 읽으므로 무해하다.
+    opd_c_scored = 0
+    opd_c_groups_ge2 = 0
+    if _opd_on:
+        for u, ix in groups.items():
+            kls = [rows[i].get("opd_kl") for i in ix]
+            centered = _cdr.opd_center_rows(kls, _cdr.OPD_C)
+            n_finite = sum(1 for k in kls if k is not None and math.isfinite(float(k)))
+            if n_finite >= 2:
+                opd_c_groups_ge2 += 1
+            for j, i in enumerate(ix):
+                rows[i]["opd_kl_c"] = centered[j]
+                if centered[j] != 0.0:
+                    opd_c_scored += 1
+    else:
+        for r in rows:
+            r["opd_kl_c"] = 0.0
 
     # ★강등이 걸려 있으면 osd 항을 0 으로 죽인다(이전 스텝의 판정이 이번 스텝부터 적용된다).
     #   지난 판정을 «다음 스텝부터» 적용하는 것이 옳다 — 이미 뽑은 롤아웃의 보상을
@@ -1609,6 +1634,7 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
           f"osd_scored={osd_diag.get('scored', 0)}/{osd_diag.get('B', 0)} "
           f"inv_scored={inv_diag.get('scored', 0)}/{inv_diag.get('B', 0)} "
           f"opd_scored={opd_diag.get('scored', 0)}/{opd_diag.get('B', 0)} "
+          f"opd_c_scored={opd_c_scored} opd_c_groups>=2={opd_c_groups_ge2}/{len(groups)} "
           f"n_site_rows={n_site_rows}", flush=True)
 
     # ★0902 관측: 보상 구성 요소별 평균 · 발화율 · 계획 항(해 생존/이행) 비율 · 응답 표본 8개 → wandb (실패해도 학습은 계속)

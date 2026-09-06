@@ -87,6 +87,7 @@ __all__ = [
     "r_explore", "r_explore_g", "r_verify", "r_early",
     "W_TIMING", "W_LIVE_NEW", "r_timing", "r_live_new",
     "OPD_TERM", "OPD_C", "OPD_C_PROVISIONAL", "r_opd_meta",
+    "OPD_TERM_C", "opd_center_rows", "r_opd_meta_c",
     "OSD_TERM", "OSD_C", "OSD_C_PROVISIONAL", "OSD_W_MAX", "OSD_LEAK_NGRAM",
     "INV_TERM", "INV_SCOPE", "INV_FORM", "INV_AGG", "INV_TAU", "INV_C",
     "INV_TAU_PROVISIONAL", "INV_MIN_PROSE_TOK", "INV_FALSE_CLAIM_PEN", "r_meta_inv",
@@ -275,6 +276,22 @@ OPD_C = 0.075           # ⚠**잠정**. `scripts/local/opd_probe.py`(2026-09-06
                         #   실측(COUNTDOWN_OPD=1 측정 모드)으로 교체한다.
 OPD_C_PROVISIONAL = True
 
+# ── OPD 그룹 중심화(opd_meta_c) — OPT_OPDC 팔 (2026-09-06, docs/DESIGN_opd_hint_teacher.md §10) ──
+# 왜 새 항인가(실측 실패 원인). `opd_meta`(단측 벌 `−clip(kl,0,C)/C`)는 **발화한 행에만**
+# 걸리고 미발화 행은 0 이다 — 즉 "메타를 냈다 → (거의 항상) 벌을 받는다"가 되어, 정책이
+# 벌을 피하는 가장 싼 길인 "메타를 그만 낸다"로 수렴했다(cd7 실측: 발화율 7%→0.8%,
+# 15 스텝. `docs/RESULTS_cd7.md` "그룹 중심화 OPD" 항목). 문제는 벌의 **부호**가 아니라
+# **기준선**이다 — 모든 발화 행이 같은 절대 기준(0)과 비교되므로 "평균적인 메타"조차
+# 벌을 받는다.
+# 해법: 같은 GRPO 그룹(같은 프롬프트의 8 롤아웃) 안에서, 메타를 내고 힌트가 있어 opd_kl
+# 을 잰 행끼리만 **서로** 비교한다. `r_i = clip((mean_kl_group − kl_i)/C, −1, +1)` —
+# 그룹 평균보다 KL 이 낮은(힌트 교사와 더 가까운) 메타는 +, 높은 메타는 −. 그룹 평균
+# 자체는 **기댓값 0**이다(정의상 `sum(mean−kl_i) = 0`) → "발화 자체"에는 중립이고,
+# "발화했다면 어느 메타가 더 나은가"만 순위를 매긴다. 채점 가능 행이 1개 이하인
+# 그룹(비교 상대가 없다)과 NaN(포이즌, `r_opd_meta` 와 같은 fail-closed 규약)은 0.
+OPD_TERM_C = "opd_meta_c"   # ★OPD_TERM 과 같은 "단일 정의처" 규약 — verl_sdc 의 게이트가
+                            #   {OPD_TERM, OPD_TERM_C} 둘 다 읽는다.
+
 SHIFT_PARAMS = dict(scale=1.0, clip=2.0, reversal_save=1.0, reversal_derail=2.0,
                     reversal_min_magnitude=0.0)
 # C·F·H 가 sign 을 곱하기 전에 쓰는 파라미터. 위 ⚠사양 충돌 참조 —
@@ -331,6 +348,9 @@ TERM_MAX_ABS: dict = {
     # r_opd_meta 가 이미 [−1, 0] 이라 정규화는 항등이다. osd/meta_inv 와 같은 이유로
     # `.get(t, 1.0)` 기본값에 기대지 않고 명시한다.
     "opd_meta":   1.0,
+    # opd_center_rows 가 이미 clip(·,−1,+1) 로 [-1,1] 이라 정규화는 항등이다.
+    # opd_meta 와 같은 이유로 `.get(t, 1.0)` 기본값에 기대지 않고 명시한다.
+    "opd_meta_c": 1.0,
 }
 
 # sign(adv_corr) == 0 일 때의 정책. 아래 `r_meta_mul` 주석 참조.
@@ -809,6 +829,59 @@ def r_opd_meta(opd_kl, *, c: float | None = None) -> float:
     return -x / cc
 
 
+def opd_center_rows(kls: Sequence[float | None], c: float | None = None) -> list[float]:
+    r"""OPT_OPDC 팔. 한 GRPO 그룹(같은 프롬프트의 롤아웃들) 안에서 `opd_kl` **끼리**
+    상대 순위를 매기는 그룹 중심화 보상. `r_opd_meta`(절대 기준 0 과 비교하는 단측 벌)와
+    달리 이 함수는 그룹 자신의 평균을 기준으로 삼는다 — 위 `OPD_TERM_C` 주석 참조.
+
+    입력 `kls` 는 **한 그룹**의 행들이 낸 `opd_kl` 값 리스트(순서 = 그 그룹 안 행 순서),
+    각 원소는 `float | None | nan` 이다:
+      * `None` = 메타를 안 냈거나 힌트를 만들 시도 이력이 없다(잴 스팬 없음) — 채점 제외.
+      * `nan`  = 쟀는데 비유한(포이즌 행) — `r_opd_meta` 와 같은 fail-closed 규약으로
+        채점에서 **제외**한다(평균에도 안 들어가고, 그 행 자신도 0 을 받는다).
+      * 유한 실수 = 채점 대상.
+
+    채점 대상이 **2개 미만**인 그룹은 비교 상대가 없으므로 전원 0.0(발화·미채점 불문).
+    그 외에는 채점 대상의 평균 `m` 을 구해 각 채점 대상 행에
+    `clip((m − kl_i)/c, −1, +1)` 을 준다 — `sum(m − kl_i) = 0` 이므로 그룹 안에서
+    기댓값 0(발화 자체는 중립), 그룹 평균보다 KL 이 낮은(힌트 교사와 더 가까운) 메타만
+    상대적으로 + 를 받는다. 채점 제외 행(None/nan)은 항상 0.0.
+
+    반환값은 입력과 같은 길이·순서의 리스트다.
+    """
+    cc = float(OPD_C if c is None else c)
+    if not (cc > 0):
+        raise ValueError(f"opd_center_rows: c={cc!r} 는 0보다 커야 한다.")
+    scored_idx = [i for i, k in enumerate(kls) if k is not None and _finite(k)]
+    out = [0.0] * len(kls)
+    if len(scored_idx) < 2:
+        return out
+    m = sum(float(kls[i]) for i in scored_idx) / len(scored_idx)
+    for i in scored_idx:
+        x = (m - float(kls[i])) / cc
+        out[i] = max(-1.0, min(1.0, x))
+    return out
+
+
+def r_opd_meta_c(opd_kl_c: float | None) -> float:
+    r"""OPT_OPDC 팔의 항 값. `opd_kl_c` 는 `opd_center_rows` 가 그룹 단위로 미리 계산해
+    행에 얹어 둔 결과(이미 [-1,+1] 클립됨) — 이 함수는 `arm_reward` 의 다른 항과 같은
+    "행 하나 → 값 하나" 호출 패턴을 지키기 위한 얇은 통과 함수일 뿐이다. 실제 계산은
+    그룹 문맥이 필요해 `verl_sdc._compute_countdown_arm_stash` 에서 그룹별로 한 번
+    수행된다(§10, `phat`/`adv_corr` 와 같은 "그룹 단위 선계산 → 행 필드로 전달" 패턴).
+
+    `opd_kl_c is None`(센터링 자체가 안 돌았다 — 배선 사고) 이면 0.0 이 아니라 이 값을
+    그대로 반환하지 않고 **KeyError 대신 조용히 0**을 주는 것도 사고다 — 그래서 이 함수는
+    호출되지 않고, `arm_reward` 는 `row["opd_kl_c"]` 를 `needs` 로 강제해 그 필드가 아예
+    없으면 즉사한다(무효 레버 방지). `None` 이 **값으로** 들어오는 경우(그룹 채점
+    2 미만이라 이 행이 애초에 대상이 아니었다)만 여기서 0.0 을 준다 — `opd_center_rows`
+    는 그 경우도 0.0(float)으로 채우므로 실제로는 float 만 들어온다.
+    """
+    if opd_kl_c is None:
+        return 0.0
+    return float(opd_kl_c)
+
+
 def warmup_scale(step, warmup_steps: int = 20) -> float:
     """0→1 선형 워밍업. step 0 에서 0.0, step ≥ warmup_steps 에서 1.0.
 
@@ -887,6 +960,13 @@ TERMS: dict[str, dict] = {
     #   채우는 행 필드명 그대로다. `opd_n_tok` 은 진단용(구간 길이)일 뿐 보상 계산에는
     #   안 쓰므로 needs 에 안 넣는다(design §4: "보상 계산엔 안 쓴다 — 로그·중단 규칙 전용").
     OPD_TERM:     {"needs": ("emitted", "opd_kl"), "warmup": True, "weight": W_META},
+    # ── OPD 그룹 중심화(opd_meta_c, 2026-09-06) — needs 에 "opd_kl" 이 아니라
+    #   "opd_kl_c" 를 요구한다: 그룹 중심화는 그룹 문맥이 필요해 `verl_sdc.
+    #   _compute_countdown_arm_stash` 가 그룹별로 미리 계산해 행에 얹어 둔 값을 읽는다
+    #   (`phat`/`adv_corr` 와 같은 "그룹 단위 선계산 → 행 필드" 패턴). 이 필드가 행에
+    #   없으면 즉사한다 — OPT_OPDC 가 돌았는데 센터링이 배선 안 된 채 조용히 0 을 흘리는
+    #   사고를 막는다(OPD_TERM 과 같은 이유).
+    OPD_TERM_C:   {"needs": ("emitted", "opd_kl_c"), "warmup": True, "weight": W_META},
 }
 
 _COMMON = ("corr", "format", "meta_floor")   # 공통 = 처치 아님. 여덟 팔 전부 동일.
@@ -1009,6 +1089,17 @@ ARM_SPECS: dict[str, dict] = {
                 "note": "★힌트 교사(오라클 상태-요약 조건화) 메타 구간 on-policy 증류. "
                         "OPT 와 항 동일 + opd_meta. 오라클은 family_dead/live_new_moves만 "
                         "쓴다 — 정답 식(witness)은 절대 안 준다."},
+    # ★OPT_OPDC (2026-09-06, docs/DESIGN_opd_hint_teacher.md §10): OPT_OPD 의
+    #   단측 벌(절대 기준 0)이 cd7 스모크에서 "메타를 그만 낸다"로만 수렴한 실패
+    #   (발화율 7%→0.8%, 15 스텝, `docs/RESULTS_cd7.md` "그룹 중심화 OPD")를 고치는
+    #   판. 항 하나만 opd_meta → opd_meta_c 로 바뀐다 — 나머지는 OPT_OPD 와 완전히
+    #   같다(코드가 아니라 데이터로 이 사실을 확인할 것: `arm_signature` 가 term 이름
+    #   차이 하나로만 갈린다).
+    "OPT_OPDC": {"label": "optional_opd_centered", "terms": ("corr", "format", OPD_TERM_C),
+                 "meta_form": "new", "require_meta": False, "data_hint": "normal",
+                 "note": "★OPT_OPD 와 항 동일 + opd_meta_c(그룹 중심화) 대신. 같은 그룹의 "
+                         "발화·채점된 메타끼리만 kl 을 상대 비교한다 — 발화 자체엔 기대값 "
+                         "중립, 힌트 교사에 더 가까운 메타만 상대적으로 밀어올린다."},
 }
 
 
@@ -1053,6 +1144,11 @@ def arm_signature(arm: str) -> str:
     #   사후에 한 줄로 확인해야 한다. 실측 전 잠정값이면 '?' 가 붙는다.
     if OPD_TERM in spec["terms"]:
         extra += f"|opd_c={OPD_C:g}{'?' if OPD_C_PROVISIONAL else ''}"
+    # ★OPD_TERM 과 별개 조각(`opdc_c=`)이다 — 두 항이 같은 OPD_C 상수를 공유해도
+    #   서명 문자열은 term 이름(`parts` 루프의 `t@weight`)만으로 이미 갈리지만,
+    #   OSD_C/INV_TAU 규약(잠정값이면 '?')을 이 항에도 그대로 지키기 위해 명시한다.
+    if OPD_TERM_C in spec["terms"]:
+        extra += f"|opdc_c={OPD_C:g}{'?' if OPD_C_PROVISIONAL else ''}"
     # ★SC/SCg 정체 — K_S(막힘 임계)·conf_hi(과신 임계)·세 항의 무게가 이 팔의 전부다.
     #   하나라도 안 박으면 "어느 K_S 로 돌았나"가 로그에서 사라진다(OSD_C/INV_TAU 와
     #   같은 규약). 무게는 위 `parts` 루프가 이미 `t@weight` 로 찍으므로 여기서는
@@ -1188,6 +1284,11 @@ def arm_reward(
         raw["live_new"] = r_live_new(row) if emitted else 0.0
     if OPD_TERM in terms:
         raw[OPD_TERM] = r_opd_meta(row["opd_kl"]) if emitted else 0.0
+    if OPD_TERM_C in terms:
+        # 센터링은 emitted 게이팅과 무관하게 이미 0 이다(opd_center_rows 가 None/nan/
+        # 미채점 행에 0.0 을 채운다) — 그래도 다른 meta 항과 같은 관례(if emitted else
+        # 0.0)를 명시해 "emitted 게이팅을 빠뜨렸다"는 감사 질문에 코드로 바로 답한다.
+        raw[OPD_TERM_C] = r_opd_meta_c(row["opd_kl_c"]) if emitted else 0.0
 
     comps: dict[str, float] = {}
     for t, v in raw.items():
@@ -1754,7 +1855,7 @@ def component_means(components: Sequence[Mapping[str, float]], *, dead_eps: floa
 META_TERMS: tuple = ("meta_pos", "meta_mul", "meta_ctx", "gate", "len", "osd",
                      "meta_pos_full", "plan", INV_TERM,
                      "explore", "explore_g", "verify", "early_cost",
-                     "timing", "live_new", OPD_TERM)
+                     "timing", "live_new", OPD_TERM, OPD_TERM_C)
 
 
 def rmeta_magnitude(components: Sequence[Mapping[str, float]],
