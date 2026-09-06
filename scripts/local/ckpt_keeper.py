@@ -139,7 +139,7 @@ def submit_eval(lineage: str, step: int, dry: bool) -> None:
     if dry:
         return
     r = subprocess.run([sys.executable, "scripts/local/gpu_queue.py", "submit", "--name",
-                        f"eval_{lineage}_step{step}", "--priority", "90", "--cmd", cmd],
+                        f"eval_{lineage}_step{step}", "--priority", "90", "--need-mb", "40000", "--cmd", cmd],
                        cwd=str(REPO), capture_output=True, text=True)
     if r.returncode == 0:
         marker.write_text(time.strftime("%Y-%m-%dT%H:%M:%S"))
@@ -152,7 +152,7 @@ def submit_eval(lineage: str, step: int, dry: bool) -> None:
             f"--out $WORK/conts_v1/judge_{lineage}_step{step}.parquet")
     log(f"submit judge-site continuations {lineage} step {step}")
     r2 = subprocess.run([sys.executable, "scripts/local/gpu_queue.py", "submit", "--name",
-                         f"jsite_{lineage}_step{step}", "--priority", "90", "--cmd", jcmd],
+                         f"jsite_{lineage}_step{step}", "--priority", "90", "--need-mb", "40000", "--cmd", jcmd],
                         cwd=str(REPO), capture_output=True, text=True)
     if r2.returncode != 0:
         log(f"  judge-site submit FAILED: {r2.stderr[-300:]}")
