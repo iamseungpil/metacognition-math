@@ -239,3 +239,66 @@ def test_stash_gate_covers_both_opd_terms_and_centers_before_reward_assembly():
     assert center_idx < reward_loop_idx, (
         "그룹 중심화가 per-row arm_reward 조립보다 뒤에 있다 — opd_kl_c 가 그 행의 "
         "arm_reward 호출 시점에 아직 없을 수 있다.")
+
+
+# ══════════════════════════════════════════════════════════ 14. OPT_CF (반사실 쌍둥이)
+# §8, docs/RESULTS_cd7.md "같은 자리 인과 검사" — main(메타 허가)/twin(메타 없음)
+# 쌍을 배치 전체에서 cf_key(=site_id)로 짝짓는 배선(`_compute_countdown_arm_stash`
+# 의 `_cf_on`/`cf_center_rows` 블록)이 실제로 걸려 있는지, OSD/OPD 회귀와 같은
+# `inspect.getsource` 소스텍스트 가드로 확인한다.
+
+def test_cf_term_name_is_single_sourced():
+    assert {cr.CF_TERM} & set(cr.ARM_SPECS["OPT_CF"]["terms"]), (
+        f"CF_TERM={cr.CF_TERM!r} 이 ARM_SPECS['OPT_CF']['terms']"
+        f"={cr.ARM_SPECS['OPT_CF']['terms']} 에 없다 — fail-loud 가드가 죽는다.")
+    assert cr.CF_TERM in cr.TERMS
+    assert cr.CF_TERM in cr.META_TERMS
+
+
+def test_opt_cf_arm_is_not_bit_identical_to_opt():
+    row = {"r_corr": 1, "format_ok": 1, "emitted": 1, "cf_meta_raw": 0.5}
+    opt, _ = cr.arm_reward("OPT", row, step=30)
+    cf, comp = cr.arm_reward("OPT_CF", row, step=30)
+    assert comp.get(cr.CF_TERM, 0.0) != 0.0, f"cf_meta 성분이 0 이다: {comp}"
+    assert abs(opt - cf) > 1e-9, f"OPT_CF({cf}) 와 OPT({opt}) 총보상이 동일 — 배선 0."
+
+
+def test_cf_meta_raw_missing_is_fail_loud():
+    with pytest.raises(KeyError):
+        cr.arm_reward("OPT_CF", {"r_corr": 1, "format_ok": 1, "emitted": 1}, step=30)
+
+
+def test_cf_meta_raw_none_is_silent_zero():
+    row = {"r_corr": 1, "format_ok": 1, "emitted": 1, "cf_meta_raw": None}
+    _tot, comp = cr.arm_reward("OPT_CF", row, step=30)
+    assert comp[cr.CF_TERM] == 0.0
+
+
+def test_stash_computes_cf_center_rows_gated_on_cf_term():
+    """소스텍스트 가드: ①게이트(`_cf_on`)가 CF_TERM 을 커버, ②`cf_center_rows` 호출이
+    꺼진 팔에서는 안 나오고(else 분기가 cf_meta_raw=0.0 으로만 채운다), ③배치 전체
+    센터링이 per-row `arm_reward` 조립 **전**에 끝난다(그래야 그 행의 arm_reward 호출
+    시점에 `cf_meta_raw` 가 이미 있다)."""
+    from src.training import verl_sdc as vs
+
+    src = inspect.getsource(vs._compute_countdown_arm_stash)
+    assert "_cf_on = _cdr.CF_TERM in _cdr.ARM_SPECS[arm][\"terms\"]" in src, (
+        "cf_meta 게이트(_cf_on)가 없다 — cf_center_rows 가 팔과 무관하게 항상/전혀 "
+        "안 돌 수 있다.")
+    assert "cf_center_rows(" in src, "배치 전체 센터링 호출이 없다."
+    center_idx = src.index("cf_center_rows(")
+    reward_loop_idx = src.index('_cdr.arm_reward(arm, r, step=step, phat=phat_of[uid[i]])')
+    assert center_idx < reward_loop_idx, (
+        "cf_center_rows 호출이 per-row arm_reward 조립보다 뒤에 있다 — cf_meta_raw 가 "
+        "그 행의 arm_reward 호출 시점에 아직 없을 수 있다.")
+
+
+def test_wired_log_line_reports_cf_scored_and_pairs_found():
+    """★배선의 유일한 증거 — [COUNTDOWN][WIRED] 가 cf_main_scored/cf_pairs_found 를
+    찍는다(런처 가드가 grep 하는 그 줄). 조건부 계산이 실제로 이 줄까지 이어지는지
+    소스텍스트로 확인한다(값 자체는 통합 테스트 없이는 못 재현한다)."""
+    from src.training import verl_sdc as vs
+
+    src = inspect.getsource(vs._compute_countdown_arm_stash)
+    assert "cf_main_scored={cf_main_scored}" in src
+    assert "cf_pairs_found={cf_pairs_found}/{cf_pairs_total}" in src

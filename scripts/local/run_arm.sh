@@ -93,7 +93,7 @@ fi
 
 if [ "${ARM}" = "N0" ]; then
   DATA_VARIANT="plain"
-elif [ "${ARM}" = "OPT" ] || [ "${ARM}" = "OPT_M" ] || [ "${ARM}" = "OPT_T" ] || [ "${ARM}" = "OPT_MT" ] || [ "${ARM}" = "OPT_MT2" ] || [ "${ARM}" = "OPT_OPD" ] || [ "${ARM}" = "OPT_OPDC" ] || [ "${ARM}" = "OPT_MTC" ]; then
+elif [ "${ARM}" = "OPT" ] || [ "${ARM}" = "OPT_M" ] || [ "${ARM}" = "OPT_T" ] || [ "${ARM}" = "OPT_MT" ] || [ "${ARM}" = "OPT_MT2" ] || [ "${ARM}" = "OPT_OPD" ] || [ "${ARM}" = "OPT_OPDC" ] || [ "${ARM}" = "OPT_MTC" ] || [ "${ARM}" = "OPT_CF" ]; then
   # ★OPT/OPT_M (2026-09-05): 메타 허용·비요구 팔은 항상 `opt` 프롬프트(허가 문장)로
   #   발사한다 — N0 가 항상 `plain` 인 것과 같은 이유다. VARIANT_ARG 를 그대로 두면
   #   호출자가 실수로 p3/new 데이터를 붙여 강제 프롬프트로 발사할 수 있다.
@@ -102,6 +102,10 @@ elif [ "${ARM}" = "OPT" ] || [ "${ARM}" = "OPT_M" ] || [ "${ARM}" = "OPT_T" ] ||
   #   아래 mixed 분기는 안 탄다(고정 자리 배치 없음, §6 스모크는 일반 롤아웃 전용).
   #   ★OPT_OPDC(0906, §10): 그룹 중심화 판. OPT_OPD 와 항 하나만 다르고(opd_meta →
   #   opd_meta_c) 프롬프트·data_hint 는 완전히 같다.
+  #   ★OPT_CF(2026-09-07, §8): main 행은 opt 프롬프트(메타 허가) 그대로다 — twin
+  #   행의 plain 프롬프트는 `scripts/local/build_cf_twins.py` 가 parquet 안에서
+  #   이미 만들어 뒀다(행마다 다른 시스템 메시지). 여기서 VARIANT_ARG 를 "opt" 로
+  #   고정하는 것은 val 파일 선택(`countdown_val_4num_opt.parquet`)에만 쓰인다.
   DATA_VARIANT="opt"
 else
   DATA_VARIANT="${VARIANT_ARG}"
@@ -117,8 +121,17 @@ from src.training.countdown_rewards import ARM_SPECS
 print(ARM_SPECS['${ARM}'].get('data_hint', 'normal'))
 ")
 
+# ★OPT_CF(§8): data_hint="mixed_cf" 는 고정 자리 + 반사실 쌍둥이 판이다. 예산·
+#   continue_final_message 오버라이드는 "mixed"(FT/M0/MT/OPT_M/OPT_MT...) 와
+#   완전히 같아야 한다 — 데이터가 다를 뿐 배치 기하(site 프리픽스가 프롬프트에
+#   접합됨)는 동일하다. `IS_MIXED_LIKE` 로 그 두 값을 한 곳에서 함께 다룬다.
+IS_MIXED_LIKE=0
+if [ "${DATA_HINT}" = "mixed" ] || [ "${DATA_HINT}" = "mixed_cf" ]; then
+  IS_MIXED_LIKE=1
+fi
+
 LINEAGE="cd7_${ARM}_${DATA_VARIANT}_s${SEED}"
-if [ "${DATA_HINT}" = "mixed" ]; then
+if [ "${IS_MIXED_LIKE}" = "1" ]; then
   LINEAGE="${LINEAGE}_mixed"
 fi
 # ★RESP_LEN suffix는 _mixed 뒤에 붙인다 — 값이 기본(2048)과 다를 때만, 체크포인트/
@@ -127,7 +140,12 @@ if [ "${RESP_LEN}" != "2048" ]; then
   LINEAGE="${LINEAGE}_r${RESP_LEN}"
 fi
 CONFIG_NAME="${CONFIG_NAME:-countdown_6arm}"
-if [ "${DATA_HINT}" = "mixed" ]; then
+if [ "${DATA_HINT}" = "mixed_cf" ]; then
+  # ★OPT_CF(§8): 반사실 쌍둥이 판 — main(site, opt 프롬프트) + twin(같은 자리,
+  #   plain 프롬프트, `extra_info.cf_role=twin`) + normal. `scripts/local/
+  #   build_cf_twins.py` 가 `mixed_train_v3c_opt.parquet` 에서 만든다.
+  DATA_TRAIN="${WORK}/data/sites_v1/${MIXED_DATA:-mixed_train_v3c}_cf_opt.parquet"
+elif [ "${DATA_HINT}" = "mixed" ]; then
   # site(3000, 프리픽스가 이미 프롬프트에 접합) + normal(3000, 빈 assistant 메시지
   # 부착) 를 섞은 고정 자리 학습 parquet. countdown_sites.py 헤더 참조.
   # OPT_M 은 opt 프롬프트(메모 허용만)로 시스템 메시지를 바꾼 같은 자리 데이터를 쓴다.
@@ -147,7 +165,7 @@ LOG_FILE="${WORK}/logs/${LINEAGE}.log"
 #    "${VAR:-default}" 라 호출자가 이미 env 로 값을 줬으면 그쪽을 존중한다
 #    (그래서 data_hint 분기를 그 **기본값**에만 건다 — "지금까지"와 바이트 동일한
 #    경로는 이 분기가 없어도 원래 기본값 그대로다).
-if [ "${DATA_HINT}" = "mixed" ]; then
+if [ "${IS_MIXED_LIKE}" = "1" ]; then
   MAX_PROMPT="${MAX_PROMPT:-2048}"
   # ★RESP_LEN(0906): 기본값 2048 이면 이 세 줄은 예전 하드코딩(2048/4352/4352)과
   #   바이트 동일하다. RESP_LEN 을 올리면(예: 3072) model_len/batched_tokens 도

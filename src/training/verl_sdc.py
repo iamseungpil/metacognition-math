@@ -1152,6 +1152,22 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
     prefix_col = [(p or "") for p in prefix_col] if prefix_col is not None else [""] * bs
     n_site_rows = sum(1 for p in prefix_col if p)
 
+    # ── 반사실 쌍둥이 배선(cf_role/cf_key, OPT_CF 전용, §8). ★`mixed_train_v3c_cf_opt.
+    #   parquet`(scripts/local/build_cf_twins.py) 만 이 두 컬럼을 가진다(extra_info
+    #   안에만 있다 — flat 컬럼은 안 넣었다, `_col` 의 extra_info 폴백이 읽는다).
+    #   없으면(다른 모든 parquet) prefix_col 과 같은 관례로 관용 처리: 전부
+    #   cf_role="none"/cf_key="" — "지금까지"(cf 처치가 아예 없음)와 바이트 동일.
+    try:
+        cf_role_col = _col("cf_role")
+    except RuntimeError:
+        cf_role_col = None
+    cf_role_col = [(v or "none") for v in cf_role_col] if cf_role_col is not None else ["none"] * bs
+    try:
+        cf_key_col = _col("cf_key")
+    except RuntimeError:
+        cf_key_col = None
+    cf_key_col = [(v or "") for v in cf_key_col] if cf_key_col is not None else [""] * bs
+
     prompt_texts = [
         _decode_prompt_only(self.tokenizer, data[i].batch["prompts"],
                             data[i].batch["attention_mask"], prompt_length)
@@ -1236,6 +1252,10 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
         #   누출도 없으므로 "" 가 정직한 값이다(빈 식은 어떤 메타에도 안 들어 있다).
         r["final_expr"] = _cdt.extract_expr(text) or ""
         r["arm"] = arm
+        # ★반사실 쌍둥이(§8) — cf_center_rows 가 배치 전체에서 cf_key 로 main/twin 을
+        #   짝짓는 데 쓴다. 다른 모든 팔·데이터에서는 "none"/"" 라 무해하다.
+        r["cf_role"] = cf_role_col[i]
+        r["cf_key"] = cf_key_col[i]
         # ★불변량(고정 자리 설계): site 프리픽스는 **첫 <meta> 전**에서 잘린다
         #   (`countdown_sites.cut_own_meta`/`cut_attempt_boundary` 둘 다 — B 컷은
         #   `\\boxed{` 이후를 제외하는데, 정상 롤아웃에서 <meta> 는 boxed 이전에
@@ -1597,6 +1617,29 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
         for r in rows:
             r["opd_kl_c"] = 0.0
 
+    # ── 반사실 쌍둥이 센터링(cf_meta, OPT_CF 전용, §8) — `opd_kl_c` 와 같은 패턴으로
+    #   배치 한 번에 한 번 끝낸다. `opd_center_rows`(그룹=uid 안에서 상대 순위)와
+    #   달리 여기서는 **그룹이 아니라 배치 전체**에서 `cf_key`(=site_id) 로 main/twin
+    #   을 짝짓는다 — main 과 twin 은 서로 다른 프롬프트라 uid 가 다르기 때문이다.
+    _cf_on = _cdr.CF_TERM in _cdr.ARM_SPECS[arm]["terms"]
+    cf_main_scored = 0
+    cf_pairs_found = 0
+    cf_pairs_total = 0
+    if _cf_on:
+        _cf_input = [{"cf_role": r["cf_role"], "cf_key": r["cf_key"],
+                      "emitted": r["emitted"], "corr": r["r_corr"]} for r in rows]
+        _cf_centered = _cdr.cf_center_rows(_cf_input)
+        for i, r in enumerate(rows):
+            r["cf_meta_raw"] = _cf_centered[i]
+        cf_main_scored = sum(1 for v in _cf_centered if v != 0.0)
+        _keys_main = {r["cf_key"] for r in rows if r["cf_role"] == "main"}
+        _keys_twin = {r["cf_key"] for r in rows if r["cf_role"] == "twin"}
+        cf_pairs_total = len(_keys_main)
+        cf_pairs_found = len(_keys_main & _keys_twin)
+    else:
+        for r in rows:
+            r["cf_meta_raw"] = 0.0
+
     # ★강등이 걸려 있으면 osd 항을 0 으로 죽인다(이전 스텝의 판정이 이번 스텝부터 적용된다).
     #   지난 판정을 «다음 스텝부터» 적용하는 것이 옳다 — 이미 뽑은 롤아웃의 보상을
     #   소급해 바꾸면 그 스텝의 어드밴티지가 정책과 어긋난다.
@@ -1635,6 +1678,7 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
           f"inv_scored={inv_diag.get('scored', 0)}/{inv_diag.get('B', 0)} "
           f"opd_scored={opd_diag.get('scored', 0)}/{opd_diag.get('B', 0)} "
           f"opd_c_scored={opd_c_scored} opd_c_groups>=2={opd_c_groups_ge2}/{len(groups)} "
+          f"cf_main_scored={cf_main_scored} cf_pairs_found={cf_pairs_found}/{cf_pairs_total} "
           f"n_site_rows={n_site_rows}", flush=True)
 
     # ★0902 관측: 보상 구성 요소별 평균 · 발화율 · 계획 항(해 생존/이행) 비율 · 응답 표본 8개 → wandb (실패해도 학습은 계속)

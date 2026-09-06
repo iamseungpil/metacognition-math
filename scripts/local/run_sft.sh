@@ -45,6 +45,10 @@ CONFIG="${1:?CONFIG required}"
 
 # shellcheck disable=SC1091
 source "${_SCRIPT_DIR}/env.sh"
+# E-133(2026-09-07): 이 박스의 시스템 CUDA(13.0) 와 torch 빌드(12.8) 가 달라 DeepSpeed 가 cpu_adam 확장을
+# JIT 빌드하다 CUDAMismatchException 으로 죽는다. CPU Adam 은 CUDA 가 필요 없으므로 검사만 건너뛴다.
+export DS_SKIP_CUDA_CHECK=1
+export TORCH_EXTENSIONS_DIR="${TORCH_EXTENSIONS_DIR:-/hdd_data/seungpil/tmp/torch_extensions}"
 cd "${REPO_ROOT}"
 
 if [ ! -f "${CONFIG}" ]; then
