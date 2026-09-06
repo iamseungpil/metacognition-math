@@ -1,0 +1,39 @@
+# coupling_sft_v1 — "메타(힌트) → 구체적으로 다른 다음 수 → 정답" 결합 SFT.
+#
+# 0907, 로컬 박스 실험(cd8). `scripts/local/build_coupling_sft.py --min_site_gain 0.1
+# --no_require_novel --no_require_followed`로 뽑은 834행/403 site — 힌트가 그
+# site 에서 통계적으로 성공률을 올린(hint_rate - nometa_rate >= 0.1) 곳에서, 힌트를
+# **받은 채** 정답까지 간(r_corr=1, emitted=1) 이어쓰기를 golden demo 로 삼아,
+# 힌트 **없이**(원본 프롬프트 그대로) 학습시킨다. wrong_prefix/scenario="redirect"
+# 라 sft.py 가 자동으로 (원 프롬프트 + 학생의 flawed prefix) 를 loss-mask 하고
+# 메타+구체 수+정답만 학습하게 만든다(src/training/sft.py::_should_mask_prefix).
+#
+# init: $WORK/models/Qwen3-4B (countdown RL 이 쓰는 것과 같은 base — run_arm.sh 의
+# actor_rollout_ref.model.path 와 동일 모델). SFT2 스타일 배치(bs1 x ga4 x 4gpu=16)를
+# 1-GPU 로 재현하려면 ga=16 (accelerate_sft_1gpu_cpuoff.yaml 은 num_processes=1).
+model_name_or_path: /hdd_data/seungpil/scratch/models/Qwen3-4B
+dataset_path: /hdd_data/seungpil/scratch/data/sites_v1/coupling_sft_v1.parquet
+output_dir: /hdd_data/seungpil/scratch/models/coupling_sft_v1   # ABSOLUTE (0708 stranded-ckpt guard)
+run_name: coupling-sft-v1
+wandb_project: metacot-countdown-local
+
+num_train_epochs: 2
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 16   # x num_processes=1 (1gpu cpuoff) = effective batch 16
+learning_rate: 1.0e-5
+max_length: 3072
+save_strategy: steps
+save_steps: 25
+save_total_limit: 2
+eval_strategy: "no"
+
+# Preemption survival: on a resubmission that lands on a node where output_dir
+# still holds checkpoint-*, resume from the newest COMPLETE one (sft.py
+# _resolve_resume_checkpoint). On a first/fresh node the dir is absent and this
+# degrades silently to a normal cold start, so the SAME config is correct for
+# both the first submission and every relaunch.
+
+# accelerate_sft_1gpu_cpuoff.yaml sets deepspeed zero3_save_16bit_model: true,
+# so trainer.save_model(output_dir) in src/training/sft.py:run_sft already
+# writes MERGED bf16 safetensors (not per-rank shards) + tokenizer.save_pretrained
+# alongside it — no separate merge step needed (unlike verl's FSDP checkpoints).

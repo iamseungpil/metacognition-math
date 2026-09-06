@@ -24,7 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scripts.local.build_coupling_sft import (  # noqa: E402
-    build_sft_row, cap_per_key, row_passes_filters, summarize_stages,
+    build_sft_row, cap_per_key, compute_site_gain_ok, compute_site_success_rate,
+    row_passes_filters, summarize_stages,
 )
 
 
@@ -189,3 +190,100 @@ def test_summarize_stages_empty_survivors_mean_is_nan():
     summ = summarize_stages(rows, require_redirect_for_dead=False)
     assert summ["final_kept"] == 0
     assert math.isnan(summ["mean_n_tokens"])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# --no_require_novel / --no_require_followed
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_no_require_novel_lets_non_novel_rows_pass():
+    row = {**_cont_row(novel=0), "family_dead": 0}
+    ok, stage = row_passes_filters(row, require_redirect_for_dead=False, require_novel=False)
+    assert ok is True and stage == ""
+    # default (require_novel=True) still rejects it
+    ok2, stage2 = row_passes_filters(row, require_redirect_for_dead=False)
+    assert ok2 is False and stage2 == "novel"
+
+
+def test_no_require_followed_lets_non_followed_rows_pass():
+    row = {**_cont_row(followed=0), "family_dead": 0}
+    ok, stage = row_passes_filters(row, require_redirect_for_dead=False, require_followed=False)
+    assert ok is True and stage == ""
+    ok2, stage2 = row_passes_filters(row, require_redirect_for_dead=False)
+    assert ok2 is False and stage2 == "followed"
+
+
+def test_summarize_stages_skips_novel_followed_checks_when_disabled():
+    rows = [{**_cont_row(site_id="s1", novel=0, followed=0), "family_dead": 0}]
+    summ = summarize_stages(rows, require_redirect_for_dead=False,
+                             require_novel=False, require_followed=False)
+    assert "novel" not in summ["kept_by_stage"]
+    assert "followed" not in summ["kept_by_stage"]
+    assert summ["final_kept"] == 1
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# site-gain gate: compute_site_success_rate / compute_site_gain_ok / row+summary wiring
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_compute_site_success_rate_averages_per_site():
+    rows = [
+        {"site_id": "a", "r_corr": 1}, {"site_id": "a", "r_corr": 0},
+        {"site_id": "b", "r_corr": 1}, {"site_id": "b", "r_corr": 1},
+    ]
+    rates = compute_site_success_rate(rows)
+    assert rates == {"a": 0.5, "b": 1.0}
+
+
+def test_compute_site_gain_ok_thresholds_on_gain_and_max_base():
+    hint_rates = {"a": 0.6, "b": 0.9, "c": 0.5}
+    baseline_rates = {"a": 0.4, "b": 0.85}   # "c" missing from baseline
+    ok = compute_site_gain_ok(hint_rates, baseline_rates, min_site_gain=0.1)
+    assert ok == {"a": True, "b": False, "c": False}   # c: no baseline -> conservative False
+
+    ok_capped = compute_site_gain_ok(hint_rates, baseline_rates, min_site_gain=0.1, max_base=0.5)
+    assert ok_capped == {"a": True, "b": False, "c": False}   # b already fails gain
+
+    hint_rates2 = {"a": 0.6}
+    baseline_rates2 = {"a": 0.55}   # gain 0.05, below both thresholds
+    ok2 = compute_site_gain_ok(hint_rates2, baseline_rates2, min_site_gain=0.1, max_base=0.5)
+    assert ok2 == {"a": False}
+
+
+def test_row_passes_filters_site_gain_stage():
+    row_ok = {**_cont_row(site_id="a"), "family_dead": 0}
+    row_bad = {**_cont_row(site_id="z"), "family_dead": 0}
+    site_gain_ok = {"a": True}
+    ok, _ = row_passes_filters(row_ok, require_redirect_for_dead=False, site_gain_ok=site_gain_ok)
+    assert ok is True
+    ok2, stage2 = row_passes_filters(row_bad, require_redirect_for_dead=False,
+                                      site_gain_ok=site_gain_ok)
+    assert ok2 is False and stage2 == "site_gain"   # missing from mapping -> rejected
+
+
+def test_summarize_stages_site_gain_stage_present_only_when_requested():
+    rows = [{**_cont_row(site_id="a"), "family_dead": 0}]
+    summ_off = summarize_stages(rows, require_redirect_for_dead=False)
+    assert "site_gain" not in summ_off["kept_by_stage"]
+
+    summ_on = summarize_stages(rows, require_redirect_for_dead=False,
+                                site_gain_ok={"a": True})
+    assert summ_on["kept_by_stage"]["site_gain"] == 1
+
+    summ_on_reject = summarize_stages(rows, require_redirect_for_dead=False,
+                                       site_gain_ok={"a": False})
+    assert summ_on_reject["kept_by_stage"]["site_gain"] == 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# summarize_stages: redirect_share
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_summarize_stages_redirect_share():
+    rows = [
+        {**_cont_row(site_id="s1", decision="redirect"), "family_dead": 0},
+        {**_cont_row(site_id="s2", decision="verify"), "family_dead": 0},
+        {**_cont_row(site_id="s3", decision="redirect"), "family_dead": 0},
+    ]
+    summ = summarize_stages(rows, require_redirect_for_dead=False)
+    assert summ["redirect_share"] == pytest.approx(2 / 3)
