@@ -132,7 +132,14 @@ if [ "${DATA_HINT}" = "mixed" ] || [ "${DATA_HINT}" = "mixed_cf" ]; then
   IS_MIXED_LIKE=1
 fi
 
-LINEAGE="cd7_${ARM}_${DATA_VARIANT}_s${SEED}"
+# INIT_TAG(선택, 대문자/숫자, 예 SFT1): 초기 모델을 바꾼 팔의 계보를 구분한다 — 계보명 arm 자리에 붙어
+#   `cd7_OPT_CF_SFT1_opt_s1_mixed` 꼴이 된다(keeper 의 _LIN 정규식 arm 그룹 [A-Z0-9_]+ 가 그대로 받는다).
+# MODEL_PATH(선택): 초기 모델 경로(기본 Qwen3-4B). INIT_TAG 없이 MODEL_PATH 만 바꾸는 것은 금지(계보 충돌).
+MODEL_PATH="${MODEL_PATH:-/hdd_data/seungpil/scratch/models/Qwen3-4B}"
+INIT_TAG="${INIT_TAG:-}"
+if [ -n "${INIT_TAG}" ] && ! [[ "${INIT_TAG}" =~ ^[A-Z0-9]+$ ]]; then echo "[run_arm] FATAL: INIT_TAG 는 대문자/숫자만 (${INIT_TAG})"; exit 2; fi
+if [ -z "${INIT_TAG}" ] && [ "${MODEL_PATH}" != "/hdd_data/seungpil/scratch/models/Qwen3-4B" ]; then echo "[run_arm] FATAL: MODEL_PATH 를 바꾸면 INIT_TAG 도 줘야 한다(계보 충돌 방지)"; exit 2; fi
+LINEAGE="cd7_${ARM}${INIT_TAG:+_${INIT_TAG}}_${DATA_VARIANT}_s${SEED}"
 if [ "${IS_MIXED_LIKE}" = "1" ]; then
   LINEAGE="${LINEAGE}_mixed"
 fi
@@ -211,7 +218,7 @@ TRAIN_CMD=(python -u -m src.training.verl_sdc
   "trainer.project_name=${WANDB_PROJECT}"
   "trainer.nnodes=1"
   "trainer.n_gpus_per_node=1"
-  "actor_rollout_ref.model.path=/hdd_data/seungpil/scratch/models/Qwen3-4B"
+  "actor_rollout_ref.model.path=${MODEL_PATH}"
   "actor_rollout_ref.rollout.tensor_model_parallel_size=1"
   "actor_rollout_ref.rollout.n=8"
   "actor_rollout_ref.rollout.temperature=1.0"
@@ -277,7 +284,7 @@ if [ "${ARM}" = "OPT_CF" ]; then
   TRAIN_CMD+=("data.shuffle=false")
 fi
 
-echo "[run_arm] LINEAGE=${LINEAGE} ARM=${ARM} SEED=${SEED} STEPS=${STEPS} DATA_VARIANT=${DATA_VARIANT} DATA_HINT=${DATA_HINT} RESP_LEN=${RESP_LEN}"
+echo "[run_arm] LINEAGE=${LINEAGE} ARM=${ARM} SEED=${SEED} STEPS=${STEPS} DATA_VARIANT=${DATA_VARIANT} DATA_HINT=${DATA_HINT} RESP_LEN=${RESP_LEN} INIT_TAG=${INIT_TAG:-none} MODEL_PATH=${MODEL_PATH}"
 echo "[run_arm] data.train_files=${DATA_TRAIN}"
 echo "[run_arm] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset! queue should have set this>}"
 echo "[run_arm] exact train command:"
