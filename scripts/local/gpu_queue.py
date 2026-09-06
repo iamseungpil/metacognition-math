@@ -174,6 +174,18 @@ def _gpu_free_mb(gpu: int) -> int | None:
         return None
 
 
+
+def _gpu_cap_mb(gpu):
+    """QUEUE_ROOT/caps.json = {"0": 45000, "3": 45000} — 그 카드에 올릴 수 있는 잡의 need_mb 상한. 없으면 None."""
+    if gpu is None:
+        return None
+    try:
+        caps = json.loads((QUEUE_ROOT / "caps.json").read_text())
+    except Exception:
+        return None
+    v = caps.get(str(gpu))
+    return int(v) if v is not None else None
+
 def _pick_job(gpu: int | None = None) -> Path | None:
     """Return a pending job file sorted by (-priority, submitted order), or None.
 
@@ -196,6 +208,11 @@ def _pick_job(gpu: int | None = None) -> Path | None:
     for p in pending:
         job = load(p)
         need = int(job.get("need_mb", 0) or 0)
+        # ★0907: 카드별 상한(caps.json, 핫리로드). 타인이 «간헐적으로」 쓰는 카드(GPU 0·3)에는 큰 학습 잡을
+        #   올리지 않는다 — 빈 틈에 올렸다가 상대가 돌아오면 vLLM/옵티마이저가 OOM 으로 죽는다(0907 3회).
+        cap = _gpu_cap_mb(gpu)
+        if cap is not None and need and need > cap:
+            continue
         if free is not None and need and need > free:
             continue
         cands.append((-int(job.get("priority", 0)), p.name, p))
