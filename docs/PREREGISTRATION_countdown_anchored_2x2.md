@@ -62,3 +62,51 @@ None`(아직 시도가 없다 — 판정 불가)일 때 항상 0 이라, 정책�
 `frac_meta_first`(응답 첫 토큰 메타 비율)가 0.2 미만 **그리고** held-out 발화율이 0.5
 미만으로 유지될 때. 어느 한쪽이 깨지면(정합 하락 또는 여전히 첫 토큰 메타 지배) 착취가
 형태만 바꿨다고 읽고 기각.
+
+## §8. OPT_CF — 반사실 쌍둥이 (2026-09-07)
+
+동기(`docs/RESULTS_cd7.md` "같은 자리 인과 검사", 09-07 01:10). 학습 전 정책에서
+스스로 낸 메모는 nometa 대비 같은 자리 성공률을 바꾸지 못한다(짝지은 자리별 차이
+−0.001, 95% CI [−0.007, +0.005] — 0 을 포함). FT/MT/OPT_T/OPT_MT(오라클 타이밍
+정합)와 OPD/OPT_OPDC(힌트 교사 KL)는 전부 "이 메모가 옳은 형태였는가"만 재고
+"이 메모가 이 문제에서 **실제로 정답률을 바꿨는가**"는 안 잰다. OPT_CF 는 그것을
+직접 잰다.
+
+**정의** (`src/training/countdown_rewards.py`): 같은 자리(site_id)를 메타를
+허가한 프롬프트(main, `PROMPT_VARIANTS["opt"]`)와 메타 문장 자체가 없는 프롬프트
+(twin, `PROMPT_VARIANTS["plain"]`, 반사실 기준선)로 **둘 다** 한 배치에 태운다
+(`scripts/local/build_cf_twins.py` → `mixed_train_v3c_cf_opt.parquet`, main 234 ·
+twin 234 · normal 239 = 707행). 배치 전체에서 `cf_key`(=site_id)로 main/twin 을
+짝짓고(`cf_center_rows`, GRPO 그룹이 아니라 배치 단위 — main 과 twin 은 서로 다른
+프롬프트라 다른 uid 를 갖는다), main 행 중 메타를 낸 행에
+
+```
+r_cf_meta = clip(corr_main − mean(corr, twin 그룹(같은 cf_key))), −1, +1) × W_CF   (W_CF=1.0, warmup)
+```
+
+를 준다. twin 행 자체·일반 롤아웃·미발화 main·같은 배치에 twin 이 없는 main 은
+전부 0(비교 불가를 조용히 숨기지 않고 무처치로 둔다). `ARM_SPECS["OPT_CF"]` =
+`terms=("corr","format","cf_meta")`, `require_meta=False`, `meta_form="new"`,
+`data_hint="mixed_cf"`.
+
+**셔플 배선.** `configs/countdown_6arm.yaml` 의 `data.shuffle` 기본값은 **True**
+— verl 은 매 에폭 데이터셋 자체를 섞은 뒤 `train_batch_size`(64)로 순서대로
+자르므로, `build_cf_twins.py` 가 만든 (main,twin) 인접 순서가 셔플로 깨져 짝을
+못 찾는 main 행이 늘어날 수 있다. `scripts/local/run_arm.sh` 는 `ARM=OPT_CF` 일
+때만 `data.shuffle=false` 를 강제한다(다른 팔은 무영향). 쌍은 항상 짝수 인덱스에서
+시작하고 배치 크기(64)도 짝수라, 셔플이 꺼져 있으면 어떤 쌍도 배치 경계에 걸리지
+않는다 — 트레이너 쪽에서 그룹별로 재배열하는 대안(설계 §의 폴백)은 필요 없었다.
+
+**판정.**
+- 1차(주 지표) = 같은 자리 성공률(§3 과 같은 지표·같은 자리표). Positive:
+  OPT_MT v3c s2 (스텝 30/50 = 0.599/0.622) 와 OPT(스텝 30/50 = 0.545/0.572) 를
+  둘 다 앞선다(같은 판정선 규약 — §4 의 +3pp 밴드를 그대로 적용).
+- 기제 = 학습 텔레메트리 `mean(corr, main 발화 행) − mean(corr, twin 행)` 이 학습
+  중 0 위로 올라가는가(§8 정의상 cf_meta 의 무가중 원값과 같다) — 오르지 않으면
+  "메모가 결과를 바꾼다"는 전제 자체가 이 정책에 없다는 뜻이고, cf_meta 항은
+  구조적으로 보상을 줄 재료가 없다(OPD 가 "메타를 그만 낸다"로 수렴했던 실패와
+  같은 종류의 붕괴를 의심).
+- 무효화: held-out 정답률이 스텝 50 에서 N0 −5pp 밑으로 떨어지면 중단(§4 규칙과
+  동일). `[COUNTDOWN][WIRED]` 의 `cf_main_scored`/`cf_pairs_found` 로 배선이
+  실제로 걸렸는지(무효 레버 아님) 매 스텝 확인 — `cf_pairs_found` 가 배치의
+  site 쌍 수 대비 낮으면(셔플 재발 등) 1차 지표를 신뢰하지 않는다.
