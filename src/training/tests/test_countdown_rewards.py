@@ -255,7 +255,8 @@ SPEC_TABLE = {   # 사양 §보상 을 손으로 옮긴 것. 코드가 아니라
 #   이지만 meta_form 은 "new"(파싱은 여전히 새 형식) + require_meta=False(형식 점수는
 #   메타를 요구하지 않음)로 N0 와도 갈린다 — 아래 공통항 예외 테스트에서 함께 다룬다.
 ADDED_ARMS = ["OSD", "P", "R", "N0", "PL", "SC", "SCg", "SC_GH", "FT", "M0", "MT",
-              "OPT", "OPT_M", "OPT_T", "OPT_MT", "OPT_MT2", "OPT_OPD", "OPT_OPDC", "OPT_MTC"]
+              "OPT", "OPT_M", "OPT_T", "OPT_MT", "OPT_MT2", "OPT_OPD", "OPT_OPDC", "OPT_MTC",
+              "OPT_CF"]
 
 
 def test_arm_specs_match_spec_table():
@@ -284,13 +285,14 @@ def test_common_terms_are_identical_across_all_arms():
             assert tuple(cr.ARM_SPECS[arm]["terms"]) == ("corr", "format")
             assert cr.ARM_SPECS[arm]["meta_form"] == "none"
             continue
-        if arm in ("OPT", "OPT_M", "OPT_T", "OPT_MT", "OPT_MT2", "OPT_OPD", "OPT_OPDC", "OPT_MTC"):
+        if arm in ("OPT", "OPT_M", "OPT_T", "OPT_MT", "OPT_MT2", "OPT_OPD", "OPT_OPDC", "OPT_MTC",
+                   "OPT_CF"):
             # OPT 사다리: corr+format 위에 지도 항(timing/timing2/live_new) **또는** 힌트
             # 교사 항(opd_meta/opd_meta_c, 2026-09-06)만 얹을 수 있고, meta_floor 는 절대
             # 없다. timing2(0906) 는 OPT_MT2 전용 — timing 의 무시도-redirect 무효 레버 수리.
             _t = tuple(cr.ARM_SPECS[arm]["terms"])
             assert _t[:2] == ("corr", "format") and "meta_floor" not in _t
-            assert set(_t[2:]) <= {"timing", "timing2", "live_new", cr.OPD_TERM, cr.OPD_TERM_C}
+            assert set(_t[2:]) <= {"timing", "timing2", "live_new", cr.OPD_TERM, cr.OPD_TERM_C, cr.CF_TERM}
             assert cr.ARM_SPECS[arm]["meta_form"] == "new"
             assert cr.ARM_SPECS[arm]["require_meta"] is False
             continue
@@ -322,7 +324,8 @@ def test_warmup_applies_to_meta_and_gate_only():
     assert warmed == {"meta_pos", "meta_mul", "meta_ctx", "gate", "len", "osd",
                       "meta_pos_full", "plan", cr.INV_TERM,
                       "explore", "explore_g", "verify",
-                      "timing", "timing2", "live_new", cr.OPD_TERM, cr.OPD_TERM_C}
+                      "timing", "timing2", "live_new", cr.OPD_TERM, cr.OPD_TERM_C,
+                      cr.CF_TERM}
     for t in ("corr", "format", "meta_floor", "early_cost"):
         assert not cr.TERMS[t]["warmup"]
 
@@ -1116,6 +1119,129 @@ def test_opt_opdc_warmup_scale_applies():
 def test_check_abort_skips_emit_rate_for_opt_opdc_too():
     low_emit = _abort_report(emit_rate=0.05)
     got = {v["metric"] for v in cr.check_abort(low_emit, arm="OPT_OPDC")}
+    assert "emit_rate" not in got
+
+
+# ═════════════════════════════════════════════════════ 14. OPT_CF (반사실 쌍둥이)
+# §8, docs/RESULTS_cd7.md "같은 자리 인과 검사"(09-07 01:10) — 스스로 낸 메모가 nometa
+# 대비 같은 자리 성공률을 바꾸지 못한다는 실측(−0.001, CI 가 0 포함)에 대한 직접
+# 인과 대조. main(메타 허가)의 corr 을 같은 cf_key(=site_id) twin(메타 없음) 그룹의
+# 평균 corr 과 비교한다.
+
+def test_cf_center_rows_missing_twin_is_zero():
+    """같은 배치에 그 cf_key 의 twin 이 하나도 없으면(셔플이 쌍을 갈랐거나) 0."""
+    rows = [dict(cf_role="main", cf_key="s1", emitted=1, corr=1.0)]
+    assert cr.cf_center_rows(rows) == [0.0]
+
+
+def test_cf_center_rows_twin_present_correct_centering():
+    rows = [
+        dict(cf_role="main", cf_key="s1", emitted=1, corr=1.0),   # main, 맞음
+        dict(cf_role="twin", cf_key="s1", emitted=0, corr=0.0),   # twin, 틀림
+        dict(cf_role="twin", cf_key="s1", emitted=0, corr=1.0),   # twin, 맞음
+    ]
+    # twin 평균 corr = 0.5 → main r = clip(1.0 - 0.5, -1, 1) = 0.5
+    out = cr.cf_center_rows(rows)
+    assert out[0] == pytest.approx(0.5)
+    assert out[1] == 0.0
+    assert out[2] == 0.0
+
+
+def test_cf_center_rows_twin_rows_always_zero():
+    """twin 행 자체는 처치 대상이 아니다 — corr/emitted 값과 무관하게 항상 0."""
+    rows = [
+        dict(cf_role="twin", cf_key="s1", emitted=1, corr=1.0),
+        dict(cf_role="twin", cf_key="s1", emitted=1, corr=0.0),
+        dict(cf_role="none", cf_key="", emitted=1, corr=1.0),
+    ]
+    assert cr.cf_center_rows(rows) == [0.0, 0.0, 0.0]
+
+
+def test_cf_center_rows_main_not_emitted_is_zero():
+    rows = [
+        dict(cf_role="main", cf_key="s1", emitted=0, corr=1.0),
+        dict(cf_role="twin", cf_key="s1", emitted=0, corr=0.0),
+    ]
+    assert cr.cf_center_rows(rows) == [0.0, 0.0]
+
+
+def test_cf_center_rows_clips_to_unit_interval():
+    rows = [
+        dict(cf_role="main", cf_key="s1", emitted=1, corr=1.0),
+        dict(cf_role="main", cf_key="s2", emitted=1, corr=0.0),
+        dict(cf_role="twin", cf_key="s1", emitted=0, corr=0.0),
+        dict(cf_role="twin", cf_key="s2", emitted=0, corr=1.0),
+    ]
+    out = cr.cf_center_rows(rows)
+    assert out[0] == pytest.approx(1.0)     # 1.0 - 0.0, clip 안 걸림
+    assert out[1] == pytest.approx(-1.0)    # 0.0 - 1.0
+
+
+def test_r_cf_meta_is_a_thin_passthrough():
+    assert cr.r_cf_meta(None) == 0.0
+    assert cr.r_cf_meta(0.5) == pytest.approx(0.5)
+    assert cr.r_cf_meta(-1.0) == pytest.approx(-1.0)
+
+
+def test_opt_cf_arm_spec():
+    spec = cr.ARM_SPECS["OPT_CF"]
+    assert tuple(spec["terms"]) == ("corr", "format", cr.CF_TERM)
+    assert spec["meta_form"] == "new"
+    assert spec["require_meta"] is False
+    assert spec.get("data_hint") == "mixed_cf"
+
+
+def test_arm_OPT_CF_hand_computed():
+    row = dict(r_corr=1, format_ok=1, emitted=1, cf_meta_raw=0.5)
+    total, comps = cr.arm_reward("OPT_CF", row, step=999)
+    assert set(comps) == {"corr", "format", cr.CF_TERM}
+    assert comps[cr.CF_TERM] == pytest.approx(0.5 * cr.W_CF)
+    assert total == pytest.approx(1.0 + 0.35 + comps[cr.CF_TERM])
+
+
+def test_arm_OPT_CF_term_is_off_without_emitted():
+    row = dict(r_corr=1, format_ok=1, emitted=0, cf_meta_raw=0.9)
+    _total, comps = cr.arm_reward("OPT_CF", row, step=999)
+    assert comps[cr.CF_TERM] == 0.0
+
+
+def test_arm_OPT_CF_none_raw_is_silent_not_a_wire_failure():
+    row = dict(r_corr=0, format_ok=1, emitted=1, cf_meta_raw=None)
+    _total, comps = cr.arm_reward("OPT_CF", row, step=999)
+    assert comps[cr.CF_TERM] == 0.0
+
+
+def test_arm_OPT_CF_missing_material_dies_loud():
+    row = dict(r_corr=1, format_ok=1, emitted=1)     # cf_meta_raw 없음
+    with pytest.raises(KeyError):
+        cr.arm_reward("OPT_CF", row, step=999)
+
+
+def test_arm_OPT_CF_is_not_arm_OPT():
+    """«선언된 레버, 배선 0» 방지: OPT_CF 는 OPT 와 같지 않다."""
+    row = dict(r_corr=1, format_ok=1, emitted=1, cf_meta_raw=-0.6)
+    opt_total, _ = cr.arm_reward("OPT", row, step=999)
+    cf_total, _ = cr.arm_reward("OPT_CF", row, step=999)
+    assert cf_total != opt_total
+
+
+def test_opt_cf_arm_signature_differs_from_opt():
+    sig_cf = cr.arm_signature("OPT_CF")
+    sig_opt = cr.arm_signature("OPT")
+    assert sig_cf != sig_opt
+
+
+def test_opt_cf_warmup_scale_applies():
+    row = dict(r_corr=0, format_ok=1, emitted=1, cf_meta_raw=1.0)
+    total0, comps0 = cr.arm_reward("OPT_CF", row, step=0, warmup_steps=20)
+    total_full, comps_full = cr.arm_reward("OPT_CF", row, step=20, warmup_steps=20)
+    assert comps0[cr.CF_TERM] == pytest.approx(0.0)     # 워밍업 0 스텝 = 무게 0
+    assert comps_full[cr.CF_TERM] == pytest.approx(1.0 * cr.W_CF)
+
+
+def test_check_abort_skips_emit_rate_for_opt_cf_too():
+    low_emit = _abort_report(emit_rate=0.05)
+    got = {v["metric"] for v in cr.check_abort(low_emit, arm="OPT_CF")}
     assert "emit_rate" not in got
 
 

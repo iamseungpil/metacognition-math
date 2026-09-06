@@ -88,6 +88,7 @@ __all__ = [
     "W_TIMING", "W_LIVE_NEW", "r_timing", "r_timing2", "r_live_new",
     "OPD_TERM", "OPD_C", "OPD_C_PROVISIONAL", "r_opd_meta",
     "OPD_TERM_C", "opd_center_rows", "r_opd_meta_c",
+    "CF_TERM", "W_CF", "cf_center_rows", "r_cf_meta",
     "OSD_TERM", "OSD_C", "OSD_C_PROVISIONAL", "OSD_W_MAX", "OSD_LEAK_NGRAM",
     "INV_TERM", "INV_SCOPE", "INV_FORM", "INV_AGG", "INV_TAU", "INV_C",
     "INV_TAU_PROVISIONAL", "INV_MIN_PROSE_TOK", "INV_FALSE_CLAIM_PEN", "r_meta_inv",
@@ -292,6 +293,82 @@ OPD_C_PROVISIONAL = True
 OPD_TERM_C = "opd_meta_c"   # ★OPD_TERM 과 같은 "단일 정의처" 규약 — verl_sdc 의 게이트가
                             #   {OPD_TERM, OPD_TERM_C} 둘 다 읽는다.
 
+# ── 반사실 쌍둥이(counterfactual twin) — OPT_CF 팔 (2026-09-07, §8) ──────────────
+# 왜 새 항인가. cd8 "같은 자리 인과 검사"(docs/RESULTS_cd7.md 09-07 01:10)의 실측: 학습
+# 전 정책에서 스스로 낸 메모는 nometa 대비 같은 자리 성공률을 **바꾸지 못한다**
+# (−0.001, 95% CI 가 0 을 포함). FT/MT/OPT_T/OPT_MT 는 전부 오라클(완전열거) 판정이
+# "올바른 타이밍"이었는지만 보고, OPD/OPDC 는 힌트 교사의 분포에 얼마나 가까운지만
+# 보는데, 둘 다 "그 메모가 **이 문제에서 실제로 정답률을 바꿨는가**"는 안 잰다.
+# 이 항은 그것을 직접 잰다 — 같은 자리(site_id)에서 메타를 **허가**한 프롬프트(main)
+# 와 메타 문장 자체가 없는 **plain** 프롬프트(twin, 처치 없음)를 한 배치에 같이 태워,
+# main 의 정답률을 twin 그룹의 평균 정답률과 비교한다. twin 은 반사실(counterfactual)
+# 기준선 — "이 자리에서 메타 없이 이어쓰면 얼마나 맞히는가"의 그룹 평균이다.
+CF_TERM = "cf_meta"     # ★단일 정의처 규약(OSD_TERM/INV_TERM/OPD_TERM 과 같은 이유).
+W_CF = 1.0              # 사용자 지시(§8). warmup 대상. OPD/INV 류와 달리 잠정 실측치가
+                        #   아니라 사용자가 고정한 값이라 '?' 표시가 없다.
+
+
+def cf_center_rows(rows: Sequence[Mapping]) -> list[float]:
+    r"""OPT_CF 팔. 배치 **전체**(여러 GRPO 그룹을 포괄)에서 `cf_key`(=site_id)로
+    짝지은 main/twin 쌍을 찾아, main 행의 `corr` 을 그 twin **그룹의 평균 corr** 과
+    비교한다.
+
+    `opd_center_rows`(같은 그룹 안에서 자기들끼리 상대 순위)와 다른 점: 이 함수가
+    비교하는 두 편은 **서로 다른 프롬프트**(같은 자리 접합, 메타 허가 문장 유무만
+    다름)이고 따라서 서로 다른 GRPO 그룹(uid)에 속한다 — "메모를 허가한 정책이,
+    메모 자체가 없는 반사실 쌍둥이보다 이 자리에서 실제로 더 잘 푸는가"라는 인과
+    대조다.
+
+    입력 `rows` 는 **배치 전체**의 행 딕셔너리 목록, 각 원소가 최소
+    `cf_role`("main"/"twin"/"none"), `cf_key`(str, "" 는 미짝), `emitted`,
+    `corr`(={0,1}, r_corr 그대로) 를 갖는다.
+
+    규칙 (그 외는 전부 0.0):
+      * `cf_role == "twin"` 인 행은 **항상** 0.0 — 비교 기준일 뿐 처치 대상이 아니다.
+      * `cf_role == "none"`(일반 롤아웃) 도 0.0 — 반사실 쌍이 없다.
+      * `cf_role == "main"` 이고 `emitted` 인 행만 채점 대상:
+        `r = clip(corr − mean(같은 cf_key 의 twin 그룹 corr), −1, +1)`.
+      * `cf_role == "main"` 인데 미발화, 또는 같은 배치에 그 `cf_key` 의 twin 행이
+        **하나도 없으면**(데이터 셔플이 쌍을 갈랐거나 이 자리가 twin이 없는 경우)
+        0.0 — 비교 불가를 조용히 숨기지 않고 그냥 무처치로 둔다.
+
+    반환값은 입력과 같은 길이·순서의 리스트.
+    """
+    rows = list(rows)
+    twin_corr: dict = {}
+    for r in rows:
+        if str(r.get("cf_role", "none")) == "twin":
+            key = r.get("cf_key")
+            twin_corr.setdefault(key, []).append(_f(r.get("corr", 0.0)))
+    twin_mean = {k: (sum(v) / len(v)) for k, v in twin_corr.items() if v}
+    out: list[float] = []
+    for r in rows:
+        if str(r.get("cf_role", "none")) == "main" and _bool01(r.get("emitted", 0)):
+            m = twin_mean.get(r.get("cf_key"))
+            if m is None:
+                out.append(0.0)
+            else:
+                x = _f(r.get("corr", 0.0)) - m
+                out.append(max(-1.0, min(1.0, x)))
+        else:
+            out.append(0.0)
+    return out
+
+
+def r_cf_meta(cf_meta_raw: float | None) -> float:
+    r"""OPT_CF 팔의 항 값. `cf_meta_raw` 는 `cf_center_rows` 가 배치 단위로 미리
+    계산해 행에 얹어 둔 결과(이미 [-1,+1] 클립됨) — `r_opd_meta_c` 와 같은 얇은
+    통과 함수(그룹/배치 문맥이 필요한 계산은 `verl_sdc._compute_countdown_arm_stash`
+    에서 한 번만 한다는 패턴을 그대로 따른다).
+
+    `cf_meta_raw is None` 이면(배선 사고가 아니라, `cf_center_rows` 가 이미 모든
+    "0 이어야 하는" 칸을 float 0.0 으로 채우므로 정상 경로에서는 None 이 들어오지
+    않는다 — 방어적으로만 0.0) 0.0.
+    """
+    if cf_meta_raw is None:
+        return 0.0
+    return float(cf_meta_raw)
+
 SHIFT_PARAMS = dict(scale=1.0, clip=2.0, reversal_save=1.0, reversal_derail=2.0,
                     reversal_min_magnitude=0.0)
 # C·F·H 가 sign 을 곱하기 전에 쓰는 파라미터. 위 ⚠사양 충돌 참조 —
@@ -354,6 +431,9 @@ TERM_MAX_ABS: dict = {
     # opd_center_rows 가 이미 clip(·,−1,+1) 로 [-1,1] 이라 정규화는 항등이다.
     # opd_meta 와 같은 이유로 `.get(t, 1.0)` 기본값에 기대지 않고 명시한다.
     "opd_meta_c": 1.0,
+    # cf_center_rows 가 이미 clip(·,−1,+1) 로 [-1,1] 이라 정규화는 항등이다.
+    # opd_meta_c 와 같은 이유로 `.get(t, 1.0)` 기본값에 기대지 않고 명시한다.
+    "cf_meta": 1.0,
 }
 
 # sign(adv_corr) == 0 일 때의 정책. 아래 `r_meta_mul` 주석 참조.
@@ -1014,6 +1094,13 @@ TERMS: dict[str, dict] = {
     #   없으면 즉사한다 — OPT_OPDC 가 돌았는데 센터링이 배선 안 된 채 조용히 0 을 흘리는
     #   사고를 막는다(OPD_TERM 과 같은 이유).
     OPD_TERM_C:   {"needs": ("emitted", "opd_kl_c"), "warmup": True, "weight": W_META},
+    # ── 반사실 쌍둥이(cf_meta, 2026-09-07, §8) — needs 에 "corr" 원값이 아니라
+    #   "cf_meta_raw" 를 요구한다: main/twin 비교는 배치 문맥(다른 GRPO 그룹)이
+    #   필요해 `verl_sdc._compute_countdown_arm_stash` 가 배치별로 한 번 계산해
+    #   행에 얹어 둔 값을 읽는다(opd_kl_c 와 같은 "배치 단위 선계산 → 행 필드" 패턴).
+    #   이 필드가 행에 없으면 즉사한다 — OPT_CF 가 돌았는데 배선이 안 된 채 조용히
+    #   0 을 흘리는 사고를 막는다(OPD_TERM/OPD_TERM_C 와 같은 이유).
+    CF_TERM:      {"needs": ("emitted", "cf_meta_raw"), "warmup": True, "weight": W_CF},
 }
 
 _COMMON = ("corr", "format", "meta_floor")   # 공통 = 처치 아님. 여덟 팔 전부 동일.
@@ -1166,6 +1253,22 @@ ARM_SPECS: dict[str, dict] = {
                  "note": "★OPT_OPD 와 항 동일 + opd_meta_c(그룹 중심화) 대신. 같은 그룹의 "
                          "발화·채점된 메타끼리만 kl 을 상대 비교한다 — 발화 자체엔 기대값 "
                          "중립, 힌트 교사에 더 가까운 메타만 상대적으로 밀어올린다."},
+    # ★OPT_CF (2026-09-07, §8 「반사실 쌍둥이」): cd8 "같은 자리 인과 검사"(docs/
+    #   RESULTS_cd7.md 09-07 01:10)의 실측 — 학습 전 정책에서 스스로 낸 메모는 nometa
+    #   대비 같은 자리 성공률을 바꾸지 못한다(−0.001, CI 가 0 포함). OPD/OPDC 는
+    #   "힌트 교사와 얼마나 가까운가", timing/live_new 는 "오라클 타이밍이 맞았는가"
+    #   만 재고 **결과가 실제로 바뀌었는가**는 안 잰다. cf_meta 는 그것을 직접 잰다:
+    #   같은 자리(site_id)에서 메타를 허가한 프롬프트(main)와 메타 문장 자체가 없는
+    #   plain 프롬프트(twin, 처치 없음 반사실 기준선)를 한 배치에 같이 태워 main 의
+    #   corr 을 twin 그룹 평균과 비교한다. `data_hint="mixed_cf"` 는 이 파일이 안
+    #   읽는다 — `scripts/local/run_arm.sh` 가 `mixed_train_v3c_cf_opt.parquet`(twin
+    #   포함판)로 라우팅한다.
+    "OPT_CF": {"label": "optional_cf_twin", "terms": ("corr", "format", CF_TERM),
+               "meta_form": "new", "require_meta": False, "data_hint": "mixed_cf",
+               "note": "★반사실 쌍둥이. main(메타 허가) 의 corr 을 같은 자리 twin(메타 "
+                       "없음) 그룹의 평균 corr 과 비교(clip ±1) — 「메모가 이 문제에서 "
+                       "실제로 정답률을 바꿨는가」의 직접 인과 대조. twin 행 자체는 "
+                       "cf_meta=0(비교 기준일 뿐 처치 대상 아님), 일반 롤아웃도 0."},
 }
 
 
@@ -1357,6 +1460,10 @@ def arm_reward(
         # 미채점 행에 0.0 을 채운다) — 그래도 다른 meta 항과 같은 관례(if emitted else
         # 0.0)를 명시해 "emitted 게이팅을 빠뜨렸다"는 감사 질문에 코드로 바로 답한다.
         raw[OPD_TERM_C] = r_opd_meta_c(row["opd_kl_c"]) if emitted else 0.0
+    if CF_TERM in terms:
+        # 센터링은 emitted 게이팅과 무관하게 이미 0 이다(cf_center_rows 가 twin/none/
+        # 미발화 main 행에 0.0 을 채운다) — OPD_TERM_C 와 같은 이유로 관례를 명시한다.
+        raw[CF_TERM] = r_cf_meta(row["cf_meta_raw"]) if emitted else 0.0
 
     comps: dict[str, float] = {}
     for t, v in raw.items():
@@ -1923,7 +2030,7 @@ def component_means(components: Sequence[Mapping[str, float]], *, dead_eps: floa
 META_TERMS: tuple = ("meta_pos", "meta_mul", "meta_ctx", "gate", "len", "osd",
                      "meta_pos_full", "plan", INV_TERM,
                      "explore", "explore_g", "verify", "early_cost",
-                     "timing", "timing2", "live_new", OPD_TERM, OPD_TERM_C)
+                     "timing", "timing2", "live_new", OPD_TERM, OPD_TERM_C, CF_TERM)
 
 
 def rmeta_magnitude(components: Sequence[Mapping[str, float]],
