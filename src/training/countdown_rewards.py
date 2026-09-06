@@ -1095,6 +1095,12 @@ ARM_SPECS: dict[str, dict] = {
     #   판. 항 하나만 opd_meta → opd_meta_c 로 바뀐다 — 나머지는 OPT_OPD 와 완전히
     #   같다(코드가 아니라 데이터로 이 사실을 확인할 것: `arm_signature` 가 term 이름
     #   차이 하나로만 갈린다).
+    "OPT_MTC": {"label": "optional_timing_mixed_opd_centered",
+                "terms": ("corr", "format", "timing", "live_new", OPD_TERM_C),
+                "meta_form": "new", "require_meta": False, "data_hint": "mixed",
+                "note": "★OPT_MT(고정 자리 절반 + 정답표 타이밍) + opd_meta_c. 자율 출발(OPT_OPDC) 에서는 "
+                        "발화 6% 라 그룹당 채점 메타가 2개 미만이어서 항이 굶었다(0906 스모크). 자리 행은 "
+                        "발화 40~60% 라 중심화 항이 실제로 분산을 갖는다."},
     "OPT_OPDC": {"label": "optional_opd_centered", "terms": ("corr", "format", OPD_TERM_C),
                  "meta_form": "new", "require_meta": False, "data_hint": "normal",
                  "note": "★OPT_OPD 와 항 동일 + opd_meta_c(그룹 중심화) 대신. 같은 그룹의 "

@@ -255,7 +255,7 @@ SPEC_TABLE = {   # 사양 §보상 을 손으로 옮긴 것. 코드가 아니라
 #   이지만 meta_form 은 "new"(파싱은 여전히 새 형식) + require_meta=False(형식 점수는
 #   메타를 요구하지 않음)로 N0 와도 갈린다 — 아래 공통항 예외 테스트에서 함께 다룬다.
 ADDED_ARMS = ["OSD", "P", "R", "N0", "PL", "SC", "SCg", "SC_GH", "FT", "M0", "MT",
-              "OPT", "OPT_M", "OPT_T", "OPT_MT", "OPT_OPD", "OPT_OPDC"]
+              "OPT", "OPT_M", "OPT_T", "OPT_MT", "OPT_OPD", "OPT_OPDC", "OPT_MTC"]
 
 
 def test_arm_specs_match_spec_table():
@@ -284,7 +284,7 @@ def test_common_terms_are_identical_across_all_arms():
             assert tuple(cr.ARM_SPECS[arm]["terms"]) == ("corr", "format")
             assert cr.ARM_SPECS[arm]["meta_form"] == "none"
             continue
-        if arm in ("OPT", "OPT_M", "OPT_T", "OPT_MT", "OPT_OPD", "OPT_OPDC"):
+        if arm in ("OPT", "OPT_M", "OPT_T", "OPT_MT", "OPT_OPD", "OPT_OPDC", "OPT_MTC"):
             # OPT 사다리: corr+format 위에 지도 항(timing/live_new) **또는** 힌트 교사
             # 항(opd_meta/opd_meta_c, 2026-09-06)만 얹을 수 있고, meta_floor 는 절대 없다.
             _t = tuple(cr.ARM_SPECS[arm]["terms"])
@@ -1100,7 +1100,7 @@ def test_opdc_c_is_in_the_arm_signature_and_differs_from_opt_opd():
     assert sig_opdc != sig_opd
     # 다른 팔의 서명에는 한 조각도 안 들어간다(조건부 추가 규약).
     for arm in cr.ARM_SPECS:
-        if arm != "OPT_OPDC":
+        if cr.OPD_TERM_C not in cr.ARM_SPECS[arm]["terms"]:
             assert "opdc_c=" not in cr.arm_signature(arm), arm
 
 
