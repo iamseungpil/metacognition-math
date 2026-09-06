@@ -15,6 +15,15 @@ r"""CLI — 사이트(prefix) 각각에서 K개 이어쓰기를 세 모드로 �
               (토큰 금지는 우회당한다는 것이 이미 확인됐다 — 과제 지시 참조).
     donor   — `prompt` 그대로 + **다른 문제**에서 뽑은 기증 메타를 프리픽스 바로
               뒤에 이어붙인다(text = prefix + "\n" + donor_meta_raw + "\n").
+    hint    — 같은 site 프리픽스, 단 메시지는 `countdown_opd.hinted_messages` 로
+              조립한다(OPD 힌트 교사와 정확히 같은 조립 — family_dead·live_new_moves
+              만 넣은 힌트를 **마지막 user 메시지** 끝에 붙이고 그 뒤에 프리픽스를
+              assistant 메시지로 잇는다). fed prefix 자체는 meta/nometa 와 같다(힌트는
+              user 쪽에 들어가지, "이미 쓴 것"에 섞이지 않는다). `hint_text` 컬럼에
+              실제로 붙인 힌트 문자열을 남긴다(다른 세 모드는 빈 문자열). family_dead
+              가 None(시도 0회)이면 힌트를 만들 수 없어 그 site 는 hint 모드에서
+              스킵한다(donor 모드가 기증 풀이 빈 site 를 스킵하는 것과 같은 패턴) —
+              스킵 개수는 요약의 `hint_skipped_n`.
 
 렌더링. `apply_chat_template(msgs, tokenize=False, continue_final_message=True,
 add_generation_prompt=False, enable_thinking=False)` — `scripts/local/build_sites.py`
@@ -50,11 +59,12 @@ from typing import Iterable, Mapping, Optional, Sequence
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
+from src.training import countdown_opd as opd  # noqa: E402
 from src.training import countdown_rewards as cdr  # noqa: E402
 from src.training import countdown_selfcontrol as csc  # noqa: E402
 from src.training import countdown_task as ct  # noqa: E402
 
-MODES = ("meta", "nometa", "donor")
+MODES = ("meta", "nometa", "donor", "hint")
 CHUNK_SIZE = 256
 
 # SC(자기제어) 항의 K_S·CONF_HI — `countdown_rewards.SC_K_STUCK`/`SC_CONF_HI` 와 같은
@@ -101,6 +111,34 @@ def build_messages_for_mode(prompt_msgs: Sequence[Mapping], mode: str, *,
     fed = build_fed_prefix_text(mode, prefix, donor_meta_raw)
     msgs[-1] = {**msgs[-1], "content": fed}
     return msgs
+
+
+def build_hint_messages(prompt_msgs: Sequence[Mapping], nums, target,
+                        prefix: str) -> tuple[Optional[list[dict]], str]:
+    r"""hint 모드 전용 조립. site 의 `prompt`([system,user,assistant-프리픽스] 3행)에서
+    프리픽스 메시지를 떼고(`countdown_opd.hinted_messages` 가 새로 붙이므로) 오라클
+    힌트(`countdown_opd.build_hint`)를 만들어 삽입한다.
+
+    힌트를 만들 수 없으면(`family_dead is None` — 시도 0회) `(None, "")` 을 돌려준다
+    — 호출자는 이 site 를 hint 모드에서 스킵해야 한다(donor 모드가 기증 풀이 빈
+    site 를 스킵하는 것과 같은 규약).
+
+    ★fed prefix(모델에 "이미 썼다"고 먹이는 텍스트)는 이 함수가 정하지 않는다 —
+    hint 는 user 메시지 끝에 붙을 뿐이고 프리픽스 자체는 meta/nometa 와 바이트가
+    같으므로 `build_fed_prefix_text("hint", prefix, None)` 이 그대로 `prefix` 를
+    돌려준다(MODES 판정 밖에서 특수화가 필요 없다).
+    """
+    msgs = [dict(m) for m in prompt_msgs]
+    if not msgs or msgs[0].get("role") != "system":
+        raise ValueError("build_hint_messages: 첫 메시지가 system 이 아니다.")
+    if not msgs or msgs[-1].get("role") != "assistant":
+        raise ValueError("build_hint_messages: 마지막 메시지가 assistant(프리픽스) 가 아니다.")
+    hint = opd.build_hint(nums, target, prefix)
+    if not hint:
+        return None, ""
+    base_msgs = msgs[:-1]                       # 프리픽스 assistant 메시지는 뗀다
+    hinted = opd.hinted_messages(base_msgs, hint, prefix)
+    return hinted, hint
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -155,7 +193,8 @@ def sample_donor(pool: Sequence[Mapping], exclude_problem: tuple,
 
 def build_record(*, site_id: str, mode: str, policy_tag: str, k_index: int,
                  prefix: str, donor_meta_raw: Optional[str], nums, target,
-                 continuation: str, n_tokens: int, truncated: bool) -> dict:
+                 continuation: str, n_tokens: int, truncated: bool,
+                 hint_text: str = "") -> dict:
     """생성된 이어쓰기 하나를 채점·파싱해 출력 스키마 한 행으로 조립한다.
 
     ★채점은 fed_prefix(모드별로 모델에 먹인 텍스트) + continuation 의 **전체**에
@@ -186,6 +225,7 @@ def build_record(*, site_id: str, mode: str, policy_tag: str, k_index: int,
         "n_tokens": int(n_tokens),
         "truncated": int(bool(truncated)),
         "donor_meta_raw": donor_meta_raw,
+        "hint_text": hint_text,
     }
 
 
@@ -332,15 +372,25 @@ def main() -> None:
             rng = _site_rng(site_id, args.seed)
             donor_entry, donor_fallback = sample_donor(
                 donor_pool, (tuple(nums), target), rng)
+        hint_skipped = False
         for mode in modes:
+            if mode == "hint":
+                hint_msgs, hint_text = build_hint_messages(prompt_msgs, nums, target, prefix)
+                if hint_msgs is None:
+                    hint_skipped = True  # family_dead 를 못 정한다(시도 0회) — 스킵
+                    continue
+                plan["per_mode"]["hint"] = {"messages": hint_msgs, "donor_meta_raw": None,
+                                            "hint_text": hint_text}
+                continue
             donor_raw = donor_entry["raw"] if (mode == "donor" and donor_entry) else None
             if mode == "donor" and donor_entry is None:
                 continue  # 기증 풀이 아예 비었다 — 이 사이트는 donor 모드에서 스킵
             msgs = build_messages_for_mode(
                 prompt_msgs, mode, prefix=prefix, donor_meta_raw=donor_raw,
                 plain_system=plain_system)
-            plan["per_mode"][mode] = {"messages": msgs, "donor_meta_raw": donor_raw}
+            plan["per_mode"][mode] = {"messages": msgs, "donor_meta_raw": donor_raw, "hint_text": ""}
         plan["donor_fallback"] = donor_fallback
+        plan["hint_skipped"] = hint_skipped
         return plan
 
     if args.dry_run:
@@ -352,11 +402,14 @@ def main() -> None:
             plan = build_site_plan(df.iloc[i])
             print(f"\n=== site {plan['site_id']} nums={plan['nums']} target={plan['target']} "
                   f"family_dead={plan['family_dead']} ===")
+            if plan.get("hint_skipped"):
+                print("--- mode=hint SKIPPED (family_dead 를 못 정한다 — 시도 0회) ---")
             for mode, info in plan["per_mode"].items():
                 rendered = render(tok, info["messages"])
                 tail = rendered[-400:]
+                extra = f"hint_text={info['hint_text']!r} " if mode == "hint" else ""
                 print(f"--- mode={mode} (donor_meta_raw={'yes' if info['donor_meta_raw'] else 'no'}) "
-                      f"rendered tail ---\n{tail}")
+                      f"{extra}rendered tail ---\n{tail}")
         print("\n[gen_continuations] dry-run 완료 — 생성/채점/출력 없음(exit 0).", flush=True)
         return
 
@@ -372,6 +425,7 @@ def main() -> None:
     all_records: list[dict] = []
     site_family_dead: dict[str, object] = {}
     donor_fallback_n = 0
+    hint_skipped_n = 0
     n_sites_done = 0
     t0 = time.time()
 
@@ -383,6 +437,8 @@ def main() -> None:
             site_family_dead[plan["site_id"]] = plan["family_dead"]
             if plan.get("donor_fallback"):
                 donor_fallback_n += 1
+            if plan.get("hint_skipped"):
+                hint_skipped_n += 1
 
         # 청크 안 (site, mode) 조합 전부를 하나의 generate 호출에 담는다.
         flat_keys: list[tuple] = []   # (site_idx, mode)
@@ -404,7 +460,8 @@ def main() -> None:
                     k_index=k_index, prefix=plan["prefix"],
                     donor_meta_raw=info["donor_meta_raw"], nums=plan["nums"],
                     target=plan["target"], continuation=comp.text,
-                    n_tokens=len(comp.token_ids), truncated=truncated)
+                    n_tokens=len(comp.token_ids), truncated=truncated,
+                    hint_text=info.get("hint_text", ""))
                 all_records.append(rec)
 
         n_sites_done += len(plans)
@@ -420,6 +477,7 @@ def main() -> None:
     summary["n_sites"] = len(df)
     summary["donor_fallback_n"] = donor_fallback_n
     summary["donor_pool_size"] = len(donor_pool)
+    summary["hint_skipped_n"] = hint_skipped_n
     summary["modes"] = modes
     summary["k"] = args.k
     summary["policy_tag"] = args.policy_tag

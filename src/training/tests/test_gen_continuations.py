@@ -123,6 +123,70 @@ def test_messages_rejects_bad_shape():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# build_hint_messages (hint 모드)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_build_hint_messages_no_attempts_skips():
+    # 시도가 아예 없는 prefix → family_dead is None → (None, "") (스킵 신호).
+    msgs = _prompt_msgs("Let me think about this.")
+    out, hint = gc.build_hint_messages(msgs, [24, 15, 22, 7], 331,
+                                        "Let me think about this.")
+    assert out is None
+    assert hint == ""
+
+
+def test_build_hint_messages_inserts_hint_and_reattaches_prefix():
+    # nums=[1,2,3,4] target=10, prefix="2-1=1\n" — countdown_opd 테스트와 같은
+    # 인스턴스(family_dead=1, live_new_moves 있음).
+    prefix = "2-1=1\n"
+    msgs = _prompt_msgs(prefix)
+    out, hint = gc.build_hint_messages(msgs, [1, 2, 3, 4], 10, prefix)
+    assert out is not None
+    assert hint.startswith("Hint: your current line of attack is dead.")
+    assert len(out) == 3
+    assert out[0]["role"] == "system" and out[0]["content"] == "SYSTEM_META"
+    assert out[1]["role"] == "user"
+    assert out[1]["content"] == msgs[1]["content"] + "\n\n" + hint
+    assert out[2] == {"role": "assistant", "content": prefix}
+
+
+def test_build_hint_messages_does_not_mutate_input():
+    prefix = "2-1=1\n"
+    msgs = _prompt_msgs(prefix)
+    original = [dict(m) for m in msgs]
+    gc.build_hint_messages(msgs, [1, 2, 3, 4], 10, prefix)
+    assert msgs == original
+
+
+def test_build_hint_messages_rejects_bad_shape():
+    bad = [{"role": "user", "content": "x"}, {"role": "assistant", "content": "y"}]
+    try:
+        gc.build_hint_messages(bad, [1, 2, 3, 4], 10, "y")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_hint_is_a_declared_mode():
+    assert "hint" in gc.MODES
+
+
+def test_build_record_hint_text_defaults_empty_and_passes_through():
+    rec_default = gc.build_record(site_id="s1", mode="meta", policy_tag="p0", k_index=0,
+                                  prefix="x", donor_meta_raw=None, nums=NUMS, target=TARGET,
+                                  continuation="\\boxed{(25/5)+(19-3)}", n_tokens=5,
+                                  truncated=False)
+    assert rec_default["hint_text"] == ""
+    rec_hint = gc.build_record(site_id="s1", mode="hint", policy_tag="p0", k_index=0,
+                               prefix="x", donor_meta_raw=None, nums=NUMS, target=TARGET,
+                               continuation="\\boxed{(25/5)+(19-3)}", n_tokens=5,
+                               truncated=False, hint_text="Hint: your current line of attack is dead.")
+    assert rec_hint["hint_text"] == "Hint: your current line of attack is dead."
+    # hint 모드의 fed prefix 는 meta/nometa 와 같다(힌트가 assistant 프리픽스에 안 섞인다).
+    assert rec_hint["full_text"] == "x" + "\\boxed{(25/5)+(19-3)}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # parse_donor_pool / sample_donor
 # ══════════════════════════════════════════════════════════════════════════════
 
