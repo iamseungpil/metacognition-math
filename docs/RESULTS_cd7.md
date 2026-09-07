@@ -362,3 +362,7 @@ OPT_T(허용만 + 지도 항): 스텝 17 발화 2.1%, 지도 항 지급 0.004/0.
 - (09-07 10:12) OPT_MT(SFT2R) 재개 r3 도 체크포인트 로드에서 OOM(73.2GB — VLLM_UTIL 0.15 로도 피크 불변 → 피크는 KV 캐시가 아니라 액터/옵티마이저/ref 쪽). r4 는 need 76GB + REF_OFFLOAD 로 거의 빈 카드에서만 시작. 피크 원인 조사(메모)를 병행.
 - (09-07 10:14) 운영 실수: OPT_MT(SFT2R) r4 가 GPU 2 에서 막 시작한 것을 같은 계보 정리 스크립트로 오살(−9). r5 재제출(REF_OFFLOAD=1, need 72GB). 교훈은 메모리에 기록.
 - (09-07 10:19) **GPU 피크 원인 확정**(`docs/MEMO_gpu_peak_2026-09-07.md`): 액터가 fp32 마스터 파라미터(16GB)+fp32 grad(16GB)+Adam m/v(32GB)=64GB 를 갱신 중 GPU 에 올린다(optimizer_offload 는 스텝 «사이」 에만 내림) + bf16 캐스트 8GB + logits → 73~76GB. VLLM_UTIL 무관. 체크포인트 재개도 옵티마이저 상태를 GPU 로 바로 적재(플래그 없음). REF_OFFLOAD=1 은 ref logprob 경로에 재적재 래퍼가 없어 **위험** → r5 OOM 후 사용 중단. 60GB 아래로 내리려면 actor bf16 마스터 또는 8-bit 옵티마이저(bitsandbytes 미설치) — 별도 실험. 당장은 «거의 빈 카드(≥77GB)」 에서만 학습(r6 큐).
+
+### cd8: 사용자 승인(09-07 11:54) — 공유 카드용 메모리 슬림 설정 → 대조군·병렬 발사 → 판정 뒤 코드 정리
+- bitsandbytes 0.45.5 설치(`python -m pip`, pip 셔뱅 깨짐). run_arm `SLIM=1` = 8-bit AdamW(`optimizer_impl=bitsandbytes.optim, optimizer=AdamW8bit`). 동등성 검사: OPT 씨앗 1 을 20스텝 SLIM 으로(`cd7_OPT_SLIM_opt_s1`), 기존 `cd7_OPT_opt_s1` 스텝 1~20 corr 궤적과 비교 + 이웃 14GB 옆(GPU 0/2) 에서 OOM 없이 도는지. 통과 기준: 스텝 10·20 corr 차이 ≤3pp, 피크 <62GB.
+- 통과 시 GPU 0·2 에 «SFT2R + 결과 보상만」 대조군(SFT_N0)과 OPT_MT(SFT2R) 를 SLIM 으로 발사. 이후 모든 새 팔은 SLIM 가족으로 통일(기존 팔과 비교할 땐 기준선을 SLIM 으로 재측정).
