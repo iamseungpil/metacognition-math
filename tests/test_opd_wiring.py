@@ -378,3 +378,24 @@ def test_wired_log_line_reports_cfg_scored_and_groups_ok():
     src = inspect.getsource(vs._compute_countdown_arm_stash)
     assert "cfg_scored={cfg_scored}" in src
     assert "cfg_groups_ok={cfg_groups_ok}/{len(groups)}" in src
+
+
+def test_opdg_fails_loud_when_no_gated_rows():
+    """E-136: 게이트 팔인데 opd_gate=1 행이 0 이면 조용히 OPT_M 이 되지 않고 죽어야 한다."""
+    import re
+    from pathlib import Path
+    src = Path("src/training/verl_sdc.py").read_text()
+    m = re.search(r"n_opdg_gated = sum\(opd_gate_col\)(.{0,900})", src, re.S)
+    assert m, "게이트 행 수 계산 지점을 못 찾았다"
+    seg = m.group(1)
+    assert "E-136" in seg and "raise RuntimeError" in seg, "게이트 0 fail-loud 가 없다"
+    assert 'ARM_SPECS[arm].get("opd_gate")' in seg, "팔 스펙의 opd_gate 로 조건을 걸어야 한다"
+
+
+def test_launcher_opt_prompt_flag_is_single_sourced():
+    """E-135: `_opt` 접미사 판정이 팔 이름 목록이 아니라 IS_OPT_PROMPT 플래그여야 한다."""
+    from pathlib import Path
+    sh = Path("scripts/local/run_arm.sh").read_text()
+    assert 'if [ "${IS_OPT_PROMPT}" = "1" ]; then' in sh
+    assert "IS_OPT_PROMPT=1" in sh and "IS_OPT_PROMPT=0" in sh
+    assert "sites_v1/*" in sh and "ALLOW_CONTAMINATED" in sh, "오염 데이터 가드가 없다"

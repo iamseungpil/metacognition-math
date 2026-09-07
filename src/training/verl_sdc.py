@@ -1179,6 +1179,14 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
     opd_gate_col = ([int(bool(v)) for v in opd_gate_col] if opd_gate_col is not None
                     else [0] * bs)
     n_opdg_gated = sum(opd_gate_col)
+    # ★E-136(2026-09-07): 게이트 팔인데 게이트가 켜진 행이 하나도 없으면 `opd_meta_c` 가 전 행 0 이
+    #   되어 팔이 조용히 대조군(OPT_M)과 같아진다 — 사전등록 §11 의 "게이트 0 이면 즉시 중단". 데이터를
+    #   잘못 준 것이므로 여기서 죽인다(무효 레버 금지 규약: 선언된 항은 반드시 배선돼야 한다).
+    if bool(_cdr.ARM_SPECS[arm].get("opd_gate")) and n_opdg_gated == 0:
+        raise RuntimeError(
+            f"[COUNTDOWN][E-136] arm={arm} 는 게이트 팔인데 배치 {bs} 행 중 opd_gate=1 이 0 개다. "
+            "`mixed_train_*_gate_opt.parquet`(build_gate_sites.py 산출)을 MIXED_DATA 로 주었는지 확인하라 "
+            "— 게이트 없이 돌면 이 팔은 OPT_M 과 동일해진다.")
 
     prompt_texts = [
         _decode_prompt_only(self.tokenizer, data[i].batch["prompts"],

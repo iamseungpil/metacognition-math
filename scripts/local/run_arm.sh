@@ -93,9 +93,13 @@ sys.exit(0 if '${ARM}' in ARM_SPECS else 1)
   exit 1
 fi
 
+IS_OPT_PROMPT=0
 if [ "${ARM}" = "N0" ]; then
   DATA_VARIANT="plain"
 elif [ "${ARM}" = "OPT" ] || [ "${ARM}" = "OPT_M" ] || [ "${ARM}" = "OPT_T" ] || [ "${ARM}" = "OPT_MT" ] || [ "${ARM}" = "OPT_MT2" ] || [ "${ARM}" = "OPT_OPD" ] || [ "${ARM}" = "OPT_OPDC" ] || [ "${ARM}" = "OPT_MTC" ] || [ "${ARM}" = "OPT_CF" ] || [ "${ARM}" = "OPT_CFG" ] || [ "${ARM}" = "OPT_OPDG" ]; then
+  # ★E-135(2026-09-07): 「opt 프롬프트 팔」 판정을 여기 한 곳에서만 한다. 예전엔 아래 mixed 분기에
+  #   팔 이름 목록이 따로 있어, 새 팔을 한쪽에만 넣으면 학습은 «강제(new)» 데이터를 읽는 사고가 났다.
+  IS_OPT_PROMPT=1
   # ★OPT/OPT_M (2026-09-05): 메타 허용·비요구 팔은 항상 `opt` 프롬프트(허가 문장)로
   #   발사한다 — N0 가 항상 `plain` 인 것과 같은 이유다. VARIANT_ARG 를 그대로 두면
   #   호출자가 실수로 p3/new 데이터를 붙여 강제 프롬프트로 발사할 수 있다.
@@ -169,7 +173,7 @@ elif [ "${DATA_HINT}" = "mixed" ]; then
   #   (예: mixed_train_v3c) 이고, opt 팔이면 런처가 `_opt` 를 붙인다.
   MIXED_BASE="${MIXED_DATA:-mixed_train_v2}"
   case "${MIXED_BASE}" in *_opt) echo "[run_arm] FATAL: MIXED_DATA 에 _opt 를 붙이지 말 것(런처가 붙인다): ${MIXED_BASE}"; exit 2;; esac
-  if [ "${ARM}" = "OPT_M" ] || [ "${ARM}" = "OPT_MT" ] || [ "${ARM}" = "OPT_MT2" ] || [ "${ARM}" = "OPT_MTC" ] || [ "${ARM}" = "OPT_CFG" ] || [ "${ARM}" = "OPT_OPDG" ]; then
+  if [ "${IS_OPT_PROMPT}" = "1" ]; then
     DATA_TRAIN="${WORK}/data/${SITES_DIR}/${MIXED_BASE}_opt.parquet"
   else
     DATA_TRAIN="${WORK}/data/${SITES_DIR}/${MIXED_BASE}.parquet"
@@ -177,6 +181,18 @@ elif [ "${DATA_HINT}" = "mixed" ]; then
 else
   DATA_TRAIN="${WORK}/data/countdown_train_4num_${DATA_VARIANT}.parquet"
 fi
+
+# ★E-133 가드: sites_v1 계열(자리·SFT 가 held-out val 문제에서 채굴됨)은 평가가 오염된다.
+#   의도적으로 재현할 때만 ALLOW_CONTAMINATED=1 로 연다.
+case "${DATA_TRAIN}" in
+  */sites_v1/*)
+    if [ "${ALLOW_CONTAMINATED:-0}" != "1" ]; then
+      echo "[run_arm] FATAL: ${DATA_TRAIN} 는 오염된 sites_v1 계열이다(E-133). SITES_DIR=sites_v4 MIXED_DATA=mixed_train_v4 로 발사하거나 ALLOW_CONTAMINATED=1 을 명시하라."
+      exit 2
+    fi
+    echo "[run_arm] WARNING: 오염된 sites_v1 데이터를 명시적으로 사용한다(ALLOW_CONTAMINATED=1)."
+    ;;
+esac
 DATA_VAL="${WORK}/data/countdown_val_4num_${DATA_VARIANT}.parquet"
 CKPT_DIR="${WORK}/checkpoints/${LINEAGE}"
 LOG_FILE="${WORK}/logs/${LINEAGE}.log"
