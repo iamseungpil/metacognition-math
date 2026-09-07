@@ -36,7 +36,7 @@ def _dry_run(env_extra: dict, args: list[str]) -> str:
 
 
 def test_sites_dir_default_matches_v1():
-    out = _dry_run({"MIXED_DATA": "mixed_train_v3c"}, ["OPT_CF", "1", "100", "opt"])
+    out = _dry_run({"MIXED_DATA": "mixed_train_v3c", "ALLOW_CONTAMINATED": "1"}, ["OPT_CF", "1", "100", "opt"])
     lines = [l for l in out.splitlines() if l.startswith("[run_arm] data.train_files=")]
     assert lines, out
     assert lines[0].endswith("sites_v1/mixed_train_v3c_cf_opt.parquet")

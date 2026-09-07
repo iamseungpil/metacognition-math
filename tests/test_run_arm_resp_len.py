@@ -33,7 +33,7 @@ def _dry_run(env_extra: dict, args: list[str]) -> str:
 
 def test_resp_len_explicit_appends_suffix_and_scales_budget():
     out = _dry_run(
-        {"MIXED_DATA": "mixed_train_v3c", "RESP_LEN": "3072"},
+        {"MIXED_DATA": "mixed_train_v3c", "RESP_LEN": "3072", "ALLOW_CONTAMINATED": "1"},
         ["OPT_MT", "1", "100", "opt"],
     )
     assert "LINEAGE=cd7_OPT_MT_opt_s1_mixed_r3072" in out
@@ -44,7 +44,7 @@ def test_resp_len_explicit_appends_suffix_and_scales_budget():
 
 def test_resp_len_default_matches_old_hardcoded_behaviour():
     out = _dry_run(
-        {"MIXED_DATA": "mixed_train_v3c"},
+        {"MIXED_DATA": "mixed_train_v3c", "ALLOW_CONTAMINATED": "1"},
         ["OPT_MT", "1", "100", "opt"],
     )
     assert "LINEAGE=cd7_OPT_MT_opt_s1_mixed ARM=" in out
