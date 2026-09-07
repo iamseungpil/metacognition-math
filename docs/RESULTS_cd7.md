@@ -369,3 +369,4 @@ OPT_T(허용만 + 지도 항): 스텝 17 발화 2.1%, 지도 항 지급 0.004/0.
 - (09-07 11:56) 병렬 발사: GPU 0 SLIM 동등성 스모크(OPT s1 20스텝, 이웃 14GB 옆), GPU 2 **대조군 OPT_M(SFT2RS)** = SFT 초기화 + 결과·형식 보상만, 같은 mixed 자리 데이터, SLIM. GPU 1 OPT_CF(SFT2R) 스텝 24 계속. OPT_MT(SFT2RS) 는 다음 빈 카드. 새 팔은 전부 SLIM 가족(INIT_TAG=SFT2RS) 로 통일.
 - (09-07 12:06) OPT_CF(SFT2R) 스텝 26 에서 OOM(GPU 1 에 이웃 6.6GB 등장). 스텝 25 조각에서 재개 큐(fp32 경로라 need 74GB). 이후 팔은 SLIM 으로만.
 - (09-07 12:09) GPU 1 을 판정 팔에 양보: 막 시작한 OPT_MT(SFT2RS) 를 멈추고 OPT_CF(SFT2R) 스텝 25 재개(r6) 를 올림. 현재 GPU 0 SLIM 스모크 · GPU 1 OPT_CF 재개 · GPU 2 대조군 OPT_M(SFT2RS). OPT_MT(SFT2RS) 는 대기.
+- (09-07 12:29) SLIM 스모크: 스텝 1·2 corr 0.412/0.418(fp32 동일 시드 0.408~0.420) — 궤적 일치. 실측: 역전파 중 우리 프로세스 **33GB**, 대조군(SFT2RS, SLIM) 카드 총량 72GB − 이웃 15GB ≈ 57GB 이하. 즉 SLIM 피크는 73GB → 약 35~57GB. 스모크는 GPU 0 에 새 외부 프로세스 31GB 가 들어와 외부 요인으로 OOM(우리 33 + 외부 46). **SLIM 잠정 채택**(재개 지점 5 에서 20스텝 재실행을 낮은 우선순위로 큐). 이후 모든 신규 팔은 SLIM.
