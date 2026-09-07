@@ -110,3 +110,9 @@ r_cf_meta = clip(corr_main − mean(corr, twin 그룹(같은 cf_key))), −1, +1
   동일). `[COUNTDOWN][WIRED]` 의 `cf_main_scored`/`cf_pairs_found` 로 배선이
   실제로 걸렸는지(무효 레버 아님) 매 스텝 확인 — `cf_pairs_found` 가 배치의
   site 쌍 수 대비 낮으면(셔플 재발 등) 1차 지표를 신뢰하지 않는다.
+
+## 9. 개정(2026-09-07 17:00) — 오염 제거 후 재실험 (E-133/E-134)
+- **E-133 평가 오염**: 자리(sites_v1)·결합 SFT 가 held-out val 문제에서 채굴됐음이 확인됨(§ RESULTS 09-07 16:5x). 자리 계열의 모든 held-out 비교를 무효화하고, **train 세트 롤아웃**(`eval/train1500_{gs0,A}_new`)에서 `sites_v4` 를 재채굴한다. 산출물 전부에 대해 val 과의 (nums,target) 교집합 0 을 스크립트로 강제한다.
+- **E-134 대조군 프롬프트 불일치**: 런처가 `MIXED_DATA` 지정 시 opt 팔에 `_opt` 를 붙이지 않던 결함을 수정. v3/v3c 세대 OPT_MT 씨앗 1~4·OPT_M 결과는 «학습 강제 / 평가 허용」 불일치 조건으로 재분류하고 본 비교에서 제외한다.
+- **재실험 팔(모두 SLIM=8-bit AdamW, opt 프롬프트, sites_v4)**: ① 결합 SFT v4(힌트 이어쓰기, 자리 이득 게이트) → ② 그 위에 OPT_CF(판정, 씨앗 1·2), OPT_M(대조: 결과 보상만), OPT_MT(비교: 정답표 타이밍). 기준선 N0/OPT 는 기존 값을 그대로 쓴다(train 세트만 학습, 오염 없음).
+- **판정(불변)**: 1차 같은 자리(sites_v4 judge, 문제 단위 분리) 성공률, 2차 held-out 500(이제 전 팔 미노출), 3차 기제(발화 선택성·redirect·새 쌍·잘림). 긍정 = held-out 에서 N0 (0.708@50) 를 씨앗 2개 평균으로 넘고 OPT_M 대조군보다 +2pp 이상.
