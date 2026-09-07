@@ -19,7 +19,7 @@
 # VARIANT  prompt/data variant for non-N0/OPT/OPT_M arms (default p3); ignored for
 #          N0, which always uses the `plain` variant (countdown_rewards.ARM_SPECS["N0"]
 #          note: "메타 지시문 없음... variant plain, DATA_SUFFIX=_4num_plain"), and
-#          ignored for OPT/OPT_M/OPT_T/OPT_MT/OPT_MT2/OPT_OPD/OPT_OPDC/OPT_MTC/OPT_CF,
+#          ignored for OPT/OPT_M/OPT_T/OPT_MT/OPT_MT2/OPT_OPD/OPT_OPDC/OPT_OPDG/OPT_MTC/OPT_CF,
 #          which always use the `opt` variant (permission, not mandate —
 #          countdown_task.PROMPT_VARIANTS["opt"]). OPT_CF's twin rows carry the
 #          `plain` system message inside the parquet itself (build_cf_twins.py) —
@@ -95,7 +95,7 @@ fi
 
 if [ "${ARM}" = "N0" ]; then
   DATA_VARIANT="plain"
-elif [ "${ARM}" = "OPT" ] || [ "${ARM}" = "OPT_M" ] || [ "${ARM}" = "OPT_T" ] || [ "${ARM}" = "OPT_MT" ] || [ "${ARM}" = "OPT_MT2" ] || [ "${ARM}" = "OPT_OPD" ] || [ "${ARM}" = "OPT_OPDC" ] || [ "${ARM}" = "OPT_MTC" ] || [ "${ARM}" = "OPT_CF" ]; then
+elif [ "${ARM}" = "OPT" ] || [ "${ARM}" = "OPT_M" ] || [ "${ARM}" = "OPT_T" ] || [ "${ARM}" = "OPT_MT" ] || [ "${ARM}" = "OPT_MT2" ] || [ "${ARM}" = "OPT_OPD" ] || [ "${ARM}" = "OPT_OPDC" ] || [ "${ARM}" = "OPT_MTC" ] || [ "${ARM}" = "OPT_CF" ] || [ "${ARM}" = "OPT_CFG" ] || [ "${ARM}" = "OPT_OPDG" ]; then
   # ★OPT/OPT_M (2026-09-05): 메타 허용·비요구 팔은 항상 `opt` 프롬프트(허가 문장)로
   #   발사한다 — N0 가 항상 `plain` 인 것과 같은 이유다. VARIANT_ARG 를 그대로 두면
   #   호출자가 실수로 p3/new 데이터를 붙여 강제 프롬프트로 발사할 수 있다.
@@ -169,7 +169,7 @@ elif [ "${DATA_HINT}" = "mixed" ]; then
   #   (예: mixed_train_v3c) 이고, opt 팔이면 런처가 `_opt` 를 붙인다.
   MIXED_BASE="${MIXED_DATA:-mixed_train_v2}"
   case "${MIXED_BASE}" in *_opt) echo "[run_arm] FATAL: MIXED_DATA 에 _opt 를 붙이지 말 것(런처가 붙인다): ${MIXED_BASE}"; exit 2;; esac
-  if [ "${ARM}" = "OPT_M" ] || [ "${ARM}" = "OPT_MT" ] || [ "${ARM}" = "OPT_MT2" ] || [ "${ARM}" = "OPT_MTC" ]; then
+  if [ "${ARM}" = "OPT_M" ] || [ "${ARM}" = "OPT_MT" ] || [ "${ARM}" = "OPT_MT2" ] || [ "${ARM}" = "OPT_MTC" ] || [ "${ARM}" = "OPT_CFG" ] || [ "${ARM}" = "OPT_OPDG" ]; then
     DATA_TRAIN="${WORK}/data/${SITES_DIR}/${MIXED_BASE}_opt.parquet"
   else
     DATA_TRAIN="${WORK}/data/${SITES_DIR}/${MIXED_BASE}.parquet"

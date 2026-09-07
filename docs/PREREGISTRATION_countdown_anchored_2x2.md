@@ -116,3 +116,100 @@ r_cf_meta = clip(corr_main − mean(corr, twin 그룹(같은 cf_key))), −1, +1
 - **E-134 대조군 프롬프트 불일치**: 런처가 `MIXED_DATA` 지정 시 opt 팔에 `_opt` 를 붙이지 않던 결함을 수정. v3/v3c 세대 OPT_MT 씨앗 1~4·OPT_M 결과는 «학습 강제 / 평가 허용」 불일치 조건으로 재분류하고 본 비교에서 제외한다.
 - **재실험 팔(모두 SLIM=8-bit AdamW, opt 프롬프트, sites_v4)**: ① 결합 SFT v4(힌트 이어쓰기, 자리 이득 게이트) → ② 그 위에 OPT_CF(판정, 씨앗 1·2), OPT_M(대조: 결과 보상만), OPT_MT(비교: 정답표 타이밍). 기준선 N0/OPT 는 기존 값을 그대로 쓴다(train 세트만 학습, 오염 없음).
 - **판정(불변)**: 1차 같은 자리(sites_v4 judge, 문제 단위 분리) 성공률, 2차 held-out 500(이제 전 팔 미노출), 3차 기제(발화 선택성·redirect·새 쌍·잘림). 긍정 = held-out 에서 N0 (0.708@50) 를 씨앗 2개 평균으로 넘고 OPT_M 대조군보다 +2pp 이상.
+
+## §11. OPT_OPDG — 교사 게이트 증류 (2026-09-07)
+
+동기. 힌트 교사 증류는 두 번 실패했다. **OPT_OPD**(단측 벌, 절대 기준 0)는
+「메타를 그만 낸다」로만 수렴했다 — 메타를 낼 때마다 기대 보상이 음수라 발화율이
+7% → 0.8% 로 무너졌다(15스텝, `docs/RESULTS_cd7.md` "그룹 중심화 OPD").
+**OPT_OPDC**(그룹 중심화)는 그 부호 문제를 고쳤지만 **굶었다** — 자율 출발 정책의
+발화율이 ~6% 라 GRPO 그룹당 채점 가능한 메타가 2개 미만이었고, `opd_center_rows`
+의 「채점 대상 2 미만 → 전원 0」 규약이 거의 모든 그룹에서 걸렸다.
+
+두 실패에 각각 대응하는 변경이 이번에 둘 다 갖춰졌다.
+- **굶음(OPT_OPDC)** ← **결합 SFT 체크포인트에서 출발**한다. 발화율 기준선이
+  50%+ 라 그룹당 채점 메타가 2개 이상인 그룹이 다수가 된다(항이 실제로 분산을
+  갖는다). 자리 절반이 섞인 `data_hint="mixed"` 도 같은 방향으로 돕는다.
+- **잘못된 방향으로의 증류(OPT_OPD, 그리고 OPDC 에도 남아 있던 결함)** ←
+  **교사 신뢰도 게이트**. 두 팔 모두 「힌트 교사와 가까운가」만 재고, 교사가 그
+  자리에서 아무것도 안 하는 것보다 나은지는 묻지 않았다. 게이트는 그것을 묻는다.
+
+**정의.** `ARM_SPECS["OPT_OPDG"]` = `terms=("corr","format","opd_meta_c")`,
+`meta_form="new"`, `require_meta=False`, `data_hint="mixed"`, `opd_gate=True`.
+보상식은 OPT_OPDC 와 **바이트 동일**하다 — 달라지는 것은 「어느 행이 센터링의
+채점 대상인가」뿐이다(`arm_signature` 에 `|opdgate=on` 이 박혀 두 팔이 로그에서
+갈린다).
+
+**게이트**(`scripts/local/build_gate_sites.py`, 자리 단위):
+
+```
+hint_rate   = mean(r_corr | mode=="hint",   그 site_id)
+nometa_rate = mean(r_corr | mode=="nometa", 그 site_id)
+gate = 1  iff  (hint_rate − nometa_rate) >= τ  AND  hint_rate >= min_hint
+```
+
+기본값 **τ = 0.10, min_hint = 0.25**. 게이트 결과는 mixed parquet 의 행마다
+`extra_info.opd_gate ∈ {0,1}`(+ 진단용 `hint_rate`/`nometa_rate`)로 얹히고,
+자리가 없는 일반 행은 `opd_gate=0, hint_rate=nometa_rate=0.0` 이다.
+`verl_sdc._compute_countdown_arm_stash` 가 그 마스크를 `opd_center_rows(gate=…)`
+로 넘긴다: 센터링 평균은 게이트 통과 행만으로 잡고, 게이트 밖 행은 항상 0(=순수
+결과 GRPO), 그룹 안 게이트 통과 행이 2 미만이면 그 그룹은 전원 0(기존 규약 상속).
+배치 게이트 행 수는 `[COUNTDOWN][WIRED]` 의 `opdg_gated_rows=` 로 매 스텝 찍힌다.
+
+**v1 프로브**(v4 산출물이 아직 없어 v1 유사물로 사전 점검, 0907):
+`mixed_train_v3c_opt` × `hint_gs0` × `conts_train_gs0` 에서 게이트 통과 자리는
+**423/2844 = 14.9%**, `hint_rate − nometa_rate` 의 십분위는 p10 −0.0625 ·
+p20~p70 0.0000 · p80 +0.0625 · p90 +0.2500 · p100 +1.0000(중앙값 0 — 힌트가
+대부분의 자리에서 아무것도 바꾸지 않고, 소수의 자리에서만 크게 이긴다). τ=0.10 은
+그 소수 꼬리를 정확히 집어내는 값으로 보인다(p90 이 +0.25 이므로 τ 를 0.05 로
+낮추면 게이트가 급격히 넓어지고, 0.25 로 올리면 10% 아래로 좁아진다).
+
+**판정.** §8(OPT_CF)과 같은 지표 세 개를 그대로 쓴다.
+- 1차 = 같은 자리(sites_v4 judge) 성공률. Positive = 같은 초기 모델의 **OPT_M**
+  대조군(결과 보상만)을 §4 의 +3pp 밴드로 앞선다.
+- 2차 = held-out 500 정답률(전 팔 미노출) — N0 대비 하락 없음.
+- 3차 = 기제(발화 선택성·redirect·새 쌍·잘림).
+- **기제 요건(추가)**: 새 첫수(novel-first-move) 비율과 죽은 자리 redirect 비율이
+  **OPT_M 대조군 대비 상승**해야 한다. 오르지 않으면 1차가 양성이어도 「증류가
+  행동을 바꿨다」고 주장하지 않는다(게이트가 아니라 잡음일 수 있다).
+
+**무효화 규칙.** 발사 전 `build_gate_sites.py` 요약에서 게이트 통과 자리가 전체의
+**15% 미만 또는 85% 초과**면 τ 를 재조정하고 나서 실험을 건다(너무 좁으면 항이
+다시 굶고, 너무 넓으면 게이트가 아무것도 안 거른 OPT_OPDC 의 재탕이다). 학습 중
+`opdg_gated_rows` 가 0 이면 즉시 중단 — 배선 없는 선언이다. §4 의 held-out 하락
+중단 규칙(N0 −5pp)도 그대로 적용한다.
+
+## §10. OPT_CFG — 반사실 쌍둥이, 그룹 내부판 (2026-09-07)
+
+동기(§8 실측 교란). OPT_CF 의 twin(plain 프롬프트) 기준선이 그 자체로 부풀려
+있다 — 학습 전 정책이 같은 500 held-out 문제에서 `plain` 0.426 vs `opt` 0.352
+(7.4pp)를 낸다. 즉 cf_meta 는 "메모가 없어서 못 푼다"가 아니라 "twin 이 plain
+프롬프트라서 더 잘 푼다"를 일부 섞어서 재고, 그만큼 발화에 불리하게 편향된다.
+
+**정의** (`src/training/countdown_rewards.py`): 프롬프트를 아예 바꾸지 않는다.
+같은 GRPO 그룹(=같은 opt 프롬프트, uid 하나) 안에서 실제로 메타를 낸 롤아웃
+(E, emitted==1)과 안 낸 롤아웃(NE, emitted==0)을 갈라, E 의 corr 을 그 그룹 NE
+평균 corr 과 비교한다(`cf_group_rows`):
+
+```
+r_cf_group = clip(corr_E − mean(corr, 그룹 내 NE)), −1, +1) × W_CF   (W_CF=1.0, warmup)
+```
+
+그룹 안에 NE·E 둘 다 없으면(전원 발화 또는 전원 무발화) 그룹 전체 0. NE 행 자체는
+항상 0(비교 기준일 뿐 처치 대상 아님). `ARM_SPECS["OPT_CFG"]` =
+`terms=("corr","format","cf_group")`, `require_meta=False`, `meta_form="new"`,
+`data_hint="mixed"` — OPT_M/OPT_MT 와 같은 `${MIXED_DATA}_opt.parquet` 로
+라우팅된다(twin 데이터 불필요, 셔플 오버라이드도 불필요).
+
+**판정.** §8 과 동일선상 — 같은 자리 성공률(1차)·held-out(2차)·기제(3차)를 같은
+자리표·같은 판정선으로 본다. Positive 조건은 §8 의 OPT_CF 판정을 그대로 적용
+(OPT_MT/OPT 를 앞서고 held-out 이 N0 −5pp 밑으로 떨어지지 않을 것). 기제는
+`mean(corr, E) − mean(corr, NE)`(그룹 내부, `[COUNTDOWN][WIRED]` 의
+`cfg_scored`/`cfg_groups_ok`)가 학습 중 0 위로 올라가는가.
+
+**알려진 한계.** 그룹 안에서 "누가 메타를 냈는가"는 정책 자신의 선택이다 —
+emit/no-emit 이 **내생적**(endogenous)이라, 모델이 이미 풀 수 있다고 느낀
+문제·서브그룹에서만 메타를 낼 수도 있다(선택 편향이 인과 추정을 오염시킬 수
+있다). OPT_CF(서로 다른 프롬프트 쌍둥이)는 이 내생성 문제가 없는 대신 §8 의
+7.4pp 프롬프트 교란이 있다 — 두 팔을 서로 대체하지 않고 **상호 보조적 이차
+확인**으로 함께 유지한다(어느 한쪽만 양성이면 결론을 유보).

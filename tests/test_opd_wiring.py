@@ -224,6 +224,19 @@ def test_opd_center_rows_none_and_group_lt2_stay_zero():
     assert cr.opd_center_rows([None] * 5, c=0.075) == [0.0] * 5
 
 
+def test_opdg_arm_and_gate_are_wired_in_the_stash():
+    """OPT_OPDG(§11) 소스텍스트 가드: ①게이트 마스크가 `opd_center_rows` 로 들어가고,
+    ②배치 게이트 행 수가 `[COUNTDOWN][WIRED]` 에 찍힌다(선언만 있고 배선 0 방지)."""
+    from src.training import verl_sdc as vs
+
+    assert cr.OPD_TERM_C in cr.ARM_SPECS["OPT_OPDG"]["terms"]
+    assert cr.ARM_SPECS["OPT_OPDG"].get("opd_gate") is True
+    src = inspect.getsource(vs._compute_countdown_arm_stash)
+    assert 'opd_gate' in src, "verl_sdc 가 extra_info.opd_gate 를 안 읽는다."
+    assert 'gate=_gate' in src, "게이트 마스크가 opd_center_rows 로 안 들어간다."
+    assert 'opdg_gated_rows=' in src, "[COUNTDOWN][WIRED] 에 게이트 행 수가 없다."
+
+
 def test_stash_gate_covers_both_opd_terms_and_centers_before_reward_assembly():
     """소스텍스트 가드: ①게이트가 opd_meta·opd_meta_c 둘 다 커버, ②그룹 중심화
     (`opd_center_rows` 호출)가 per-row `arm_reward` 조립 **전**에 있다."""
@@ -302,3 +315,66 @@ def test_wired_log_line_reports_cf_scored_and_pairs_found():
     src = inspect.getsource(vs._compute_countdown_arm_stash)
     assert "cf_main_scored={cf_main_scored}" in src
     assert "cf_pairs_found={cf_pairs_found}/{cf_pairs_total}" in src
+
+
+# ══════════════════════════════════════════════════════════ 15. OPT_CFG (그룹 내부판)
+# §10 — OPT_CF 의 twin 프롬프트 교란(학습 전 정책 plain 0.426 vs opt 0.352, 7.4pp)을
+# 없앤 판. 같은 GRPO 그룹(uid) 안에서 emit(E)/no-emit(NE) 을 갈라 짝짓는 배선
+# (`_compute_countdown_arm_stash` 의 `_cfg_on`/`cf_group_rows` 블록)이 실제로 걸려
+# 있는지, OPT_CF 회귀와 같은 `inspect.getsource` 소스텍스트 가드로 확인한다.
+
+def test_cf_group_term_name_is_single_sourced():
+    assert {cr.CF_GROUP_TERM} & set(cr.ARM_SPECS["OPT_CFG"]["terms"]), (
+        f"CF_GROUP_TERM={cr.CF_GROUP_TERM!r} 이 ARM_SPECS['OPT_CFG']['terms']"
+        f"={cr.ARM_SPECS['OPT_CFG']['terms']} 에 없다 — fail-loud 가드가 죽는다.")
+    assert cr.CF_GROUP_TERM in cr.TERMS
+    assert cr.CF_GROUP_TERM in cr.META_TERMS
+
+
+def test_opt_cfg_arm_is_not_bit_identical_to_opt():
+    row = {"r_corr": 1, "format_ok": 1, "emitted": 1, "cf_group_raw": 0.5}
+    opt, _ = cr.arm_reward("OPT", row, step=30)
+    cfg, comp = cr.arm_reward("OPT_CFG", row, step=30)
+    assert comp.get(cr.CF_GROUP_TERM, 0.0) != 0.0, f"cf_group 성분이 0 이다: {comp}"
+    assert abs(opt - cfg) > 1e-9, f"OPT_CFG({cfg}) 와 OPT({opt}) 총보상이 동일 — 배선 0."
+
+
+def test_cf_group_raw_missing_is_fail_loud():
+    with pytest.raises(KeyError):
+        cr.arm_reward("OPT_CFG", {"r_corr": 1, "format_ok": 1, "emitted": 1}, step=30)
+
+
+def test_cf_group_raw_none_is_silent_zero():
+    row = {"r_corr": 1, "format_ok": 1, "emitted": 1, "cf_group_raw": None}
+    _tot, comp = cr.arm_reward("OPT_CFG", row, step=30)
+    assert comp[cr.CF_GROUP_TERM] == 0.0
+
+
+def test_stash_computes_cf_group_rows_gated_on_cf_group_term():
+    """소스텍스트 가드: ①게이트(`_cfg_on`)가 CF_GROUP_TERM 을 커버, ②`cf_group_rows`
+    호출이 꺼진 팔에서는 안 나오고(else 분기가 cf_group_raw=0.0 으로만 채운다),
+    ③배치 전체 계산이 per-row `arm_reward` 조립 **전**에 끝난다(그래야 그 행의
+    arm_reward 호출 시점에 `cf_group_raw` 가 이미 있다)."""
+    from src.training import verl_sdc as vs
+
+    src = inspect.getsource(vs._compute_countdown_arm_stash)
+    assert "_cfg_on = _cdr.CF_GROUP_TERM in _cdr.ARM_SPECS[arm][\"terms\"]" in src, (
+        "cf_group 게이트(_cfg_on)가 없다 — cf_group_rows 가 팔과 무관하게 항상/전혀 "
+        "안 돌 수 있다.")
+    assert "cf_group_rows(" in src, "그룹 내부 계산 호출이 없다."
+    center_idx = src.index("cf_group_rows(")
+    reward_loop_idx = src.index('_cdr.arm_reward(arm, r, step=step, phat=phat_of[uid[i]])')
+    assert center_idx < reward_loop_idx, (
+        "cf_group_rows 호출이 per-row arm_reward 조립보다 뒤에 있다 — cf_group_raw 가 "
+        "그 행의 arm_reward 호출 시점에 아직 없을 수 있다.")
+
+
+def test_wired_log_line_reports_cfg_scored_and_groups_ok():
+    """★배선의 유일한 증거 — [COUNTDOWN][WIRED] 가 cfg_scored/cfg_groups_ok 를
+    찍는다(런처 가드가 grep 하는 그 줄). 조건부 계산이 실제로 이 줄까지 이어지는지
+    소스텍스트로 확인한다(값 자체는 통합 테스트 없이는 못 재현한다)."""
+    from src.training import verl_sdc as vs
+
+    src = inspect.getsource(vs._compute_countdown_arm_stash)
+    assert "cfg_scored={cfg_scored}" in src
+    assert "cfg_groups_ok={cfg_groups_ok}/{len(groups)}" in src

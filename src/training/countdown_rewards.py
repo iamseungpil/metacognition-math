@@ -89,6 +89,7 @@ __all__ = [
     "OPD_TERM", "OPD_C", "OPD_C_PROVISIONAL", "r_opd_meta",
     "OPD_TERM_C", "opd_center_rows", "r_opd_meta_c",
     "CF_TERM", "W_CF", "cf_center_rows", "r_cf_meta",
+    "CF_GROUP_TERM", "cf_group_rows", "r_cf_group",
     "OSD_TERM", "OSD_C", "OSD_C_PROVISIONAL", "OSD_W_MAX", "OSD_LEAK_NGRAM",
     "INV_TERM", "INV_SCOPE", "INV_FORM", "INV_AGG", "INV_TAU", "INV_C",
     "INV_TAU_PROVISIONAL", "INV_MIN_PROSE_TOK", "INV_FALSE_CLAIM_PEN", "r_meta_inv",
@@ -369,6 +370,72 @@ def r_cf_meta(cf_meta_raw: float | None) -> float:
         return 0.0
     return float(cf_meta_raw)
 
+
+# ── 반사실 쌍둥이(그룹 내부판) — OPT_CFG 팔 (2026-09-07) ────────────────────────
+# 왜 새 항인가. `cf_center_rows`(OPT_CF)는 main(메타 허가 프롬프트) 과 twin(plain
+# 프롬프트) 을 **서로 다른 프롬프트**로 비교한다. 실측 교란: 학습 전 정책이 같은 500
+# 문제에서 `plain` 0.426 vs `opt` 0.352(7.4pp) — 즉 twin 기준선이 "메타가 없어서"가
+# 아니라 "plain 프롬프트라서" 부풀려 있고, 그 결과 cf_meta 는 발화에 불리하게 편향된다.
+# 해법: 프롬프트를 아예 바꾸지 않는다. 같은 GRPO 그룹(=같은 프롬프트, uid 하나) 안에서
+# 실제로 메타를 낸 롤아웃(E)과 안 낸 롤아웃(NE)을 갈라, E 의 corr 을 그 그룹 NE 의 평균
+# corr 과 비교한다 — 프롬프트가 동일하므로 위 7.4pp 교란이 구조적으로 없다.
+CF_GROUP_TERM = "cf_group"   # ★단일 정의처 규약(CF_TERM 과 같은 이유).
+
+
+def cf_group_rows(rows: Sequence[Mapping]) -> list[float]:
+    r"""OPT_CFG 팔. 배치 전체(여러 GRPO 그룹을 포괄)를 받아, `cf_center_rows` 가
+    쓰는 것과 같은 그룹 단위(`group_id`, `_compute_countdown_arm_stash` 의 uid)로
+    묶은 뒤 **그룹 안에서** emitted==1(E) 대 emitted==0(NE) 로 가른다.
+
+    입력 `rows` 는 배치 전체의 행 딕셔너리 목록, 각 원소가 최소
+    `group_id`(str/hashable, 같은 프롬프트 롤아웃끼리 같은 값), `emitted`, `corr`
+    (={0,1}, r_corr 그대로) 를 갖는다. site 행·일반 행 구분은 필요 없다 — site 접두가
+    붙은 행도 프롬프트가 같은 그룹 안이면 그대로 섞인다.
+
+    규칙 (그 외는 전부 0.0):
+      * 그룹 안에 NE(`emitted==0`)가 1개 이상 **그리고** E(`emitted==1`)가 1개 이상
+        있어야 채점한다. 둘 중 하나라도 없으면(전원 발화 또는 전원 무발화) 그 그룹은
+        비교 불가 — 그룹 전체 0.0.
+      * 채점 대상 그룹에서 E 행마다 `r = clip(corr − mean(NE 의 corr), −1, +1)`.
+      * NE 행은 (채점 대상 그룹이라도) 항상 0.0 — 비교 기준일 뿐 처치 대상이 아니다
+        (`cf_center_rows` 의 twin==0 과 같은 관례).
+
+    NaN-safe: `corr`/`emitted` 가 비유한이면 `_f`/`_bool01` 로 fail-closed 처리한다
+    (포이즌 행이 그룹 평균을 망치지 못하게).
+
+    반환값은 입력과 같은 길이·순서의 리스트.
+    """
+    rows = list(rows)
+    groups: dict = {}
+    for i, r in enumerate(rows):
+        groups.setdefault(r.get("group_id"), []).append(i)
+    out = [0.0] * len(rows)
+    for _gid, ix in groups.items():
+        ne_ix = [i for i in ix if not _bool01(rows[i].get("emitted", 0))]
+        e_ix = [i for i in ix if _bool01(rows[i].get("emitted", 0))]
+        if not ne_ix or not e_ix:
+            continue
+        ne_mean = sum(_f(rows[i].get("corr", 0.0)) for i in ne_ix) / len(ne_ix)
+        for i in e_ix:
+            x = _f(rows[i].get("corr", 0.0)) - ne_mean
+            out[i] = max(-1.0, min(1.0, x))
+    return out
+
+
+def r_cf_group(cf_group_raw: float | None) -> float:
+    r"""OPT_CFG 팔의 항 값. `cf_group_raw` 는 `cf_group_rows` 가 배치 단위로 미리
+    계산해 행에 얹어 둔 결과(이미 [-1,+1] 클립됨) — `r_cf_meta` 와 같은 얇은 통과
+    함수(그룹/배치 문맥이 필요한 계산은 `verl_sdc._compute_countdown_arm_stash` 에서
+    한 번만 한다는 패턴을 그대로 따른다).
+
+    `cf_group_raw is None` 이면(배선 사고가 아니라, `cf_group_rows` 가 이미 모든
+    "0 이어야 하는" 칸을 float 0.0 으로 채우므로 정상 경로에서는 None 이 들어오지
+    않는다 — 방어적으로만) 0.0.
+    """
+    if cf_group_raw is None:
+        return 0.0
+    return float(cf_group_raw)
+
 SHIFT_PARAMS = dict(scale=1.0, clip=2.0, reversal_save=1.0, reversal_derail=2.0,
                     reversal_min_magnitude=0.0)
 # C·F·H 가 sign 을 곱하기 전에 쓰는 파라미터. 위 ⚠사양 충돌 참조 —
@@ -434,6 +501,9 @@ TERM_MAX_ABS: dict = {
     # cf_center_rows 가 이미 clip(·,−1,+1) 로 [-1,1] 이라 정규화는 항등이다.
     # opd_meta_c 와 같은 이유로 `.get(t, 1.0)` 기본값에 기대지 않고 명시한다.
     "cf_meta": 1.0,
+    # cf_group_rows 가 이미 clip(·,−1,+1) 로 [-1,1] 이라 정규화는 항등이다.
+    # cf_meta 와 같은 이유로 `.get(t, 1.0)` 기본값에 기대지 않고 명시한다.
+    "cf_group": 1.0,
 }
 
 # sign(adv_corr) == 0 일 때의 정책. 아래 `r_meta_mul` 주석 참조.
@@ -951,7 +1021,8 @@ def r_opd_meta(opd_kl, *, c: float | None = None) -> float:
     return -x / cc
 
 
-def opd_center_rows(kls: Sequence[float | None], c: float | None = None) -> list[float]:
+def opd_center_rows(kls: Sequence[float | None], c: float | None = None,
+                    gate: Sequence | None = None) -> list[float]:
     r"""OPT_OPDC 팔. 한 GRPO 그룹(같은 프롬프트의 롤아웃들) 안에서 `opd_kl` **끼리**
     상대 순위를 매기는 그룹 중심화 보상. `r_opd_meta`(절대 기준 0 과 비교하는 단측 벌)와
     달리 이 함수는 그룹 자신의 평균을 기준으로 삼는다 — 위 `OPD_TERM_C` 주석 참조.
@@ -970,11 +1041,22 @@ def opd_center_rows(kls: Sequence[float | None], c: float | None = None) -> list
     상대적으로 + 를 받는다. 채점 제외 행(None/nan)은 항상 0.0.
 
     반환값은 입력과 같은 길이·순서의 리스트다.
+
+    `gate`(OPT_OPDG, §11) — 없으면(None) 위 계약 그대로다(OPT_OPDC 와 바이트 동일).
+    주면 같은 길이의 0/1 마스크로 읽어 **게이트 통과 행만** 채점 대상으로 삼는다:
+    센터링 평균 `m` 도 게이트 통과 행들만으로 구하고, 게이트 밖 행은 kl 이 유한해도
+    항상 0.0 이다. 게이트 통과 채점 대상이 2개 미만인 그룹은 (게이트 안팎 불문)
+    전원 0.0 — 위의 "채점 대상 2 미만 → 전원 0" 규약을 그대로 물려받는다.
     """
     cc = float(OPD_C if c is None else c)
     if not (cc > 0):
         raise ValueError(f"opd_center_rows: c={cc!r} 는 0보다 커야 한다.")
+    if gate is not None and len(gate) != len(kls):
+        raise ValueError(
+            f"opd_center_rows: gate 길이({len(gate)}) 가 kls({len(kls)}) 와 다르다.")
     scored_idx = [i for i, k in enumerate(kls) if k is not None and _finite(k)]
+    if gate is not None:
+        scored_idx = [i for i in scored_idx if _bool01(gate[i])]
     out = [0.0] * len(kls)
     if len(scored_idx) < 2:
         return out
@@ -1101,6 +1183,13 @@ TERMS: dict[str, dict] = {
     #   이 필드가 행에 없으면 즉사한다 — OPT_CF 가 돌았는데 배선이 안 된 채 조용히
     #   0 을 흘리는 사고를 막는다(OPD_TERM/OPD_TERM_C 와 같은 이유).
     CF_TERM:      {"needs": ("emitted", "cf_meta_raw"), "warmup": True, "weight": W_CF},
+    # ── 반사실 쌍둥이 그룹판(cf_group, 2026-09-07) — needs 는 CF_TERM 과 같은 이유로
+    #   "corr" 원값이 아니라 "cf_group_raw" 를 요구한다: 그룹 내부 emit/no-emit 비교는
+    #   그룹 문맥이 필요해 `verl_sdc._compute_countdown_arm_stash` 가 배치별로 한 번
+    #   계산해 행에 얹어 둔 값을 읽는다(cf_meta_raw 와 같은 "배치 단위 선계산 → 행
+    #   필드" 패턴). 이 필드가 행에 없으면 즉사한다 — OPT_CFG 가 돌았는데 배선이 안
+    #   된 채 조용히 0 을 흘리는 사고를 막는다(CF_TERM 과 같은 이유).
+    CF_GROUP_TERM: {"needs": ("emitted", "cf_group_raw"), "warmup": True, "weight": W_CF},
 }
 
 _COMMON = ("corr", "format", "meta_floor")   # 공통 = 처치 아님. 여덟 팔 전부 동일.
@@ -1253,6 +1342,17 @@ ARM_SPECS: dict[str, dict] = {
                  "note": "★OPT_OPD 와 항 동일 + opd_meta_c(그룹 중심화) 대신. 같은 그룹의 "
                          "발화·채점된 메타끼리만 kl 을 상대 비교한다 — 발화 자체엔 기대값 "
                          "중립, 힌트 교사에 더 가까운 메타만 상대적으로 밀어올린다."},
+    # ★OPT_OPDG (2026-09-07, §11): OPT_OPDC 에 «교사 신뢰도 게이트» 하나만 더한 판.
+    #   항 구성은 OPT_OPDC 와 완전히 같고(opd_meta_c), 달라지는 것은 그 항을 **어느
+    #   행에서 켜는가**뿐이다 — `extra_info.opd_gate == 1`(그 자리에서 힌트 교사가
+    #   nometa 대비 tau 이상 이겼다, `scripts/local/build_gate_sites.py`)인 행만
+    #   센터링에 참여하고 나머지는 순수 결과 GRPO 로 남는다. `opd_gate` 는 그래서
+    #   서명에도 박힌다(`arm_signature` 참조) — 항 이름만으로는 OPT_OPDC 와 안 갈린다.
+    "OPT_OPDG": {"label": "optional_opd_gated", "terms": ("corr", "format", OPD_TERM_C),
+                 "meta_form": "new", "require_meta": False, "data_hint": "mixed",
+                 "opd_gate": True,
+                 "note": "★교사 게이트 증류: opd_meta_c 를 extra_info.opd_gate==1 인 자리에서만 "
+                         "적용한다(자리 단위 교사 신뢰도 게이트). 게이트 밖 행은 순수 결과 GRPO."},
     # ★OPT_CF (2026-09-07, §8 「반사실 쌍둥이」): cd8 "같은 자리 인과 검사"(docs/
     #   RESULTS_cd7.md 09-07 01:10)의 실측 — 학습 전 정책에서 스스로 낸 메모는 nometa
     #   대비 같은 자리 성공률을 바꾸지 못한다(−0.001, CI 가 0 포함). OPD/OPDC 는
@@ -1269,6 +1369,24 @@ ARM_SPECS: dict[str, dict] = {
                        "없음) 그룹의 평균 corr 과 비교(clip ±1) — 「메모가 이 문제에서 "
                        "실제로 정답률을 바꿨는가」의 직접 인과 대조. twin 행 자체는 "
                        "cf_meta=0(비교 기준일 뿐 처치 대상 아님), 일반 롤아웃도 0."},
+    # ★OPT_CFG (2026-09-07, §10): OPT_CF 의 **그룹 내부판**. 실측 교란 — 학습 전
+    #   정책이 같은 500 문제에서 `plain` 0.426 vs `opt` 0.352(7.4pp): OPT_CF 의 twin
+    #   기준선(plain 프롬프트)이 그 자체로 부풀려 있어 cf_meta 가 발화에 불리하게
+    #   편향된다. 이 팔은 twin 프롬프트를 쓰지 않는다 — 같은 GRPO 그룹(=같은 opt
+    #   프롬프트) 안에서 실제로 메타를 낸 롤아웃(E)과 안 낸 롤아웃(NE)을 갈라 E 의
+    #   corr 을 그 그룹 NE 평균 corr 과 비교한다(clip ±1). 프롬프트가 동일하므로 위
+    #   7.4pp 교란이 구조적으로 없다. `data_hint="mixed"` — OPT_M/OPT_MT 와 같은
+    #   `${MIXED_DATA}_opt.parquet` 로 라우팅된다(twin 데이터 불필요).
+    #   알려진 한계(§10): 그룹 안에서 「누가 메타를 냈는가」는 정책 자신의 선택 —
+    #   내생적(endogenous) 선택 편향이 있다(모델이 이미 풀 수 있다고 느낀 문제에서만
+    #   메타를 낼 수도 있다). OPT_CF(서로 다른 프롬프트 쌍둥이)는 이 편향이 없는 대신
+    #   위 7.4pp 교란이 있다 — 둘을 상호 보조적 이차 확인으로만 쓴다.
+    "OPT_CFG": {"label": "optional_cf_group", "terms": ("corr", "format", CF_GROUP_TERM),
+                "meta_form": "new", "require_meta": False, "data_hint": "mixed",
+                "note": "★반사실 쌍둥이 그룹 내부판. 같은 프롬프트 그룹 안에서 emit(E) 의 "
+                        "corr 을 no-emit(NE) 그룹 평균 corr 과 비교(clip ±1) — OPT_CF 의 "
+                        "twin 프롬프트 교란(plain 0.426 vs opt 0.352) 을 없앤다. 한계: "
+                        "emit/no-emit 선택이 내생적(§10) — OPT_CF 를 이차 확인으로 유지."},
 }
 
 
@@ -1318,6 +1436,10 @@ def arm_signature(arm: str) -> str:
     #   OSD_C/INV_TAU 규약(잠정값이면 '?')을 이 항에도 그대로 지키기 위해 명시한다.
     if OPD_TERM_C in spec["terms"]:
         extra += f"|opdc_c={OPD_C:g}{'?' if OPD_C_PROVISIONAL else ''}"
+    # ★게이트는 «정체»다 — OPT_OPDG 는 항 구성이 OPT_OPDC 와 바이트 동일이라 이 조각이
+    #   없으면 두 팔의 서명이 같아져 로그가 거짓말을 한다(조건부라 기존 서명은 안 깨진다).
+    if spec.get("opd_gate"):
+        extra += "|opdgate=on"
     # ★SC/SCg 정체 — K_S(막힘 임계)·conf_hi(과신 임계)·세 항의 무게가 이 팔의 전부다.
     #   하나라도 안 박으면 "어느 K_S 로 돌았나"가 로그에서 사라진다(OSD_C/INV_TAU 와
     #   같은 규약). 무게는 위 `parts` 루프가 이미 `t@weight` 로 찍으므로 여기서는
@@ -1464,6 +1586,11 @@ def arm_reward(
         # 센터링은 emitted 게이팅과 무관하게 이미 0 이다(cf_center_rows 가 twin/none/
         # 미발화 main 행에 0.0 을 채운다) — OPD_TERM_C 와 같은 이유로 관례를 명시한다.
         raw[CF_TERM] = r_cf_meta(row["cf_meta_raw"]) if emitted else 0.0
+
+    if CF_GROUP_TERM in terms:
+        # 센터링은 emitted 게이팅과 무관하게 이미 0 이다(cf_group_rows 가 NE 행·비교
+        # 불가 그룹에 0.0 을 채운다) — CF_TERM 과 같은 이유로 관례를 명시한다.
+        raw[CF_GROUP_TERM] = r_cf_group(row["cf_group_raw"]) if emitted else 0.0
 
     comps: dict[str, float] = {}
     for t, v in raw.items():
@@ -2030,7 +2157,8 @@ def component_means(components: Sequence[Mapping[str, float]], *, dead_eps: floa
 META_TERMS: tuple = ("meta_pos", "meta_mul", "meta_ctx", "gate", "len", "osd",
                      "meta_pos_full", "plan", INV_TERM,
                      "explore", "explore_g", "verify", "early_cost",
-                     "timing", "timing2", "live_new", OPD_TERM, OPD_TERM_C, CF_TERM)
+                     "timing", "timing2", "live_new", OPD_TERM, OPD_TERM_C, CF_TERM,
+                     CF_GROUP_TERM)
 
 
 def rmeta_magnitude(components: Sequence[Mapping[str, float]],

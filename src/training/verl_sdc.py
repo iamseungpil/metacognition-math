@@ -1168,6 +1168,18 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
         cf_key_col = None
     cf_key_col = [(v or "") for v in cf_key_col] if cf_key_col is not None else [""] * bs
 
+    # ── 교사 신뢰도 게이트(opd_gate, OPT_OPDG 전용, §11). ★`mixed_train_*_gate_opt.
+    #   parquet`(scripts/local/build_gate_sites.py)만 이 컬럼을 가진다(extra_info
+    #   안에만 — cf_role/cf_key 와 같은 관례). 없으면 전부 0 = 게이트 없음, 즉
+    #   `opd_center_rows(gate=None)` 과 같은 "지금까지"(OPT_OPDC) 동작이다.
+    try:
+        opd_gate_col = _col("opd_gate")
+    except RuntimeError:
+        opd_gate_col = None
+    opd_gate_col = ([int(bool(v)) for v in opd_gate_col] if opd_gate_col is not None
+                    else [0] * bs)
+    n_opdg_gated = sum(opd_gate_col)
+
     prompt_texts = [
         _decode_prompt_only(self.tokenizer, data[i].batch["prompts"],
                             data[i].batch["attention_mask"], prompt_length)
@@ -1600,13 +1612,22 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
     #   묶어 `countdown_rewards.opd_center_rows` 에 넘긴다. 이 팔을 안 쓰는 배치에서도
     #   `opd_kl` 이 이미 계산돼 있으면(측정 모드 COUNTDOWN_OPD=1, 또는 OPT_OPD 가 채운
     #   경우) 공짜로 채워 둔다 — 다른 팔의 `arm_reward` 는 이 필드를 안 읽으므로 무해하다.
+    #   ★게이트(OPT_OPDG, §11): 팔이 게이트 팔이거나(spec 의 `opd_gate`) 데이터가
+    #   `opd_gate` 컬럼을 실제로 나르면 게이트 마스크를 그대로 `opd_center_rows` 에
+    #   넘긴다 — 게이트 밖 행은 항상 0, 그룹 안 게이트 통과 행이 2 미만이면 그 그룹은
+    #   전원 0(그 함수의 계약). 마스크가 전부 0/컬럼이 없으면 gate=None 과 같으므로
+    #   OPT_OPDC 동작은 바이트 그대로다.
+    _opd_gate_on = bool(_cdr.ARM_SPECS[arm].get("opd_gate")) or n_opdg_gated > 0
     opd_c_scored = 0
     opd_c_groups_ge2 = 0
     if _opd_on:
         for u, ix in groups.items():
             kls = [rows[i].get("opd_kl") for i in ix]
-            centered = _cdr.opd_center_rows(kls, _cdr.OPD_C)
-            n_finite = sum(1 for k in kls if k is not None and math.isfinite(float(k)))
+            _gate = [opd_gate_col[i] for i in ix] if _opd_gate_on else None
+            centered = _cdr.opd_center_rows(kls, _cdr.OPD_C, gate=_gate)
+            n_finite = sum(1 for j, k in enumerate(kls)
+                           if k is not None and math.isfinite(float(k))
+                           and (_gate is None or _gate[j]))
             if n_finite >= 2:
                 opd_c_groups_ge2 += 1
             for j, i in enumerate(ix):
@@ -1639,6 +1660,29 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
     else:
         for r in rows:
             r["cf_meta_raw"] = 0.0
+
+    # ── 반사실 쌍둥이 그룹판(cf_group, OPT_CFG 전용, §10) — `cf_center_rows` 와 같은
+    #   패턴으로 배치 한 번에 한 번 끝낸다. 프롬프트 쌍둥이(twin) 대신 **같은 그룹
+    #   (uid) 안**에서 emit(E) 대 no-emit(NE) 을 갈라 비교한다 — OPT_CF 의 twin
+    #   프롬프트 교란(plain 0.426 vs opt 0.352)이 구조적으로 없다.
+    _cfg_on = _cdr.CF_GROUP_TERM in _cdr.ARM_SPECS[arm]["terms"]
+    cfg_scored = 0
+    cfg_groups_ok = 0
+    if _cfg_on:
+        _cfg_input = [{"group_id": r["group_id"], "emitted": r["emitted"],
+                       "corr": r["r_corr"]} for r in rows]
+        _cfg_centered = _cdr.cf_group_rows(_cfg_input)
+        for i, r in enumerate(rows):
+            r["cf_group_raw"] = _cfg_centered[i]
+        cfg_scored = sum(1 for v in _cfg_centered if v != 0.0)
+        for u, ix in groups.items():
+            _ne = any(not _cdr._bool01(rows[i].get("emitted", 0)) for i in ix)
+            _e = any(_cdr._bool01(rows[i].get("emitted", 0)) for i in ix)
+            if _ne and _e:
+                cfg_groups_ok += 1
+    else:
+        for r in rows:
+            r["cf_group_raw"] = 0.0
 
     # ★강등이 걸려 있으면 osd 항을 0 으로 죽인다(이전 스텝의 판정이 이번 스텝부터 적용된다).
     #   지난 판정을 «다음 스텝부터» 적용하는 것이 옳다 — 이미 뽑은 롤아웃의 보상을
@@ -1678,7 +1722,9 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
           f"inv_scored={inv_diag.get('scored', 0)}/{inv_diag.get('B', 0)} "
           f"opd_scored={opd_diag.get('scored', 0)}/{opd_diag.get('B', 0)} "
           f"opd_c_scored={opd_c_scored} opd_c_groups>=2={opd_c_groups_ge2}/{len(groups)} "
+          f"opdg_gated_rows={n_opdg_gated} "
           f"cf_main_scored={cf_main_scored} cf_pairs_found={cf_pairs_found}/{cf_pairs_total} "
+          f"cfg_scored={cfg_scored} cfg_groups_ok={cfg_groups_ok}/{len(groups)} "
           f"n_site_rows={n_site_rows}", flush=True)
 
     # ★0902 관측: 보상 구성 요소별 평균 · 발화율 · 계획 항(해 생존/이행) 비율 · 응답 표본 8개 → wandb (실패해도 학습은 계속)
