@@ -239,6 +239,10 @@ TRAIN_CMD=(python -u -m src.training.verl_sdc
   "actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1"
   "actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1"
   "actor_rollout_ref.rollout.gpu_memory_utilization=${VLLM_UTIL:-0.35}"
+  # SLIM=1(0907): 8-bit AdamW(bitsandbytes) — 갱신 피크 73GB→~50GB, 공유 카드(이웃 5~14GB) 옆에서 학습 가능.
+  #   최적화 수치가 바뀌므로 같은 설정끼리만 비교한다(계보 태그 INIT_TAG 로 구분).
+  "actor_rollout_ref.actor.optim.optimizer_impl=$([ "${SLIM:-0}" = "1" ] && echo bitsandbytes.optim || echo torch.optim)"
+  "actor_rollout_ref.actor.optim.optimizer=$([ "${SLIM:-0}" = "1" ] && echo AdamW8bit || echo AdamW)"
   # REF_OFFLOAD=1: ref(KL) 워커 파라미터를 CPU 로 내려 GPU 피크 ~8GB 절감(공유 카드용). 기본 false(기존 팔과 동일).
   "actor_rollout_ref.ref.fsdp_config.param_offload=$([ "${REF_OFFLOAD:-0}" = "1" ] && echo true || echo false)"
   "actor_rollout_ref.actor.fsdp_config.optimizer_offload=true"
@@ -286,7 +290,7 @@ if [ "${ARM}" = "OPT_CF" ]; then
   TRAIN_CMD+=("data.shuffle=false")
 fi
 
-echo "[run_arm] LINEAGE=${LINEAGE} ARM=${ARM} SEED=${SEED} STEPS=${STEPS} DATA_VARIANT=${DATA_VARIANT} DATA_HINT=${DATA_HINT} RESP_LEN=${RESP_LEN} INIT_TAG=${INIT_TAG:-none} MODEL_PATH=${MODEL_PATH}"
+echo "[run_arm] LINEAGE=${LINEAGE} ARM=${ARM} SEED=${SEED} STEPS=${STEPS} DATA_VARIANT=${DATA_VARIANT} DATA_HINT=${DATA_HINT} RESP_LEN=${RESP_LEN} INIT_TAG=${INIT_TAG:-none} MODEL_PATH=${MODEL_PATH} SLIM=${SLIM:-0}"
 echo "[run_arm] data.train_files=${DATA_TRAIN}"
 echo "[run_arm] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset! queue should have set this>}"
 echo "[run_arm] exact train command:"
