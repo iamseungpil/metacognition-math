@@ -132,6 +132,12 @@ if [ "${DATA_HINT}" = "mixed" ] || [ "${DATA_HINT}" = "mixed_cf" ]; then
   IS_MIXED_LIKE=1
 fi
 
+# SITES_DIR(0907, E-133 수리): mixed 계열이 읽는 site parquet 디렉터리 이름
+# ($WORK/data/<SITES_DIR>/ 아래). 기본 sites_v1 은 "지금까지"와 바이트 동일하다.
+# sites_v1(및 v2/v3/v3c) 은 held-out val 에서 채굴돼 오염됐다(E-133) —
+# 새 라운드는 SITES_DIR=sites_v4 로 재개해야 한다(scripts/local/build_sites_v4.sh).
+SITES_DIR="${SITES_DIR:-sites_v1}"
+
 # INIT_TAG(선택, 대문자/숫자, 예 SFT1): 초기 모델을 바꾼 팔의 계보를 구분한다 — 계보명 arm 자리에 붙어
 #   `cd7_OPT_CF_SFT1_opt_s1_mixed` 꼴이 된다(keeper 의 _LIN 정규식 arm 그룹 [A-Z0-9_]+ 가 그대로 받는다).
 # MODEL_PATH(선택): 초기 모델 경로(기본 Qwen3-4B). INIT_TAG 없이 MODEL_PATH 만 바꾸는 것은 금지(계보 충돌).
@@ -153,7 +159,7 @@ if [ "${DATA_HINT}" = "mixed_cf" ]; then
   # ★OPT_CF(§8): 반사실 쌍둥이 판 — main(site, opt 프롬프트) + twin(같은 자리,
   #   plain 프롬프트, `extra_info.cf_role=twin`) + normal. `scripts/local/
   #   build_cf_twins.py` 가 `mixed_train_v3c_opt.parquet` 에서 만든다.
-  DATA_TRAIN="${WORK}/data/sites_v1/${MIXED_DATA:-mixed_train_v3c}_cf_opt.parquet"
+  DATA_TRAIN="${WORK}/data/${SITES_DIR}/${MIXED_DATA:-mixed_train_v3c}_cf_opt.parquet"
 elif [ "${DATA_HINT}" = "mixed" ]; then
   # site(3000, 프리픽스가 이미 프롬프트에 접합) + normal(3000, 빈 assistant 메시지
   # 부착) 를 섞은 고정 자리 학습 parquet. countdown_sites.py 헤더 참조.
@@ -164,9 +170,9 @@ elif [ "${DATA_HINT}" = "mixed" ]; then
   MIXED_BASE="${MIXED_DATA:-mixed_train_v2}"
   case "${MIXED_BASE}" in *_opt) echo "[run_arm] FATAL: MIXED_DATA 에 _opt 를 붙이지 말 것(런처가 붙인다): ${MIXED_BASE}"; exit 2;; esac
   if [ "${ARM}" = "OPT_M" ] || [ "${ARM}" = "OPT_MT" ] || [ "${ARM}" = "OPT_MT2" ] || [ "${ARM}" = "OPT_MTC" ]; then
-    DATA_TRAIN="${WORK}/data/sites_v1/${MIXED_BASE}_opt.parquet"
+    DATA_TRAIN="${WORK}/data/${SITES_DIR}/${MIXED_BASE}_opt.parquet"
   else
-    DATA_TRAIN="${WORK}/data/sites_v1/${MIXED_BASE}.parquet"
+    DATA_TRAIN="${WORK}/data/${SITES_DIR}/${MIXED_BASE}.parquet"
   fi
 else
   DATA_TRAIN="${WORK}/data/countdown_train_4num_${DATA_VARIANT}.parquet"
