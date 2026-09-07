@@ -24,7 +24,9 @@ from pathlib import Path
 def _problem_set(df) -> set[tuple]:
     out = set()
     for nums, target in zip(df["nums"], df["target"]):
-        out.add((tuple(int(v) for v in nums), int(target)))
+        # ★숫자 «순서» 는 문제 정체성이 아니다 — [5,19,25,3] 과 [3,5,19,25] 는 같은 문제다.
+        #   정렬해서 키를 만들지 않으면 순열만 다른 오염을 놓친다(0907 지적).
+        out.add((tuple(sorted(int(v) for v in nums)), int(target)))
     return out
 
 
