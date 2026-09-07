@@ -158,10 +158,15 @@ elif [ "${DATA_HINT}" = "mixed" ]; then
   # site(3000, 프리픽스가 이미 프롬프트에 접합) + normal(3000, 빈 assistant 메시지
   # 부착) 를 섞은 고정 자리 학습 parquet. countdown_sites.py 헤더 참조.
   # OPT_M 은 opt 프롬프트(메모 허용만)로 시스템 메시지를 바꾼 같은 자리 데이터를 쓴다.
+  # ★E-134(2026-09-07): 예전엔 `_opt` 가 기본값 문자열 안에만 있어 MIXED_DATA 를 넘기면 opt 팔이
+  #   메타 «강제」(new) 데이터를 읽었다(대조군 프롬프트 불일치). 이제 MIXED_DATA 는 항상 «기본 이름」
+  #   (예: mixed_train_v3c) 이고, opt 팔이면 런처가 `_opt` 를 붙인다.
+  MIXED_BASE="${MIXED_DATA:-mixed_train_v2}"
+  case "${MIXED_BASE}" in *_opt) echo "[run_arm] FATAL: MIXED_DATA 에 _opt 를 붙이지 말 것(런처가 붙인다): ${MIXED_BASE}"; exit 2;; esac
   if [ "${ARM}" = "OPT_M" ] || [ "${ARM}" = "OPT_MT" ] || [ "${ARM}" = "OPT_MT2" ] || [ "${ARM}" = "OPT_MTC" ]; then
-    DATA_TRAIN="${WORK}/data/sites_v1/${MIXED_DATA:-mixed_train_v2_opt}.parquet"
+    DATA_TRAIN="${WORK}/data/sites_v1/${MIXED_BASE}_opt.parquet"
   else
-    DATA_TRAIN="${WORK}/data/sites_v1/${MIXED_DATA:-mixed_train_v2}.parquet"
+    DATA_TRAIN="${WORK}/data/sites_v1/${MIXED_BASE}.parquet"
   fi
 else
   DATA_TRAIN="${WORK}/data/countdown_train_4num_${DATA_VARIANT}.parquet"
