@@ -1597,7 +1597,10 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
                 nums=nums_col, targets=[int(t) for t in target_col],
                 prefixes=prefix_col, step=step,
                 full_span_rows=(
-                    [i for i in range(bs) if opd_gate_col[i] and prefix_col[i]]
+                    # 게이트 팔은 게이트 자리만, 게이트 없는 팔(OPT_OPDC 절제)은 자리 전부 —
+                    # «게이트 유무»만 다른 절제 쌍이 되도록.
+                    [i for i in range(bs) if prefix_col[i] and
+                     (opd_gate_col[i] or not bool(_cdr.ARM_SPECS[arm].get("opd_gate")))]
                     if os.environ.get("OPD_FULL_SPAN", "0") == "1" else None))
             opd_diag.update(_od)
             for i, r in enumerate(rows):
