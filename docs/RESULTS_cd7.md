@@ -472,3 +472,8 @@ OPT_T(허용만 + 지도 항): 스텝 17 발화 2.1%, 지도 항 지급 0.004/0.
 - **g3dn 밀도 확인**: 스텝 20~22 스태시 168/88/136 행 = 어드밴티지 행, 2~4만 토큰/스텝(이전 16~48행 대비 3~5배), E-136 사망 없음. 학습 corr 스텝 22 **.611 ≈ N0 궤적 .605**(트윈 없어 편향 없음). 현재 선두 후보.
 - VTRW: when 일치율 .77~.87 유지, 발화 20~38% 로 **상승**(«언제» 보상이 «옳은 때의 메모»를 늘린다), 학습 corr .49~.64. 스텝 30 held-out 대기.
 - 신규 팔 `OPT_OPDGW`(§12-d) = 오프라인 게이트 과표집 + 밀집 증류 + when 보상, 트윈 없음. `v5_OPDGW_base_g3dn_s1`(p99) 발사.
+
+### cd8 방향 전환 — 회복형 메타 종료, §13 검산 사다리 발사 (09-09 01:45)
+- 종료(의도 이탈·판정 실패): g3dn s30 held-out **.582**, VTRW **.555**, OPDGW 동계열 중단; 대기 중이던 CFG s2·OPT_MT·OPT_M 재개 취소. 근거: 메모 뒤 정답률 .12 불변(0908 해부), 중반 메타는 세금.
+- 발사(RL 만, 베이스 출발, 프롬프트 chk): `v6_EVC_CHK_s1`(p99) · `v6_FIXED_CHK_s1`(p98) · `v6_TAG0_s1`(p97) 100스텝, 스텝 30/50 held-out 으로 판정. 프로브 2건(베이스·N0 s100 × chk) GPU 0.
+- 구현: countdown_task `SOLVE_SYS_CHK`, countdown_rewards `check_row/parse_checks` + 항 fclaim/chk_fixed/chk_evc, ARM_SPECS 3팔, verl_sdc 행 필드, run_arm chk 고정. 테스트 7 통과. 데이터 `countdown_{train,val}_4num_chk.parquet` = plain 과 같은 문제(8000/500), 시스템 프롬프트만 교체.
