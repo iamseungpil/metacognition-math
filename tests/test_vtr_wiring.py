@@ -269,3 +269,28 @@ def test_build_opd_arms_full_span_scores_rows_without_meta():
     assert diag["full_span"] == 1 and per_row[0]["opd_status"] == "pending" and per_row[0]["opd_n_tok"] == 8
     _, _, _, per_row2, diag2 = _build_opd_arms(_Tok(), msgs, resp, [prefix], [[20, 10, 7, 10]], [27])
     assert diag2["no_meta"] == 1 and per_row2[0]["opd_status"] == "no_meta"
+
+
+def test_dense_opd_advantage_adds_clipped_token_signal_on_gated_rows_only():
+    """§12-c: 스태시에 든 행만, 길이 L 까지만, coef·clip 적용해 더한다."""
+    import torch
+    from src.training import verl_sdc as V
+
+    class _D:
+        pass
+    d = _D()
+    d.batch = {"advantages": torch.zeros(3, 5)}
+    d.non_tensor_batch = {}
+    V._OPD_DENSE_STASH.update({"step": 7, "bs": 3, "adv": {1: [0.5, -5.0, 1.0]}})
+    out = V._countdown_add_dense_opd_advantage(d, coef=0.5, clip=2.0)
+    a = out.batch["advantages"]
+    assert a[0].abs().sum().item() == 0 and a[2].abs().sum().item() == 0
+    assert torch.allclose(a[1], torch.tensor([0.25, -1.0, 0.5, 0.0, 0.0]))
+    assert V._OPD_DENSE_STASH["adv"] == {}
+
+
+def test_read_opd_token_vectors_teacher_minus_student():
+    from src.training.verl_sdc import _read_opd_token_vectors, _OsdAttempt
+    ref_lp = [[-1.0, -2.0, -3.0], [-2.0, -2.0, -1.0]]
+    vecs = _read_opd_token_vectors(ref_lp, [_OsdAttempt(row=0, w_len=3)])
+    assert vecs == [[1.0, 0.0, -2.0]]

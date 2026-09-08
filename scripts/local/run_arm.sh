@@ -171,6 +171,10 @@ fi
 if [ "${OPD_FULL_SPAN:-0}" = "1" ]; then
   LINEAGE="${LINEAGE}_fs"
 fi
+# ★OPD_DENSE=1 (0908, §12-c): 토큰별 밀집 OPD 어드밴티지. 계보 접미사 _dn.
+if [ "${OPD_DENSE:-0}" = "1" ]; then
+  LINEAGE="${LINEAGE}_dn"
+fi
 CONFIG_NAME="${CONFIG_NAME:-countdown_6arm}"
 if [ "${DATA_HINT}" = "mixed_cf" ]; then
   # ★OPT_CF(§8): 반사실 쌍둥이 판 — main(site, opt 프롬프트) + twin(같은 자리,

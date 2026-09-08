@@ -1588,6 +1588,12 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
             for i in range(bs)
         ]
         try:
+            try:
+                _am = data.batch["attention_mask"][:, prompt_length:]
+                _vl = _am.sum(dim=1).tolist()
+                _resp_ids_for_opd = [data.batch["responses"][i][:int(_vl[i])].tolist() for i in range(bs)]
+            except Exception:
+                _resp_ids_for_opd = None
             opd_rows, _od = _compute_countdown_opd(
                 tokenizer=self.tokenizer,
                 trainer=_ACTIVE_SDC_CONTEXT.get("trainer", None),
@@ -1596,6 +1602,8 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
                 response_texts=list(decoded_responses),
                 nums=nums_col, targets=[int(t) for t in target_col],
                 prefixes=prefix_col, step=step,
+                response_ids=_resp_ids_for_opd,
+                dense=(os.environ.get("OPD_DENSE", "0") == "1"),
                 full_span_rows=(
                     # 게이트 팔은 게이트 자리만, 게이트 없는 팔(OPT_OPDC 절제)은 자리 전부 —
                     # «게이트 유무»만 다른 절제 쌍이 되도록.
@@ -1689,6 +1697,14 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
         _n_sites_seen = len(_vtr_gate_table)
         vtr_gate_rate = (vtr_gated_online + vtr_gated_fallback) / max(1, _n_sites_seen)
         n_opdg_gated = sum(opd_gate_col)
+
+    # ── §12-c 밀집 OPD 스태시: 게이트가 최종(오프라인/온라인 모두 반영)인 지금 채운다.
+    if os.environ.get("OPD_DENSE", "0") == "1":
+        _dense_adv = {i: r["opd_tok_adv"] for i, r in enumerate(rows)
+                      if r.get("opd_tok_adv") is not None and _bool01_local(opd_gate_col[i])}
+        _OPD_DENSE_STASH.update({"step": step, "bs": bs, "adv": _dense_adv})
+        print(f"[COUNTDOWN][OPD-DENSE] step={step} stash rows={len(_dense_adv)} "
+              f"gated={sum(1 for v in opd_gate_col if v)} scored_vecs={sum(1 for r in rows if r.get('opd_tok_adv') is not None)}")
 
     # ── OPD 그룹 중심화(opd_meta_c, OPT_OPDC 전용, §10) — 배치 한 번에 한 번, per-row
     #   보상 조립(아래 arm_reward 루프) **전에** 끝낸다. `opd_kl`(위 OPD 블록이 이미
@@ -3165,7 +3181,7 @@ def _osd_delta_stats(vals) -> dict:
 #   이미 이 방법으로 §7 의 결과(메타 특이적 KL 5.7배, 방향 일치 98.3%)를 냈다.
 
 def _build_opd_arms(tokenizer, prompt_messages, response_texts, prefixes, nums, targets,
-                    full_span_rows=None, full_span_tok: int = 256):
+                    full_span_rows=None, full_span_tok: int = 256, response_ids=None):
     r"""점수를 매길 **2n 개** (문맥, target) 팔. GPU 를 잡지 않는다.
 
     행 하나당 팔 둘, **고정 순서**: `hint`(teacher), `plain`(student). 두 팔의
@@ -3234,9 +3250,14 @@ def _build_opd_arms(tokenizer, prompt_messages, response_texts, prefixes, nums, 
 
         pre_text = prefix_i + text[:meta_start]
         pre_ids = list(tokenizer(pre_text, add_special_tokens=False)["input_ids"])
-        target_ids = list(tokenizer(target_text, add_special_tokens=False)["input_ids"])
-        if i in _fs and prefix_i:
-            target_ids = target_ids[:max(1, int(full_span_tok))]
+        if i in _fs and prefix_i and response_ids is not None and response_ids[i] is not None:
+            # ★밀집 OPD(§12-c): 롤아웃이 실제로 뽑은 응답 토큰열을 그대로 target 으로 쓴다 —
+            #   재토큰화하면 경계가 어긋나 토큰별 어드밴티지를 응답 위치에 못 얹는다.
+            target_ids = [int(t) for t in list(response_ids[i])[:max(1, int(full_span_tok))]]
+        else:
+            target_ids = list(tokenizer(target_text, add_special_tokens=False)["input_ids"])
+            if i in _fs and prefix_i:
+                target_ids = target_ids[:max(1, int(full_span_tok))]
         if not target_ids:
             per_row[i] = {"opd_kl": None, "opd_n_tok": 0, "opd_status": "empty_span"}
             diag["no_span"] += 1
@@ -3255,6 +3276,62 @@ def _build_opd_arms(tokenizer, prompt_messages, response_texts, prefixes, nums, 
 
     diag["attempted"] = len(attempts)
     return arm_prompts, arm_resps, attempts, per_row, diag
+
+
+_OPD_DENSE_STASH: dict = {"step": None, "bs": 0, "adv": {}}
+
+
+def _bool01_local(v) -> int:
+    try:
+        return 1 if int(bool(v)) else 0
+    except Exception:
+        return 0
+
+
+def _read_opd_token_vectors(ref_lp, attempts):
+    """행별 토큰 벡터 `lp_teacher_t − lp_student_t`(길이 L, 팔 순서 hint=base+0, plain=base+1).
+    비유한 값이 하나라도 있으면 그 행은 None(fail-closed)."""
+    out = []
+    for k, at in enumerate(attempts):
+        base, L = 2 * k, at.w_len
+        try:
+            t = [float(v) for v in list(ref_lp[base + 0])[:L]]
+            st = [float(v) for v in list(ref_lp[base + 1])[:L]]
+            vec = [a - b for a, b in zip(t, st)]
+            out.append(vec if (len(vec) == L and all(math.isfinite(v) for v in vec)) else None)
+        except Exception:
+            out.append(None)
+    return out
+
+
+def _countdown_add_dense_opd_advantage(data, coef: float | None = None, clip: float | None = None):
+    """★§12-c(0908): 게이트 자리의 토큰별 OPD 어드밴티지를 GRPO 어드밴티지 위에 더한다.
+        adv[i, t] += coef · clip(lp_teacher_t − lp_student_t, ±clip)   (t < L_i)
+    GRPO 는 token_level_rewards 를 시퀀스 합으로 뭉개 그룹 정규화하므로 토큰 신호를 보상에
+    실으면 스칼라로 퇴화한다 — 그래서 어드밴티지 단계에서 직접 더한다(OPD 의 정의 그대로).
+    스태시가 이 배치와 안 맞으면(bs 불일치) 아무것도 안 하고 크게 남긴다."""
+    st = _OPD_DENSE_STASH
+    advmap = st.get("adv") or {}
+    if not advmap:
+        return data
+    coef = float(os.environ.get("OPD_DENSE_C", "0.5")) if coef is None else coef
+    clip = float(os.environ.get("OPD_DENSE_CLIP", "2.0")) if clip is None else clip
+    adv = data.batch["advantages"]
+    if adv.shape[0] != int(st.get("bs", -1)):
+        print(f"[COUNTDOWN][OPD-DENSE][WARN] stash bs {st.get('bs')} != batch {adv.shape[0]} — skip")
+        return data
+    n_tok = 0
+    for i, vec in advmap.items():
+        L = min(len(vec), adv.shape[1])
+        if L <= 0:
+            continue
+        v = torch.tensor(vec[:L], dtype=adv.dtype, device=adv.device).clamp_(-clip, clip)
+        adv[i, :L] = adv[i, :L] + coef * v
+        n_tok += L
+    data.batch["advantages"] = adv
+    print(f"[COUNTDOWN][OPD-DENSE] step={st.get('step')} rows={len(advmap)} tokens={n_tok} coef={coef} clip={clip}")
+    st["adv"] = {}
+    return data
 
 
 def _read_opd_from_ref_logprobs(ref_lp, attempts):
@@ -3288,7 +3365,8 @@ def _read_opd_from_ref_logprobs(ref_lp, attempts):
 
 def _compute_countdown_opd(*, tokenizer, trainer, prompt_texts, prompt_messages,
                            response_texts, nums, targets, prefixes, step: int = 0,
-                           _ref_scorer=None, full_span_rows=None):
+                           _ref_scorer=None, full_span_rows=None, response_ids=None,
+                           dense: bool = False):
     r"""행별 `opd_kl`(+ `opd_n_tok`) + 진단. **여기서만 GPU 를 쓴다**(ref forward 1회,
     행당 2팔 — 힌트 조건화 teacher, 힌트 없는 student. §4.1 의 비용 편차는 위 모듈
     헤더 주석 참조).
@@ -3308,7 +3386,8 @@ def _compute_countdown_opd(*, tokenizer, trainer, prompt_texts, prompt_messages,
     arm_prompts, arm_resps, attempts, per_row, diag = _build_opd_arms(
         tokenizer, prompt_messages, response_texts, prefixes, nums, targets,
         full_span_rows=full_span_rows,
-        full_span_tok=int(os.environ.get("OPD_FULL_SPAN_TOK", "256")))
+        full_span_tok=int(os.environ.get("OPD_FULL_SPAN_TOK", "256")),
+        response_ids=response_ids)
     diag["scored"] = 0
     diag["nan_rows"] = 0
     diag["ref_error"] = None
@@ -3350,6 +3429,14 @@ def _compute_countdown_opd(*, tokenizer, trainer, prompt_texts, prompt_messages,
 
     kls = _read_opd_from_ref_logprobs(ref_lp, attempts)
     good = []
+    if dense:
+        # ★§12-c 밀집 OPD: 토큰별 (lp_teacher_t − lp_student_t) — Thinking Machines OPD 의
+        #   토큰별 역KL 어드밴티지 그대로. 스칼라 opd_kl 과 별도로 행에 얹어 두고,
+        #   `_countdown_add_dense_opd_advantage` 가 GRPO 어드밴티지 위에 더한다.
+        _vecs = _read_opd_token_vectors(ref_lp, attempts)
+        for at, vec in zip(attempts, _vecs):
+            if vec is not None:
+                per_row[at.row]["opd_tok_adv"] = vec
     for at, kl in zip(attempts, kls):
         r = per_row[at.row]
         if math.isfinite(kl):
@@ -5672,6 +5759,8 @@ def _patch_verl_for_sdc():
         )
         if _adv_sdc_mode == _COUNTDOWN_MODE:
             data = _countdown_mask_twin_advantages(data)
+            if os.environ.get("OPD_DENSE", "0") == "1":
+                data = _countdown_add_dense_opd_advantage(data)
         return data
 
     ray_trainer_module.compute_advantage = patched_compute_advantage
