@@ -590,7 +590,68 @@ CTX_CLIP = 2.0      # 문맥대조 clip. `dcpo_rmeta_forms._clip` 의 기본값�
 #   `arm_signature` 에 상태가 박히므로 로그만 봐도 어느 판인지 구분된다.
 NORMALIZE_TERMS: bool = True
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ★0909 «검산(check)» 메타 행동 — 자기 주장 감시. 프롬프트 변형 `chk`(countdown_task) 전용.
+#   메타 칸 점수를 세 방식으로 나란히 잰다(docs/PREREGISTRATION §13):
+#     fclaim   (답 칸, 공통): 박스 식이 정답이 아닌데 ✗ 표시가 없다 → 거짓 주장, −W_FCLAIM.
+#     chk_fixed(FIXED_CHK)  : 형식에 맞는 <check> 가 하나라도 있으면 +W_CHK — 내용 안 봄(선행 연구식).
+#     chk_evc  (EVC_CHK)    : ✗ 로 표시한 식이 **정말** 틀렸고(값≠목표 또는 규칙 위반) 최종 박스가
+#                             그 식과 다르며 정답이면 +W_CHK — «거짓을 잡고 고쳤다」. 그 외 0.
+#   검산 안의 산수에는 점수를 주지 않는다 — 점수는 «자기 주장이 틀렸음을 알아채고 행동을
+#   바꿨나」에만 붙는다(사용자 지적 0909: 계산을 앞당긴 것은 메타인지가 아니다).
+# ══════════════════════════════════════════════════════════════════════════════
+W_FCLAIM = 0.5
+W_CHK = 0.5
+_CHECK_RE = re.compile(r"<check>\s*(.*?)\s*</check>", re.S)
+
+
+def _norm_expr(e: str) -> str:
+    e = e.replace("\\times", "*").replace("\\cdot", "*").replace("\\div", "/").replace("$", "")
+    e = re.sub(r"\\d?frac\{([^{}]+)\}\{([^{}]+)\}", r"((\1)/(\2))", e)
+    return re.sub(r"\s+", "", e)
+
+
+def parse_checks(text: str) -> list[dict]:
+    """<check> 블록들을 (expr, mark) 로. mark ∈ {"ok","bad",None}. `expr = value` 의 좌변만 쓴다."""
+    out = []
+    for body in _CHECK_RE.findall(text or ""):
+        mark = "bad" if ("\u2717" in body or "\u274c" in body) else ("ok" if ("\u2713" in body or "\u2714" in body) else None)
+        left = body.split("=")[0]
+        left = re.sub(r"[\u2713\u2714\u2717\u274c]", "", left).strip()
+        if left:
+            out.append({"expr": _norm_expr(left), "mark": mark})
+    return out
+
+
+def check_row(text: str, nums, target, r_corr: int) -> dict:
+    """행 하나의 검산 원재료. countdown_task.grade/extract_expr/eval_countdown 재사용(복제 금지)."""
+    from src.training import countdown_task as _ct   # noqa: PLC0415
+    checks = parse_checks(text)
+    final = _ct.extract_expr(text)
+    final_n = _norm_expr(final) if final else None
+    def _wrong(expr: str) -> bool:
+        try:
+            v = _ct.eval_countdown(expr)
+        except Exception:
+            return True
+        if v is None:
+            return True
+        used = sorted(int(x) for x in re.findall(r"\d+", expr))
+        return not (v == int(target) and used == sorted(int(x) for x in nums))
+    flagged_bad = {c["expr"] for c in checks if c["mark"] == "bad"}
+    has_box = final is not None
+    fclaim = int(has_box and not _bool01(r_corr) and (final_n not in flagged_bad))
+    chk_fixed = int(any(c["mark"] is not None for c in checks))
+    chk_evc = int(_bool01(r_corr) and any(e != final_n and _wrong(e) for e in flagged_bad))
+    return {"fclaim": fclaim, "chk_fixed": chk_fixed, "chk_evc": chk_evc, "n_checks": len(checks)}
+
+
+def r_fclaim(fclaim) -> float:
+    return -1.0 if _bool01(fclaim) else 0.0
+
+
 TERM_MAX_ABS: dict = {
+    "fclaim":     1.0, "chk_fixed": 1.0, "chk_evc": 1.0,   # ★0909 check
     "corr":       1.0,   # {0,1}
     "format":     1.0,   # {0,1}
     "meta_floor": 1.0,   # {0,1}
@@ -1248,6 +1309,9 @@ def warmup_scale(step, warmup_steps: int = 20) -> float:
 #   weight : 기본 무게
 TERMS: dict[str, dict] = {
     "corr":       {"needs": ("r_corr",),                                   "warmup": False, "weight": W_CORR},
+    "fclaim":     {"needs": ("fclaim",),                                   "warmup": False, "weight": W_FCLAIM},
+    "chk_fixed":  {"needs": ("chk_fixed",),                                "warmup": False, "weight": W_CHK},
+    "chk_evc":    {"needs": ("chk_evc",),                                  "warmup": False, "weight": W_CHK},
     "format":     {"needs": ("format_ok",),                                "warmup": False, "weight": W_FORMAT},
     # meta_floor 는 워밍업을 **안 받는다**(명시적 결정): 발화 침식을 막는 바닥값인데
     # 워밍업을 받으면 바닥이 도착하기 전에 발화가 무너질 수 있다. 사양은 warmup 대상으로
@@ -1420,6 +1484,16 @@ ARM_SPECS: dict[str, dict] = {
     #   두어 발화가 나오면 다른 팔과 같은 계기(`parse_meta`/텔레메트리)로 잡히게 하되,
     #   `require_meta: False` 로 `format_ok_row` 의 형식 점수에서 메타 요구를 뗀다
     #   (N0 처럼 `meta_form: "none"` 을 쓰면 파싱 계기까지 꺼져 발화율을 못 잰다).
+    # ★0909 §13 검산 사다리(RL 만, SFT 없음, 프롬프트 chk). 답 칸(corr+fclaim)은 셋이 같고 메모 칸만 다르다.
+    "TAG0":      {"label": "chk_tag_only", "terms": ("corr", "format", "fclaim"), "meta_form": "new",
+                  "require_meta": False, "data_hint": "normal", "prompt_variant": "chk",
+                  "note": "문법(check 허가)만, 메모 칸 점수 0 — 세금 대조군."},
+    "FIXED_CHK": {"label": "chk_fixed_bonus", "terms": ("corr", "format", "fclaim", "chk_fixed"), "meta_form": "new",
+                  "require_meta": False, "data_hint": "normal", "prompt_variant": "chk",
+                  "note": "check 썼으면 +W_CHK(내용 무관) — 선행 연구(고정 검증 보상) 절제군."},
+    "EVC_CHK":   {"label": "chk_effect_verified", "terms": ("corr", "format", "fclaim", "chk_evc"), "meta_form": "new",
+                  "require_meta": False, "data_hint": "normal", "prompt_variant": "chk",
+                  "note": "✗ 로 잡은 식이 정말 틀렸고 최종 답이 다른 정답일 때만 +W_CHK — 효과-검증 메타 크레딧."},
     "OPT": {"label": "optional", "terms": ("corr", "format"), "meta_form": "new",
             "require_meta": False, "data_hint": "normal",
             "note": "★메타 허용·비요구. N0 와 항은 같고 프롬프트만 opt(강제→허가). "
@@ -1697,6 +1771,12 @@ def arm_reward(
 
     if "corr" in terms:
         raw["corr"] = 1.0 if _bool01(row["r_corr"]) else 0.0
+    if "fclaim" in terms:
+        raw["fclaim"] = r_fclaim(row["fclaim"])
+    if "chk_fixed" in terms:
+        raw["chk_fixed"] = 1.0 if _bool01(row["chk_fixed"]) else 0.0
+    if "chk_evc" in terms:
+        raw["chk_evc"] = 1.0 if _bool01(row["chk_evc"]) else 0.0
     if "format" in terms:
         raw["format"] = 1.0 if _bool01(row["format_ok"]) else 0.0
     if "meta_floor" in terms:

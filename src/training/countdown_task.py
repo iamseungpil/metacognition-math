@@ -508,6 +508,20 @@ assert "At least once during your search, stop and write a metacognitive block" 
 PROMPT_VARIANTS = {"new": SOLVE_SYS_NEW, "old": SOLVE_SYS_OLD, "shot": SOLVE_SYS_SHOT,
                    "plain": SOLVE_SYS_PLAIN, "opt": SOLVE_SYS_OPT}
 
+# ★0909 «검산(check)» 변형: plain 과 바이트 동일 + 한 줄 허가. 메타 블록(confidence/decision)
+#   없음 — 0908 실측에서 그 문법의 세금이 7pp 였다. 유일한 메타 행동은 «내 후보 식이 정말
+#   목표가 되는지」를 스스로 확인하는 것(자기 주장 감시). 정확하지 않은 식을 박스에 넣을 때는
+#   ✗ 로 표시해야 한다 — 표시 없이 틀린 식을 박스에 넣으면 «거짓 주장」(fclaim) 이다.
+_CHK_SENTENCE = (
+    "\nBefore your final answer you MAY verify a candidate with ONE line exactly like "
+    "<check> (3+7)*8-25 = 55 \u2713 </check> (write \u2717 instead of \u2713 if the value is NOT the "
+    "target). If you end up boxing an expression that is not exact, mark it with a "
+    "<check> ... \u2717 </check> line first.\n"
+)
+SOLVE_SYS_CHK = _RULES + _CHK_SENTENCE + _CLOSING.lstrip("\n")
+assert "<meta>" not in SOLVE_SYS_CHK and "<check>" in SOLVE_SYS_CHK
+PROMPT_VARIANTS["chk"] = SOLVE_SYS_CHK
+
 # ─────────────────────────────────────────────────────── P3 조향 프롬프트 (0904) ──
 # ★수리(감사결함10): `scripts/steer_prompts.py` 가 이 조립(P0→P1→P2→P3)을 자기
 #   안에서 스스로 해서 `PROMPT_VARIANTS` 밖에 있었다 — `countdown_task.build_parquet

@@ -1296,6 +1296,8 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
         #   prefix_i=="" 라 이 줄은 "지금까지"(text 만 채점)와 바이트 동일하다.
         r["r_corr"] = int(_cdt.grade(full_text_i, nums_col[i], int(target_col[i])))
         r["format_ok"] = _cdr.format_ok_row(text, arm, parse_expr_ok=_parse_ok)
+        # ★0909 check(§13): 검산 원재료 — fclaim/chk_fixed/chk_evc. 항이 없는 팔도 텔레메트리용으로 채운다.
+        r.update(_cdr.check_row(full_text_i, nums_col[i], int(target_col[i]), r["r_corr"]))
         # ⚠`or ""` 를 지우지 마라. answer_leak 은 None 을 받으면 **예외를 던진다**
         #   (조용한 0 이 누출 중단조건을 무력화하는 것을 막는 의도적 설계다). 그런데
         #   \boxed 가 없는 행 — 절단되거나 답을 못 맺은 행 — 은 정말로 `None` 이 나오고,
