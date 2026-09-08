@@ -433,3 +433,9 @@ OPT_T(허용만 + 지도 항): 스텝 17 발화 2.1%, 지도 항 지급 0.004/0.
 - 사고: `v4_OPT_M_ctrl_s1` 스텝 72 OOM — GPU 0 에 외부 프로세스 31GB 복귀(pid 3201412). 스텝 30·50·70 ckpt 무사. caps.json={"0":45000} 복구(0907 규칙).
 - N0 8-bit 스텝 100 완주(학습 corr 0.797). 평가 19건 소화 시작(GPU 2·0).
 - 선행 정리: TGOPD(2609.02998)=프롬프트 단위 교사 게이트, 우리 OPT_OPDG=결정 자리 단위+상태 힌트 교사. 인용·«유휴 교사 신뢰도 탐침» 차용 예정.
+
+### cd8 E5-b/c 배선 완료·발사 (09-08 10:30)
+- 보조 에이전트 구현을 리뷰해 3건 수정: ① 힌트 twin 이 `inv_hint_prompt`(**정답 witness 노출**)를 쓰고 있었다 → `countdown_opd.build_hint`(상태 힌트: 공략선 생사 + 살아있는 첫 수)로 교체, OPD 교사·gen_continuations hint 모드와 바이트 동일 조립. ② twin 4행(자리당 32롤아웃) → 1행(rollout.n=8 → K=8). ③ twin 행 GRPO 어드밴티지 0 마스크(`_countdown_mask_twin_advantages`) — 특권 정보는 증류로만.
+- 데이터 `sites_v4/mixed_train_v4_vtr_opt.parquet` 8,906행(main 2,973 / twin 2,960 / normal 2,973), val 겹침 0, 힌트 못 만든 자리 13.
+- 테스트 23 통과. 큐: `v5_VTR_base_s1`(p98) · `v5_VTRW_base_s1`(p97) — 둘 다 베이스 출발. 순서: OPDG(p99) → VTR → VTRW → OPDC 절제(p93) → OPT_M 재개(p92).
+- 사고: 드라이런 플래그를 잘못 줘(`DRY_RUN=1` 환경변수가 아니라 `--dry-run` 인자) 실제 학습이 GPU 0 에서 기동, 즉시 OOM 으로 종료. 잔여 프로세스 없음, 흔적 ckpt 삭제.
