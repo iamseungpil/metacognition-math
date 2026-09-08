@@ -167,6 +167,10 @@ fi
 if [ "${RESP_LEN}" != "2048" ]; then
   LINEAGE="${LINEAGE}_r${RESP_LEN}"
 fi
+# ★OPD_FULL_SPAN=1 (0908, §12-b): 게이트 자리 전 구간 증류. 계보 접미사 _fs 로 분리.
+if [ "${OPD_FULL_SPAN:-0}" = "1" ]; then
+  LINEAGE="${LINEAGE}_fs"
+fi
 CONFIG_NAME="${CONFIG_NAME:-countdown_6arm}"
 if [ "${DATA_HINT}" = "mixed_cf" ]; then
   # ★OPT_CF(§8): 반사실 쌍둥이 판 — main(site, opt 프롬프트) + twin(같은 자리,

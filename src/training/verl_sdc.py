@@ -1595,7 +1595,10 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
                 prompt_messages=prompt_messages,
                 response_texts=list(decoded_responses),
                 nums=nums_col, targets=[int(t) for t in target_col],
-                prefixes=prefix_col, step=step)
+                prefixes=prefix_col, step=step,
+                full_span_rows=(
+                    [i for i in range(bs) if opd_gate_col[i] and prefix_col[i]]
+                    if os.environ.get("OPD_FULL_SPAN", "0") == "1" else None))
             opd_diag.update(_od)
             for i, r in enumerate(rows):
                 r.update(opd_rows[i])
@@ -3153,7 +3156,8 @@ def _osd_delta_stats(vals) -> dict:
 #   토큰열(target_ids)을 teacher-force 하도록 보장하는 가장 단순한 방법이고, 프로브가
 #   이미 이 방법으로 §7 의 결과(메타 특이적 KL 5.7배, 방향 일치 98.3%)를 냈다.
 
-def _build_opd_arms(tokenizer, prompt_messages, response_texts, prefixes, nums, targets):
+def _build_opd_arms(tokenizer, prompt_messages, response_texts, prefixes, nums, targets,
+                    full_span_rows=None, full_span_tok: int = 256):
     r"""점수를 매길 **2n 개** (문맥, target) 팔. GPU 를 잡지 않는다.
 
     행 하나당 팔 둘, **고정 순서**: `hint`(teacher), `plain`(student). 두 팔의
@@ -3175,11 +3179,22 @@ def _build_opd_arms(tokenizer, prompt_messages, response_texts, prefixes, nums, 
     diag = {"B": B, "no_meta": 0, "no_hint": 0, "no_span": 0, "attempted": 0,
             "n_tok_sum": 0, "fwd_tokens": 0}
 
+    _fs = set(full_span_rows or ())
+    diag["full_span"] = 0
     for i in range(B):
         text = response_texts[i] or ""
         prefix_i = prefixes[i] or ""
         meta_start, meta_end, span_end = _cdo.opd_spans(text)
-        if meta_start is None:
+        if i in _fs and prefix_i:
+            # ★E5(0908, §12-b «전 구간 게이트 증류»): 게이트 통과 자리(opd_gate=1)는 메타
+            #   발화 여부와 무관하게 **프리픽스 직후 이어쓰기 앞 full_span_tok 토큰**을
+            #   증류 구간으로 삼는다. 베이스 출발(발화 7%)에서는 메타 구간만 재면 그룹당
+            #   채점 행이 2 미만이라(0908 실측 2/64) 증류 신호가 0 이다 — 상태 힌트 교사는
+            #   «다음 수를 어디로 돌릴지»를 알므로 다음-수 구간 자체를 증류한다(HDPO 식
+            #   특권 자기증류를 자리 단위로). 상태는 프리픽스까지(메타를 아직 안 본 상태).
+            meta_start, span_end = 0, len(text)
+            diag["full_span"] += 1
+        elif meta_start is None:
             diag["no_meta"] += 1
             continue
         target_text = text[meta_start:span_end]
@@ -3212,6 +3227,8 @@ def _build_opd_arms(tokenizer, prompt_messages, response_texts, prefixes, nums, 
         pre_text = prefix_i + text[:meta_start]
         pre_ids = list(tokenizer(pre_text, add_special_tokens=False)["input_ids"])
         target_ids = list(tokenizer(target_text, add_special_tokens=False)["input_ids"])
+        if i in _fs and prefix_i:
+            target_ids = target_ids[:max(1, int(full_span_tok))]
         if not target_ids:
             per_row[i] = {"opd_kl": None, "opd_n_tok": 0, "opd_status": "empty_span"}
             diag["no_span"] += 1
@@ -3263,7 +3280,7 @@ def _read_opd_from_ref_logprobs(ref_lp, attempts):
 
 def _compute_countdown_opd(*, tokenizer, trainer, prompt_texts, prompt_messages,
                            response_texts, nums, targets, prefixes, step: int = 0,
-                           _ref_scorer=None):
+                           _ref_scorer=None, full_span_rows=None):
     r"""행별 `opd_kl`(+ `opd_n_tok`) + 진단. **여기서만 GPU 를 쓴다**(ref forward 1회,
     행당 2팔 — 힌트 조건화 teacher, 힌트 없는 student. §4.1 의 비용 편차는 위 모듈
     헤더 주석 참조).
@@ -3281,7 +3298,9 @@ def _compute_countdown_opd(*, tokenizer, trainer, prompt_texts, prompt_messages,
     from src.training import countdown_pmi as _cdp          # noqa: PLC0415
 
     arm_prompts, arm_resps, attempts, per_row, diag = _build_opd_arms(
-        tokenizer, prompt_messages, response_texts, prefixes, nums, targets)
+        tokenizer, prompt_messages, response_texts, prefixes, nums, targets,
+        full_span_rows=full_span_rows,
+        full_span_tok=int(os.environ.get("OPD_FULL_SPAN_TOK", "256")))
     diag["scored"] = 0
     diag["nan_rows"] = 0
     diag["ref_error"] = None

@@ -250,3 +250,22 @@ def test_twin_mask_is_noop_without_column():
     d.batch = {"advantages": torch.ones(2, 3)}
     d.non_tensor_batch = {"extra_info": [{}, {}]}
     assert _countdown_mask_twin_advantages(d).batch["advantages"].sum().item() == 6.0
+
+
+def test_build_opd_arms_full_span_scores_rows_without_meta():
+    """§12-b: full_span_rows 에 든 행은 메타가 없어도 프리픽스 직후 구간이 증류 대상이 된다."""
+    from src.training.verl_sdc import _build_opd_arms
+
+    class _Tok:
+        def __call__(self, text, add_special_tokens=False):
+            return {"input_ids": [ord(c) % 100 for c in text]}
+        def apply_chat_template(self, msgs, tokenize=False, **kw):
+            return "\n".join(m["content"] for m in msgs)
+    prefix = "Numbers: [20, 10, 7, 10]\n20+10 = 30 → too low\n10*7 = 70 → too low\n"
+    msgs = [[{"role": "system", "content": "s"}, {"role": "user", "content": "Numbers: [20, 10, 7, 10] Target: 27"}]]
+    resp = ["Let me try 20-7 = 13 → too low, then 13+10 = 23."]  # 메타 없음
+    _, _, attempts, per_row, diag = _build_opd_arms(_Tok(), msgs, resp, [prefix], [[20, 10, 7, 10]], [27],
+                                                  full_span_rows=[0], full_span_tok=8)
+    assert diag["full_span"] == 1 and per_row[0]["opd_status"] == "pending" and per_row[0]["opd_n_tok"] == 8
+    _, _, _, per_row2, diag2 = _build_opd_arms(_Tok(), msgs, resp, [prefix], [[20, 10, 7, 10]], [27])
+    assert diag2["no_meta"] == 1 and per_row2[0]["opd_status"] == "no_meta"
