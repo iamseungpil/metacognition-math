@@ -1599,8 +1599,13 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
                 full_span_rows=(
                     # 게이트 팔은 게이트 자리만, 게이트 없는 팔(OPT_OPDC 절제)은 자리 전부 —
                     # «게이트 유무»만 다른 절제 쌍이 되도록.
+                    # ★온라인 게이트 팔(OPT_VTR/VTRW)은 게이트가 이 블록 **뒤**(vtr_batch_gate)에
+                    #   정해지므로 자리 전부의 구간을 미리 재 두고, 게이트는 중심화 단계에서만
+                    #   건다 — 안 그러면 «오프라인 ∧ 온라인» 교집합이 돼 온라인 게이트가 무력해진다.
                     [i for i in range(bs) if prefix_col[i] and
-                     (opd_gate_col[i] or not bool(_cdr.ARM_SPECS[arm].get("opd_gate")))]
+                     (opd_gate_col[i]
+                      or not bool(_cdr.ARM_SPECS[arm].get("opd_gate"))
+                      or bool(_cdr.ARM_SPECS[arm].get("vtr_online_gate")))]
                     if os.environ.get("OPD_FULL_SPAN", "0") == "1" else None))
             opd_diag.update(_od)
             for i, r in enumerate(rows):
