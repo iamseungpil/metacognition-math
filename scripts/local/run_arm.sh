@@ -304,6 +304,9 @@ TRAIN_CMD=(python -u -m src.training.verl_sdc
   # REF_OFFLOAD=1: ref(KL) 워커 파라미터를 CPU 로 내려 GPU 피크 ~8GB 절감(공유 카드용). 기본 false(기존 팔과 동일).
   "actor_rollout_ref.ref.fsdp_config.param_offload=$([ "${REF_OFFLOAD:-0}" = "1" ] && echo true || echo false)"
   "actor_rollout_ref.actor.fsdp_config.optimizer_offload=true"
+  # ★0909 ACTOR_OFFLOAD=1: 외부 잡이 카드마다 32GB 를 상주시킬 때(0909 trm pretrain ×4) 45GB 안에서 돌기 위한
+  #   파라미터 CPU 오프로드. 방법이 아니라 메모리 배치라 계보 접미사 없음. 속도 저하 감수.
+  "actor_rollout_ref.actor.fsdp_config.param_offload=$([ "${ACTOR_OFFLOAD:-0}" = "1" ] && echo true || echo false)"
   "++actor_rollout_ref.model.enable_activation_offload=true"
   "actor_rollout_ref.rollout.enforce_eager=true"
   "++trainer.total_training_steps=${STEPS}"
