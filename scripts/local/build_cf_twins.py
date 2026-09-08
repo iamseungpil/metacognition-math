@@ -52,27 +52,34 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from src.training import countdown_task as ct  # noqa: E402
 from src.training import countdown_inv as ci  # noqa: E402
+from src.training import countdown_opd as opd  # noqa: E402
 
 # ── OPT_VTR(§12) 힌트 쌍둥이. K=4 개, 시스템 메시지는 그대로(opt, 메타 허가) 두고
 #   user 메시지의 `Target: N` 뒤에 `countdown_inv.inv_hint_prompt` 와 같은 힌트 한
 #   줄을 끼운다 — CF twin(시스템 메시지를 plain 으로 바꿔 메타 자체를 못 내게 함)과는
 #   다른 처치다: 여기서는 "메타를 허가한 채로, 정답 힌트를 주면 이 자리에서 실제로
 #   더 잘 푸는가"를 재는 온라인 게이트의 재료를 만든다(§12 OPT_VTR).
-N_HINT_TWINS = 4
+N_HINT_TWINS = 1  # ★0908 리뷰: twin 행 1개 × rollout.n(=8) = 힌트 이어쓰기 K=8. 4행이면 자리당 32롤아웃(+400%)이라 과다.
 
 
-def _hint_twin_prompt(prompt, witness: str, target):
-    """`prompt`(system/user 메시지 리스트)에서 **user** 메시지에만
-    `countdown_inv.inv_hint_prompt` 를 적용한 **새** 리스트를 돌려준다. system 은
-    바이트 동일 보존(메타 허가 프롬프트 그대로) — `_twin_prompt`(system 만 바꿈)의
-    대칭 짝이다.
+def _hint_twin_prompt(prompt, nums, target, prefix: str):
+    """★0908 리뷰 수정: 힌트 twin 은 **상태 힌트**(`countdown_opd.build_hint` — 현재
+    공략선이 죽었는지 + 아직 표적에 닿는 첫 수 목록)만 받는다. 원안이 쓰던
+    `countdown_inv.inv_hint_prompt` 는 **정답(witness)을 통째로** 알려 주는 역산 힌트라
+    게이트가 «메타가 도움 되는 자리»가 아니라 «답을 알면 푸는 자리»(=전부)를 재게 된다.
+    OPD 힌트 교사(`_read_opd_from_ref_logprobs`)·`gen_continuations.py --modes hint` 와
+    바이트 같은 조립을 쓴다: [system, user+hint, assistant-프리픽스]. 힌트를 만들 수
+    없으면(`family_dead is None`) None — 호출자는 그 자리의 twin 을 만들지 않는다
+    (게이트는 오프라인 폴백으로 간다).
     """
     msgs = [dict(m) for m in prompt]
-    if len(msgs) < 2 or msgs[1].get("role") != "user":
-        raise ValueError("prompt[1] 이 user 메시지가 아니다 — 스키마 가정이 깨졌다.")
-    msgs[1] = {"role": "user",
-              "content": ci.inv_hint_prompt(msgs[1]["content"], witness, target)}
-    return msgs
+    if len(msgs) < 2 or msgs[0].get("role") != "system" or msgs[1].get("role") != "user":
+        raise ValueError("prompt 가 [system, user, ...] 가 아니다 — 스키마 가정이 깨졌다.")
+    hint = opd.build_hint(nums, target, prefix)
+    if not hint:
+        return None
+    base = msgs[:-1] if msgs[-1].get("role") == "assistant" else msgs
+    return opd.hinted_messages(base, hint, prefix)
 
 
 def build_hint_twins(df, n_hint: int = N_HINT_TWINS):
@@ -89,6 +96,7 @@ def build_hint_twins(df, n_hint: int = N_HINT_TWINS):
 
     pair_rows: list[dict] = []
     normal_rows: list[dict] = []
+    n_no_hint = 0
     n_site = 0
     for _, row in df.iterrows():
         r = row.to_dict()
@@ -102,10 +110,13 @@ def build_hint_twins(df, n_hint: int = N_HINT_TWINS):
             main_ei["vtr_key"] = site_id
             main["extra_info"] = main_ei
             pair_rows.append(main)
-            witness_i, target_i = r["witness"], r["target"]
+            hinted = _hint_twin_prompt(list(r["prompt"]), r["nums"], r["target"], r.get("prefix") or "")
+            if hinted is None:
+                n_no_hint += 1
+                continue
             for k in range(n_hint):
                 twin = copy.deepcopy(r)
-                twin["prompt"] = _hint_twin_prompt(list(r["prompt"]), witness_i, target_i)
+                twin["prompt"] = hinted
                 twin_ei = dict(ei)
                 twin_ei["vtr_role"] = "twin"
                 twin_ei["vtr_key"] = site_id
@@ -139,7 +150,7 @@ def build_hint_twins(df, n_hint: int = N_HINT_TWINS):
     out_rows.extend(normal_rows[ni:])
     return pd.DataFrame(out_rows), {
         "n_in": len(df), "n_site": n_site, "n_normal": len(normal_rows),
-        "n_hint_per_site": n_hint, "n_out": len(out_rows),
+        "n_hint_per_site": n_hint, "n_site_without_hint": n_no_hint, "n_out": len(out_rows),
     }
 
 

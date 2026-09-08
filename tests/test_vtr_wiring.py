@@ -222,3 +222,31 @@ def test_opt_vtr_uses_opt_prompt_variant():
         ["OPT_VTR", "1", "100", "p3"],   # VARIANT_ARG 는 무시돼야 한다
     )
     assert "DATA_VARIANT=opt" in out
+
+
+def test_twin_advantages_are_zeroed():
+    """§12 수정 ②: vtr_role=="twin" 행의 advantages 는 0, 나머지는 그대로."""
+    import torch
+    from src.training.verl_sdc import _countdown_mask_twin_advantages
+
+    class _D:  # verl DataProto 흉내(batch dict + non_tensor_batch dict)
+        pass
+    d = _D()
+    d.batch = {"advantages": torch.ones(4, 3)}
+    d.non_tensor_batch = {"extra_info": [{"vtr_role": "main"}, {"vtr_role": "twin"}, {}, {"vtr_role": "twin"}]}
+    out = _countdown_mask_twin_advantages(d)
+    assert out.batch["advantages"].sum().item() == 6.0
+    assert out.batch["advantages"][1].abs().sum().item() == 0.0
+    assert out.batch["advantages"][3].abs().sum().item() == 0.0
+
+
+def test_twin_mask_is_noop_without_column():
+    import torch
+    from src.training.verl_sdc import _countdown_mask_twin_advantages
+
+    class _D:
+        pass
+    d = _D()
+    d.batch = {"advantages": torch.ones(2, 3)}
+    d.non_tensor_batch = {"extra_info": [{}, {}]}
+    assert _countdown_mask_twin_advantages(d).batch["advantages"].sum().item() == 6.0

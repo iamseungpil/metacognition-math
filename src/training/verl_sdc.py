@@ -5561,6 +5561,33 @@ def _patch_actor_loss_for_gfn():
     print("[SDC][GFN] ppo_loss hooked for GFN_OPSD_CONTRAST (R18c, Plan v7.2.7)")
 
 
+
+def _countdown_mask_twin_advantages(data):
+    """★0908(§12 리뷰): 힌트 twin 행(`extra_info.vtr_role=="twin"`)은 **게이트 측정용**
+    롤아웃이지 학습 대상이 아니다 — 특권 힌트 프롬프트로 정책을 직접 갱신하면 «특권
+    정보는 교사 증류로만 들어간다»는 주장이 깨진다. GRPO 어드밴티지 계산 뒤 twin 행의
+    advantages 를 0 으로 지워 정책 손실에서 제외한다(보상·채점·게이트 표는 그대로).
+    vtr_role 컬럼이 없는 배치(다른 팔)는 바이트 동일하게 통과한다."""
+    try:
+        nt = data.non_tensor_batch
+        roles = nt.get("vtr_role", None)
+        if roles is None:
+            ei = nt.get("extra_info", None)
+            if ei is None:
+                return data
+            roles = [(e or {}).get("vtr_role", None) for e in list(ei)]
+        mask = [str(r) == "twin" for r in roles]
+        if not any(mask):
+            return data
+        adv = data.batch["advantages"]
+        keep = torch.tensor([0.0 if m else 1.0 for m in mask], dtype=adv.dtype, device=adv.device)
+        data.batch["advantages"] = adv * keep.view(-1, *([1] * (adv.dim() - 1)))
+        n_twin = int(sum(mask))
+        print(f"[COUNTDOWN][VTR] twin advantages zeroed: {n_twin}/{len(mask)} rows")
+    except Exception as exc:  # 방어: 마스킹 실패는 학습을 죽이지 않되 크게 남긴다
+        print(f"[COUNTDOWN][VTR][WARN] twin advantage mask skipped: {exc!r}")
+    return data
+
 def _patch_verl_for_sdc():
     import verl.trainer.ppo.ray_trainer as ray_trainer_module
     from verl.single_controller.ray import RayWorkerGroup
@@ -5607,7 +5634,7 @@ def _patch_verl_for_sdc():
         # ★COUNTDOWN: async 우회로. 위 설명은 `_countdown_populate_token_rewards` 참조.
         if _adv_sdc_mode == _COUNTDOWN_MODE:
             data = _countdown_populate_token_rewards(data, config)
-        return original_compute_advantage(
+        data = original_compute_advantage(
             data,
             adv_estimator=adv_estimator,
             gamma=gamma,
@@ -5616,6 +5643,9 @@ def _patch_verl_for_sdc():
             norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
             config=config,
         )
+        if _adv_sdc_mode == _COUNTDOWN_MODE:
+            data = _countdown_mask_twin_advantages(data)
+        return data
 
     ray_trainer_module.compute_advantage = patched_compute_advantage
 
