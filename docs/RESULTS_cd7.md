@@ -479,3 +479,8 @@ OPT_T(허용만 + 지도 항): 스텝 17 발화 2.1%, 지도 항 지급 0.004/0.
 - 구현: countdown_task `SOLVE_SYS_CHK`, countdown_rewards `check_row/parse_checks` + 항 fclaim/chk_fixed/chk_evc, ARM_SPECS 3팔, verl_sdc 행 필드, run_arm chk 고정. 테스트 7 통과. 데이터 `countdown_{train,val}_4num_chk.parquet` = plain 과 같은 문제(8000/500), 시스템 프롬프트만 교체.
 - 01:53 §13-b 영역 분할 구현·테스트 8 통과. 스칼라 EVC/FIXED(기동 15분) 중단 → `v6_EVC_CHK_rg_s1`(p99)·`v6_FIXED_CHK_rg_s1`(p98) 재발사. TAG0 는 메모 항이 없어 그대로. 스칼라 판은 절제로 후순위.
 - 01:56 외부 trm pretrain 이 GPU 0~3 전부에 32GB 씩 상주 → 60GB 잡 불가. ACTOR_OFFLOAD=1(파라미터 CPU 오프로드)+VLLM_UTIL 0.15 로 need 44GB 판 재제출(EVC_rg/FIXED_rg/TAG0). 스칼라 EVC 는 01:49 vLLM 초기화 실패(free 16GB)로 사망.
+
+### cd8 §13 프로브 1차: chk 문법 v1 세금 5.3pp → 문법 개정·재발사 (09-09 02:03)
+- 베이스 × chk(v1) held-out **.373** vs plain .426 (−5.3pp, 무효선 3pp 초과). 원인: 응답 34% 가 <check> 를 **탐색 로그**로 남용(시도마다 check ✗). 오답 중 ✗ 표시 .54 는 긍정(정직 표시 습관은 있다).
+- 개정 v2: «박스 직전 **한 번**, 박스할 식만, 탐색 중 금지». 데이터 재빌드. v1 문법 세 팔 중단·ckpt 삭제, `v6b_*` 재발사(44GB 판). 프로브 2건(베이스·N0 s100 × v2) 재제출; v1 N0 프로브는 완주시켜 참고치로.
+- 운영: 외부 trm pretrain 4장 상주(32GB/장). 교훈(두 번째): 같은 명령 문자열 안에 kill 패턴과 그 문자열이 함께 있으면 pgrep -f 가 내 셸을 죽인다(exit 144) — kill 은 단독 명령으로.
