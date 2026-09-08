@@ -1805,6 +1805,22 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
         totals.append(float(_t))
         comps.append(_c)
 
+    # ★0909 §13-b 영역 분할(CHK_REGION=1): 메모 칸 항(chk_fixed/chk_evc)은 시퀀스 스칼라에서
+    #   빼고 <check> 구간 토큰에만 어드밴티지로 얹는다(`_countdown_add_check_region_advantage`).
+    #   답 칸(corr/format/fclaim)만 GRPO 의 시퀀스 보상으로 남는다 — «메타 부분과 정답을 다르게
+    #   채점」을 어드밴티지 수준에서 실제로 구현한 것. 사용자 지시(0909): 한계로 남기지 말고 고칠 것.
+    if os.environ.get("CHK_REGION", "0") == "1":
+        _meta_vals, _spans = [], []
+        for i, r in enumerate(rows):
+            mv = float(comps[i].get("chk_fixed", 0.0)) + float(comps[i].get("chk_evc", 0.0))
+            totals[i] = float(totals[i]) - mv
+            _meta_vals.append(mv)
+            _spans.append([(m.start(), m.end()) for m in _cdr._CHECK_RE.finditer(r.get("text") or "")])
+        _CHK_REGION_STASH.update({"step": step, "bs": len(rows), "uid": [str(u) for u in uid],
+                                  "meta": _meta_vals, "spans": _spans})
+        print(f"[COUNTDOWN][CHK-REGION] step={step} rows_with_meta={sum(1 for v in _meta_vals if v)} "
+              f"rows_with_span={sum(1 for sp in _spans if sp)} meta_sum={sum(_meta_vals):.2f}")
+
     _COUNTDOWN_STASH.update({"step": step, "arm": arm, "total": totals,
                              "components": comps, "n": len(totals), "rows": rows})
 
@@ -3287,6 +3303,65 @@ def _build_opd_arms(tokenizer, prompt_messages, response_texts, prefixes, nums, 
 
 
 _OPD_DENSE_STASH: dict = {"step": None, "bs": 0, "adv": {}}
+_CHK_REGION_STASH: dict = {"step": None, "bs": 0, "uid": [], "meta": [], "spans": []}
+
+
+def _char_to_tok(decode_prefix_len, n_tok: int, char_pos: int) -> int:
+    """decode(ids[:t]) 의 문자 길이가 char_pos 를 처음 넘는 t (이진 탐색, 단조 가정)."""
+    lo, hi = 0, n_tok
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if decode_prefix_len(mid) <= char_pos:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+
+def _countdown_add_check_region_advantage(data, tokenizer=None):
+    """★§13-b: 메모 칸 항을 그룹 중심화(Dr.GRPO, /std 없음)해 <check> 구간 토큰에만 더한다.
+    답 칸 어드밴티지(GRPO)는 그대로. 스태시 bs 가 배치와 다르면 건너뛰고 크게 남긴다."""
+    st = _CHK_REGION_STASH
+    if not st.get("meta"):
+        return data
+    adv = data.batch["advantages"]
+    if adv.shape[0] != int(st.get("bs", -1)):
+        print(f"[COUNTDOWN][CHK-REGION][WARN] stash bs {st.get('bs')} != batch {adv.shape[0]} — skip")
+        st["meta"] = []
+        return data
+    from src.training.dcpo_region import group_mean_subtract   # noqa: PLC0415
+    centered = group_mean_subtract(st["meta"], st["uid"]).reshape(-1)
+    tok = tokenizer or getattr(_ACTIVE_SDC_CONTEXT.get("trainer", None), "tokenizer", None)
+    if tok is None:
+        print("[COUNTDOWN][CHK-REGION][WARN] tokenizer 없음 — skip")
+        st["meta"] = []
+        return data
+    resp = data.batch["responses"]
+    am = data.batch.get("response_mask", None)
+    n_rows = n_tok_total = 0
+    for i, spans in enumerate(st["spans"]):
+        c = float(centered[i])
+        if not spans or abs(c) < 1e-9:
+            continue
+        L = int(am[i].sum().item()) if am is not None else int(resp.shape[1])
+        ids = resp[i][:L].tolist()
+        cache: dict[int, int] = {}
+        def _plen(t, _ids=ids, _cache=cache):
+            if t not in _cache:
+                _cache[t] = len(tok.decode(_ids[:t], skip_special_tokens=False))
+            return _cache[t]
+        for (c0, c1) in spans:
+            t0 = _char_to_tok(_plen, L, c0) - 1
+            t1 = _char_to_tok(_plen, L, c1 - 1)
+            t0 = max(0, min(t0, L)); t1 = max(t0, min(t1, L))
+            if t1 > t0:
+                adv[i, t0:t1] = adv[i, t0:t1] + c
+                n_tok_total += (t1 - t0)
+        n_rows += 1
+    data.batch["advantages"] = adv
+    print(f"[COUNTDOWN][CHK-REGION] step={st.get('step')} applied rows={n_rows} tokens={n_tok_total}")
+    st["meta"] = []
+    return data
 
 
 def _bool01_local(v) -> int:
@@ -5769,6 +5844,8 @@ def _patch_verl_for_sdc():
             data = _countdown_mask_twin_advantages(data)
             if os.environ.get("OPD_DENSE", "0") == "1":
                 data = _countdown_add_dense_opd_advantage(data)
+            if os.environ.get("CHK_REGION", "0") == "1":
+                data = _countdown_add_check_region_advantage(data)
         return data
 
     ray_trainer_module.compute_advantage = patched_compute_advantage

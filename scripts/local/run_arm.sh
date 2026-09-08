@@ -178,6 +178,10 @@ fi
 if [ "${OPD_DENSE:-0}" = "1" ]; then
   LINEAGE="${LINEAGE}_dn"
 fi
+# ★CHK_REGION=1 (0909, §13-b): 메모 칸 항을 <check> 구간 토큰에만 어드밴티지로. 계보 접미사 _rg.
+if [ "${CHK_REGION:-0}" = "1" ]; then
+  LINEAGE="${LINEAGE}_rg"
+fi
 CONFIG_NAME="${CONFIG_NAME:-countdown_6arm}"
 if [ "${DATA_HINT}" = "mixed_cf" ]; then
   # ★OPT_CF(§8): 반사실 쌍둥이 판 — main(site, opt 프롬프트) + twin(같은 자리,
