@@ -51,6 +51,96 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 from src.training import countdown_task as ct  # noqa: E402
+from src.training import countdown_inv as ci  # noqa: E402
+
+# ── OPT_VTR(§12) 힌트 쌍둥이. K=4 개, 시스템 메시지는 그대로(opt, 메타 허가) 두고
+#   user 메시지의 `Target: N` 뒤에 `countdown_inv.inv_hint_prompt` 와 같은 힌트 한
+#   줄을 끼운다 — CF twin(시스템 메시지를 plain 으로 바꿔 메타 자체를 못 내게 함)과는
+#   다른 처치다: 여기서는 "메타를 허가한 채로, 정답 힌트를 주면 이 자리에서 실제로
+#   더 잘 푸는가"를 재는 온라인 게이트의 재료를 만든다(§12 OPT_VTR).
+N_HINT_TWINS = 4
+
+
+def _hint_twin_prompt(prompt, witness: str, target):
+    """`prompt`(system/user 메시지 리스트)에서 **user** 메시지에만
+    `countdown_inv.inv_hint_prompt` 를 적용한 **새** 리스트를 돌려준다. system 은
+    바이트 동일 보존(메타 허가 프롬프트 그대로) — `_twin_prompt`(system 만 바꿈)의
+    대칭 짝이다.
+    """
+    msgs = [dict(m) for m in prompt]
+    if len(msgs) < 2 or msgs[1].get("role") != "user":
+        raise ValueError("prompt[1] 이 user 메시지가 아니다 — 스키마 가정이 깨졌다.")
+    msgs[1] = {"role": "user",
+              "content": ci.inv_hint_prompt(msgs[1]["content"], witness, target)}
+    return msgs
+
+
+def build_hint_twins(df, n_hint: int = N_HINT_TWINS):
+    """`df`(mixed_train_v4_gate_opt.parquet 형, `witness`/`target` 플랫 컬럼 필요) 에서
+    site 행마다 main 1 + hint twin `n_hint` 개를 만들어 (main, twin*n_hint) 블록을
+    먼저 두고 normal 행을 뒤에 붙인 새 DataFrame 을 돌려준다(§12 OPT_VTR).
+
+    `extra_info.vtr_role` ∈ {"main","twin","none"}, `vtr_key`=site_id(twin/main만),
+    twin 행은 추가로 `vtr_hint_idx`(0..n_hint-1) 를 갖는다. 기존
+    `cf_role`/`cf_key`(있으면)는 건드리지 않는다 — OPT_CF 와 동시에 쓰지 않으므로
+    무해하다.
+    """
+    import pandas as pd
+
+    pair_rows: list[dict] = []
+    normal_rows: list[dict] = []
+    n_site = 0
+    for _, row in df.iterrows():
+        r = row.to_dict()
+        site_id = r.get("site_id") or ""
+        ei = dict(r["extra_info"])
+        if site_id:
+            n_site += 1
+            main = copy.deepcopy(r)
+            main_ei = dict(ei)
+            main_ei["vtr_role"] = "main"
+            main_ei["vtr_key"] = site_id
+            main["extra_info"] = main_ei
+            pair_rows.append(main)
+            witness_i, target_i = r["witness"], r["target"]
+            for k in range(n_hint):
+                twin = copy.deepcopy(r)
+                twin["prompt"] = _hint_twin_prompt(list(r["prompt"]), witness_i, target_i)
+                twin_ei = dict(ei)
+                twin_ei["vtr_role"] = "twin"
+                twin_ei["vtr_key"] = site_id
+                twin_ei["vtr_hint_idx"] = k
+                twin["extra_info"] = twin_ei
+                pair_rows.append(twin)
+        else:
+            ei2 = dict(ei)
+            ei2["vtr_role"] = "none"
+            ei2["vtr_key"] = ""
+            r["extra_info"] = ei2
+            normal_rows.append(r)
+
+    # ★블록 = 1 main + n_hint twin (기본 5행). `cf_center_rows`/`vtr_batch_gate` 는
+    #   배치 전체에서 vtr_key 로 짝짓기(인접 불요)라 OPT_CF 만큼 순서에 민감하진
+    #   않지만, `data.shuffle=false`(run_arm.sh, OPT_CF 와 같은 이유)로 에폭마다
+    #   dataset 자체가 섞여 같은 배치에 못 들어가는 사고를 막는 것은 동일하다 —
+    #   블록을 앞에 몰아 배치 경계 계산을 예측 가능하게 유지한다.
+    block = 1 + n_hint
+    blocks = [pair_rows[i:i + block] for i in range(0, len(pair_rows), block)]
+    need = block * len(blocks)
+    if normal_rows and len(normal_rows) < len(blocks):
+        reps = -(-len(blocks) // len(normal_rows))
+        normal_rows = [dict(r) for r in (normal_rows * reps)[:len(blocks)]]
+    out_rows = []
+    ni = 0
+    for b in blocks:
+        out_rows.extend(b)
+        if ni < len(normal_rows):
+            out_rows.append(normal_rows[ni]); ni += 1
+    out_rows.extend(normal_rows[ni:])
+    return pd.DataFrame(out_rows), {
+        "n_in": len(df), "n_site": n_site, "n_normal": len(normal_rows),
+        "n_hint_per_site": n_hint, "n_out": len(out_rows),
+    }
 
 
 def _twin_prompt(prompt, variant: str = "plain"):
@@ -131,12 +221,27 @@ def main():
     ap.add_argument("--in", dest="in_path", required=True,
                     help="입력 parquet (예: mixed_train_v3c_opt.parquet)")
     ap.add_argument("--out", dest="out_path", required=True,
-                    help="출력 parquet (예: mixed_train_v3c_cf_opt.parquet)")
+                    help="출력 parquet (예: mixed_train_v3c_cf_opt.parquet, OPT_VTR 는 "
+                         "mixed_train_v4_vtr_opt.parquet)")
+    ap.add_argument("--mode", choices=("twin", "hint"), default="twin",
+                    help="twin(기본, OPT_CF §8) = 1 main + 1 plain-twin. "
+                        "hint(OPT_VTR §12) = 1 main + N_HINT_TWINS 개 힌트 twin.")
+    ap.add_argument("--n_hint", type=int, default=N_HINT_TWINS,
+                    help="--mode hint 전용: 자리당 힌트 twin 개수(기본 4).")
     args = ap.parse_args()
 
     import pandas as pd
 
     df = pd.read_parquet(args.in_path)
+    if args.mode == "hint":
+        out_df, stats = build_hint_twins(df, n_hint=args.n_hint)
+        out_df.to_parquet(args.out_path, index=False)
+        print(f"[build_cf_twins][hint] in={args.in_path} n_in={stats['n_in']} "
+              f"(site={stats['n_site']}, normal={stats['n_normal']})")
+        print(f"[build_cf_twins][hint] out={args.out_path} n_out={stats['n_out']} "
+              f"(main+hint*{stats['n_hint_per_site']}={stats['n_site'] * (1 + stats['n_hint_per_site'])}"
+              f" + normal={stats['n_normal']})")
+        return
     out_df, stats = build_cf_twins(df)
     out_df.to_parquet(args.out_path, index=False)
 

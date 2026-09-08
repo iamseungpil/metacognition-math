@@ -90,6 +90,8 @@ __all__ = [
     "OPD_TERM_C", "opd_center_rows", "r_opd_meta_c",
     "CF_TERM", "W_CF", "cf_center_rows", "r_cf_meta",
     "CF_GROUP_TERM", "cf_group_rows", "r_cf_group",
+    "WHEN_TERM", "VTR_TAU", "VTR_WHEN_W", "resolved_vtr_tau", "resolved_vtr_when_w",
+    "vtr_batch_gate", "r_when",
     "OSD_TERM", "OSD_C", "OSD_C_PROVISIONAL", "OSD_W_MAX", "OSD_LEAK_NGRAM",
     "INV_TERM", "INV_SCOPE", "INV_FORM", "INV_AGG", "INV_TAU", "INV_C",
     "INV_TAU_PROVISIONAL", "INV_MIN_PROSE_TOK", "INV_FALSE_CLAIM_PEN", "r_meta_inv",
@@ -436,6 +438,131 @@ def r_cf_group(cf_group_raw: float | None) -> float:
         return 0.0
     return float(cf_group_raw)
 
+
+# ── OPT_VTR/OPT_VTRW(§12) — 온라인 검증 게이트 + "언제" 보상 (2026-09-07/08) ─────
+# 왜 새 항인가. OPT_OPDG(§11)의 게이트는 **오프라인**이다 — 학습 전(고정) 힌트 교사
+# 롤아웃으로 자리를 한 번 채점해 두고, 학습 내내 그 값을 그대로 쓴다. 정책이 학습
+# 중에 바뀌면(발화 습관·능력 모두) 오프라인 게이트가 "지금" 그 자리에서 힌트가
+# 실제로 도움이 되는지와 어긋날 수 있다. OPT_VTR 은 배치마다 **온라인**으로 다시
+# 잰다 — 그 스텝에 실제로 뽑은 힌트 twin 롤아웃(K=4, `build_cf_twins.py --mode
+# hint`)의 평균 정답률에서, 같은 배치 main 그룹의 **무발화** 롤아웃 평균 정답률을
+# 뺀 값이 tau 이상이면 그 자리를 그 스텝에서 게이트 통과로 본다. 온라인 비교가
+# 불가능한 자리(무발화 main 표본이 그 배치에 없다 — 예: 발화율이 높아져 전원
+# 발화한 그룹)는 오프라인 `opd_gate`(build_gate_sites.py 산출) 로 **폴백**한다.
+# 게이트를 통과한 행은 OPT_OPDG 와 같은 `opd_meta_c` 증류를 받고, 그 외는 순수
+# 결과 GRPO 만 받는다(`verl_sdc._compute_countdown_arm_stash` 가 이 함수의 출력을
+# `opd_center_rows(gate=…)` 에 그대로 넘긴다).
+WHEN_TERM = "when"      # ★단일 정의처 규약(CF_TERM 과 같은 이유).
+VTR_TAU = 0.10          # 사용자 지시(§12). `VTR_TAU` 환경변수로 오버라이드.
+VTR_WHEN_W = 0.2        # 사용자 지시(§12). `VTR_WHEN_W` 환경변수로 오버라이드.
+
+
+def resolved_vtr_tau() -> float:
+    """온라인 검증 게이트 임계값 — `VTR_TAU` 로 오버라이드(기본 0.10).
+
+    `_resolved_arith_threshold`(이 파일 하단)와 같은 패턴: 오버라이드 여부를
+    `arm_signature` 가 찍어 "선언된 값 = 실행된 값"을 로그 한 줄로 확인한다.
+    """
+    v = os.environ.get("VTR_TAU")
+    return float(VTR_TAU) if v is None else float(v)
+
+
+def _vtr_tau_overridden() -> bool:
+    return os.environ.get("VTR_TAU") is not None
+
+
+def resolved_vtr_when_w() -> float:
+    """"when" 보상 무게 — `VTR_WHEN_W` 로 오버라이드(기본 0.2)."""
+    v = os.environ.get("VTR_WHEN_W")
+    return float(VTR_WHEN_W) if v is None else float(v)
+
+
+def _vtr_when_w_overridden() -> bool:
+    return os.environ.get("VTR_WHEN_W") is not None
+
+
+def vtr_batch_gate(rows: Sequence[Mapping], *, tau: float | None = None) -> dict[str, tuple[int, str]]:
+    r"""OPT_VTR/OPT_VTRW 팔. 배치 **전체**에서 `vtr_key`(=site_id) 별로 온라인 검증
+    게이트를 계산한다 — 계산 불가하면 오프라인 `opd_gate` 로 폴백한다(§12).
+
+    입력 `rows` 는 배치 전체의 행 딕셔너리 목록, 각 원소가 최소
+    `vtr_role`("main"/"twin"/"none"), `vtr_key`(str, "" 는 사이트 무관),
+    `emitted`(main 행에서만 의미), `corr`(={0,1}, r_corr 그대로), `opd_gate`
+    (오프라인 폴백값, 0/1, `build_gate_sites.py` 산출 — 없으면 0) 를 갖는다.
+
+    자리(`vtr_key`)마다:
+      * `hint_corrs`  = twin 행(`vtr_role=="twin"`)의 corr 전부(그 자리 K개).
+      * `nometa_corrs`= main 행(`vtr_role=="main"`) 중 **무발화**(`emitted==0`)
+        인 것의 corr(그 자리 그룹 안에서 이번 배치가 실제로 뽑은 무발화 롤아웃).
+      * 둘 다 1개 이상이면 **온라인**: `gate = 1 if mean(hint_corrs) −
+        mean(nometa_corrs) >= tau else 0`, source="online".
+      * 아니면(둘 중 하나라도 비었다) **폴백**: 그 자리 main 행의 `opd_gate`
+        값(첫 번째로 발견된 것, 전부 같은 값이어야 정상이지만 방어적으로 첫 값만
+        본다) 을 그대로 쓴다, source="fallback". main 행도 그 자리 twin 행도
+        배치에 전혀 없으면(자리 자체가 이 배치에 없음) 표에 아예 안 실린다.
+
+    반환값: `{site_id: (gate:int, source:"online"|"fallback")}`. `vtr_key==""`
+    (사이트 없음, normal 행) 은 표에 안 들어간다.
+    """
+    tau = resolved_vtr_tau() if tau is None else float(tau)
+    hint_by_site: dict[str, list[float]] = {}
+    nometa_by_site: dict[str, list[float]] = {}
+    fallback_by_site: dict[str, int] = {}
+    seen_sites: set[str] = set()
+    for r in rows:
+        role = str(r.get("vtr_role", "none"))
+        key = r.get("vtr_key") or ""
+        if not key:
+            continue
+        seen_sites.add(key)
+        if role == "twin":
+            hint_by_site.setdefault(key, []).append(_f(r.get("corr", 0.0)))
+        elif role == "main":
+            if key not in fallback_by_site:
+                fallback_by_site[key] = _bool01(r.get("opd_gate", 0))
+            if not _bool01(r.get("emitted", 0)):
+                nometa_by_site.setdefault(key, []).append(_f(r.get("corr", 0.0)))
+    out: dict[str, tuple[int, str]] = {}
+    for key in seen_sites:
+        hints = hint_by_site.get(key, [])
+        nometas = nometa_by_site.get(key, [])
+        if hints and nometas:
+            delta = (sum(hints) / len(hints)) - (sum(nometas) / len(nometas))
+            out[key] = (int(delta >= tau), "online")
+        else:
+            out[key] = (fallback_by_site.get(key, 0), "fallback")
+    return out
+
+
+def r_when(row: Mapping) -> float:
+    r"""OPT_VTRW 팔의 "when" 보상. site 행(`is_site_row`)에서 실제로 메타를 낸
+    행에서만 채점한다 — 발화를 요구하지 않는다(§5 사양: "no meta emitted -> 0,
+    never force emission").
+
+    `family_dead`(마지막 두 시도의 첫수 계열이 이미 죽었는가, `r_timing` 과 같은
+    오라클) 와 `dec_redirect`(decision=="redirect" 였는가) 의 정합만 본다 —
+    verify/무결정은 전부 "continue"(계열을 안 버렸다) 로 묶는다.
+
+        emitted==0                                    → 0.0 (발화 강제 아님)
+        family_dead is None(판정불가, 시도 없음)          → 0.0 (r_timing 과 같은 관례)
+        family_dead==1(죽음) ∧ redirect                → +w  (옳게 갈아탐)
+        family_dead==0(생존) ∧ ¬redirect(continue)     → +w  (옳게 계속함)
+        family_dead==1 ∧ ¬redirect                     → −w  (죽었는데 안 갈아탐)
+        family_dead==0 ∧ redirect                       → −w  (안 죽었는데 갈아탐)
+
+    범위 {−w, 0, +w}, w=`resolved_vtr_when_w()`.
+    """
+    if not _bool01(row.get("emitted", 0)):
+        return 0.0
+    fd = row.get("family_dead")
+    if fd is None:
+        return 0.0
+    fd = _bool01(fd)
+    redirect = _bool01(row.get("dec_redirect", 0))
+    w = resolved_vtr_when_w()
+    match = (redirect and fd == 1) or ((not redirect) and fd == 0)
+    return w if match else -w
+
 SHIFT_PARAMS = dict(scale=1.0, clip=2.0, reversal_save=1.0, reversal_derail=2.0,
                     reversal_min_magnitude=0.0)
 # C·F·H 가 sign 을 곱하기 전에 쓰는 파라미터. 위 ⚠사양 충돌 참조 —
@@ -504,6 +631,10 @@ TERM_MAX_ABS: dict = {
     # cf_group_rows 가 이미 clip(·,−1,+1) 로 [-1,1] 이라 정규화는 항등이다.
     # cf_meta 와 같은 이유로 `.get(t, 1.0)` 기본값에 기대지 않고 명시한다.
     "cf_group": 1.0,
+    # r_when 이 이미 [−w,+w](w=resolved_vtr_when_w(), 기본 0.2) 로 무게를 내장한다
+    # (`arm_reward` 의 일반 무게×스케일 곱은 여기서는 항등 1.0×scale 만 얹는다) —
+    # cf_meta/cf_group 과 같은 이유로 `.get(t, 1.0)` 기본값에 기대지 않고 명시한다.
+    "when": 1.0,
 }
 
 # sign(adv_corr) == 0 일 때의 정책. 아래 `r_meta_mul` 주석 참조.
@@ -1190,6 +1321,12 @@ TERMS: dict[str, dict] = {
     #   필드" 패턴). 이 필드가 행에 없으면 즉사한다 — OPT_CFG 가 돌았는데 배선이 안
     #   된 채 조용히 0 을 흘리는 사고를 막는다(CF_TERM 과 같은 이유).
     CF_GROUP_TERM: {"needs": ("emitted", "cf_group_raw"), "warmup": True, "weight": W_CF},
+    # ── "when" 보상(OPT_VTRW, §12) — `r_timing` 과 같은 원재료(emitted/family_dead/
+    #   dec_redirect), 단 무게(±VTR_WHEN_W)는 `r_when` 안에 이미 내장돼 있으므로 여기
+    #   무게는 항등 1.0(위 TERM_MAX_ABS["when"] 주석 참조). warmup 은 다른 처치 항
+    #   (timing/live_new)과 같이 받는다.
+    WHEN_TERM:    {"needs": ("emitted", "family_dead", "dec_redirect"),
+                   "warmup": True, "weight": 1.0},
 }
 
 _COMMON = ("corr", "format", "meta_floor")   # 공통 = 처치 아님. 여덟 팔 전부 동일.
@@ -1387,6 +1524,31 @@ ARM_SPECS: dict[str, dict] = {
                         "corr 을 no-emit(NE) 그룹 평균 corr 과 비교(clip ±1) — OPT_CF 의 "
                         "twin 프롬프트 교란(plain 0.426 vs opt 0.352) 을 없앤다. 한계: "
                         "emit/no-emit 선택이 내생적(§10) — OPT_CF 를 이차 확인으로 유지."},
+    # ★OPT_VTR (2026-09-08, §12 「온라인 검증 게이트」): OPT_OPDG(§11, 오프라인 게이트)
+    #   의 항 구성(corr·format·opd_meta_c)을 그대로 쓰되, **어느 행이 게이트 통과인가**
+    #   를 매 배치 온라인으로 다시 잰다 — `vtr_batch_gate`(위 정의) 가 그 스텝에 실제로
+    #   뽑은 힌트 twin(K=4, `build_cf_twins.py --mode hint`) 평균 정답률과 main 그룹
+    #   무발화 평균 정답률의 차이를 tau(=`VTR_TAU`) 와 비교하고, 비교 불가하면
+    #   `extra_info.opd_gate`(오프라인)로 폴백한다. `data_hint="mixed_vtr"` 는 이
+    #   파일이 안 읽는다 — `scripts/local/run_arm.sh` 가
+    #   `mixed_train_v4_vtr_opt.parquet`(힌트 twin 포함판)로 라우팅한다.
+    "OPT_VTR": {"label": "optional_vtr_gated", "terms": ("corr", "format", OPD_TERM_C),
+                "meta_form": "new", "require_meta": False, "data_hint": "mixed_vtr",
+                "opd_gate": True, "vtr_online_gate": True,
+                "note": "★온라인 검증 게이트 증류. opd_meta_c 를 그 스텝 실측 "
+                        "«힌트 twin 평균 − 무발화 main 평균 >= tau» 인 자리에서만 "
+                        "켠다(온라인 불가 시 오프라인 opd_gate 로 폴백). 게이트 밖 "
+                        "행은 순수 결과 GRPO."},
+    # ★OPT_VTRW (2026-09-08, §12): OPT_VTR + "when" 보상(WHEN_TERM). 게이트 증류는
+    #   "어떻게(교사와 얼마나 가까운가)"만 재므로, "언제(죽은 계열에서 갈아탔는가)"를
+    #   직접 상벌하는 항을 더한다 — 발화한 site 행에서만 채점, 미발화는 절대 0(발화
+    #   강제 금지, §5).
+    "OPT_VTRW": {"label": "optional_vtr_gated_when",
+                 "terms": ("corr", "format", OPD_TERM_C, WHEN_TERM),
+                 "meta_form": "new", "require_meta": False, "data_hint": "mixed_vtr",
+                 "opd_gate": True, "vtr_online_gate": True,
+                 "note": "★OPT_VTR + when(±VTR_WHEN_W, family_dead·dec_redirect 정합). "
+                         "발화를 요구하지 않는다 — 미발화는 항상 0."},
 }
 
 
@@ -1440,6 +1602,14 @@ def arm_signature(arm: str) -> str:
     #   없으면 두 팔의 서명이 같아져 로그가 거짓말을 한다(조건부라 기존 서명은 안 깨진다).
     if spec.get("opd_gate"):
         extra += "|opdgate=on"
+    # ★OPT_VTR/OPT_VTRW(§12) — 게이트가 온라인(매 배치 재계산)인지를 박는다. 없으면
+    #   OPT_OPDG 와 opdgate=on 이 같아 "오프라인 vs 온라인"이 로그에서 안 갈린다.
+    if spec.get("vtr_online_gate"):
+        _tq = "?" if _vtr_tau_overridden() else ""
+        extra += f"|vtr_tau={resolved_vtr_tau():g}{_tq}"
+    if WHEN_TERM in spec["terms"]:
+        _wq = "?" if _vtr_when_w_overridden() else ""
+        extra += f"|when_w={resolved_vtr_when_w():g}{_wq}"
     # ★SC/SCg 정체 — K_S(막힘 임계)·conf_hi(과신 임계)·세 항의 무게가 이 팔의 전부다.
     #   하나라도 안 박으면 "어느 K_S 로 돌았나"가 로그에서 사라진다(OSD_C/INV_TAU 와
     #   같은 규약). 무게는 위 `parts` 루프가 이미 `t@weight` 로 찍으므로 여기서는
@@ -1591,6 +1761,12 @@ def arm_reward(
         # 센터링은 emitted 게이팅과 무관하게 이미 0 이다(cf_group_rows 가 NE 행·비교
         # 불가 그룹에 0.0 을 채운다) — CF_TERM 과 같은 이유로 관례를 명시한다.
         raw[CF_GROUP_TERM] = r_cf_group(row["cf_group_raw"]) if emitted else 0.0
+
+    if WHEN_TERM in terms:
+        # `r_when` 자체가 emitted==0/family_dead is None 을 이미 0.0 으로 처리한다
+        # (§5: 발화 강제 금지) — 그래도 다른 meta 항과 같은 관례를 명시해 "emitted
+        # 게이팅을 빠뜨렸다"는 감사 질문에 코드로 바로 답한다.
+        raw[WHEN_TERM] = r_when(row) if emitted else 0.0
 
     comps: dict[str, float] = {}
     for t, v in raw.items():

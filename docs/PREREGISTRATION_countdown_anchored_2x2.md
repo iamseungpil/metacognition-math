@@ -213,3 +213,104 @@ emit/no-emit 이 **내생적**(endogenous)이라, 모델이 이미 풀 수 있�
 있다). OPT_CF(서로 다른 프롬프트 쌍둥이)는 이 내생성 문제가 없는 대신 §8 의
 7.4pp 프롬프트 교란이 있다 — 두 팔을 서로 대체하지 않고 **상호 보조적 이차
 확인**으로 함께 유지한다(어느 한쪽만 양성이면 결론을 유보).
+
+## §12. OPT_VTR / OPT_VTRW — 온라인 검증 게이트 + "언제" 보상 (2026-09-08)
+
+**동기.** OPT_OPDG(§11)의 교사 신뢰도 게이트는 **오프라인**이다 — 학습 시작 전
+고정 힌트 교사 롤아웃 한 번으로 자리별 게이트를 계산해 parquet 에 얹어 두고,
+100스텝 내내 그 값을 그대로 쓴다. 그런데 발화 습관·능력 둘 다 학습 중 바뀐다
+(§9/§11 실측: 결합 SFT 출발 발화율 50%+ 가 RL 중 침식하는 경향, `docs/
+RESULTS_cd7.md` 여러 절). 오프라인 게이트가 "그때"는 맞았어도 "지금"은 틀릴 수
+있다 — 정책이 이미 그 자리를 스스로 풀 수 있게 됐는데도 옛 게이트가 계속 증류를
+켜 두면, 이제는 필요 없는 교사 의존을 강화한다(또는 그 반대). OPT_VTR 은 게이트를
+**매 배치 온라인**으로 다시 잰다.
+
+**정의.** `ARM_SPECS["OPT_VTR"]` = `terms=("corr","format","opd_meta_c")`,
+`require_meta=False`, `meta_form="new"`, `data_hint="mixed_vtr"`,
+`opd_gate=True`, `vtr_online_gate=True`. 보상식은 OPT_OPDG 와 **바이트
+동일**하다(`opd_meta_c`) — 달라지는 것은 게이트를 **어떻게 재는가**뿐이다.
+
+**힌트 twin(K=4).** `scripts/local/build_cf_twins.py --mode hint` 가
+`mixed_train_v4_gate_opt.parquet`(§11 의 오프라인 `opd_gate` 폴백을 이미 포함한
+판)에서 자리(site)마다 **1 main + 4 힌트 twin**을 만든다. main 행은 opt 프롬프트
+(메타 허가) 그대로 — `extra_info.vtr_role="main"`. 힌트 twin 행은 시스템 메시지를
+그대로 두고(OPT_CF 의 twin 처럼 plain 으로 바꾸지 않는다 — §10 이 지적한 7.4pp
+프롬프트 교란을 피한다), user 메시지의 `Target: N` 뒤에 `countdown_inv.
+inv_hint_prompt` 와 같은 한 줄(`Hint: one valid solution is {witness}.`)을 끼운
+사본 4개 — `extra_info.vtr_role="twin"`, `vtr_key=site_id`,
+`vtr_hint_idx∈{0,1,2,3}`. 출력은
+`data/sites_v4/mixed_train_v4_vtr_opt.parquet`(sites_v1 은 건드리지 않는다).
+
+**온라인 게이트**(`countdown_rewards.vtr_batch_gate`, 배치 단위 순수 함수).
+자리(`vtr_key`)마다:
+
+```
+hint_corrs   = corr(그 배치에서 뽑힌 그 자리의 힌트 twin 롤아웃 전부, K=4 그룹)
+nometa_corrs = corr(그 배치에서 뽑힌 그 자리의 main 그룹 중 무발화 롤아웃)
+```
+
+`hint_corrs`·`nometa_corrs` 가 **둘 다** 1개 이상이면 **온라인**:
+`gate = 1  iff  mean(hint_corrs) − mean(nometa_corrs) >= tau`(τ=`VTR_TAU`,
+기본 0.10, 환경변수로 오버라이드). 어느 한쪽이라도 이 배치에 없으면(예: 발화율이
+올라가 그 그룹이 전원 발화 — 무발화 표본이 없다) **오프라인 폴백**:
+`extra_info.opd_gate`(§11 산출) 을 그대로 쓴다. 온라인/폴백 두 경우 다 없는
+자리(그 배치에 아예 없음)는 게이트 표에 안 실린다. 게이트가 매긴 값은 main 행의
+`opd_gate` 를 덮어써 `opd_center_rows(gate=…)` 가 그대로 읽는다(§11 의 배선을
+재사용) — 힌트 twin 행 자신은 별도 GRPO 그룹(다른 uid)이라 이 센터링의 대상이
+되지 않는다.
+
+**"when" 보상(OPT_VTRW).** `ARM_SPECS["OPT_VTRW"]` = OPT_VTR + `terms`에 `"when"`
+추가. 게이트 증류(`opd_meta_c`)는 "교사와 얼마나 가까운가"만 재므로, "죽은
+계열에서 실제로 갈아탔는가"를 직접 상벌하는 `r_timing`(FT/MT, §2) 과 같은
+오라클(`family_dead`)을 재사용해 다음을 준다(발화한 site 행에서만, 발화 강제
+없음):
+
+```
+(redirect ∧ family_dead)      -> +w
+(continue ∧ ¬family_dead)     -> +w   (continue = ¬redirect, verify/무결정 포함)
+그 외 정합 불일치(redirect∧생존, continue∧죽음) -> −w
+무발화                          -> 0    (절대 발화를 요구하지 않는다)
+family_dead 판정불가(시도 없음)   -> 0
+```
+
+w=`VTR_WHEN_W`(기본 0.2, 환경변수 오버라이드). 텔레메트리:
+`[COUNTDOWN][WIRED]` 에 `vtr_twins`(배치의 힌트 twin 행 수)·`vtr_sites`(배치에
+등장한 자리 수)·`vtr_gated_online`/`vtr_gated_fallback`(게이트 통과 자리 수,
+출처별)·`vtr_gate_rate`(통과 자리 / 등장 자리)·`when_scored`(OPT_VTRW, family_dead
+판정 가능했던 발화 행 수)·`when_match_rate`(그중 정합 비율).
+
+**판정.** §11(OPT_OPDG)과 같은 세 지표(같은 자리 성공률·held-out·기제)에 두 조건이
+더 붙는다:
+
+- **1차 통과 조건(강화)**: held-out 정답률이 N0(8-bit AdamW 기준선) 을 넘고,
+  **또한** OPT_OPDG 의 (같은 초기 모델·같은 씨앗 조건) 오프라인 게이트 결과를
+  **+2pp 이상** 앞선다. OPT_OPDG 대비 우위가 없으면 온라인 재계산의 추가 비용
+  (아래 §토큰 비용)이 정당화되지 않는다.
+- **기제(추가)**: **사이트 unstick 개선** — 오프라인 게이트가 "막혀 있었다"(N-스텝
+  연속 게이트 미통과) 판정한 자리 중, 온라인 게이트가 학습 중 최초로 통과로
+  전환되는 비율이 **0보다 커야** 한다(폴백만 계속 쓰이고 온라인 전환이 0건이면
+  "온라인"이라는 처치 자체가 무효 레버 — `vtr_gated_online` 이 매 스텝 0에
+  머무르면 즉시 재검토).
+- OPT_VTRW 추가 판정: `when_match_rate` 가 학습 중 상승 추세(적어도 하락하지
+  않음) — 하락하면 "언제" 항이 오히려 잘못된 타이밍을 강화하고 있다는 신호.
+
+**무효화.** §11 의 두 규칙(발사 전 게이트 통과 자리 15~85% 확인, `opdg_gated_rows`
+0 이면 즉시 중단)을 그대로 물려받는다(온라인 게이트 값이 `opd_gate` 를 덮어써도
+그 컬럼을 읽는 하위 배선은 동일). 추가로 `vtr_gate_rate` 가 매 스텝 0(온라인·
+폴백 둘 다 전멸)이면 "온라인 검증"이라는 처치가 배선만 있고 실효가 없는 것이므로
+중단한다. `data.shuffle=false` 강제(OPT_CF·아래 비용 절 참조)가 안 걸려 있으면
+1차 지표를 신뢰하지 않는다.
+
+**twin 비용 추정(K=4).** §8(OPT_CF)의 블록은 (main, twin) 2행/자리였다. OPT_VTR
+은 (main, twin×4) = 5행/자리 — §8 대비 자리당 2.5배. `mixed_train_v4_gate_opt.
+parquet` 기준 자리 수가 §11 v1 프로브와 비슷한 규모(수천)라면, 배치의 site 쪽
+행 수가 (기존 main-only 대비) 최대 5배까지 부풀 수 있다 — 정상 배치의 "자리
+절반·일반 절반"(§5 무효화 규칙) 균형을 유지하려면 정상(normal) 행을 반복해
+채우는 기존 관례(`build_cf_twins.py` 의 need/reps 로직)를 그대로 물려받되,
+블록 크기가 5 로 커진 만큼 정상 행 반복 배수도 커진다 — 발사 전
+`[COUNTDOWN][WIRED]` 의 `n_site_rows`(배치의 40~60% 여야 함, §5)로 실측 확인이
+필수다. GPU 비용 측면에서는 힌트 twin 도 일반 롤아웃과 똑같이 롤아웃·채점을
+거치므로(빈 자리표시자가 아니다), 자리당 롤아웃 수가 5배 느는 만큼 그 자리를
+포함한 배치의 유효 처리량이 준다 — §8 과 같은 `data.shuffle=false` 오버라이드가
+필수인 이유도 같다(블록 인접성이 깨지면 같은 배치 안에서 main/twin 을 못 찾아
+온라인 게이트가 폴백으로만 돌게 된다).

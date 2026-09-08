@@ -1188,6 +1188,31 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
             "`mixed_train_*_gate_opt.parquet`(build_gate_sites.py 산출)을 MIXED_DATA 로 주었는지 확인하라 "
             "— 게이트 없이 돌면 이 팔은 OPT_M 과 동일해진다.")
 
+    # ── 온라인 검증 게이트 재료(vtr_role/vtr_key, OPT_VTR/OPT_VTRW 전용, §12).
+    #   ★`mixed_train_v4_vtr_opt.parquet`(build_cf_twins.py --mode hint) 만 이 두
+    #   컬럼을 가진다(extra_info 안에만 — cf_role/cf_key 와 같은 관례). 없으면
+    #   cf_role_col 과 같은 관례로 관용 처리: 전부 vtr_role="none"/vtr_key="" —
+    #   "지금까지"(vtr 처치가 아예 없음)와 바이트 동일.
+    try:
+        vtr_role_col = _col("vtr_role")
+    except RuntimeError:
+        vtr_role_col = None
+    vtr_role_col = [(v or "none") for v in vtr_role_col] if vtr_role_col is not None else ["none"] * bs
+    try:
+        vtr_key_col = _col("vtr_key")
+    except RuntimeError:
+        vtr_key_col = None
+    vtr_key_col = [(v or "") for v in vtr_key_col] if vtr_key_col is not None else [""] * bs
+    # ★E-136 과 같은 이유의 배선 가드: 온라인 게이트 팔인데 vtr 데이터가 안 왔으면
+    #   `vtr_batch_gate` 가 모든 자리에서 표 자체를 못 만든다(hint twin 이 없다) —
+    #   그러면 폴백(opd_gate)만 남아 OPT_VTR 이 조용히 OPT_OPDG 로 퇴화한다.
+    if bool(_cdr.ARM_SPECS[arm].get("vtr_online_gate")) and all(v == "none" for v in vtr_role_col):
+        raise RuntimeError(
+            f"[COUNTDOWN][E-VTR] arm={arm} 는 온라인 게이트 팔인데 배치 {bs} 행 중 "
+            "vtr_role 이 하나도 없다(전부 'none'). `mixed_train_*_vtr_opt.parquet`"
+            "(build_cf_twins.py --mode hint 산출)을 MIXED_DATA 로 주었는지 확인하라 "
+            "— 힌트 twin 없이 돌면 온라인 게이트는 항상 폴백(오프라인)이 된다.")
+
     prompt_texts = [
         _decode_prompt_only(self.tokenizer, data[i].batch["prompts"],
                             data[i].batch["attention_mask"], prompt_length)
@@ -1276,6 +1301,12 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
         #   짝짓는 데 쓴다. 다른 모든 팔·데이터에서는 "none"/"" 라 무해하다.
         r["cf_role"] = cf_role_col[i]
         r["cf_key"] = cf_key_col[i]
+        # ★온라인 검증 게이트(§12) — vtr_batch_gate 가 배치 전체에서 vtr_key 로
+        #   main/twin(K=4) 을 짝짓는 데 쓴다. 다른 모든 팔·데이터에서는 "none"/"" 라
+        #   무해하다(cf_role/cf_key 와 같은 관례).
+        r["vtr_role"] = vtr_role_col[i]
+        r["vtr_key"] = vtr_key_col[i]
+        r["opd_gate"] = opd_gate_col[i]
         # ★불변량(고정 자리 설계): site 프리픽스는 **첫 <meta> 전**에서 잘린다
         #   (`countdown_sites.cut_own_meta`/`cut_attempt_boundary` 둘 다 — B 컷은
         #   `\\boxed{` 이후를 제외하는데, 정상 롤아웃에서 <meta> 는 boxed 이전에
@@ -1306,7 +1337,9 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
         #   응답에 접합돼 있으므로 "메타 앞" = prefix + response[:meta_start]. normal 행은
         #   prefix_i=="" 라 그냥 response[:meta_start] 다(런타임 계산, `countdown_sites`
         #   가 CPU 로 4수 완전열거하므로 싸다).
-        if {"timing", "timing2", "live_new"} & set(_arm_terms):
+        # ★"when"(OPT_VTRW, §12) 도 family_dead/dec_redirect 가 원재료다 — r_timing
+        #   과 같은 오라클을 그대로 재사용한다(복제 금지 규약).
+        if {"timing", "timing2", "live_new", _cdr.WHEN_TERM} & set(_arm_terms):
             _m = _cdr.parse_meta(text, _cdr.ARM_SPECS[arm]["meta_form"])
             _resp_pre_meta = text[: int(_m["start"])] if _m.get("start") is not None else text
             _oracle = _cds.oracle_for_site(prefix_i + _resp_pre_meta, nums_col[i], int(target_col[i]))
@@ -1614,6 +1647,38 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
         r["phat"] = phat_of[uid[i]]
         r["group_id"] = uid[i]
 
+    # ── 온라인 검증 게이트(vtr, OPT_VTR/OPT_VTRW 전용, §12) — `cf_center_rows` 와
+    #   같은 패턴으로 배치 한 번에 한 번, OPD 센터링 **전에** 끝낸다. 배치 전체에서
+    #   site(`vtr_key`) 별로 게이트를 다시 재고(그 스텝 실제 힌트 twin·무발화 main
+    #   표본), main 행의 `opd_gate` 를 그 결과로 **덮어쓴다** — 아래 OPD 센터링
+    #   블록은 `opd_gate_col`(리스트)을 그대로 읽으므로 코드를 두 벌 두지 않는다.
+    #   폴백(오프라인 opd_gate)으로 떨어진 자리는 원래 값이 그대로 남는다(덮어쓰기가
+    #   같은 값을 다시 쓸 뿐).
+    _vtr_on = bool(_cdr.ARM_SPECS[arm].get("vtr_online_gate"))
+    vtr_twins = sum(1 for r in rows if r["vtr_role"] == "twin")
+    vtr_sites = len({r["vtr_key"] for r in rows if r["vtr_key"]})
+    vtr_gated_online = 0
+    vtr_gated_fallback = 0
+    vtr_gate_rate = 0.0
+    if _vtr_on:
+        _vtr_input = [{"vtr_role": r["vtr_role"], "vtr_key": r["vtr_key"],
+                      "emitted": r["emitted"], "corr": r["r_corr"],
+                      "opd_gate": opd_gate_col[i]} for i, r in enumerate(rows)]
+        _vtr_gate_table = _cdr.vtr_batch_gate(_vtr_input)
+        for i, r in enumerate(rows):
+            key = r["vtr_key"]
+            if r["vtr_role"] == "main" and key and key in _vtr_gate_table:
+                g, _src = _vtr_gate_table[key]
+                opd_gate_col[i] = g
+            else:
+                opd_gate_col[i] = 0
+            r["opd_gate"] = opd_gate_col[i]
+        vtr_gated_online = sum(1 for v, s in _vtr_gate_table.values() if s == "online" and v)
+        vtr_gated_fallback = sum(1 for v, s in _vtr_gate_table.values() if s == "fallback" and v)
+        _n_sites_seen = len(_vtr_gate_table)
+        vtr_gate_rate = (vtr_gated_online + vtr_gated_fallback) / max(1, _n_sites_seen)
+        n_opdg_gated = sum(opd_gate_col)
+
     # ── OPD 그룹 중심화(opd_meta_c, OPT_OPDC 전용, §10) — 배치 한 번에 한 번, per-row
     #   보상 조립(아래 arm_reward 루프) **전에** 끝낸다. `opd_kl`(위 OPD 블록이 이미
     #   채웠다 — OPT_OPD 와 원재료를 공유한다, `_opd_terms` 확장 참조)을 그룹(uid)별로
@@ -1708,6 +1773,19 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
     _COUNTDOWN_STASH.update({"step": step, "arm": arm, "total": totals,
                              "components": comps, "n": len(totals), "rows": rows})
 
+    # ── "when" 텔레메트리(OPT_VTRW, §12) — 발화한 site 행 중 family_dead 가 판정
+    #   가능했던(None 아님) 행만 "채점 대상"으로 센다(r_when 이 그 칸만 ±w 를 준다).
+    when_scored = 0
+    when_match_rate = 0.0
+    if _cdr.WHEN_TERM in _arm_terms:
+        _wr = [r for r in rows if _cdr._bool01(r.get("emitted", 0)) and r.get("family_dead") is not None]
+        when_scored = len(_wr)
+        if _wr:
+            _match = sum(1 for r in _wr
+                        if (_cdr._bool01(r["dec_redirect"]) and _cdr._bool01(r["family_dead"]) == 1)
+                        or (not _cdr._bool01(r["dec_redirect"]) and _cdr._bool01(r["family_dead"]) == 0))
+            when_match_rate = _match / len(_wr)
+
     # ★팔의 **정체 서명**을 런당 한 번 찍는다(검수 0831).
     #   `countdown_rewards.arm_signature` 의 docstring 은 "런처·로그·분석이 전부 이
     #   문자열을 찍으면 어떤 팔이 실제로 무엇을 켜고 돌았는지가 사후에 한 줄로 확인된다"
@@ -1733,6 +1811,10 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
           f"opdg_gated_rows={n_opdg_gated} "
           f"cf_main_scored={cf_main_scored} cf_pairs_found={cf_pairs_found}/{cf_pairs_total} "
           f"cfg_scored={cfg_scored} cfg_groups_ok={cfg_groups_ok}/{len(groups)} "
+          f"vtr_twins={vtr_twins} vtr_sites={vtr_sites} "
+          f"vtr_gated_online={vtr_gated_online} vtr_gated_fallback={vtr_gated_fallback} "
+          f"vtr_gate_rate={vtr_gate_rate:.3f} "
+          f"when_scored={when_scored} when_match_rate={when_match_rate:.3f} "
           f"n_site_rows={n_site_rows}", flush=True)
 
     # ★0902 관측: 보상 구성 요소별 평균 · 발화율 · 계획 항(해 생존/이행) 비율 · 응답 표본 8개 → wandb (실패해도 학습은 계속)

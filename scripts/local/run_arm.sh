@@ -19,11 +19,14 @@
 # VARIANT  prompt/data variant for non-N0/OPT/OPT_M arms (default p3); ignored for
 #          N0, which always uses the `plain` variant (countdown_rewards.ARM_SPECS["N0"]
 #          note: "메타 지시문 없음... variant plain, DATA_SUFFIX=_4num_plain"), and
-#          ignored for OPT/OPT_M/OPT_T/OPT_MT/OPT_MT2/OPT_OPD/OPT_OPDC/OPT_OPDG/OPT_MTC/OPT_CF,
-#          which always use the `opt` variant (permission, not mandate —
-#          countdown_task.PROMPT_VARIANTS["opt"]). OPT_CF's twin rows carry the
+#          ignored for OPT/OPT_M/OPT_T/OPT_MT/OPT_MT2/OPT_OPD/OPT_OPDC/OPT_OPDG/OPT_MTC/OPT_CF/
+#          OPT_CFG/OPT_VTR/OPT_VTRW, which always use the `opt` variant (permission, not
+#          mandate — countdown_task.PROMPT_VARIANTS["opt"]). OPT_CF's twin rows carry the
 #          `plain` system message inside the parquet itself (build_cf_twins.py) —
-#          VARIANT/DATA_VARIANT here only pick the val file for OPT_CF.
+#          VARIANT/DATA_VARIANT here only pick the val file for OPT_CF. OPT_VTR/OPT_VTRW's
+#          hint-twin rows keep the `opt` system message and instead splice a hint line into
+#          the user message (build_cf_twins.py --mode hint) — same reasoning, VARIANT/
+#          DATA_VARIANT here only pick the val file.
 #
 # LINEAGE = cd7_<ARM>_<VARIANT>_s<SEED>   (VARIANT here is the EFFECTIVE data variant,
 #           i.e. "plain" for N0, so lineages stay unambiguous.)
@@ -96,7 +99,7 @@ fi
 IS_OPT_PROMPT=0
 if [ "${ARM}" = "N0" ]; then
   DATA_VARIANT="plain"
-elif [ "${ARM}" = "OPT" ] || [ "${ARM}" = "OPT_M" ] || [ "${ARM}" = "OPT_T" ] || [ "${ARM}" = "OPT_MT" ] || [ "${ARM}" = "OPT_MT2" ] || [ "${ARM}" = "OPT_OPD" ] || [ "${ARM}" = "OPT_OPDC" ] || [ "${ARM}" = "OPT_MTC" ] || [ "${ARM}" = "OPT_CF" ] || [ "${ARM}" = "OPT_CFG" ] || [ "${ARM}" = "OPT_OPDG" ]; then
+elif [ "${ARM}" = "OPT" ] || [ "${ARM}" = "OPT_M" ] || [ "${ARM}" = "OPT_T" ] || [ "${ARM}" = "OPT_MT" ] || [ "${ARM}" = "OPT_MT2" ] || [ "${ARM}" = "OPT_OPD" ] || [ "${ARM}" = "OPT_OPDC" ] || [ "${ARM}" = "OPT_MTC" ] || [ "${ARM}" = "OPT_CF" ] || [ "${ARM}" = "OPT_CFG" ] || [ "${ARM}" = "OPT_OPDG" ] || [ "${ARM}" = "OPT_VTR" ] || [ "${ARM}" = "OPT_VTRW" ]; then
   # ★E-135(2026-09-07): 「opt 프롬프트 팔」 판정을 여기 한 곳에서만 한다. 예전엔 아래 mixed 분기에
   #   팔 이름 목록이 따로 있어, 새 팔을 한쪽에만 넣으면 학습은 «강제(new)» 데이터를 읽는 사고가 났다.
   IS_OPT_PROMPT=1
@@ -112,6 +115,10 @@ elif [ "${ARM}" = "OPT" ] || [ "${ARM}" = "OPT_M" ] || [ "${ARM}" = "OPT_T" ] ||
   #   행의 plain 프롬프트는 `scripts/local/build_cf_twins.py` 가 parquet 안에서
   #   이미 만들어 뒀다(행마다 다른 시스템 메시지). 여기서 VARIANT_ARG 를 "opt" 로
   #   고정하는 것은 val 파일 선택(`countdown_val_4num_opt.parquet`)에만 쓰인다.
+  #   ★OPT_VTR/OPT_VTRW(2026-09-08, §12): main 행은 OPT_CF 와 같은 opt 프롬프트.
+  #   힌트 twin 행은 시스템 메시지를 그대로 두고 user 메시지에 힌트를 끼운다
+  #   (`build_cf_twins.py --mode hint`) — VARIANT/DATA_VARIANT 는 여기서도 val
+  #   파일 선택에만 쓰인다.
   DATA_VARIANT="opt"
 else
   DATA_VARIANT="${VARIANT_ARG}"
@@ -131,8 +138,10 @@ print(ARM_SPECS['${ARM}'].get('data_hint', 'normal'))
 #   continue_final_message 오버라이드는 "mixed"(FT/M0/MT/OPT_M/OPT_MT...) 와
 #   완전히 같아야 한다 — 데이터가 다를 뿐 배치 기하(site 프리픽스가 프롬프트에
 #   접합됨)는 동일하다. `IS_MIXED_LIKE` 로 그 두 값을 한 곳에서 함께 다룬다.
+# ★OPT_VTR/OPT_VTRW(§12): data_hint="mixed_vtr" 는 고정 자리 + 힌트 twin(K=4) 판이다.
+#   같은 이유로 "mixed"/"mixed_cf" 와 함께 `IS_MIXED_LIKE` 로 다룬다.
 IS_MIXED_LIKE=0
-if [ "${DATA_HINT}" = "mixed" ] || [ "${DATA_HINT}" = "mixed_cf" ]; then
+if [ "${DATA_HINT}" = "mixed" ] || [ "${DATA_HINT}" = "mixed_cf" ] || [ "${DATA_HINT}" = "mixed_vtr" ]; then
   IS_MIXED_LIKE=1
 fi
 
@@ -164,6 +173,13 @@ if [ "${DATA_HINT}" = "mixed_cf" ]; then
   #   plain 프롬프트, `extra_info.cf_role=twin`) + normal. `scripts/local/
   #   build_cf_twins.py` 가 `mixed_train_v3c_opt.parquet` 에서 만든다.
   DATA_TRAIN="${WORK}/data/${SITES_DIR}/${MIXED_DATA:-mixed_train_v3c}_cf_opt.parquet"
+elif [ "${DATA_HINT}" = "mixed_vtr" ]; then
+  # ★OPT_VTR/OPT_VTRW(2026-09-08, §12): 온라인 검증 게이트 판 — main(site, opt
+  #   프롬프트, `extra_info.vtr_role=main`) + 힌트 twin(같은 자리, 같은 opt 프롬프트에
+  #   힌트 삽입, K=4, `extra_info.vtr_role=twin`) + normal. `scripts/local/
+  #   build_cf_twins.py --mode hint` 가 `mixed_train_v4_gate_opt.parquet`(오프라인
+  #   opd_gate 폴백 포함판)에서 만든다.
+  DATA_TRAIN="${WORK}/data/${SITES_DIR}/${MIXED_DATA:-mixed_train_v4}_vtr_opt.parquet"
 elif [ "${DATA_HINT}" = "mixed" ]; then
   # site(3000, 프리픽스가 이미 프롬프트에 접합) + normal(3000, 빈 assistant 메시지
   # 부착) 를 섞은 고정 자리 학습 parquet. countdown_sites.py 헤더 참조.
@@ -313,7 +329,11 @@ fi
 #   항상 짝수 인덱스(0,2,4,...)에서 시작하고 배치 크기(64)도 짝수라, 셔플이 꺼져
 #   있으면 어떤 쌍도 배치 경계에 걸리지 않는다(파일 순서가 고정되므로). 다른 팔은
 #   이 분기를 안 타 "지금까지"(shuffle=True)와 바이트 동일하다.
-if [ "${ARM}" = "OPT_CF" ]; then
+#   ★OPT_VTR/OPT_VTRW(§12): 같은 이유로 같은 오버라이드가 필요하다 — 블록이
+#   (main, twin*4) 로 인접 배치돼 있고(`build_cf_twins.py --mode hint`), 셔플이
+#   켜지면 온라인 게이트(`vtr_batch_gate`)가 같은 배치에서 main/twin 을 못 찾는
+#   행이 늘어 폴백(오프라인)으로만 돌게 된다.
+if [ "${ARM}" = "OPT_CF" ] || [ "${ARM}" = "OPT_VTR" ] || [ "${ARM}" = "OPT_VTRW" ]; then
   TRAIN_CMD+=("data.shuffle=false")
 fi
 
