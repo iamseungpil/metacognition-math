@@ -186,6 +186,9 @@ def _gpu_cap_mb(gpu):
     v = caps.get(str(gpu))
     return int(v) if v is not None else None
 
+PICK_HOLD_S = 90
+
+
 def _pick_job(gpu: int | None = None) -> Path | None:
     """Return a pending job file sorted by (-priority, submitted order), or None.
 
@@ -203,6 +206,32 @@ def _pick_job(gpu: int | None = None) -> Path | None:
             return json.loads(p.read_text())
         except Exception:
             return {}
+
+    # ★0908: «큰 잡 기아» 수정. 카드가 막 비었을 때 nvidia-smi 의 free 는 직전 잡의 메모리가
+    #   아직 회수되기 전 값이라, 우선순위 최상의 큰 잡(need 60GB)이 free 필터에 걸리고
+    #   need 가 작은 평가 잡이 카드를 채 간다 — 이것이 11:06·11:26 두 번 반복돼 p99 학습 잡이
+    #   p98 평가 뒤로 밀렸다. 우선순위 1등 후보가 cap 은 통과하지만 free 만 모자라면 최대
+    #   PICK_HOLD_S 초 동안 5초 간격으로 free 를 다시 재고, 그동안 맞으면 그 잡을 집는다.
+    #   끝내 안 맞으면 기존 규칙대로 맞는 잡 중 최상위를 집는다.
+    _top = None
+    for p in pending:
+        job = load(p)
+        need = int(job.get("need_mb", 0) or 0)
+        cap = _gpu_cap_mb(gpu)
+        if cap is not None and need and need > cap:
+            continue
+        key = (-int(job.get("priority", 0)), p.name)
+        if _top is None or key < _top[0]:
+            _top = (key, p, need)
+    if _top is not None and free is not None and _top[2] and _top[2] > free:
+        deadline = time.time() + PICK_HOLD_S
+        while time.time() < deadline:
+            time.sleep(5)
+            free = _gpu_free_mb(gpu)
+            if free is None or _top[2] <= free:
+                print(f"[pick gpu={gpu}] hold ok: free={free} need={_top[2]} -> {_top[1].name}")
+                return _top[1]
+        print(f"[pick gpu={gpu}] hold expired: free={free} need={_top[2]} — falling back to fitting jobs")
 
     cands = []
     for p in pending:
