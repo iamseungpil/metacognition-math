@@ -300,7 +300,10 @@ TRAIN_CMD=(python -u -m src.training.verl_sdc
   # SLIM=1(0907): 8-bit AdamW(bitsandbytes) — 갱신 피크 73GB→~50GB, 공유 카드(이웃 5~14GB) 옆에서 학습 가능.
   #   최적화 수치가 바뀌므로 같은 설정끼리만 비교한다(계보 태그 INIT_TAG 로 구분).
   "actor_rollout_ref.actor.optim.optimizer_impl=$([ "${SLIM:-0}" = "1" ] && echo bitsandbytes.optim || echo torch.optim)"
-  "actor_rollout_ref.actor.optim.optimizer=$([ "${SLIM:-0}" = "1" ] && echo AdamW8bit || echo AdamW)"
+  # ★0909 PAGED=1: bitsandbytes PagedAdamW8bit — 옵티마이저 상태를 압력 시 CPU 로 페이징한다.
+  #   수식은 AdamW8bit 과 같고 «어디에 두느냐»만 다르다(방법 변경 아님). 외부 잡이 카드를 27~62GB
+  #   오가며 액터 업데이트 순간 OOM 을 내는 상황(0909 새벽 9회)에서 피크 ~8GB 를 줄인다.
+  "actor_rollout_ref.actor.optim.optimizer=$([ "${SLIM:-0}" = "1" ] && { [ "${PAGED:-0}" = "1" ] && echo PagedAdamW8bit || echo AdamW8bit; } || echo AdamW)"
   # REF_OFFLOAD=1: ref(KL) 워커 파라미터를 CPU 로 내려 GPU 피크 ~8GB 절감(공유 카드용). 기본 false(기존 팔과 동일).
   "actor_rollout_ref.ref.fsdp_config.param_offload=$([ "${REF_OFFLOAD:-0}" = "1" ] && echo true || echo false)"
   "actor_rollout_ref.actor.fsdp_config.optimizer_offload=true"
