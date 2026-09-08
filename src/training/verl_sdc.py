@@ -1176,13 +1176,19 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
         opd_gate_col = _col("opd_gate")
     except RuntimeError:
         opd_gate_col = None
+    _opd_gate_col_absent = opd_gate_col is None or all(v is None for v in opd_gate_col)
     opd_gate_col = ([int(bool(v)) for v in opd_gate_col] if opd_gate_col is not None
                     else [0] * bs)
     n_opdg_gated = sum(opd_gate_col)
+    if bool(_cdr.ARM_SPECS[arm].get("opd_gate")) and n_opdg_gated == 0 and not _opd_gate_col_absent:
+        print(f"[COUNTDOWN][E-136][WARN] step={step} arm={arm} 게이트 컬럼은 있으나 이 배치 게이트 행 0 — 표본 요동, 계속")
     # ★E-136(2026-09-07): 게이트 팔인데 게이트가 켜진 행이 하나도 없으면 `opd_meta_c` 가 전 행 0 이
     #   되어 팔이 조용히 대조군(OPT_M)과 같아진다 — 사전등록 §11 의 "게이트 0 이면 즉시 중단". 데이터를
     #   잘못 준 것이므로 여기서 죽인다(무효 레버 금지 규약: 선언된 항은 반드시 배선돼야 한다).
-    if bool(_cdr.ARM_SPECS[arm].get("opd_gate")) and n_opdg_gated == 0:
+    # ★0908 완화: 컬럼이 **있는데** 이 배치에만 0 개인 것은 표본 요동(게이트 행 8.6% 면 64프롬프트
+    #   배치에서 드물게 0)이지 배선 사고가 아니다 — 밀집 판이 스텝 13 에서 이걸로 죽었다. 컬럼 자체가
+    #   없을 때(전부 None → 배선 사고)만 죽이고, 있는데 0 이면 크게 남기고 지나간다.
+    if bool(_cdr.ARM_SPECS[arm].get("opd_gate")) and n_opdg_gated == 0 and _opd_gate_col_absent:
         raise RuntimeError(
             f"[COUNTDOWN][E-136] arm={arm} 는 게이트 팔인데 배치 {bs} 행 중 opd_gate=1 이 0 개다. "
             "`mixed_train_*_gate_opt.parquet`(build_gate_sites.py 산출)을 MIXED_DATA 로 주었는지 확인하라 "
