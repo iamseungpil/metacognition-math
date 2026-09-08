@@ -513,10 +513,12 @@ PROMPT_VARIANTS = {"new": SOLVE_SYS_NEW, "old": SOLVE_SYS_OLD, "shot": SOLVE_SYS
 #   목표가 되는지」를 스스로 확인하는 것(자기 주장 감시). 정확하지 않은 식을 박스에 넣을 때는
 #   ✗ 로 표시해야 한다 — 표시 없이 틀린 식을 박스에 넣으면 «거짓 주장」(fclaim) 이다.
 _CHK_SENTENCE = (
-    "\nBefore your final answer you MAY verify a candidate with ONE line exactly like "
-    "<check> (3+7)*8-25 = 55 \u2713 </check> (write \u2717 instead of \u2713 if the value is NOT the "
-    "target). If you end up boxing an expression that is not exact, mark it with a "
-    "<check> ... \u2717 </check> line first.\n"
+    # ★0909 02:05 개정(프로브: 베이스가 <check> 를 탐색 로그로 남용 — 응답 34% 가 시도마다 check,
+    #   세금 5.3pp > 무효선 3pp). «박스 직전 한 번, 박스할 식만」으로 좁힌다.
+    "\nJust before your final \\boxed{...} you MAY add ONE verification line, exactly like "
+    "<check> (3+7)*8-25 = 55 \u2713 </check>, evaluating the expression you are about to box "
+    "(write \u2717 instead of \u2713 if its value is NOT the target). Use <check> only for that "
+    "final verification, never while exploring.\n"
 )
 SOLVE_SYS_CHK = _RULES + _CHK_SENTENCE + _CLOSING.lstrip("\n")
 assert "<meta>" not in SOLVE_SYS_CHK and "<check>" in SOLVE_SYS_CHK
