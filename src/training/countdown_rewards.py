@@ -1549,6 +1549,15 @@ ARM_SPECS: dict[str, dict] = {
                  "opd_gate": True, "vtr_online_gate": True,
                  "note": "★OPT_VTR + when(±VTR_WHEN_W, family_dead·dec_redirect 정합). "
                          "발화를 요구하지 않는다 — 미발화는 항상 0."},
+    # ★OPT_OPDGW (2026-09-08 20:3x, §12-d): OPT_OPDG(오프라인 게이트 + 밀집 증류, 트윈 없음) +
+    #   when 보상. 실측 근거 — VTR(온라인 게이트, 트윈 34%) held-out s30 .555 < N0 .640 < 이고
+    #   g3dn(오프라인 게이트 과표집 + 밀집) 스텝 22 학습 corr .611 ≈ N0 궤적(.605), VTRW 의
+    #   when 일치율 .63→.87. 즉 «무엇을(밀집 증류)»은 오프라인 게이트로, «언제(when)»는 보상으로.
+    "OPT_OPDGW": {"label": "optional_opd_gated_when",
+                  "terms": ("corr", "format", OPD_TERM_C, WHEN_TERM),
+                  "meta_form": "new", "require_meta": False, "data_hint": "mixed",
+                  "opd_gate": True,
+                  "note": "★OPT_OPDG + when(±VTR_WHEN_W). 트윈 없음 — mixed_train_v4_gate3 권장."},
 }
 
 

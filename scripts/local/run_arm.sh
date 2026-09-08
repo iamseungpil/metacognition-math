@@ -99,7 +99,7 @@ fi
 IS_OPT_PROMPT=0
 if [ "${ARM}" = "N0" ]; then
   DATA_VARIANT="plain"
-elif [ "${ARM}" = "OPT" ] || [ "${ARM}" = "OPT_M" ] || [ "${ARM}" = "OPT_T" ] || [ "${ARM}" = "OPT_MT" ] || [ "${ARM}" = "OPT_MT2" ] || [ "${ARM}" = "OPT_OPD" ] || [ "${ARM}" = "OPT_OPDC" ] || [ "${ARM}" = "OPT_MTC" ] || [ "${ARM}" = "OPT_CF" ] || [ "${ARM}" = "OPT_CFG" ] || [ "${ARM}" = "OPT_OPDG" ] || [ "${ARM}" = "OPT_VTR" ] || [ "${ARM}" = "OPT_VTRW" ]; then
+elif [ "${ARM}" = "OPT" ] || [ "${ARM}" = "OPT_M" ] || [ "${ARM}" = "OPT_T" ] || [ "${ARM}" = "OPT_MT" ] || [ "${ARM}" = "OPT_MT2" ] || [ "${ARM}" = "OPT_OPD" ] || [ "${ARM}" = "OPT_OPDC" ] || [ "${ARM}" = "OPT_MTC" ] || [ "${ARM}" = "OPT_CF" ] || [ "${ARM}" = "OPT_CFG" ] || [ "${ARM}" = "OPT_OPDG" ] || [ "${ARM}" = "OPT_VTR" ] || [ "${ARM}" = "OPT_VTRW" ] || [ "${ARM}" = "OPT_OPDGW" ]; then
   # ★E-135(2026-09-07): 「opt 프롬프트 팔」 판정을 여기 한 곳에서만 한다. 예전엔 아래 mixed 분기에
   #   팔 이름 목록이 따로 있어, 새 팔을 한쪽에만 넣으면 학습은 «강제(new)» 데이터를 읽는 사고가 났다.
   IS_OPT_PROMPT=1
