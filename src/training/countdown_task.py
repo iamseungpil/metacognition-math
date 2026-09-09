@@ -528,6 +528,28 @@ SOLVE_SYS_CHK = _RULES + _CHK_SENTENCE + _CLOSING.lstrip("\n")
 assert "<meta>" not in SOLVE_SYS_CHK and "<check>" in SOLVE_SYS_CHK
 PROMPT_VARIANTS["chk"] = SOLVE_SYS_CHK
 
+# ★0909 P0 프로브 «포기 금지»(persist): chk 문법 + 탐색 예산 상한 제거 + 계속 찾으라는 지시.
+#   동기 — 응답이 예산 2,048 토큰 중 ~400 만 쓰고 멈추고, ✗ 로 «틀렸다»고 표시한 뒤에도 74%가
+#   그대로 제출한다. «검증된 정답을 찾을 때까지 멈추지 마라»만으로 정확도가 오르는지(=이 지렛대의
+#   천장이 얼마인지)를 **학습 없이** 잰다. 학습 팔이 아니라 프로브 전용 변형이다.
+_PERSIST_BUDGET_OLD = (
+    f"Search budget: work through AT MOST {SEARCH_BUDGET} candidate groupings, "
+)
+_PERSIST_BUDGET_NEW = (
+    "Search budget: you have a long budget. Work through as many candidate groupings as you need, "
+)
+_PERSIST_TAIL = (
+    "\nDo not stop while your best candidate is still unverified or verified wrong: keep searching "
+    "for an expression whose <check> comes out \u2713. Only give up and box your closest expression "
+    "if you truly run out of room.\n"
+)
+_chk_no_cap = SOLVE_SYS_CHK.replace(_PERSIST_BUDGET_OLD, _PERSIST_BUDGET_NEW, 1)
+_chk_no_cap = _chk_no_cap.replace(
+    f"Do NOT keep searching past {SEARCH_BUDGET} attempts.", "", 1)
+SOLVE_SYS_PERSIST = _chk_no_cap + _PERSIST_TAIL
+assert "<check>" in SOLVE_SYS_PERSIST and f"AT MOST {SEARCH_BUDGET}" not in SOLVE_SYS_PERSIST
+PROMPT_VARIANTS["persist"] = SOLVE_SYS_PERSIST
+
 # ─────────────────────────────────────────────────────── P3 조향 프롬프트 (0904) ──
 # ★수리(감사결함10): `scripts/steer_prompts.py` 가 이 조립(P0→P1→P2→P3)을 자기
 #   안에서 스스로 해서 `PROMPT_VARIANTS` 밖에 있었다 — `countdown_task.build_parquet
