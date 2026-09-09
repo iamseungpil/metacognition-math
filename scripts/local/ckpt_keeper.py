@@ -35,7 +35,10 @@ KEEP_LATEST = 2
 LOG = WORK / "logs" / "ckpt_keeper.log"
 _LIN = re.compile(
     r"^cd7_(?P<arm>[A-Z0-9_]+)_(?P<variant>[a-z0-9]+)_s(?P<seed>\d+)"
-    r"(?P<mixed>_mixed)?(?:_r(?P<resp>\d+))?$"
+    # ★E-137(0909): 메모리·배선 접미사(_fs/_dn/_rg …)가 붙은 계보는 이 정규식에 **안 맞아**
+    #   variant 가 "new"(메타 강제 프롬프트)로 떨어졌다 — VTR/g3dn/VTRW/EVC s30 이 학습 프롬프트와
+    #   다른 프롬프트로 채점돼 .555/.582/.510 이 나왔다(전부 무효). 임의 소문자 접미사를 허용한다.
+    r"(?P<mixed>_mixed)?(?:_r(?P<resp>\d+))?(?:_[a-z0-9]+)*$"
 )
 
 
@@ -125,7 +128,10 @@ def submit_eval(lineage: str, step: int, dry: bool) -> None:
     if marker.exists():
         return
     m = _LIN.match(lineage)
-    variant = m.group("variant") if m else "new"
+    if m is None:
+        log(f"[E-137] lineage {lineage!r} 가 _LIN 에 안 맞는다 — variant 를 추정할 수 없어 평가를 **건너뛴다**(무음 'new' 금지)")
+        return
+    variant = m.group("variant")
     # ★RESP_LEN(0906, OPT_MT-L): 학습 예산이 커진 계보(_r{N} 접미사)는 eval/이어쓰기
     #   예산도 run_arm.sh 와 같은 비율로 늘린다 — resp 기본값(접미사 없음) 2048 에서는
     #   아래 두 숫자(2560/2048)가 예전 하드코딩과 바이트 동일하다.
