@@ -1812,7 +1812,8 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
     if os.environ.get("CHK_REGION", "0") == "1":
         _meta_vals, _spans = [], []
         for i, r in enumerate(rows):
-            mv = float(comps[i].get("chk_fixed", 0.0)) + float(comps[i].get("chk_evc", 0.0))
+            mv = (float(comps[i].get("chk_fixed", 0.0)) + float(comps[i].get("chk_evc", 0.0))
+                  + float(comps[i].get("chk_persist", 0.0)) + float(comps[i].get("chk_solved", 0.0)))
             totals[i] = float(totals[i]) - mv
             _meta_vals.append(mv)
             _spans.append([(m.start(), m.end()) for m in _cdr._CHECK_RE.finditer(r.get("text") or "")])

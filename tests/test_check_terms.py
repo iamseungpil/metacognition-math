@@ -96,3 +96,22 @@ def test_flag_wrong_then_box_it_anyway_gets_no_evc():
     t = "<check> 20*10-7-10 = 183 ✗ </check>\n\\boxed{20*10-7-10}"
     r = C.check_row(t, NUMS, TGT, r_corr=0)
     assert r["chk_evc"] == 0 and r["fclaim"] == 0
+
+
+def test_persist_requires_real_extra_search():
+    """P2: ✗ 후 새 시도 없이 다른 식만 박스하면 persist 0 (EVC 의 허점)."""
+    lazy = "<check> 20*10-7-10 = 183 ✗ </check>\n\\boxed{20+10+7-10}"
+    r = C.check_row(lazy, NUMS, TGT, r_corr=0)
+    assert r["chk_evc"] == 1 and r["chk_persist"] == 0 and r["chk_solved"] == 0
+    real = ("<check> 20*10-7-10 = 183 ✗ </check>\n20+10 = 30\n30-7 = 23\n10-7 = 3\n"
+            "30-3 = 27\n\\boxed{(20+10)-(10-7)}")
+    r2 = C.check_row(real, NUMS, TGT, r_corr=1)
+    assert r2["chk_persist"] == 1 and r2["chk_solved"] == 1
+
+
+def test_persist_arm_registered_and_ordered():
+    sp = C.ARM_SPECS["PERSIST_CHK"]["terms"]
+    assert "chk_persist" in sp and "chk_solved" in sp and "chk_evc" not in sp
+    row = {"r_corr": 1, "format_ok": 1, "fclaim": 0, "chk_persist": 1, "chk_solved": 1, "emitted": 0}
+    row2 = dict(row, chk_solved=0)
+    assert C.arm_reward("PERSIST_CHK", row, step=50)[0] > C.arm_reward("PERSIST_CHK", row2, step=50)[0]

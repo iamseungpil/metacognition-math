@@ -602,6 +602,10 @@ NORMALIZE_TERMS: bool = True
 # ══════════════════════════════════════════════════════════════════════════════
 W_FCLAIM = 0.5
 W_CHK = 0.5
+PERSIST_MIN_ATTEMPTS = 3   # ✗ 검산 뒤 «실제로 더 찾았다»로 인정할 최소 시도(등식) 수
+W_PERSIST = 0.2            # 탐색 재개 자체(작게)
+W_SOLVED = 0.6             # 재개해서 정답까지(크게)
+_ARITH_EQ_SIMPLE = re.compile(r"\d+\s*[-+*/]\s*\d+\s*=")
 _CHECK_RE = re.compile(r"<check>\s*(.*?)\s*</check>", re.S)
 
 
@@ -653,9 +657,26 @@ def check_row(text: str, nums, target, r_corr: int) -> dict:
     false_alarm = int(has_box and _bool01(r_corr) and (final_n in flagged_bad))
     fclaim = int(over_claim or false_alarm)
     chk_fixed = int(any(c["mark"] is not None for c in checks))
-    chk_evc = int(any(e != final_n and _wrong(e) for e in flagged_bad))
+    revised = int(any(e != final_n and _wrong(e) for e in flagged_bad))
+    chk_evc = revised
+    # ★0909 P2 «PERSIST»: 완화판 chk_evc 의 허점(틀렸다 표시 후 **아무** 다른 식이나 박스해도
+    #   크레딧)을 막는다. 두 단계로 나눈다 —
+    #     chk_persist = 진짜 틀린 식을 ✗ 로 잡고, 그 뒤에 **새 시도를 실제로 더 하고**(등식 ≥
+    #                   PERSIST_MIN_ATTEMPTS 개), 다른 식을 박스했다  → 작은 크레딧(탐색 재개)
+    #     chk_solved  = 위에 더해 **최종 답이 정답**                  → 큰 크레딧(효과 확인)
+    #   «알고도 제출 74%»를 정면으로 겨냥한다. 등식 세기는 첫 ✗ 검산 이후 구간만 본다.
+    after = ""
+    if flagged_bad:
+        last_bad_end = max((m.end() for m in _CHECK_RE.finditer(text or "")
+                            if _norm_expr(m.group(1).split("=")[0]) in flagged_bad), default=None)
+        if last_bad_end is not None:
+            after = (text or "")[last_bad_end:]
+    n_after = len(_ARITH_EQ_SIMPLE.findall(after))
+    chk_persist = int(revised and n_after >= PERSIST_MIN_ATTEMPTS)
+    chk_solved = int(chk_persist and _bool01(r_corr))
     return {"fclaim": fclaim, "over_claim": over_claim, "false_alarm": false_alarm,
-            "chk_fixed": chk_fixed, "chk_evc": chk_evc, "n_checks": len(checks)}
+            "chk_fixed": chk_fixed, "chk_evc": chk_evc, "chk_persist": chk_persist,
+            "chk_solved": chk_solved, "n_after_bad": n_after, "n_checks": len(checks)}
 
 
 def r_fclaim(fclaim) -> float:
@@ -664,6 +685,7 @@ def r_fclaim(fclaim) -> float:
 
 TERM_MAX_ABS: dict = {
     "fclaim":     1.0, "chk_fixed": 1.0, "chk_evc": 1.0,   # ★0909 check
+    "chk_persist": 1.0, "chk_solved": 1.0,               # ★0909 P2 persist
     "corr":       1.0,   # {0,1}
     "format":     1.0,   # {0,1}
     "meta_floor": 1.0,   # {0,1}
@@ -1324,6 +1346,8 @@ TERMS: dict[str, dict] = {
     "fclaim":     {"needs": ("fclaim",),                                   "warmup": False, "weight": W_FCLAIM},
     "chk_fixed":  {"needs": ("chk_fixed",),                                "warmup": False, "weight": W_CHK},
     "chk_evc":    {"needs": ("chk_evc",),                                  "warmup": False, "weight": W_CHK},
+    "chk_persist":{"needs": ("chk_persist",),                              "warmup": False, "weight": W_PERSIST},
+    "chk_solved": {"needs": ("chk_solved",),                               "warmup": False, "weight": W_SOLVED},
     "format":     {"needs": ("format_ok",),                                "warmup": False, "weight": W_FORMAT},
     # meta_floor 는 워밍업을 **안 받는다**(명시적 결정): 발화 침식을 막는 바닥값인데
     # 워밍업을 받으면 바닥이 도착하기 전에 발화가 무너질 수 있다. 사양은 warmup 대상으로
@@ -1506,6 +1530,14 @@ ARM_SPECS: dict[str, dict] = {
     "EVC_CHK":   {"label": "chk_effect_verified", "terms": ("corr", "format", "fclaim", "chk_evc"), "meta_form": "new",
                   "require_meta": False, "data_hint": "normal", "prompt_variant": "chk",
                   "note": "✗ 로 잡은 식이 정말 틀렸고 최종 답이 다른 정답일 때만 +W_CHK — 효과-검증 메타 크레딧."},
+    # ★0909 P2: EVC 의 허점을 막은 판. 메타 칸 = chk_persist(+0.2, 재탐색 실제로 함) +
+    #   chk_solved(+0.6, 재탐색해서 정답). 답 칸은 세 팔 공통(corr/format/양방향 fclaim).
+    "PERSIST_CHK": {"label": "chk_persist_solved",
+                    "terms": ("corr", "format", "fclaim", "chk_persist", "chk_solved"),
+                    "meta_form": "new", "require_meta": False, "data_hint": "normal",
+                    "prompt_variant": "chk",
+                    "note": "✗ 로 잡은 뒤 실제로 더 찾고(등식 ≥3) 다른 식을 박스하면 +0.2, "
+                            "그래서 정답이면 +0.6 추가. «알고도 제출»을 겨냥."},
     "OPT": {"label": "optional", "terms": ("corr", "format"), "meta_form": "new",
             "require_meta": False, "data_hint": "normal",
             "note": "★메타 허용·비요구. N0 와 항은 같고 프롬프트만 opt(강제→허가). "
@@ -1789,6 +1821,10 @@ def arm_reward(
         raw["chk_fixed"] = 1.0 if _bool01(row["chk_fixed"]) else 0.0
     if "chk_evc" in terms:
         raw["chk_evc"] = 1.0 if _bool01(row["chk_evc"]) else 0.0
+    if "chk_persist" in terms:
+        raw["chk_persist"] = 1.0 if _bool01(row["chk_persist"]) else 0.0
+    if "chk_solved" in terms:
+        raw["chk_solved"] = 1.0 if _bool01(row["chk_solved"]) else 0.0
     if "format" in terms:
         raw["format"] = 1.0 if _bool01(row["format_ok"]) else 0.0
     if "meta_floor" in terms:

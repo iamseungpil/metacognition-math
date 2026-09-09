@@ -120,7 +120,7 @@ elif [ "${ARM}" = "OPT" ] || [ "${ARM}" = "OPT_M" ] || [ "${ARM}" = "OPT_T" ] ||
   #   (`build_cf_twins.py --mode hint`) — VARIANT/DATA_VARIANT 는 여기서도 val
   #   파일 선택에만 쓰인다.
   DATA_VARIANT="opt"
-elif [ "${ARM}" = "TAG0" ] || [ "${ARM}" = "FIXED_CHK" ] || [ "${ARM}" = "EVC_CHK" ]; then
+elif [ "${ARM}" = "TAG0" ] || [ "${ARM}" = "FIXED_CHK" ] || [ "${ARM}" = "EVC_CHK" ] || [ "${ARM}" = "PERSIST_CHK" ]; then
   # ★0909 §13 검산 사다리: 항상 chk 프롬프트(plain + check 한 줄 허가).
   DATA_VARIANT="chk"
 else
