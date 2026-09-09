@@ -100,7 +100,7 @@ def test_flag_wrong_then_box_it_anyway_gets_no_evc():
 
 def test_persist_requires_real_extra_search():
     """P2: ✗ 후 새 시도 없이 다른 식만 박스하면 persist 0 (EVC 의 허점)."""
-    lazy = "<check> 20*10-7-10 = 183 ✗ </check>\n\\boxed{20+10+7-10}"
+    lazy = "<check> 20*10-7-10 = 183 ✗ </check>\n\\boxed{20+10+7-10}"  # ✗ 뒤 등식 0개
     r = C.check_row(lazy, NUMS, TGT, r_corr=0)
     assert r["chk_evc"] == 1 and r["chk_persist"] == 0 and r["chk_solved"] == 0
     real = ("<check> 20*10-7-10 = 183 ✗ </check>\n20+10 = 30\n30-7 = 23\n10-7 = 3\n"
