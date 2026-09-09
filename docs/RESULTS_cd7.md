@@ -499,3 +499,4 @@ OPT_T(허용만 + 지도 항): 스텝 17 발화 2.1%, 지도 항 지급 0.004/0.
 - ⚠**상관이지 인과가 아니다**: «후보를 찾은 롤아웃일수록 검산한다»는 역인과가 가능하다. RL 판정(EVC vs FIXED vs TAG0)이 인과 검증이다.
 - **세금**: 베이스 −2.7pp(사전등록 무효선 3pp 통과), N0 −3.2pp(단 N0 는 plain 으로 학습된 모델이라 off-distribution; 오답의 26%가 «박스 없음»으로 증가 — RL 이 문법에 적응하면 사라질 항목).
 - 운영: 44GB 판도 액터 업데이트에서 6회 OOM(외부 trm 4장 27~62GB 변동). `scripts/local/run_arm_retry.sh`(resume_mode=auto 로 ckpt 이어받기, 최대 30회·4분 간격) + expandable_segments + VLLM_UTIL .12 로 08:31 세 팔 재발사(GPU 0·2·3).
+- 09:56 **자책 진단**: 08:31~09:55 세 팔이 못 뜬 진짜 원인은 OOM 이 아니라 내가 넣은 `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` 였다 — vLLM CuMemAllocator(sleep 모드 메모리 풀)가 이 옵션과 **비호환**이라 assert 로 죽는다(vllm/device_allocator/cumem.py:142). 제거 후 v6g 재발사(PAGED=1 + REF/ACTOR_OFFLOAD + VLLM_UTIL .12, need 40GB, 재시도 40회).
