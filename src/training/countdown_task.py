@@ -513,15 +513,16 @@ PROMPT_VARIANTS = {"new": SOLVE_SYS_NEW, "old": SOLVE_SYS_OLD, "shot": SOLVE_SYS
 #   목표가 되는지」를 스스로 확인하는 것(자기 주장 감시). 정확하지 않은 식을 박스에 넣을 때는
 #   ✗ 로 표시해야 한다 — 표시 없이 틀린 식을 박스에 넣으면 «거짓 주장」(fclaim) 이다.
 _CHK_SENTENCE = (
-    # ★0909 v3(프로브 실측 반영): v2 는 «박스 직전 한 번만, 탐색 중 금지» 라 **수정 루프를 막았다** —
-    #   ✗ 로 틀렸다고 표시한 뒤에도 74%가 그 식을 그대로 박스했다(재탐색 2.4%). 검산의 값은
-    #   «틀린 줄 알고 계속 찾는 것»에 있으므로 v3 는 재탐색을 명시적으로 허가한다. 남은 예산도
-    #   충분하다(응답 평균 ~400토큰 / 예산 2048).
-    "\nBefore you box an expression, you MAY verify it with ONE line exactly like "
-    "<check> (3+7)*8-25 = 55 \u2713 </check> (write \u2717 instead of \u2713 if its value is NOT the "
-    "target). If a check comes out \u2717, keep searching and box a different expression; verify "
-    "that one too. Do not use <check> for ordinary attempts \u2014 only to verify a candidate you "
-    "are about to box.\n"
+    # ★0909 v4: v2 문안(«Just before your final \boxed{...}»)이 사용률 50~55%를 냈는데, v3 에서
+    #   도입부를 «Before you box an expression»으로 바꾸자 스텝 1 사용률이 55%→3.5%로 붕괴했다.
+    #   그래서 v2 도입부를 되살리고, v3 가 추가하려던 **재탐색 허가**만 한 문장 덧붙인다
+    #   (v2 의 «탐색 중 금지»가 수정 루프를 막아 ✗ 표시의 74%가 그대로 제출됐다).
+    "\nJust before your final \\boxed{...} you MAY add ONE verification line, exactly like "
+    "<check> (3+7)*8-25 = 55 \u2713 </check>, evaluating the expression you are about to box "
+    "(write \u2717 instead of \u2713 if its value is NOT the target). A check that comes out "
+    "\u2717 does not count toward your attempts: keep searching, box a different expression, and "
+    "verify that one too. Use <check> only for this final verification, never for ordinary "
+    "attempts.\n"
 )
 SOLVE_SYS_CHK = _RULES + _CHK_SENTENCE + _CLOSING.lstrip("\n")
 assert "<meta>" not in SOLVE_SYS_CHK and "<check>" in SOLVE_SYS_CHK

@@ -8,7 +8,7 @@ NUMS, TGT = [20, 10, 7, 10], 27
 def test_prompt_variant_chk_exists_and_is_compact():
     p = T.PROMPT_VARIANTS["chk"]
     assert "<check>" in p and "<meta>" not in p
-    assert len(p) - len(T.PROMPT_VARIANTS["plain"]) < 400
+    assert len(p) - len(T.PROMPT_VARIANTS["plain"]) < 500   # v4 재탐색 허가 한 문장 추가(428자)
 
 
 def test_false_claim_without_flag():
