@@ -122,3 +122,24 @@ def test_tax0_is_n0_terms_with_chk_prompt():
     assert C.ARM_SPECS["TAX0"]["terms"] == ("corr", "format")
     assert C.ARM_SPECS["TAX0"]["prompt_variant"] == "chk"
     assert "fclaim" in C.ARM_SPECS["TAG0"]["terms"] and "fclaim" not in C.ARM_SPECS["TAX0"]["terms"]
+
+
+def test_evcm_mask_zeroes_decorative_check_but_keeps_solved_and_overclaim():
+    """§13-c: keep 규칙 — solved/over_claim 은 통과, 장식적 ✓·정직한 ✗ 는 check 토큰 어드밴티지 0."""
+    import torch, re
+    from src.training import verl_sdc as V
+    class _Tok:
+        def decode(self, ids, skip_special_tokens=False): return "".join(chr(i) for i in ids)
+    texts = ["ab<check>x</check>cd", "ab<check>y</check>cd"]
+    ids = torch.tensor([[ord(ch) for ch in t] for t in texts])
+    class _D: pass
+    d = _D(); d.batch = {"advantages": torch.ones(2, ids.shape[1]), "responses": ids,
+                         "response_mask": torch.ones(2, ids.shape[1], dtype=torch.long)}
+    spans = [[(m.start(), m.end()) for m in re.finditer(r"<check>.*?</check>", t)] for t in texts]
+    V._CHK_REGION_STASH.update({"step": 1, "bs": 2, "uid": ["g", "g"], "meta": [0.0, 0.0],
+                                "spans": spans, "keep": [1, 0], "mask_on": True})
+    out = V._countdown_add_check_region_advantage(d, tokenizer=_Tok())
+    a = out.batch["advantages"]; s0, e0 = spans[1][0]
+    assert a[0].sum().item() == ids.shape[1]            # keep=1: 그대로
+    assert a[1, s0:e0].abs().sum().item() == 0 and a[1, :s0].sum().item() == s0   # keep=0: check 토큰만 0
+    assert "chk_mask" in C.ARM_SPECS["EVCM_CHK"] and C.ARM_SPECS["EVCM_CHK"]["terms"] == ("corr", "format", "fclaim")

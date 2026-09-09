@@ -1809,7 +1809,7 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
     #   빼고 <check> 구간 토큰에만 어드밴티지로 얹는다(`_countdown_add_check_region_advantage`).
     #   답 칸(corr/format/fclaim)만 GRPO 의 시퀀스 보상으로 남는다 — «메타 부분과 정답을 다르게
     #   채점」을 어드밴티지 수준에서 실제로 구현한 것. 사용자 지시(0909): 한계로 남기지 말고 고칠 것.
-    if os.environ.get("CHK_REGION", "0") == "1":
+    if os.environ.get("CHK_REGION", "0") == "1" or bool(_cdr.ARM_SPECS[arm].get("chk_mask")):
         _meta_vals, _spans = [], []
         for i, r in enumerate(rows):
             mv = (float(comps[i].get("chk_fixed", 0.0)) + float(comps[i].get("chk_evc", 0.0))
@@ -1817,8 +1817,24 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
             totals[i] = float(totals[i]) - mv
             _meta_vals.append(mv)
             _spans.append([(m.start(), m.end()) for m in _cdr._CHECK_RE.finditer(r.get("text") or "")])
+        # ★EVCM(§13-c): check 토큰 어드밴티지 통과 규칙 — 1 = 그대로, 0 = 지움.
+        #   solved(✗ 잡고 재탐색해 정답)       → 1  (검산이 결과를 바꿨다: 정답 크레딧이 check 토큰에도 간다)
+        #   과신(✓/무표시로 틀린 답 박스)       → 1  (음의 어드밴티지가 check 토큰에도 간다: 거짓 확신을 벌한다)
+        #   정직한 ✗ 인데 못 고침               → 0  (검산 자체는 옳았다 — 벌하지 않는다)
+        #   정답인데 장식적 ✓ 검산              → 0  (결과를 안 바꾼 검산은 강화하지 않는다 → 세금 억제)
+        _keep = []
+        for r in rows:
+            if _bool01_local(r.get("chk_solved", 0)) or _bool01_local(r.get("over_claim", 0)):
+                _keep.append(1)
+            else:
+                _keep.append(0)
         _CHK_REGION_STASH.update({"step": step, "bs": len(rows), "uid": [str(u) for u in uid],
-                                  "meta": _meta_vals, "spans": _spans})
+                                  "meta": _meta_vals, "spans": _spans, "keep": _keep,
+                                  "mask_on": bool(_cdr.ARM_SPECS[arm].get("chk_mask"))})
+        if bool(_cdr.ARM_SPECS[arm].get("chk_mask")):
+            print(f"[COUNTDOWN][CHK-MASK] step={step} keep={sum(_keep)}/{len(_keep)} "
+                  f"solved={sum(1 for r in rows if _bool01_local(r.get('chk_solved',0)))} "
+                  f"over_claim={sum(1 for r in rows if _bool01_local(r.get('over_claim',0)))}")
         print(f"[COUNTDOWN][CHK-REGION] step={step} rows_with_meta={sum(1 for v in _meta_vals if v)} "
               f"rows_with_span={sum(1 for sp in _spans if sp)} meta_sum={sum(_meta_vals):.2f}")
 
@@ -3340,8 +3356,26 @@ def _countdown_add_check_region_advantage(data, tokenizer=None):
     resp = data.batch["responses"]
     am = data.batch.get("response_mask", None)
     n_rows = n_tok_total = 0
+    _mask_on = bool(st.get("mask_on"))
+    _keep = st.get("keep") or []
+    n_masked = 0
     for i, spans in enumerate(st["spans"]):
         c = float(centered[i])
+        if _mask_on and spans and i < len(_keep) and not _keep[i]:
+            # ★EVCM: 이 행의 check 토큰은 결과를 바꾸지 않았다 → 어드밴티지를 지운다(보너스도 없음).
+            L0 = int(am[i].sum().item()) if am is not None else int(resp.shape[1])
+            ids0 = resp[i][:L0].tolist()
+            cache0: dict[int, int] = {}
+            def _plen0(t, _ids=ids0, _cache=cache0):
+                if t not in _cache:
+                    _cache[t] = len(tok.decode(_ids[:t], skip_special_tokens=False))
+                return _cache[t]
+            for (c0, c1) in spans:
+                t0 = max(0, min(_char_to_tok(_plen0, L0, c0) - 1, L0)); t1 = max(t0, min(_char_to_tok(_plen0, L0, c1 - 1), L0))
+                if t1 > t0:
+                    adv[i, t0:t1] = 0.0
+                    n_masked += (t1 - t0)
+            continue
         if not spans or abs(c) < 1e-9:
             continue
         L = int(am[i].sum().item()) if am is not None else int(resp.shape[1])
@@ -3360,7 +3394,7 @@ def _countdown_add_check_region_advantage(data, tokenizer=None):
                 n_tok_total += (t1 - t0)
         n_rows += 1
     data.batch["advantages"] = adv
-    print(f"[COUNTDOWN][CHK-REGION] step={st.get('step')} applied rows={n_rows} tokens={n_tok_total}")
+    print(f"[COUNTDOWN][CHK-REGION] step={st.get('step')} applied rows={n_rows} tokens={n_tok_total} masked_tokens={n_masked}")
     st["meta"] = []
     return data
 
@@ -5845,7 +5879,7 @@ def _patch_verl_for_sdc():
             data = _countdown_mask_twin_advantages(data)
             if os.environ.get("OPD_DENSE", "0") == "1":
                 data = _countdown_add_dense_opd_advantage(data)
-            if os.environ.get("CHK_REGION", "0") == "1":
+            if os.environ.get("CHK_REGION", "0") == "1" or _CHK_REGION_STASH.get("mask_on"):
                 data = _countdown_add_check_region_advantage(data)
         return data
 

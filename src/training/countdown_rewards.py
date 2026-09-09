@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import math
 import os
+import os
 import re
 from collections import Counter
 from typing import Callable, Iterable, Mapping, Sequence
@@ -605,7 +606,9 @@ W_CHK = 0.5
 PERSIST_MIN_ATTEMPTS = 1   # ★0909 P0 프로브 실측으로 3→1: N0 의 «✗ 후 재탐색» 145행 중 105행이
 #   ✗ 뒤 등식 0개(즉 다른 식을 박스만 했다), ≥3 은 17행(전체의 0.4%)뿐이라 3 이면 신호가 굶는다.
 #   1 이면 40행(재탐색의 28%)이 걸린다. «실제로 더 찾았다»의 최소 기준을 등식 1개로 낮춘다.
-W_PERSIST = 0.2            # 탐색 재개 자체(작게)
+W_PERSIST = float(os.environ.get("W_PERSIST", "0.0"))  # ★0909 E-137 뒤 재설계: 기본 0 — «✗ 후 다른 식 박스」류
+#   패턴 보너스는 EVC 에서 해킹 의심(검증 전)이라 기본은 **결과 조건부(chk_solved)만** 남긴다. 탐색 재개
+#   자체에 작은 보너스를 주는 변형은 W_PERSIST=0.2 로 켠다.
 W_SOLVED = 0.6             # 재개해서 정답까지(크게)
 _ARITH_EQ_SIMPLE = re.compile(r"\d+\s*[-+*/]\s*\d+\s*=")
 _CHECK_RE = re.compile(r"<check>\s*(.*?)\s*</check>", re.S)
@@ -1546,6 +1549,12 @@ ARM_SPECS: dict[str, dict] = {
                     "prompt_variant": "chk",
                     "note": "✗ 로 잡은 뒤 실제로 더 찾고(등식 ≥3) 다른 식을 박스하면 +0.2, "
                             "그래서 정답이면 +0.6 추가. «알고도 제출»을 겨냥."},
+    # ★0909 R3 «EVCM»: 보너스 없이 **크레딧 배정만** 바꾸는 판. 항은 TAG0 과 같고(corr/format/fclaim),
+    #   CHK_MASK=1 로 <check> 토큰의 GRPO 어드밴티지를 «검산이 결과를 바꿨을 때만» 남긴다
+    #   (verl_sdc._countdown_mask_check_tokens). 해킹 불가: 새 보상 크기가 없다.
+    "EVCM_CHK":  {"label": "chk_effect_masked", "terms": ("corr", "format", "fclaim"), "meta_form": "new",
+                  "require_meta": False, "data_hint": "normal", "prompt_variant": "chk", "chk_mask": True,
+                  "note": "메타 보너스 0. check 토큰 어드밴티지를 효과 있을 때만 통과(마스크)."},
     "OPT": {"label": "optional", "terms": ("corr", "format"), "meta_form": "new",
             "require_meta": False, "data_hint": "normal",
             "note": "★메타 허용·비요구. N0 와 항은 같고 프롬프트만 opt(강제→허가). "
