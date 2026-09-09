@@ -624,11 +624,19 @@ def parse_checks(text: str) -> list[dict]:
 
 
 def check_row(text: str, nums, target, r_corr: int) -> dict:
-    """행 하나의 검산 원재료. countdown_task.grade/extract_expr/eval_countdown 재사용(복제 금지)."""
+    """행 하나의 검산 원재료. countdown_task.grade/extract_expr/eval_countdown 재사용(복제 금지).
+
+    ★0909 개정(프로브 실측): ① `fclaim` 을 **양방향**으로 만든다 — 틀린 식을 ✗ 없이 박스(과신)뿐
+    아니라 **맞는 식을 ✗ 로 깎아내리고 박스**(허위 경보)도 벌한다. 안 그러면 «전부 ✗ 찍기»가
+    공짜 지름길이 된다. ② `chk_evc` 를 «잡고 고쳐서 정답»(실측 0.1~0.2%, 사실상 0)에서
+    «**진짜 틀린 식을 ✗ 로 잡고 다른 식을 박스**»(실측 2.4~3.4%)로 완화한다 — 최종 정답 여부는
+    답 칸이 이미 채점한다. 메타 칸이 채점할 것은 «틀린 줄 알아채고 행동을 바꿨나»다.
+    """
     from src.training import countdown_task as _ct   # noqa: PLC0415
     checks = parse_checks(text)
     final = _ct.extract_expr(text)
     final_n = _norm_expr(final) if final else None
+
     def _wrong(expr: str) -> bool:
         try:
             v = _ct.eval_countdown(expr)
@@ -638,12 +646,16 @@ def check_row(text: str, nums, target, r_corr: int) -> dict:
             return True
         used = sorted(int(x) for x in re.findall(r"\d+", expr))
         return not (v == int(target) and used == sorted(int(x) for x in nums))
+
     flagged_bad = {c["expr"] for c in checks if c["mark"] == "bad"}
     has_box = final is not None
-    fclaim = int(has_box and not _bool01(r_corr) and (final_n not in flagged_bad))
+    over_claim = int(has_box and not _bool01(r_corr) and (final_n not in flagged_bad))
+    false_alarm = int(has_box and _bool01(r_corr) and (final_n in flagged_bad))
+    fclaim = int(over_claim or false_alarm)
     chk_fixed = int(any(c["mark"] is not None for c in checks))
-    chk_evc = int(_bool01(r_corr) and any(e != final_n and _wrong(e) for e in flagged_bad))
-    return {"fclaim": fclaim, "chk_fixed": chk_fixed, "chk_evc": chk_evc, "n_checks": len(checks)}
+    chk_evc = int(any(e != final_n and _wrong(e) for e in flagged_bad))
+    return {"fclaim": fclaim, "over_claim": over_claim, "false_alarm": false_alarm,
+            "chk_fixed": chk_fixed, "chk_evc": chk_evc, "n_checks": len(checks)}
 
 
 def r_fclaim(fclaim) -> float:

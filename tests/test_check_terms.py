@@ -76,3 +76,23 @@ def test_check_region_advantage_lands_only_on_check_tokens():
     s0, e0 = spans[0][0]
     assert torch.allclose(a[0, s0:e0], torch.full((e0 - s0,), 0.25))   # 0.5 − mean(0.25)
     assert a[0, :s0].abs().sum().item() == 0 and a[0, e0:].abs().sum().item() == 0
+
+
+def test_false_alarm_is_penalised():
+    """0909: 맞는 식을 ✗ 로 깎고 박스 = 허위 경보도 fclaim."""
+    t = "<check> (20+10)-(10-7) = 27 ✗ </check>\n\\boxed{(20+10)-(10-7)}"
+    r = C.check_row(t, NUMS, TGT, r_corr=1)
+    assert r["fclaim"] == 1 and r["false_alarm"] == 1 and r["over_claim"] == 0
+
+
+def test_reject_and_revise_gets_evc_even_if_final_wrong():
+    """0909 완화: 진짜 틀린 식을 ✗ 로 잡고 다른 식을 박스하면, 최종 오답이어도 메타 크레딧."""
+    t = "<check> 20*10-7-10 = 183 ✗ </check> keep searching\n\\boxed{20+10+7-10}"
+    r = C.check_row(t, NUMS, TGT, r_corr=0)
+    assert r["chk_evc"] == 1 and r["over_claim"] == 1
+
+
+def test_flag_wrong_then_box_it_anyway_gets_no_evc():
+    t = "<check> 20*10-7-10 = 183 ✗ </check>\n\\boxed{20*10-7-10}"
+    r = C.check_row(t, NUMS, TGT, r_corr=0)
+    assert r["chk_evc"] == 0 and r["fclaim"] == 0
