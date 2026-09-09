@@ -1523,6 +1523,12 @@ ARM_SPECS: dict[str, dict] = {
     #   `require_meta: False` 로 `format_ok_row` 의 형식 점수에서 메타 요구를 뗀다
     #   (N0 처럼 `meta_form: "none"` 을 쓰면 파싱 계기까지 꺼져 발화율을 못 잰다).
     # ★0909 §13 검산 사다리(RL 만, SFT 없음, 프롬프트 chk). 답 칸(corr+fclaim)은 셋이 같고 메모 칸만 다르다.
+    # ★0909 R2 «TAX0»: 세금 분해용 순수 대조 — chk 문법만 주고 정직 벌(fclaim)조차 없다.
+    #   N0 와 항이 바이트 동일이고 프롬프트만 다르다. TAX0 − N0 = **문법 자체의 세금**,
+    #   TAG0 − TAX0 = **정직 벌이 유발한 추가 비용**(검산 사용률 94% 의 토큰 값).
+    "TAX0":      {"label": "chk_grammar_only", "terms": ("corr", "format"), "meta_form": "new",
+                  "require_meta": False, "data_hint": "normal", "prompt_variant": "chk",
+                  "note": "chk 문법만. 메타 점수도 정직 벌도 없다 — 순수 문법 세금 대조군."},
     "TAG0":      {"label": "chk_tag_only", "terms": ("corr", "format", "fclaim"), "meta_form": "new",
                   "require_meta": False, "data_hint": "normal", "prompt_variant": "chk",
                   "note": "문법(check 허가)만, 메모 칸 점수 0 — 세금 대조군."},

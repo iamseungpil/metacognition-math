@@ -115,3 +115,10 @@ def test_persist_arm_registered_and_ordered():
     row = {"r_corr": 1, "format_ok": 1, "fclaim": 0, "chk_persist": 1, "chk_solved": 1, "emitted": 0}
     row2 = dict(row, chk_solved=0)
     assert C.arm_reward("PERSIST_CHK", row, step=50)[0] > C.arm_reward("PERSIST_CHK", row2, step=50)[0]
+
+
+def test_tax0_is_n0_terms_with_chk_prompt():
+    """R2: TAX0 는 항이 N0/OPT 와 같고(corr+format) 프롬프트만 chk — 순수 문법 세금 대조군."""
+    assert C.ARM_SPECS["TAX0"]["terms"] == ("corr", "format")
+    assert C.ARM_SPECS["TAX0"]["prompt_variant"] == "chk"
+    assert "fclaim" in C.ARM_SPECS["TAG0"]["terms"] and "fclaim" not in C.ARM_SPECS["TAX0"]["terms"]
