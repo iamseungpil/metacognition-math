@@ -143,3 +143,36 @@ def test_evcm_mask_zeroes_decorative_check_but_keeps_solved_and_overclaim():
     assert a[0].sum().item() == ids.shape[1]            # keep=1: 그대로
     assert a[1, s0:e0].abs().sum().item() == 0 and a[1, :s0].sum().item() == s0   # keep=0: check 토큰만 0
     assert "chk_mask" in C.ARM_SPECS["EVCM_CHK"] and C.ARM_SPECS["EVCM_CHK"]["terms"] == ("corr", "format", "fclaim")
+
+
+def test_evca_arm_registered_as_evcm_superset():
+    """§14 R4 EVCA: EVCM 과 항·데이터·프롬프트 바이트 동일, chk_mask 값만 "amplify"."""
+    evcm, evca = C.ARM_SPECS["EVCM_CHK"], C.ARM_SPECS["EVCA_CHK"]
+    for k in ("terms", "meta_form", "require_meta", "data_hint", "prompt_variant"):
+        assert evcm[k] == evca[k]
+    assert evcm["chk_mask"] is True and evca["chk_mask"] == "amplify"
+
+
+def test_evca_amplifies_solved_keeps_overclaim_zeroes_neutral():
+    """§14 R4: keep 배열이 배율(float)일 때 — 0 은 지움(EVCM 과 동일), 1 은 그대로,
+    >1(CHK_AMP) 은 그 구간 어드밴티지를 배율만큼 키운다(새 보너스가 아니라 기존 크레딧 증폭)."""
+    import torch, re
+    from src.training import verl_sdc as V
+    class _Tok:
+        def decode(self, ids, skip_special_tokens=False): return "".join(chr(i) for i in ids)
+    texts = ["ab<check>x</check>cd", "ab<check>y</check>cd", "ab<check>z</check>cd"]
+    ids = torch.tensor([[ord(ch) for ch in t] for t in texts])
+    class _D: pass
+    d = _D(); d.batch = {"advantages": torch.ones(3, ids.shape[1]), "responses": ids,
+                         "response_mask": torch.ones(3, ids.shape[1], dtype=torch.long)}
+    spans = [[(m.start(), m.end()) for m in re.finditer(r"<check>.*?</check>", t)] for t in texts]
+    # row0: over_claim(1.0, 그대로) · row1: 중립(0.0, 지움) · row2: solved(2.0, 증폭)
+    V._CHK_REGION_STASH.update({"step": 1, "bs": 3, "uid": ["g", "g", "g"], "meta": [0.0, 0.0, 0.0],
+                                "spans": spans, "keep": [1.0, 0.0, 2.0], "mask_on": True})
+    out = V._countdown_add_check_region_advantage(d, tokenizer=_Tok())
+    a = out.batch["advantages"]
+    s1, e1 = spans[1][0]; s2, e2 = spans[2][0]
+    assert a[0].sum().item() == ids.shape[1]                              # keep=1.0: 그대로
+    assert a[1, s1:e1].abs().sum().item() == 0                            # keep=0.0: check 토큰 0
+    assert torch.allclose(a[2, s2:e2], torch.full_like(a[2, s2:e2], 2.0))  # keep=2.0: 원래 1.0 이 2.0 으로
+    assert a[2, :s2].sum().item() == s2                                  # check 밖 토큰은 안 건드림

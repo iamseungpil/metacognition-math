@@ -609,6 +609,10 @@ W_PERSIST = float(os.environ.get("W_PERSIST", "0.0"))  # ★0909 E-137 뒤 재�
 #   패턴 보너스는 EVC 에서 해킹 의심(검증 전)이라 기본은 **결과 조건부(chk_solved)만** 남긴다. 탐색 재개
 #   자체에 작은 보너스를 주는 변형은 W_PERSIST=0.2 로 켠다.
 W_SOLVED = 0.6             # 재개해서 정답까지(크게)
+CHK_AMP = float(os.environ.get("CHK_AMP", "1.5"))  # ★0910 R4 EVCA(OPRD식 증폭, arXiv:2609.08798):
+#   EVCM 의 0/1 마스크를 배율로 일반화한다. chk_solved(검산이 결과를 바꿔 정답) 토큰의 기존 GRPO
+#   어드밴티지를 이 배율만큼 키운다 — 새 보상 채널이 아니라 **이미 있는 정답 크레딧의 배분**만
+#   바꾼다(목표가 아니라 방향). over_claim 은 EVCM 과 동일하게 1.0(그대로 벌), 중립은 0.0(지움).
 _ARITH_EQ_SIMPLE = re.compile(r"\d+\s*[-+*/]\s*\d+\s*=")
 _CHECK_RE = re.compile(r"<check>\s*(.*?)\s*</check>", re.S)
 
@@ -1554,6 +1558,13 @@ ARM_SPECS: dict[str, dict] = {
     "EVCM_CHK":  {"label": "chk_effect_masked", "terms": ("corr", "format", "fclaim"), "meta_form": "new",
                   "require_meta": False, "data_hint": "normal", "prompt_variant": "chk", "chk_mask": True,
                   "note": "메타 보너스 0. check 토큰 어드밴티지를 효과 있을 때만 통과(마스크)."},
+    # ★0910 R4 «EVCA»: EVCM 과 항·데이터·프롬프트 전부 동일(보너스 없음) — 차이는 chk_mask 값 하나뿐.
+    #   True(EVCM) = 통과(1.0)/차단(0.0) 이진. "amplify"(EVCA) = chk_solved 행에서 배율 CHK_AMP(기본
+    #   1.5) 로 **증폭**, over_claim 은 그대로 1.0, 중립은 0.0 — EVCM 의 상위호환(CHK_AMP=1.0 이면
+    #   EVCM 과 바이트 동일). OPRD(arXiv:2609.08798) 식 «검증된 방향만 증폭, 목표로 끌어당기지 않음».
+    "EVCA_CHK":  {"label": "chk_effect_amplified", "terms": ("corr", "format", "fclaim"), "meta_form": "new",
+                  "require_meta": False, "data_hint": "normal", "prompt_variant": "chk", "chk_mask": "amplify",
+                  "note": "메타 보너스 0. check 토큰 어드밴티지를 chk_solved 에서 CHK_AMP 배 증폭."},
     "OPT": {"label": "optional", "terms": ("corr", "format"), "meta_form": "new",
             "require_meta": False, "data_hint": "normal",
             "note": "★메타 허용·비요구. N0 와 항은 같고 프롬프트만 opt(강제→허가). "
