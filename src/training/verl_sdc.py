@@ -3368,30 +3368,17 @@ def _countdown_add_check_region_advantage(data, tokenizer=None):
     _mask_on = bool(st.get("mask_on"))
     _keep = st.get("keep") or []
     n_masked = n_amplified_tok = 0
+    # ★0911 수리: 이전엔 배율(scale≠1) 이 걸리면 `continue` 로 곧장 다음 행으로 넘어가
+    #   그 행의 그룹 중심화 보너스(c, chk_fixed 등)가 **조용히 안 더해지는** 상호작용
+    #   버그가 있었다. EVCM/EVCA/EVCAS 는 terms 에 chk_fixed 류가 없어 c 가 항상 0 이라
+    #   지금까지 관측된 적은 없다(회귀 아님 — 아래 결합 테스트로 봉인). 배율(기존 크레딧
+    #   재배분)과 덧셈(새 그룹 중심화 보너스) 은 서로 다른 개입이라 **둘 다 적용**해야
+    #   FIXED_CHK 류(chk_fixed 보너스) 와 chk_mask(EVCA 류) 를 같은 팔에서 섞을 수 있다.
     for i, spans in enumerate(st["spans"]):
+        if not spans:
+            continue
         c = float(centered[i])
-        _scale = float(_keep[i]) if _mask_on and spans and i < len(_keep) else 1.0
-        if _mask_on and spans and abs(_scale - 1.0) > 1e-9:
-            # ★EVCM(scale=0)/EVCA(scale=CHK_AMP): 이 행의 check 토큰 어드밴티지를 지우거나(0)
-            #   증폭한다(>1) — 새 보너스가 아니라 **기존 정답 크레딧의 재배분/증폭**뿐이다.
-            L0 = int(am[i].sum().item()) if am is not None else int(resp.shape[1])
-            ids0 = resp[i][:L0].tolist()
-            cache0: dict[int, int] = {}
-            def _plen0(t, _ids=ids0, _cache=cache0):
-                if t not in _cache:
-                    _cache[t] = len(tok.decode(_ids[:t], skip_special_tokens=False))
-                return _cache[t]
-            for (c0, c1) in spans:
-                t0 = max(0, min(_char_to_tok(_plen0, L0, c0) - 1, L0)); t1 = max(t0, min(_char_to_tok(_plen0, L0, c1 - 1), L0))
-                if t1 > t0:
-                    adv[i, t0:t1] = adv[i, t0:t1] * _scale
-                    if _scale == 0.0:
-                        n_masked += (t1 - t0)
-                    else:
-                        n_amplified_tok += (t1 - t0)
-            continue
-        if not spans or abs(c) < 1e-9:
-            continue
+        _scale = float(_keep[i]) if _mask_on and i < len(_keep) else 1.0
         L = int(am[i].sum().item()) if am is not None else int(resp.shape[1])
         ids = resp[i][:L].tolist()
         cache: dict[int, int] = {}
@@ -3399,11 +3386,23 @@ def _countdown_add_check_region_advantage(data, tokenizer=None):
             if t not in _cache:
                 _cache[t] = len(tok.decode(_ids[:t], skip_special_tokens=False))
             return _cache[t]
+        tok_spans = []
         for (c0, c1) in spans:
-            t0 = _char_to_tok(_plen, L, c0) - 1
-            t1 = _char_to_tok(_plen, L, c1 - 1)
-            t0 = max(0, min(t0, L)); t1 = max(t0, min(t1, L))
+            t0 = max(0, min(_char_to_tok(_plen, L, c0) - 1, L)); t1 = max(t0, min(_char_to_tok(_plen, L, c1 - 1), L))
             if t1 > t0:
+                tok_spans.append((t0, t1))
+        if not tok_spans:
+            continue
+        if _mask_on and abs(_scale - 1.0) > 1e-9:
+            # ★EVCM(scale=0)/EVCA(scale=CHK_AMP): 기존 정답 크레딧을 지우거나 증폭한다.
+            for (t0, t1) in tok_spans:
+                adv[i, t0:t1] = adv[i, t0:t1] * _scale
+                if _scale == 0.0:
+                    n_masked += (t1 - t0)
+                else:
+                    n_amplified_tok += (t1 - t0)
+        if abs(c) >= 1e-9:
+            for (t0, t1) in tok_spans:
                 adv[i, t0:t1] = adv[i, t0:t1] + c
                 n_tok_total += (t1 - t0)
         n_rows += 1

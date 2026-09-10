@@ -1575,6 +1575,19 @@ ARM_SPECS: dict[str, dict] = {
     "EVCAS_CHK": {"label": "chk_effect_amplified_sym", "terms": ("corr", "format", "fclaim"), "meta_form": "new",
                   "require_meta": False, "data_hint": "normal", "prompt_variant": "chk", "chk_mask": "amplify_sym",
                   "note": "메타 보너스 0. chk_solved 는 CHK_AMP 배, over_claim 은 CHK_AMP_NEG 배 증폭(양방향)."},
+    # ★0911 R4c «FIXEDA»: FIXED_CHK(형식만 맞으면 +W_CHK, 내용 무관) 와 EVCA(chk_solved 증폭)
+    #   를 같은 팔에 합친다. 09-11 실측: FIXED_CHK 가 스텝 50 에서 대조군(TAG0) 대비 +4.0pp —
+    #   지금까지 나온 모든 팔 중 최대치(EVCM +0.9pp 보다 큼). 이 팔은 그 위에 «검산이 진짜
+    #   도움됐을 때"만 더 세게 미는」 층을 얹어 두 효과가 정말 더해지는지 본다. chk_fixed(그룹
+    #   중심화 덧셈) 와 chk_mask(기존 크레딧 배율) 를 같은 행에서 함께 적용하려면
+    #   `_countdown_add_check_region_advantage` 가 둘을 **모두** 적용해야 하는데, 그 전까지는
+    #   배율이 걸리면 덧셈이 조용히 스킵되는 상호작용 버그가 있었다(0911 수리, 지금까지 발사된
+    #   어떤 팔도 이 조합을 안 써서 관측된 적은 없음 — `tests/test_check_terms.py::
+    #   test_scale_and_additive_bonus_compose_on_same_row` 로 봉인).
+    "FIXEDA_CHK": {"label": "chk_fixed_plus_amplified", "terms": ("corr", "format", "fclaim", "chk_fixed"),
+                   "meta_form": "new", "require_meta": False, "data_hint": "normal", "prompt_variant": "chk",
+                   "chk_mask": "amplify",
+                   "note": "check 썼으면 +W_CHK(내용 무관, FIXED_CHK 와 동일) + chk_solved 행은 CHK_AMP 배 증폭(EVCA 와 동일)."},
     "OPT": {"label": "optional", "terms": ("corr", "format"), "meta_form": "new",
             "require_meta": False, "data_hint": "normal",
             "note": "★메타 허용·비요구. N0 와 항은 같고 프롬프트만 opt(강제→허가). "

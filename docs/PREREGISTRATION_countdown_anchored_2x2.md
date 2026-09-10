@@ -438,3 +438,31 @@ test_dpo_check.py` 15건 전부 통과. **현 시점 디스크에 있는 conts_v
 아직 없고, 스크립트는 그 상태에서 설계대로 크게 실패한다. ⚠️**트레이너 배선은 안 했다**:
 verl PPO/GRPO 스텝에 연결돼 있지 않고 ARM_SPECS 에도 없다. 발사 가능한 팔이 아니며,
 판정선·성공 기준은 여기서 정하지 않는다(사전등록이 아니라 구현 기록이다).
+
+## §16 R4c FIXEDA_CHK — FIXED_CHK(형식 보너스) + EVCA(증폭) 결합 (2026-09-11)
+
+**동기(09-11 01:30 실측).** 평가 파이프라인 수리 뒤 확보한 FIXED_CHK 스텝 50 held-out
+이 TAG0 대비 **+4.0pp** — 지금까지 나온 모든 팔 중 대조군 우위가 가장 크다(EVCM
++0.9pp 보다 큼). FIXED_CHK 는 검산 사다리에서 가장 단순한 보상(형식만 맞는 `<check>`
+존재 시 +W_CHK, 내용 무관)인데, 가장 정교한 팔들보다 앞섰다. `<check>` 사용률이
+98~99%(EVCM 은 23~27% 로 선택적)라는 점에서 EVCM 과는 다른 기전으로 보인다.
+
+**결합 배선 수리(선행 필요, 0911).** `verl_sdc._countdown_add_check_region_advantage`
+에 이전엔 몰랐던 상호작용 버그가 있었다: chk_mask 배율(scale≠1) 이 걸리면 `continue`
+로 곧장 다음 행으로 넘어가, 같은 행의 그룹 중심화 보너스(`c`, chk_fixed 등) 덧셈이
+**조용히 스킵**됐다. EVCM/EVCA/EVCAS 는 `terms` 에 chk_fixed 류가 없어 `c` 가 항상
+0 이라 지금까지 발사된 어떤 팔에서도 관측된 적 없는 잠재 버그였다. 배율과 덧셈을
+독립된 단계로 분리해 같은 행에서 **둘 다** 적용되도록 고쳤다(회귀 없음 — 기존
+테스트 18개 그대로 통과, 결합 검증 테스트 1건 추가:
+`test_scale_and_additive_bonus_compose_on_same_row`).
+
+**정의.** `ARM_SPECS["FIXEDA_CHK"]` = `terms=("corr","format","fclaim","chk_fixed")`
+(FIXED_CHK 와 바이트 동일) + `chk_mask="amplify"`(EVCA 와 바이트 동일). 새 항 없음 —
+이미 검증된 두 기전을 합쳤을 뿐이다.
+
+**판정.** §14 EVCA 와 같은 판정 지표(held-out 500×8, 짝지은 스텝). 1차 =
+FIXEDA s50 ≥ FIXED_CHK s50 + 1pp(증폭이 형식 보너스 위에 추가 값을 더하는가).
+2차 = N0 와의 격차가 FIXED_CHK 단독보다 좁혀지는가.
+
+**자원·순서.** 새 GPU 요구 없음 — EVCA 판정 뒤(§14 큐 규율 그대로) 다음 순번으로
+큐에 넣는다. 아직 제출하지 않았다(사전등록 시점 = 구현 완료·미발사).

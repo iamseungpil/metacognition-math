@@ -202,3 +202,37 @@ def test_evcas_arm_registered_and_symmetric_amplifies_negative_side():
     out = V._countdown_add_check_region_advantage(d, tokenizer=_Tok())
     a = out.batch["advantages"]; s0, e0 = spans[0][0]
     assert torch.allclose(a[0, s0:e0], torch.full_like(a[0, s0:e0], -2.0))  # -1.0 이 -2.0 으로(부호 유지, 크기만 증폭)
+
+
+def test_scale_and_additive_bonus_compose_on_same_row():
+    """§14 R4c 결합판을 위한 봉인 테스트(0911 수리): chk_mask 배율과 그룹 중심화 보너스(c)가
+    같은 행에서 **둘 다** 적용돼야 한다 — 예전엔 배율이 걸리면 `continue` 로 보너스 덧셈이
+    조용히 스킵됐다(지금까지 어떤 발사된 팔도 이 조합을 안 써서 관측된 적은 없다)."""
+    import torch, re
+    from src.training import verl_sdc as V
+    class _Tok:
+        def decode(self, ids, skip_special_tokens=False): return "".join(chr(i) for i in ids)
+    # 그룹 중심화(group_mean_subtract)는 같은 그룹 안에서 평균을 빼므로, 행이 하나뿐이면
+    # c 가 항상 0 이 된다 — 2행짜리 그룹(메타 1.0/0.0)으로 c=0.5 를 만든다.
+    texts = ["ab<check>x</check>cd", "abcdefghijklmnopqrst"]
+    ids = torch.tensor([[ord(ch) for ch in t] for t in texts])
+    class _D: pass
+    d = _D(); d.batch = {"advantages": torch.full((2, ids.shape[1]), 1.0), "responses": ids,
+                         "response_mask": torch.ones(2, ids.shape[1], dtype=torch.long)}
+    spans = [[(m.start(), m.end()) for m in re.finditer(r"<check>.*?</check>", texts[0])], []]
+    # row0: scale=2.0(EVCA 증폭) 와 c=+0.5(예: chk_fixed 그룹 중심화 보너스) 가 동시에 걸린다.
+    V._CHK_REGION_STASH.update({"step": 1, "bs": 2, "uid": ["g", "g"], "meta": [1.0, 0.0],
+                                "spans": spans, "keep": [2.0, 1.0], "mask_on": True})
+    out = V._countdown_add_check_region_advantage(d, tokenizer=_Tok())
+    a = out.batch["advantages"]; s0, e0 = spans[0][0]
+    # 1.0 * 2.0(배율) + 0.5(보너스) = 2.5 — 배율만(2.0) 도 보너스만(1.5) 도 아니어야 한다.
+    assert torch.allclose(a[0, s0:e0], torch.full_like(a[0, s0:e0], 2.5))
+
+
+def test_fixeda_arm_registered_as_fixed_plus_evca():
+    """§14 R4c FIXEDA: FIXED_CHK(chk_fixed 보너스) + EVCA(chk_mask=amplify) 결합."""
+    fixed, evca, hybrid = C.ARM_SPECS["FIXED_CHK"], C.ARM_SPECS["EVCA_CHK"], C.ARM_SPECS["FIXEDA_CHK"]
+    assert hybrid["terms"] == fixed["terms"] == ("corr", "format", "fclaim", "chk_fixed")
+    assert hybrid["chk_mask"] == evca["chk_mask"] == "amplify"
+    for k in ("meta_form", "require_meta", "data_hint", "prompt_variant"):
+        assert hybrid[k] == fixed[k] == evca[k]
