@@ -402,3 +402,39 @@ CHK_AMP 를 2.0~3.0 으로 올린 씨앗도 하나 더 건다(`chk_solved` 가 �
 스모크로 시작한다(§13 관행: 스모크 → s30 짝비교 → 승격/폐기). R5(FIXED 완주)·R6(절제·씨앗2)·R7(수학
 이식) 보다 앞선다 — 구현 비용이 사실상 0이고, 지금까지 유일한 양성 결과를 직접 강화하는 시도이기
 때문이다.
+
+**§14 부기 — 절제 보충 코퍼스 (2026-09-10, 데이터만·발사 없음).** 결합 SFT
+(`coupling_sft_v4.parquet`, 463행)는 «막힌 자리에서 메타→다른 수→정답» 양성만 담아
+"언제 안 해야 하는지"를 한 행도 가르치지 않는다. `scripts/local/build_restraint_sft.py`
+가 `conts_v4/base_train.parquet` 의 `mode=="meta"` 이어쓰기(=site 원본 system 프롬프트와
+같은 조건)에서 건강 자리(`family_dead==0`) 두 종류를 뽑는다: **restraint**(메타 미발현
+∧ 정답, 780행/416사이트 — `wrong_prefix`=site prefix)와 **decorative**(건강 자리에서
+굳이 낸 검산 블록, 300행 — `wrong_prefix` 를 `</meta>` 까지 확장해 장식 블록을 통째로
+loss-mask). 둘 다 `scenario="redirect"` 로 기존 `sft.py::_should_mask_prefix` 경로를
+그대로 쓴다(sft.py 무변경). 스키마는 결합 코퍼스 14컬럼 + `kind` → `concat` 가능,
+섞으면 coupling 30.0% / restraint 50.6% / decorative 19.4%. 한계: 기존 SFT 에 음의
+손실이 없어 decorative 는 장식 블록의 확률을 **깎지 못하고** 올리지 않을 뿐이며, 그
+학습 구간의 93%가 60자 미만(사실상 `\boxed{}` 한 줄)이라 실효가 작다 —
+restraint 만 먼저 섞는 것이 기본. 출력 =
+`/hdd_data/seungpil/scratch/data/sites_v4/restraint_sft_v4.parquet`,
+테스트 = `tests/test_build_restraint_sft.py` (19건). 아직 어떤 SFT/RL 도 발사하지 않았다.
+
+## §15 R8 DPO_CHK — 구성된 쌍 위의 직접 선호 목적함수 (2026-09-10, 구현 노트·발사 아님)
+
+지금까지 검산 사다리는 전부 스칼라 보상 항(EVC — 정확도 해침) 아니면 기존 크레딧의
+마스크/배율(EVCM·EVCA·TAG0)이었다. **두 궤적을 한 손실 안에서 직접 맞대는** 목적함수는
+이 프로젝트에서 한 번도 안 돌았다 — 수학 단계 R18b(`archive/docs_pre_rq3/PLAN.md` "A.1
+contrastive-on-natural-meta — FAIL")가 자연 발생 그룹에서 쌍을 찾다 굶은 것이 전부다.
+`scripts/local/chk_pair_probe.py` 재측정도 같은 결론이다: 자연 GRPO 그룹(8롤아웃) 중
+`chk_solved` 와 `over_claim`/미해결이 **함께** 있는 그룹은 **0.4~5.0%**. 그래서 쌍을 자연
+그룹에 기대지 않고 **같은 자리(site)의 K개 이어쓰기에서 구성**한다(OPT_CF 쌍둥이·
+`gen_continuations.py` 와 같은 관행). 만든 것: `scripts/local/build_check_pairs.py`
+(자리별 chosen/rejected 1쌍, 분류는 `countdown_rewards.check_row` 재사용, 양쪽이 실제로
+존재할 때만 방출, 쌍 비율이 굶으면 하드 실패 + 무작위 5쌍 대장 기록), `src/training/
+dpo_check.py`(표준 DPO 손실 + 단독 스텝, 참조 logp 는 계산하지 않고 기존 OPD/PMI 경로
+`trainer._compute_ref_log_prob` 산출물을 받는다), 시험 `src/training/tests/
+test_dpo_check.py` 15건 전부 통과. **현 시점 디스크에 있는 conts_v1/v4 이어쓰기에는
+`<check>` 가 한 건도 없다**(전부 check 프롬프트 변형 이전 생성분) — 즉 실제 쌍 코퍼스는
+아직 없고, 스크립트는 그 상태에서 설계대로 크게 실패한다. ⚠️**트레이너 배선은 안 했다**:
+verl PPO/GRPO 스텝에 연결돼 있지 않고 ARM_SPECS 에도 없다. 발사 가능한 팔이 아니며,
+판정선·성공 기준은 여기서 정하지 않는다(사전등록이 아니라 구현 기록이다).
