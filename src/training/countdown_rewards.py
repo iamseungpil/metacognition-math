@@ -613,6 +613,9 @@ CHK_AMP = float(os.environ.get("CHK_AMP", "1.5"))  # ★0910 R4 EVCA(OPRD식 증
 #   EVCM 의 0/1 마스크를 배율로 일반화한다. chk_solved(검산이 결과를 바꿔 정답) 토큰의 기존 GRPO
 #   어드밴티지를 이 배율만큼 키운다 — 새 보상 채널이 아니라 **이미 있는 정답 크레딧의 배분**만
 #   바꾼다(목표가 아니라 방향). over_claim 은 EVCM 과 동일하게 1.0(그대로 벌), 중립은 0.0(지움).
+CHK_AMP_NEG = float(os.environ.get("CHK_AMP_NEG", "1.5"))  # ★0910 R4b EVCAS(대칭판): over_claim
+#   (확신에 찬 오답) 행의 기존 어드밴티지도 이 배율만큼 키운다. chk_solved 만 당기지 말고 검증된
+#   실패 방향도 똑같이 세게 민다 — 새 부호를 만드는 게 아니라 기존 부호를 증폭한다.
 _ARITH_EQ_SIMPLE = re.compile(r"\d+\s*[-+*/]\s*\d+\s*=")
 _CHECK_RE = re.compile(r"<check>\s*(.*?)\s*</check>", re.S)
 
@@ -1565,6 +1568,13 @@ ARM_SPECS: dict[str, dict] = {
     "EVCA_CHK":  {"label": "chk_effect_amplified", "terms": ("corr", "format", "fclaim"), "meta_form": "new",
                   "require_meta": False, "data_hint": "normal", "prompt_variant": "chk", "chk_mask": "amplify",
                   "note": "메타 보너스 0. check 토큰 어드밴티지를 chk_solved 에서 CHK_AMP 배 증폭."},
+    # ★0910 R4b «EVCAS»: EVCA 의 대칭판. chk_solved 뿐 아니라 over_claim(확신에 찬 오답) 쪽도
+    #   CHK_AMP_NEG 배 증폭한다 — 잘한 방향만 당기지 말고 검증된 실패 방향도 똑같이 세게 민다.
+    #   over_claim 행의 기존 부호(대개 음의 어드밴티지)를 그대로 키우는 것이지 새 벌점이 아니다.
+    #   CHK_AMP=CHK_AMP_NEG=1.0 이면 EVCM 과 바이트 동일(상위호환 유지).
+    "EVCAS_CHK": {"label": "chk_effect_amplified_sym", "terms": ("corr", "format", "fclaim"), "meta_form": "new",
+                  "require_meta": False, "data_hint": "normal", "prompt_variant": "chk", "chk_mask": "amplify_sym",
+                  "note": "메타 보너스 0. chk_solved 는 CHK_AMP 배, over_claim 은 CHK_AMP_NEG 배 증폭(양방향)."},
     "OPT": {"label": "optional", "terms": ("corr", "format"), "meta_form": "new",
             "require_meta": False, "data_hint": "normal",
             "note": "★메타 허용·비요구. N0 와 항은 같고 프롬프트만 opt(강제→허가). "

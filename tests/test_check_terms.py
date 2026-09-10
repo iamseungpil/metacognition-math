@@ -176,3 +176,29 @@ def test_evca_amplifies_solved_keeps_overclaim_zeroes_neutral():
     assert a[1, s1:e1].abs().sum().item() == 0                            # keep=0.0: check 토큰 0
     assert torch.allclose(a[2, s2:e2], torch.full_like(a[2, s2:e2], 2.0))  # keep=2.0: 원래 1.0 이 2.0 으로
     assert a[2, :s2].sum().item() == s2                                  # check 밖 토큰은 안 건드림
+
+
+def test_evcas_arm_registered_and_symmetric_amplifies_negative_side():
+    """§14 R4b EVCAS: EVCM/EVCA 와 항·데이터·프롬프트 바이트 동일, chk_mask="amplify_sym".
+    solved 는 CHK_AMP 배, over_claim 은 CHK_AMP_NEG 배로 기존 부호를 증폭(새 벌점 아님)."""
+    evcm, evcas = C.ARM_SPECS["EVCM_CHK"], C.ARM_SPECS["EVCAS_CHK"]
+    for k in ("terms", "meta_form", "require_meta", "data_hint", "prompt_variant"):
+        assert evcm[k] == evcas[k]
+    assert evcas["chk_mask"] == "amplify_sym"
+
+    import torch, re
+    from src.training import verl_sdc as V
+    class _Tok:
+        def decode(self, ids, skip_special_tokens=False): return "".join(chr(i) for i in ids)
+    texts = ["ab<check>x</check>cd"]
+    ids = torch.tensor([[ord(ch) for ch in t] for t in texts])
+    class _D: pass
+    # 음수 어드밴티지(over_claim 은 대개 틀린 롤아웃) 위에서 증폭이 부호를 지키며 키우는지 확인.
+    d = _D(); d.batch = {"advantages": torch.full((1, ids.shape[1]), -1.0), "responses": ids,
+                         "response_mask": torch.ones(1, ids.shape[1], dtype=torch.long)}
+    spans = [[(m.start(), m.end()) for m in re.finditer(r"<check>.*?</check>", t)] for t in texts]
+    V._CHK_REGION_STASH.update({"step": 1, "bs": 1, "uid": ["g"], "meta": [0.0],
+                                "spans": spans, "keep": [2.0], "mask_on": True})
+    out = V._countdown_add_check_region_advantage(d, tokenizer=_Tok())
+    a = out.batch["advantages"]; s0, e0 = spans[0][0]
+    assert torch.allclose(a[0, s0:e0], torch.full_like(a[0, s0:e0], -2.0))  # -1.0 이 -2.0 으로(부호 유지, 크기만 증폭)

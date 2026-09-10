@@ -1817,20 +1817,22 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
             totals[i] = float(totals[i]) - mv
             _meta_vals.append(mv)
             _spans.append([(m.start(), m.end()) for m in _cdr._CHECK_RE.finditer(r.get("text") or "")])
-        # ★EVCM/EVCA(§13-c, §14 R4): check 토큰 어드밴티지 통과 배율.
-        #   solved(✗ 잡고 재탐색해 정답)       → EVCM 1.0 / EVCA CHK_AMP(증폭, 기본 1.5) — 검산이
-        #                                       결과를 바꾼 유일하게 검증된 방향이므로 EVCA 는 여기만 키운다.
-        #   과신(✓/무표시로 틀린 답 박스)       → 1.0 그대로 (음의 어드밴티지가 check 토큰에도 간다: 거짓 확신을 벌한다)
+        # ★EVCM/EVCA/EVCAS(§13-c, §14 R4/R4b): check 토큰 어드밴티지 통과 배율.
+        #   solved(✗ 잡고 재탐색해 정답)       → EVCM 1.0 / EVCA·EVCAS CHK_AMP(증폭, 기본 1.5) — 검산이
+        #                                       결과를 바꾼 유일하게 검증된 방향이므로 여기를 키운다.
+        #   과신(✓/무표시로 틀린 답 박스)       → EVCM·EVCA 1.0 그대로 / EVCAS CHK_AMP_NEG(증폭) — 대칭판만
+        #                                       검증된 실패 방향도 똑같이 세게 민다(기존 부호 증폭, 새 벌점 아님).
         #   정직한 ✗ 인데 못 고침               → 0.0 (검산 자체는 옳았다 — 벌하지 않는다)
         #   정답인데 장식적 ✓ 검산              → 0.0 (결과를 안 바꾼 검산은 강화하지 않는다 → 세금 억제)
         _chk_mask_spec = _cdr.ARM_SPECS[arm].get("chk_mask")
-        _amp = float(_cdr.CHK_AMP) if _chk_mask_spec == "amplify" else 1.0
+        _amp = float(_cdr.CHK_AMP) if _chk_mask_spec in ("amplify", "amplify_sym") else 1.0
+        _amp_neg = float(_cdr.CHK_AMP_NEG) if _chk_mask_spec == "amplify_sym" else 1.0
         _keep = []
         for r in rows:
             if _bool01_local(r.get("chk_solved", 0)):
                 _keep.append(_amp)
             elif _bool01_local(r.get("over_claim", 0)):
-                _keep.append(1.0)
+                _keep.append(_amp_neg)
             else:
                 _keep.append(0.0)
         _CHK_REGION_STASH.update({"step": step, "bs": len(rows), "uid": [str(u) for u in uid],
@@ -1838,7 +1840,7 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
                                   "mask_on": bool(_chk_mask_spec)})
         if bool(_chk_mask_spec):
             n_amplified = sum(1 for r in rows if _bool01_local(r.get("chk_solved", 0)))
-            print(f"[COUNTDOWN][CHK-MASK] step={step} amp={_amp:.2f} "
+            print(f"[COUNTDOWN][CHK-MASK] step={step} amp={_amp:.2f} amp_neg={_amp_neg:.2f} "
                   f"keep_nonzero={sum(1 for k in _keep if k > 0)}/{len(_keep)} "
                   f"solved(amplified)={n_amplified} "
                   f"over_claim={sum(1 for r in rows if _bool01_local(r.get('over_claim',0)))}")
