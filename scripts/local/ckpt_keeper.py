@@ -138,9 +138,13 @@ def submit_eval(lineage: str, step: int, dry: bool) -> None:
     resp = int(m.group("resp")) if (m and m.group("resp")) else 2048
     merged = WORK / "merged" / lineage / f"step_{step}"
     out = WORK / "eval" / lineage / f"step_{step}"
-    cmd = (f"source scripts/local/env.sh >/dev/null 2>&1; python scripts/countdown_gs0_eval.py "
-           f"--model_path {merged} --data $WORK/data/countdown_val_4num_{variant}.parquet "
-           f"--meta_format {variant} --num_samples 8 --seed 11 --max_tokens {resp + 512} --gpu_util 0.6 --out_dir {out}")
+    # ★0911: gpu_util 0.6 은 공유 카드에서 두 번 OOM 사고(09-10 새벽·저녁)를 냈다 — 카드
+    #   여유가 외부 잡 때문에 흔들리는 게 정상이므로 0.4 로 낮추고, retry_cmd.sh 로 잡
+    #   **안에서** 재시도한다(마커는 "큐 제출 성공"에만 찍혀 잡 자체가 죽어도 재제출 안 됨).
+    inner = (f"source scripts/local/env.sh >/dev/null 2>&1; python scripts/countdown_gs0_eval.py "
+             f"--model_path {merged} --data $WORK/data/countdown_val_4num_{variant}.parquet "
+             f"--meta_format {variant} --num_samples 8 --seed 11 --max_tokens {resp + 512} --gpu_util 0.4 --out_dir {out}")
+    cmd = f'bash scripts/local/retry_cmd.sh 4 90 -- bash -c "{inner}"'
     log(f"submit eval {lineage} step {step}")
     if dry:
         return
@@ -156,10 +160,11 @@ def submit_eval(lineage: str, step: int, dry: bool) -> None:
     # 오염됐다 — v4 라운드로 넘어가려면 이 프로세스를 SITES_DIR=sites_v4 로 재시작해야
     # 한다(env var 미설정이면 기존과 바이트 동일하게 sites_v1 을 계속 읽는다).
     sites_dir = os.environ.get("SITES_DIR", "sites_v1")
-    jcmd = (f"source scripts/local/env.sh >/dev/null 2>&1; python scripts/local/gen_continuations.py "
-            f"--sites $WORK/data/{sites_dir}/sites_judge.parquet --model_path {merged} --policy_tag {lineage}_s{step} "
-            f"--modes meta --k 16 --max_tokens {resp} --seed 11 --gpu_util 0.45 "
-            f"--out $WORK/conts_v1/judge_{lineage}_step{step}.parquet")
+    jinner = (f"source scripts/local/env.sh >/dev/null 2>&1; python scripts/local/gen_continuations.py "
+              f"--sites $WORK/data/{sites_dir}/sites_judge.parquet --model_path {merged} --policy_tag {lineage}_s{step} "
+              f"--modes meta --k 16 --max_tokens {resp} --seed 11 --gpu_util 0.4 "
+              f"--out $WORK/conts_v1/judge_{lineage}_step{step}.parquet")
+    jcmd = f'bash scripts/local/retry_cmd.sh 4 90 -- bash -c "{jinner}"'
     log(f"submit judge-site continuations {lineage} step {step}")
     r2 = subprocess.run([sys.executable, "scripts/local/gpu_queue.py", "submit", "--name",
                          f"jsite_{lineage}_step{step}", "--priority", "90", "--need-mb", "40000", "--cmd", jcmd],

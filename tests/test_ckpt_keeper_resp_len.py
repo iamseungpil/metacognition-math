@@ -71,3 +71,29 @@ def test_running_lineages_default_no_resp_suffix(tmp_path, monkeypatch):
     monkeypatch.setattr(ck, "QUEUE", tmp_path)
     lineages = ck.running_lineages()
     assert lineages == {"cd7_OPT_MT_opt_s1_mixed"}
+
+
+def test_submit_eval_wraps_with_retry_and_uses_safer_gpu_util(tmp_path, monkeypatch):
+    """0911: 09-10 새벽·저녁 두 번의 OOM 사고(gpu_util 0.6 이 공유 카드 여유보다 큼,
+    단발 제출이라 재시도 없이 조용히 죽음)를 막는 수리. submit_eval 이 만드는 명령이
+    retry_cmd.sh 로 감싸져 있고 gpu_util 0.6 을 더는 안 쓰는지 확인한다."""
+    monkeypatch.setattr(ck, "WORK", tmp_path)
+    (tmp_path / "merged" / "cd7_N0_plain_s1" / "step_30").mkdir(parents=True)
+    captured = []
+
+    def fake_run(args, cwd=None, capture_output=None, text=None):
+        captured.append(args[args.index("--cmd") + 1])
+        class R: returncode = 0; stderr = ""
+        return R()
+
+    monkeypatch.setattr(ck.subprocess, "run", fake_run)
+    ck.submit_eval("cd7_N0_plain_s1", 30, dry=False)
+    # submit_eval 은 eval 잡과 judge-site 이어쓰기 잡을 둘 다 제출한다 — 둘 다 감싸져야 한다.
+    eval_cmd = next(c for c in captured if "countdown_gs0_eval.py" in c)
+    jsite_cmd = next(c for c in captured if "gen_continuations.py" in c)
+    for cmd in (eval_cmd, jsite_cmd):
+        assert "retry_cmd.sh" in cmd
+        assert "gpu_util 0.6" not in cmd
+        assert "gpu_util 0.45" not in cmd
+    assert "gpu_util 0.4" in eval_cmd
+    assert "gpu_util 0.4" in jsite_cmd
