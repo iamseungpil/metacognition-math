@@ -97,3 +97,34 @@ def test_submit_eval_wraps_with_retry_and_uses_safer_gpu_util(tmp_path, monkeypa
         assert "gpu_util 0.45" not in cmd
     assert "gpu_util 0.4" in eval_cmd
     assert "gpu_util 0.4" in jsite_cmd
+
+
+def test_submit_eval_cmd_expands_work_after_env_sh_not_before(tmp_path, monkeypatch):
+    """0911 2차 수리: 큰따옴표로 감싼 최초 수정이 FIXED_CHK step100 평가를 4연속
+    FileNotFoundError(`/data/...`, `$WORK` 없이)로 또 죽였다 — gpu_queue 워커가
+    --cmd 문자열을 셸에 넘기는 **바깥** 시점에 큰따옴표 안의 `$WORK` 가 (env.sh 를
+    소싱하기도 전에) 먼저 빈 문자열로 확장된 것. 작은따옴표로 재수리했고, 문자열
+    내용이 아니라 **실제로 셸을 통과시켜** `$WORK` 가 안쪽 `bash -c` 에서(= env.sh
+    소싱 뒤) 확장되는지를 실행으로 검증한다(CPU, GPU/네트워크 없음)."""
+    import subprocess
+    real_run = subprocess.run  # ck.subprocess.run 을 가짜로 바꾸기 **전에** 진짜를 저장해 둔다
+    #   (subprocess 는 모듈 싱글턴이라 ck.subprocess.run 을 바꾸면 이 테스트 파일이 부른
+    #   subprocess.run 도 같이 바뀐다 — 프로브 실행엔 진짜가 필요하다).
+    monkeypatch.setattr(ck, "WORK", tmp_path)
+    (tmp_path / "merged" / "cd7_N0_plain_s1" / "step_30").mkdir(parents=True)
+    captured = []
+
+    def fake_run(args, cwd=None, capture_output=None, text=None):
+        captured.append(args[args.index("--cmd") + 1])
+        class R: returncode = 0; stderr = ""
+        return R()
+
+    monkeypatch.setattr(ck.subprocess, "run", fake_run)
+    ck.submit_eval("cd7_N0_plain_s1", 30, dry=False)
+    eval_cmd = next(c for c in captured if "countdown_gs0_eval.py" in c)
+    # 실제 python 호출 전, "$WORK 가 살아 있는가"만 떼어내 같은 감싸기로 실행해 본다.
+    probe_cmd = eval_cmd.split("python scripts/countdown_gs0_eval.py")[0] + "echo WORK_IS:$WORK'"
+    repo_root = Path(__file__).resolve().parents[1]
+    r = real_run(probe_cmd, shell=True, cwd=str(repo_root), capture_output=True, text=True)
+    assert "WORK_IS:/data" not in r.stdout, f"$WORK 이 바깥 셸에서 먼저 비워졌다: {r.stdout!r} {r.stderr[-200:]!r}"
+    assert "WORK_IS:" in r.stdout and "WORK_IS:\n" not in r.stdout

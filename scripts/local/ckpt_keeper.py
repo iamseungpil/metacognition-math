@@ -144,7 +144,12 @@ def submit_eval(lineage: str, step: int, dry: bool) -> None:
     inner = (f"source scripts/local/env.sh >/dev/null 2>&1; python scripts/countdown_gs0_eval.py "
              f"--model_path {merged} --data $WORK/data/countdown_val_4num_{variant}.parquet "
              f"--meta_format {variant} --num_samples 8 --seed 11 --max_tokens {resp + 512} --gpu_util 0.4 --out_dir {out}")
-    cmd = f'bash scripts/local/retry_cmd.sh 4 90 -- bash -c "{inner}"'
+    # ★0911 수리(2차): 큰따옴표로 감싸면 gpu_queue 워커가 --cmd 를 셸에 넘기는 바깥
+    #   시점에 $WORK 가 (env.sh 를 소싱하기도 전에, 빈 문자열로) 먼저 확장돼 버려
+    #   `/data/...`(WORK 없이) 로 깨졌다(FIXED_CHK step100 평가 4연속 FileNotFoundError로
+    #   발각). 작은따옴표는 바깥 셸이 안을 전혀 건드리지 않아 $WORK 확장이 안쪽
+    #   `bash -c` 가 env.sh 를 소싱한 뒤로 미뤄진다. inner 자체엔 작은따옴표가 없다.
+    cmd = f"bash scripts/local/retry_cmd.sh 4 90 -- bash -c '{inner}'"
     log(f"submit eval {lineage} step {step}")
     if dry:
         return
@@ -164,7 +169,7 @@ def submit_eval(lineage: str, step: int, dry: bool) -> None:
               f"--sites $WORK/data/{sites_dir}/sites_judge.parquet --model_path {merged} --policy_tag {lineage}_s{step} "
               f"--modes meta --k 16 --max_tokens {resp} --seed 11 --gpu_util 0.4 "
               f"--out $WORK/conts_v1/judge_{lineage}_step{step}.parquet")
-    jcmd = f'bash scripts/local/retry_cmd.sh 4 90 -- bash -c "{jinner}"'
+    jcmd = f"bash scripts/local/retry_cmd.sh 4 90 -- bash -c '{jinner}'"
     log(f"submit judge-site continuations {lineage} step {step}")
     r2 = subprocess.run([sys.executable, "scripts/local/gpu_queue.py", "submit", "--name",
                          f"jsite_{lineage}_step{step}", "--priority", "90", "--need-mb", "40000", "--cmd", jcmd],
