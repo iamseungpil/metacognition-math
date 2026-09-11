@@ -152,6 +152,12 @@ def analyse_row(row: dict, form: str) -> list[dict]:
             "group_id": row.get("group_id"),
             "r_corr": int(row.get("r_corr") or 0),
             "family_dead": orc.get("family_dead"),
+            # ★0912 교란 수리: `move_live` 는 그 자리에 **살아있는 새 수가 존재할 때만**
+            #   1 이 될 수 있다. 그런데 그 존재율이 팔마다 크게 다르다(OPT 22.9% vs
+            #   p3 98.9% — 메타 위치가 앞이냐 뒤냐 때문). 분모를 안 맞추면 «내용이
+            #   나쁘다»와 «이미 늦어서 고를 게 없다»가 섞인다.
+            "live_available": int(bool(live)),
+            "oracle_ok": int(bool(orc)),
             "pos_frac": round(m.start() / max(1, len(text)), 4),
             "body": body.strip(),
             "names_move": int(bool(moves)),
@@ -178,8 +184,16 @@ def summarise(recs: list[dict], bodies: list[str]) -> dict:
     c = Counter(norm)
     top = c.most_common(5)
     claims = sum(r["n_claim"] for r in recs)
+    avail = [r for r in recs if r.get("live_available")]
+    n_fail = sum(1 for r in recs if not r.get("oracle_ok"))
     return {
         "n_blocks": n,
+        "oracle_fail": n_fail,
+        "live_available_rate": round(len(avail) / n, 4),
+        # 살아있는 새 수가 실제로 있는 자리만 분모로 한 조건부 적중률 — 팔 간 비교는
+        # 반드시 이 값으로 한다(원시 move_live 는 자리 분포에 교란된다).
+        "move_live_given_available": (round(sum(r["move_live"] for r in avail) / len(avail), 4)
+                                      if avail else None),
         "names_move": rate("names_move"),
         "move_novel": rate("move_novel"),
         "move_live": rate("move_live"),
