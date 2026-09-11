@@ -2551,7 +2551,15 @@ META_TERMS: tuple = ("meta_pos", "meta_mul", "meta_ctx", "gate", "len", "osd",
                      "meta_pos_full", "plan", INV_TERM,
                      "explore", "explore_g", "verify", "early_cost",
                      "timing", "timing2", "live_new", OPD_TERM, OPD_TERM_C, CF_TERM,
-                     CF_GROUP_TERM)
+                     CF_GROUP_TERM, WHEN_TERM,
+                     # ★0911 수리: §13~18 검산(check) 계열 항 5개 + len_bonus 가 이 계기
+                     #   등록을 빠뜨리고 있었다(발견: test_countdown_rmeta_magnitude.py /
+                     #   test_countdown_selfcontrol.py 의 "모든 메타 항을 계기가 읽는가"
+                     #   계약 시험, WHEN_TERM 도 같은 결함으로 §12 부터 누락돼 있었다).
+                     #   arm_reward 자체의 보상 계산은 이 목록과 무관하게 정상 동작했다 —
+                     #   영향은 rmeta_magnitude/그룹분산분해/AUC 관측치가 이 항들을
+                     #   "쟀는데 0"과 "안 쟀다"를 구별 못 하고 통째로 빠뜨렸다는 것.
+                     "fclaim", "chk_fixed", "chk_evc", "chk_persist", "chk_solved", "len_bonus")
 
 
 def rmeta_magnitude(components: Sequence[Mapping[str, float]],
