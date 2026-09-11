@@ -282,6 +282,14 @@ def _run_one_job(gpu: int, job_path: Path, lock_fd) -> None:
         # 죽자 EngineCore 49GB 가 카드에 남아 다음 잡이 OOM).
         proc = subprocess.Popen(["bash", "-lc", job["cmd"]], stdout=logf, stderr=subprocess.STDOUT,
                                 env=env, start_new_session=True)
+        # ★0911 지표 게이트: proc.pid(=새 세션의 프로세스그룹 리더)를 running/ json에 즉시
+        #   기록한다 — 외부 감시자가 "이름으로 grep해서 아무 pid나 죽이기"가 아니라 정확히
+        #   이 pid의 killpg만 하도록. job_path는 이미 running/으로 옮겨져 있다.
+        try:
+            job["pid"] = proc.pid
+            job_path.write_text(json.dumps(job, indent=2))
+        except Exception:
+            pass
         try:
             rc = proc.wait()
         finally:
