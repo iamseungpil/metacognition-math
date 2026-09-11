@@ -488,3 +488,36 @@ CHK_AMP_NEG 배 증폭(EVCAS 의 대칭판을 확장 — 새 벌점이 아니라
 **판정.** §14 EVCA 와 같은 지표. 1차 = NOSURR s30 ≥ EVCM s30 + 1pp. 기제 = 학습 중
 `honest_surrender_early` 비율이 스텝이 갈수록 줄어드는가(EVCM 의 keep_nonzero 감소
 패턴과 같은 방향인지). 아직 발사 전 — 스모크(20스텝) 부터.
+
+## §18 R4e LENBONUS_CHK — 길이 confound 대조군 (2026-09-11)
+
+**동기.** §16 에서 확보한 FIXED_CHK 의 우위(TAG0 대비 +4.0pp, 지금까지 최대)를 그대로
+"check 형식 보너스가 유효하다"로 해석하기 전에, 더 단순한 대안 가설을 배제해야 한다:
+`chk_fixed` 는 `<check>` 태그가 **있기만 하면** 내용과 무관하게 +W_CHK 를 준다 —
+이는 사실상 "체크섹션 하나를 더 쓰라"는 신호이고, 그 결과 응답이 구조적으로 길어진다.
+FIXED_CHK 의 우위가 check 내용(자기 검산이라는 행동)이 아니라 **단순 응답 길이 증가**
+자체의 부산물일 가능성을 이 실험으로 격리한다.
+
+**정의.** `ARM_SPECS["LENBONUS_CHK"]` = `terms=("corr","format","fclaim","len_bonus")` —
+chk 내용 항(`chk_fixed`/`chk_evc`/`chk_persist`/`chk_solved`) 은 전혀 넣지 않는다.
+프롬프트·학습/평가 데이터는 FIXED_CHK 와 완전히 동일(`prompt_variant="chk"` 재사용,
+새 파이프라인 없음). `len_bonus` 는 응답 문자 길이(`_resp_char_len`, NOSURR_CHK 작업 때
+이미 전 행에 무조건 계산되도록 배선됨)가 `LEN_BONUS_CHARS`(기본 800, 환경변수로 조절)
+이상이면 1.0, 아니면 0.0 — `<check>` 존재 여부·내용을 전혀 보지 않는다.
+
+**테스트.** `tests/test_check_terms.py` 3건 추가: (1) LENBONUS_CHK 에 check-내용 항이
+전혀 없고 len_bonus 만 있는지, (2) `arm_reward` 로 임계값 경계(799자 vs 800자)에서
+len_bonus 가 0→1 로 바뀌는지, (3) check 태그를 정확히 썼어도 짧으면 여전히 0 인지
+(내용이 아니라 순수 길이만 본다는 것을 재확인). 전부 통과, 기존 3건 무관 실패
+(`test_arm_specs_match_spec_table` 등, LENBONUS_CHK 이전부터 존재) 외 회귀 없음.
+
+**판정.** §16 FIXEDA_CHK 큐 뒤(신규 GPU 요구 없음, 자원 경합 시 순번 대기). held-out
+500×8, 짝지은 스텝(s30/s50) 비교.
+- LENBONUS s50 이 FIXED_CHK s50 과 통계적으로 구분 안 됨(±1pp 이내) → **confound 확인**:
+  FIXED_CHK 의 우위는 길이 부산물이지 check 내용과 무관. 이후 "check 형식 보너스"
+  계열(FIXED_CHK, FIXEDA_CHK 포함)의 해석을 재검토해야 한다.
+- LENBONUS s50 이 TAG0 수준(N0 대비 우위 없음 또는 FIXED_CHK 대비 유의하게 낮음) →
+  check 내용 자체(자기 검산이라는 행동 형태)가 유효하다는 뜻 — FIXED_CHK/FIXEDA_CHK
+  계열의 우위는 진짜다.
+
+아직 발사 전 — 스모크(20스텝) 부터.
