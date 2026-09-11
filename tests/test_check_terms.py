@@ -305,3 +305,32 @@ def test_amplify_nosurr_scale_covers_overclaim_and_early_surrender():
         else:
             _keep.append(0.0)
     assert _keep == [_amp, _amp_neg, _amp_neg, 0.0]
+
+
+def test_lenbonus_arm_registered_without_chk_content_terms():
+    """§18 R4e LENBONUS_CHK: chk_fixed/chk_evc 등 check-내용 항은 전혀 안 들어가고
+    len_bonus만 대신 들어간다 — FIXED_CHK 대비 confound 대조군."""
+    fixed, lenbonus = C.ARM_SPECS["FIXED_CHK"], C.ARM_SPECS["LENBONUS_CHK"]
+    assert "chk_fixed" in fixed["terms"] and "chk_fixed" not in lenbonus["terms"]
+    assert "len_bonus" in lenbonus["terms"]
+    assert lenbonus["prompt_variant"] == "chk"
+    assert lenbonus.get("chk_mask") is None or "chk_mask" not in lenbonus
+
+
+def test_lenbonus_raw_term_is_length_threshold_not_check_content():
+    """len_bonus는 <check> 내용과 무관하게 응답 문자 길이만 본다."""
+    short_row = {"r_corr": 1, "format_ok": 1, "fclaim": 0, "_resp_char_len": C.LEN_BONUS_CHARS - 1}
+    long_row = {"r_corr": 1, "format_ok": 1, "fclaim": 0, "_resp_char_len": C.LEN_BONUS_CHARS}
+    _, comp_short = C.arm_reward("LENBONUS_CHK", short_row, step=100, warmup_steps=20)
+    _, comp_long = C.arm_reward("LENBONUS_CHK", long_row, step=100, warmup_steps=20)
+    assert comp_short["len_bonus"] == 0.0
+    assert comp_long["len_bonus"] > 0.0
+
+
+def test_lenbonus_row_with_check_tags_but_short_gets_no_bonus():
+    """check 태그를 정확히 썼어도 짧으면(< LEN_BONUS_CHARS) len_bonus는 0 —
+    check '내용'이 아니라 순수 길이만 본다는 것을 확인."""
+    row = {"r_corr": 1, "format_ok": 1, "fclaim": 0,
+           "_resp_char_len": min(50, C.LEN_BONUS_CHARS - 1)}
+    _, comp = C.arm_reward("LENBONUS_CHK", row, step=100, warmup_steps=20)
+    assert comp["len_bonus"] == 0.0

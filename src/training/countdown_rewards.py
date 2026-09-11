@@ -613,6 +613,11 @@ CHK_AMP = float(os.environ.get("CHK_AMP", "1.5"))  # ★0910 R4 EVCA(OPRD식 증
 #   EVCM 의 0/1 마스크를 배율로 일반화한다. chk_solved(검산이 결과를 바꿔 정답) 토큰의 기존 GRPO
 #   어드밴티지를 이 배율만큼 키운다 — 새 보상 채널이 아니라 **이미 있는 정답 크레딧의 배분**만
 #   바꾼다(목표가 아니라 방향). over_claim 은 EVCM 과 동일하게 1.0(그대로 벌), 중립은 0.0(지움).
+LEN_BONUS_CHARS = float(os.environ.get("LEN_BONUS_CHARS", "800"))  # ★0911 R5 LENBONUS
+#   confound 확인용: FIXED_CHK 는 «검산 형식이 있으면」 +W_CHK 를 준다 — 이게 정말
+#   검산이라는 형식 때문인지, 아니면 그냥 응답이 더 길어져서(어떤 이유로든)인지 가른다.
+#   같은 chk 프롬프트·데이터를 그대로 쓰되 check 내용은 전혀 안 보고, 응답 길이가
+#   이 문자 수 이상이면(체크 계열 평균 응답 길이 근방) 무조건 +W_CHK 를 준다.
 CHK_AMP_NEG = float(os.environ.get("CHK_AMP_NEG", "1.5"))  # ★0910 R4b EVCAS(대칭판): over_claim
 #   (확신에 찬 오답) 행의 기존 어드밴티지도 이 배율만큼 키운다. chk_solved 만 당기지 말고 검증된
 #   실패 방향도 똑같이 세게 민다 — 새 부호를 만드는 게 아니라 기존 부호를 증폭한다.
@@ -704,6 +709,7 @@ def r_fclaim(fclaim) -> float:
 TERM_MAX_ABS: dict = {
     "fclaim":     1.0, "chk_fixed": 1.0, "chk_evc": 1.0,   # ★0909 check
     "chk_persist": 1.0, "chk_solved": 1.0,               # ★0909 P2 persist
+    "len_bonus":  1.0,                                   # ★0911 R5 confound 확인용
     "corr":       1.0,   # {0,1}
     "format":     1.0,   # {0,1}
     "meta_floor": 1.0,   # {0,1}
@@ -1366,6 +1372,7 @@ TERMS: dict[str, dict] = {
     "chk_evc":    {"needs": ("chk_evc",),                                  "warmup": False, "weight": W_CHK},
     "chk_persist":{"needs": ("chk_persist",),                              "warmup": False, "weight": W_PERSIST},
     "chk_solved": {"needs": ("chk_solved",),                               "warmup": False, "weight": W_SOLVED},
+    "len_bonus":  {"needs": ("_resp_char_len",),                           "warmup": False, "weight": W_CHK},
     "format":     {"needs": ("format_ok",),                                "warmup": False, "weight": W_FORMAT},
     # meta_floor 는 워밍업을 **안 받는다**(명시적 결정): 발화 침식을 막는 바닥값인데
     # 워밍업을 받으면 바닥이 도착하기 전에 발화가 무너질 수 있다. 사양은 warmup 대상으로
@@ -1591,6 +1598,14 @@ ARM_SPECS: dict[str, dict] = {
     #   배율이 걸리면 덧셈이 조용히 스킵되는 상호작용 버그가 있었다(0911 수리, 지금까지 발사된
     #   어떤 팔도 이 조합을 안 써서 관측된 적은 없음 — `tests/test_check_terms.py::
     #   test_scale_and_additive_bonus_compose_on_same_row` 로 봉인).
+    # ★0911 R5 «LENBONUS» confound 확인: FIXED_CHK 와 같은 chk 프롬프트·데이터를 그대로
+    #   쓰되 check 내용은 전혀 채점 안 하고, 응답이 LEN_BONUS_CHARS(기본 800자) 이상이면
+    #   무조건 +W_CHK. FIXED_CHK 의 이득이 «검산 형식» 때문인지 «그냥 응답이 길어서»인지
+    #   가른다 — FIXED_CHK 만큼 좋아지면 confound 확정, TAG0 수준이면 형식 자체가 원인.
+    "LENBONUS_CHK": {"label": "chk_length_placebo", "terms": ("corr", "format", "fclaim", "len_bonus"),
+                     "meta_form": "new", "require_meta": False, "data_hint": "normal",
+                     "prompt_variant": "chk",
+                     "note": "check 내용 무시, 응답 길이만 LEN_BONUS_CHARS 이상이면 +W_CHK(confound 대조군)."},
     # ★0911 R4d «NOSURR»: EVCAS 위에 «정직한 포기» 벌을 하나 더한다. 새 항 없음 —
     #   chk_mask="amplify_nosurr" 만 다르다(verl_sdc 의 honest_surrender_early 계산 참조).
     "NOSURR_CHK": {"label": "chk_no_free_surrender", "terms": ("corr", "format", "fclaim"),
@@ -1888,6 +1903,8 @@ def arm_reward(
         raw["chk_persist"] = 1.0 if _bool01(row["chk_persist"]) else 0.0
     if "chk_solved" in terms:
         raw["chk_solved"] = 1.0 if _bool01(row["chk_solved"]) else 0.0
+    if "len_bonus" in terms:
+        raw["len_bonus"] = 1.0 if float(row["_resp_char_len"]) >= LEN_BONUS_CHARS else 0.0
     if "format" in terms:
         raw["format"] = 1.0 if _bool01(row["format_ok"]) else 0.0
     if "meta_floor" in terms:
