@@ -27,10 +27,11 @@ fi
 if [ -z "${HF_TOKEN:-}" ]; then
   echo "[env.sh] HF_TOKEN not set — hf_upload.py will skip uploads" >&2
 fi
-if [ -z "${WANDB_API_KEY:-}" ]; then
-  export WANDB_MODE=offline
-  echo "[env.sh] WANDB_API_KEY not set — WANDB_MODE=offline" >&2
-fi
+# ★0911 사용자 지시: wandb 완전히 끈다. offline(WANDB_MODE=offline) 은 네트워크만 안
+#   쓸 뿐 로컬 실행 디렉터리(wandb/)를 여전히 만든다 — disabled 는 SDK 를 완전히
+#   no-op 으로 만들어 그것조차 안 남긴다. configs/countdown_6arm.yaml 의
+#   logger 에서도 'wandb' 를 뺐다(이중 방어) — 둘 중 하나만 살아 있어도 안전.
+export WANDB_MODE=disabled
 
 # ── 2. Conda env activation snippet (being installed per task; tolerant). ───
 _SIMPLERL_ACTIVATE=/hdd_data/seungpil/envs/activate_simplerl.sh

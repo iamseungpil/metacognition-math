@@ -372,7 +372,7 @@ trainer:
   total_training_steps: 150
   project_name: metacot-countdown-6arm
   experiment_name: countdown_6arm
-  logger: ['console', 'wandb']
+  logger: ['console']  # ★0911 사용자 지시: wandb 끄기 — 콘솔·파일 로그만, 전부 /hdd_data/seungpil 안에 남는다.
   resume_mode: auto
   resume_from_path: null
   nnodes: 1
