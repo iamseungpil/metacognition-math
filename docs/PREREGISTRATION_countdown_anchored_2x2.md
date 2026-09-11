@@ -466,3 +466,25 @@ FIXEDA s50 ≥ FIXED_CHK s50 + 1pp(증폭이 형식 보너스 위에 추가 값�
 
 **자원·순서.** 새 GPU 요구 없음 — EVCA 판정 뒤(§14 큐 규율 그대로) 다음 순번으로
 큐에 넣는다. 아직 제출하지 않았다(사전등록 시점 = 구현 완료·미발사).
+
+## §17 R4d NOSURR_CHK — "정직한 포기" 무료 통행증 막기 (2026-09-11)
+
+**동기(09-11 실측).** FIXED_CHK 오답의 70.1% 가 "스스로 ✗ 로 표시한 최종식을 그대로
+제출"하는 패턴이다(응답 예산은 남아 있음). `over_claim` 은 이 경우를 안 잡는다 —
+정의상 자기 최종식이 이미 flagged_bad 에 있으면 "확신에 찬 오답"이 아니라 "정직한
+오답"으로 분류돼 fclaim 도 안 받는다. 즉 지금까지 이 패턴은 완전히 무료였다.
+
+**정의.** `check_row` 에 `honest_flag`(최종식을 스스로 ✗ 로 표시하고 그대로 제출) 필드
+추가. `verl_sdc._mark_honest_surrender_early(rows, groups, frac=0.6)` 가 그룹(같은
+문제 8롤아웃) 동료가 실제로 쓴 최대 응답 길이의 60% 미만만 쓰고 끝난 honest_flag 행을
+`honest_surrender_early` 로 표시한다(절대 길이·config 무관, 그룹 상대적). `ARM_SPECS
+["NOSURR_CHK"]` = EVCM 과 항 동일(새 보상 없음) + `chk_mask="amplify_nosurr"`: chk_solved
+는 CHK_AMP 배 증폭(EVCA 와 동일), `over_claim` **그리고** `honest_surrender_early` 둘 다
+CHK_AMP_NEG 배 증폭(EVCAS 의 대칭판을 확장 — 새 벌점이 아니라 기존 어드밴티지 증폭).
+
+**테스트.** `tests/test_check_terms.py` 4건 추가(honest_flag 판정, 그룹 상대 계산,
+배율 선택, ARM_SPECS 등록) — 전부 통과, 회귀 없음(기존 3건 실패는 무관, 사전 확인됨).
+
+**판정.** §14 EVCA 와 같은 지표. 1차 = NOSURR s30 ≥ EVCM s30 + 1pp. 기제 = 학습 중
+`honest_surrender_early` 비율이 스텝이 갈수록 줄어드는가(EVCM 의 keep_nonzero 감소
+패턴과 같은 방향인지). 아직 발사 전 — 스모크(20스텝) 부터.

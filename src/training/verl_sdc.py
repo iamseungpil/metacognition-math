@@ -1298,6 +1298,10 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
         r["format_ok"] = _cdr.format_ok_row(text, arm, parse_expr_ok=_parse_ok)
         # ★0909 check(§13): 검산 원재료 — fclaim/chk_fixed/chk_evc. 항이 없는 팔도 텔레메트리용으로 채운다.
         r.update(_cdr.check_row(full_text_i, nums_col[i], int(target_col[i]), r["r_corr"]))
+        r["_resp_char_len"] = len(text)  # ★0911 NOSURR: honest_flag 행이 "예산이 남았는데
+        #   포기했는가"를 절대 길이가 아니라 **같은 그룹 동료 대비 상대 길이**로 판단하는 재료.
+        #   config 의 max_response_length 를 따로 안 읽어도 되게(설정 무관) 그룹 내 최댓값을
+        #   기준으로 삼는다 — 아래 uid 확정 뒤 한 번에 계산.
         # ⚠`or ""` 를 지우지 마라. answer_leak 은 None 을 받으면 **예외를 던진다**
         #   (조용한 0 이 누출 중단조건을 무력화하는 것을 막는 의도적 설계다). 그런데
         #   \boxed 가 없는 행 — 절단되거나 답을 못 맺은 행 — 은 정말로 `None` 이 나오고,
@@ -1665,6 +1669,11 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
     groups: dict = {}
     for i, u in enumerate(uid):
         groups.setdefault(u, []).append(i)
+    # ★0911 NOSURR: honest_flag(스스로 ✗ 로 표시한 최종식을 그대로 제출) 행 중, 같은
+    #   그룹 동료가 실제로 쓴 최대 길이의 NOSURR_FRAC(기본 0.6) 미만만 쓰고 끝낸 행만
+    #   "예산이 남았는데 포기"로 본다 — 절대 길이·config 무관, 그룹 상대적이라
+    #   RESP_LEN 을 몇으로 설정하든 바이트 동일하게 적용된다.
+    _mark_honest_surrender_early(rows, groups, frac=float(os.environ.get("NOSURR_FRAC", "0.6")))
     phat_of, mean_of = {}, {}
     for u, ix in groups.items():
         phat_of[u] = _cdr.compute_phat([rows[i] for i in ix])
@@ -1824,14 +1833,21 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
         #                                       검증된 실패 방향도 똑같이 세게 민다(기존 부호 증폭, 새 벌점 아님).
         #   정직한 ✗ 인데 못 고침               → 0.0 (검산 자체는 옳았다 — 벌하지 않는다)
         #   정답인데 장식적 ✓ 검산              → 0.0 (결과를 안 바꾼 검산은 강화하지 않는다 → 세금 억제)
+        #   ★0911 NOSURR(amplify_nosurr): «예산이 남았는데 스스로 ✗ 로 표시한 답을 그대로
+        #     제출»(honest_surrender_early) 도 over_claim 과 같은 CHK_AMP_NEG 벌 대상에 넣는다.
+        #     실측(09-11): FIXED_CHK 오답의 70.1% 가 이 패턴이고 지금까지 어떤 팔도 이걸
+        #     벌하지 않았다(over_claim 정의상 자기 최종식을 스스로 ✗ 표시하면 제외됨) — 무료
+        #     통행증이었다. 새 벌점이 아니라 기존(대개 음의) 어드밴티지를 증폭할 뿐이다.
         _chk_mask_spec = _cdr.ARM_SPECS[arm].get("chk_mask")
-        _amp = float(_cdr.CHK_AMP) if _chk_mask_spec in ("amplify", "amplify_sym") else 1.0
-        _amp_neg = float(_cdr.CHK_AMP_NEG) if _chk_mask_spec == "amplify_sym" else 1.0
+        _amp = float(_cdr.CHK_AMP) if _chk_mask_spec in ("amplify", "amplify_sym", "amplify_nosurr") else 1.0
+        _amp_neg = float(_cdr.CHK_AMP_NEG) if _chk_mask_spec in ("amplify_sym", "amplify_nosurr") else 1.0
         _keep = []
         for r in rows:
             if _bool01_local(r.get("chk_solved", 0)):
                 _keep.append(_amp)
             elif _bool01_local(r.get("over_claim", 0)):
+                _keep.append(_amp_neg)
+            elif _chk_mask_spec == "amplify_nosurr" and _bool01_local(r.get("honest_surrender_early", 0)):
                 _keep.append(_amp_neg)
             else:
                 _keep.append(0.0)
@@ -1843,7 +1859,8 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
             print(f"[COUNTDOWN][CHK-MASK] step={step} amp={_amp:.2f} amp_neg={_amp_neg:.2f} "
                   f"keep_nonzero={sum(1 for k in _keep if k > 0)}/{len(_keep)} "
                   f"solved(amplified)={n_amplified} "
-                  f"over_claim={sum(1 for r in rows if _bool01_local(r.get('over_claim',0)))}")
+                  f"over_claim={sum(1 for r in rows if _bool01_local(r.get('over_claim',0)))} "
+                  f"honest_surrender_early={sum(1 for r in rows if _bool01_local(r.get('honest_surrender_early',0)))}")
         print(f"[COUNTDOWN][CHK-REGION] step={step} rows_with_meta={sum(1 for v in _meta_vals if v)} "
               f"rows_with_span={sum(1 for sp in _spans if sp)} meta_sum={sum(_meta_vals):.2f}")
 
@@ -3418,6 +3435,22 @@ def _bool01_local(v) -> int:
         return 1 if int(bool(v)) else 0
     except Exception:
         return 0
+
+
+def _mark_honest_surrender_early(rows: list, groups: dict, frac: float = 0.6) -> None:
+    r"""★0911 R4d NOSURR: `rows[i]["honest_surrender_early"]` 를 그 자리에서 채운다.
+
+    `honest_flag`(check_row 산출 — 스스로 ✗ 로 표시한 최종식을 그대로 제출)인 행 중,
+    같은 그룹(`groups`: uid → 인덱스 리스트) 동료가 실제로 쓴 최대 응답 길이
+    (`_resp_char_len`, 문자 수)의 `frac` 미만만 쓰고 끝낸 행만 "예산이 남았는데
+    포기"로 표시한다. 그룹 최대 길이가 0(전원 빈 응답)이면 아무도 early 가 아니다.
+    """
+    for _u, ix in groups.items():
+        group_max_len = max((rows[i].get("_resp_char_len", 0) for i in ix), default=0)
+        for i in ix:
+            r = rows[i]
+            early = group_max_len > 0 and r.get("_resp_char_len", 0) < frac * group_max_len
+            r["honest_surrender_early"] = int(bool(r.get("honest_flag")) and early)
 
 
 def _read_opd_token_vectors(ref_lp, attempts):

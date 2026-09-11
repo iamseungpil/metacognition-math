@@ -685,9 +685,16 @@ def check_row(text: str, nums, target, r_corr: int) -> dict:
     n_after = len(_ARITH_EQ_SIMPLE.findall(after))
     chk_persist = int(revised and n_after >= PERSIST_MIN_ATTEMPTS)
     chk_solved = int(chk_persist and _bool01(r_corr))
+    # ★0911 R4d «NOSURR» 재료: 최종 박스 식을 **스스로** ✗ 로 표시해 놓고 그대로 제출했는가.
+    #   over_claim 은 이 경우를 안 잡는다(정의상 «자기 최종식이 flagged_bad 에 있으면»
+    #   over_claim=0 — 정직하게 틀렸다고 밝혔으니까). 그런데 실측(09-11)으로 FIXED_CHK
+    #   오답의 70.1% 가 바로 이 패턴이다 — «틀린 줄 알면서 더 안 찾고 그냥 냄». 길이
+    #   조건(예산이 남았는가)은 verl_sdc 가 그룹 컨텍스트(response_mask)로 판단한다.
+    honest_flag = int(has_box and not _bool01(r_corr) and (final_n in flagged_bad))
     return {"fclaim": fclaim, "over_claim": over_claim, "false_alarm": false_alarm,
             "chk_fixed": chk_fixed, "chk_evc": chk_evc, "chk_persist": chk_persist,
-            "chk_solved": chk_solved, "n_after_bad": n_after, "n_checks": len(checks)}
+            "chk_solved": chk_solved, "honest_flag": honest_flag,
+            "n_after_bad": n_after, "n_checks": len(checks)}
 
 
 def r_fclaim(fclaim) -> float:
@@ -1584,6 +1591,12 @@ ARM_SPECS: dict[str, dict] = {
     #   배율이 걸리면 덧셈이 조용히 스킵되는 상호작용 버그가 있었다(0911 수리, 지금까지 발사된
     #   어떤 팔도 이 조합을 안 써서 관측된 적은 없음 — `tests/test_check_terms.py::
     #   test_scale_and_additive_bonus_compose_on_same_row` 로 봉인).
+    # ★0911 R4d «NOSURR»: EVCAS 위에 «정직한 포기» 벌을 하나 더한다. 새 항 없음 —
+    #   chk_mask="amplify_nosurr" 만 다르다(verl_sdc 의 honest_surrender_early 계산 참조).
+    "NOSURR_CHK": {"label": "chk_no_free_surrender", "terms": ("corr", "format", "fclaim"),
+                   "meta_form": "new", "require_meta": False, "data_hint": "normal",
+                   "prompt_variant": "chk", "chk_mask": "amplify_nosurr",
+                   "note": "메타 보너스 0. chk_solved 증폭 + over_claim·정직한 조기포기 둘 다 증폭."},
     "FIXEDA_CHK": {"label": "chk_fixed_plus_amplified", "terms": ("corr", "format", "fclaim", "chk_fixed"),
                    "meta_form": "new", "require_meta": False, "data_hint": "normal", "prompt_variant": "chk",
                    "chk_mask": "amplify",

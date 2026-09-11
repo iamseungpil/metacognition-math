@@ -236,3 +236,72 @@ def test_fixeda_arm_registered_as_fixed_plus_evca():
     assert hybrid["chk_mask"] == evca["chk_mask"] == "amplify"
     for k in ("meta_form", "require_meta", "data_hint", "prompt_variant"):
         assert hybrid[k] == fixed[k] == evca[k]
+
+
+def test_check_row_honest_flag_true_only_when_final_expr_is_self_flagged_bad():
+    """§14 R4d NOSURR 재료: 최종 박스 식을 스스로 ✗ 로 표시하고 그대로 제출했을 때만
+    honest_flag=1. over_claim(플래그 없이 틀림)과는 배타적이어야 한다."""
+    nums, target = [5, 18, 9, 7], 94
+    # 틀린 최종식을 스스로 ✗ 로 표시하고 그대로 박스 — honest_flag=1, over_claim=0.
+    text_honest = ("try (18*5)+9-7 <check> (18*5)+9-7 = 92 ✗ </check> "
+                   "\\boxed{(18*5)+9-7}")
+    row = C.check_row(text_honest, nums, target, r_corr=0)
+    assert row["honest_flag"] == 1 and row["over_claim"] == 0
+    # 검산 없이(또는 ✓로) 틀린 답 제출 — over_claim=1, honest_flag=0.
+    text_overclaim = "\\boxed{(18*5)+9-7}"
+    row2 = C.check_row(text_overclaim, nums, target, r_corr=0)
+    assert row2["over_claim"] == 1 and row2["honest_flag"] == 0
+    # 정답이면 honest_flag=0(정의상 r_corr=0 조건 있음).
+    row3 = C.check_row(text_honest, nums, target, r_corr=1)
+    assert row3["honest_flag"] == 0
+
+
+def test_nosurr_arm_registered():
+    """§14 R4d NOSURR: EVCAS와 형제(EVCM과 항 동일, chk_mask="amplify_nosurr")."""
+    evcm, nosurr = C.ARM_SPECS["EVCM_CHK"], C.ARM_SPECS["NOSURR_CHK"]
+    assert nosurr["terms"] == evcm["terms"] == ("corr", "format", "fclaim")
+    assert nosurr["chk_mask"] == "amplify_nosurr"
+
+
+def test_mark_honest_surrender_early_group_relative():
+    """§14 R4d: honest_flag 행이 같은 그룹 동료의 최대 길이 대비 60% 미만이면
+    honest_surrender_early=1. 길게 계속 시도하다 정직하게 포기한 행(80%)은 0."""
+    from src.training.verl_sdc import _mark_honest_surrender_early
+    rows = [
+        {"honest_flag": 1, "_resp_char_len": 100},   # 그룹 최댓값(1000)의 10% — 조기 포기
+        {"honest_flag": 0, "_resp_char_len": 1000},  # 최댓값 자신(다른 이유로 틀림, honest_flag 없음)
+        {"honest_flag": 1, "_resp_char_len": 850},   # 최댓값의 85% — 충분히 시도함, 조기 포기 아님
+    ]
+    groups = {"g0": [0, 1, 2]}
+    _mark_honest_surrender_early(rows, groups, frac=0.6)
+    assert rows[0]["honest_surrender_early"] == 1
+    assert rows[1]["honest_surrender_early"] == 0   # honest_flag 자체가 0
+    assert rows[2]["honest_surrender_early"] == 0   # 충분히 길게 시도함
+
+
+def test_amplify_nosurr_scale_covers_overclaim_and_early_surrender():
+    """§14 R4d: chk_mask="amplify_nosurr" 배율 선택 로직 — chk_solved 는 CHK_AMP,
+    over_claim 과 honest_surrender_early 는 둘 다 CHK_AMP_NEG, 나머지는 0.0."""
+    import importlib
+    V = importlib.import_module("src.training.verl_sdc")
+    import src.training.countdown_rewards as _cdr
+    rows = [
+        {"chk_solved": 1, "over_claim": 0, "honest_surrender_early": 0},
+        {"chk_solved": 0, "over_claim": 1, "honest_surrender_early": 0},
+        {"chk_solved": 0, "over_claim": 0, "honest_surrender_early": 1},
+        {"chk_solved": 0, "over_claim": 0, "honest_surrender_early": 0},
+    ]
+    _chk_mask_spec = "amplify_nosurr"
+    _amp = float(_cdr.CHK_AMP)
+    _amp_neg = float(_cdr.CHK_AMP_NEG)
+    _keep = []
+    for r in rows:
+        if V._bool01_local(r.get("chk_solved", 0)):
+            _keep.append(_amp)
+        elif V._bool01_local(r.get("over_claim", 0)):
+            _keep.append(_amp_neg)
+        elif _chk_mask_spec == "amplify_nosurr" and V._bool01_local(r.get("honest_surrender_early", 0)):
+            _keep.append(_amp_neg)
+        else:
+            _keep.append(0.0)
+    assert _keep == [_amp, _amp_neg, _amp_neg, 0.0]
