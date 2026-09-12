@@ -57,10 +57,27 @@ SOLVE_MATH_PLAIN = MATH_RULES + MATH_CLOSING.lstrip("\n")
 SOLVE_MATH_OPT = (MATH_RULES + "\n" + _MATH_PERMISSION + _MATH_BLOCK
                   + _MATH_DECISION + MATH_CLOSING)
 
+# ★0912 `math_new`(강제) — Countdown `new` 의 대응. **라벨을 캘 때만** 쓴다.
+#   이유: 모델이 "막혔다고 느낄 때만" 메타를 내면 관찰되는 메타가 편향 표본이 된다
+#   (Countdown 실측: 발화 행 성공률 0.17 vs 비발화 0.91 — 메타가 나빠서가 아니라
+#   질 때만 쓰기 때문). 인과를 재려면 위치를 우리가 정해 개입해야 한다.
+#   배포·세금 측정은 반대로 `math_opt`(허용)로 한다.
+_MATH_MANDATE = (
+    "At least once while solving, stop and write a metacognitive block in EXACTLY "
+    "this format, on its own lines:\n\n"
+)
+SOLVE_MATH_NEW = (MATH_RULES + "\n" + _MATH_MANDATE + _MATH_BLOCK
+                  + _MATH_DECISION + MATH_CLOSING)
+
 MATH_PROMPT_VARIANTS = {
     "math_plain": SOLVE_MATH_PLAIN,
     "math_opt": SOLVE_MATH_OPT,
+    "math_new": SOLVE_MATH_NEW,
 }
+
+# 허가판과 강제판은 **그 한 문장만** 달라야 한다 — 다른 데가 갈리면 "강제의 효과"와
+# "프롬프트가 달라진 효과"가 섞인다(Countdown opt 조립이 같은 규약을 쓴다).
+assert SOLVE_MATH_OPT.replace(_MATH_PERMISSION, _MATH_MANDATE, 1) == SOLVE_MATH_NEW
 
 assert "<meta>" not in SOLVE_MATH_PLAIN
 assert "<meta>" in SOLVE_MATH_OPT and "You MAY" in SOLVE_MATH_OPT
