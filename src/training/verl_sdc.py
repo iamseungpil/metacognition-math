@@ -1342,8 +1342,19 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
                                   _cdr.SC_K_STUCK, _cdr.SC_CONF_HI))
         # ★explore_g 도 plan_ok(근거-진리, 완전열거)가 필요하다 — "plan" 항(PL 팔)과
         #   같은 계산이므로 조건에 함께 넣는다(복제 금지 규약).
-        if {"plan", "explore_g"} & set(_arm_terms):      # ★0902 P 팔: next 첫수 해 생존 · 이행
+        if {"plan", "plan_ng", "explore_g"} & set(_arm_terms):  # ★0902 P 팔: next 첫수 해 생존 · 이행
             r["plan_ok"], r["plan_followed"] = _cdr.plan_next(full_text_i, nums_col[i], int(target_col[i]))
+        # ★0912 R7 PL_NG: 누출 게이트의 원재료. `answer_leak` 은 중단 규칙이 이미 쓰는
+        #   같은 함수를 그대로 호출한다(복제 금지 규약) — final_expr 은 위 채점 루프에서
+        #   이미 채워져 있다. 메타 미발화 행은 0(게이트가 꺼질 일이 없다).
+        if "plan_ng" in _arm_terms:
+            _mr = _cdr.parse_meta(text, _cdr.ARM_SPECS[arm]["meta_form"])
+            r["answer_leak"] = (
+                _cdr.answer_leak(
+                    _mr["raw"], r["final_expr"] or "",
+                    extra_grader=(lambda s, _n=nums_col[i], _t=int(target_col[i]):
+                                  _cdt.grade("\\boxed{%s}" % s, _n, _t)))
+                if _bool01_local(_mr["emitted"]) else 0)
         # ★FT/M0/MT (고정 자리, 0904): family_dead/live_new_moves 는 "첫 메타 앞" 텍스트
         #   전체(프리픽스+메타 이전 응답)에 대한 오라클 라벨이다. site 행은 이미 프리픽스가
         #   응답에 접합돼 있으므로 "메타 앞" = prefix + response[:meta_start]. normal 행은

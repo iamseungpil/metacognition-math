@@ -334,3 +334,38 @@ def test_lenbonus_row_with_check_tags_but_short_gets_no_bonus():
            "_resp_char_len": min(50, C.LEN_BONUS_CHARS - 1)}
     _, comp = C.arm_reward("LENBONUS_CHK", row, step=100, warmup_steps=20)
     assert comp["len_bonus"] == 0.0
+
+
+def test_plan_ng_arm_registered_with_leak_gate_and_halved_weight():
+    """§20 R7 PL_NG: PL 과 항 구조는 같고 plan → plan_ng 로만 바뀐다.
+    무게는 PL(W_META=1.0)의 절반(PLAN_NG_W 기본 0.5)."""
+    pl, png = C.ARM_SPECS["PL"], C.ARM_SPECS["PL_NG"]
+    assert "plan" in pl["terms"] and "plan" not in png["terms"]
+    assert "plan_ng" in png["terms"]
+    assert C.TERMS["plan_ng"]["weight"] == C.PLAN_NG_W < C.TERMS["plan"]["weight"]
+    assert "answer_leak" in C.TERMS["plan_ng"]["needs"]
+
+
+def test_plan_ng_zeroed_when_answer_leaks():
+    """누출 행은 적중이어도 0 — plan 이 정답 보상의 사본이 되는 경로를 막는다."""
+    base = dict(r_corr=1, format_ok=1, emitted=1, plan_ok=1, plan_followed=1)
+    _, clean = C.arm_reward("PL_NG", dict(base, answer_leak=0), step=100, warmup_steps=20)
+    _, leak = C.arm_reward("PL_NG", dict(base, answer_leak=1), step=100, warmup_steps=20)
+    assert clean["plan_ng"] > 0.0
+    assert leak["plan_ng"] == 0.0
+
+
+def test_plan_ng_needs_answer_leak_or_dies():
+    """원재료가 없으면 즉사한다(조용히 0 흘리면 무효 레버가 된다)."""
+    import pytest
+    row = dict(r_corr=1, format_ok=1, emitted=1, plan_ok=1, plan_followed=1)
+    with pytest.raises(KeyError):
+        C.arm_reward("PL_NG", row, step=100, warmup_steps=20)
+
+
+def test_plan_ng_requires_both_ok_and_followed():
+    base = dict(r_corr=1, format_ok=1, emitted=1, answer_leak=0)
+    for ok, fw in ((1, 0), (0, 1), (0, 0)):
+        _, comp = C.arm_reward("PL_NG", dict(base, plan_ok=ok, plan_followed=fw),
+                               step=100, warmup_steps=20)
+        assert comp["plan_ng"] == 0.0

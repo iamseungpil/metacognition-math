@@ -602,6 +602,12 @@ NORMALIZE_TERMS: bool = True
 # ══════════════════════════════════════════════════════════════════════════════
 W_FCLAIM = 0.5
 W_CHK = 0.5
+# ★0912 R7 PL_NG: PL(plan, 무게 W_META=1.0)이 p3 에서 스텝 6~8 에 answer_leak 0.105~0.132 ·
+#   arith_in_meta 0.040→0.129(단조 상승)로 사전등록 굿하트 가드를 연속 위반했다. 원인 후보는
+#   ①plan 이 정답과 동급 무게라 «답을 메타에 적어 두 번 받는» 경로가 열린 것 ②누출 행에도
+#   plan 이 그대로 지급된 것. PL_NG 는 무게를 W_CHK 급으로 낮추고 누출 행의 plan 을 0 으로
+#   지운다 — 새 보상 채널이 아니라 기존 plan 의 게이팅·감량판이다.
+PLAN_NG_W = float(os.environ.get("PLAN_NG_W", "0.5"))
 PERSIST_MIN_ATTEMPTS = 1   # ★0909 P0 프로브 실측으로 3→1: N0 의 «✗ 후 재탐색» 145행 중 105행이
 #   ✗ 뒤 등식 0개(즉 다른 식을 박스만 했다), ≥3 은 17행(전체의 0.4%)뿐이라 3 이면 신호가 굶는다.
 #   1 이면 40행(재탐색의 28%)이 걸린다. «실제로 더 찾았다»의 최소 기준을 등식 1개로 낮춘다.
@@ -738,6 +744,7 @@ TERM_MAX_ABS: dict = {
     # 칸의 redirect 만 0→-1 로 바뀐 것 뿐(위 timing2 항목/`r_timing2` docstring 참조).
     "timing2":    1.0,   # r_timing2 ∈ {-1,0,+1} (weight 는 TERMS 에서 W_TIMING)
     "live_new":   1.0,   # r_live_new ∈ {0,1}
+    "plan_ng":    1.0,   # ★0912 R7 plan × 1[누출 없음] ∈ {0,1}
     # r_opd_meta 가 이미 [−1, 0] 이라 정규화는 항등이다. osd/meta_inv 와 같은 이유로
     # `.get(t, 1.0)` 기본값에 기대지 않고 명시한다.
     "opd_meta":   1.0,
@@ -1379,6 +1386,9 @@ TERMS: dict[str, dict] = {
     # w_meta·w_gate 만 적었고 meta_floor 는 "공통(처치 아님)" 쪽에 있다.
     "meta_floor": {"needs": ("emitted",),                                  "warmup": False, "weight": META_FLOOR},
     "plan":       {"needs": ("emitted", "plan_ok", "plan_followed"),       "warmup": True,  "weight": W_META},
+    # ★0912 R7: plan × 1[답 누출 없음]. 원재료에 answer_leak 이 더 붙는다(verl_sdc 가 행에 채운다).
+    "plan_ng":    {"needs": ("emitted", "plan_ok", "plan_followed", "answer_leak"),
+                                                                           "warmup": True,  "weight": PLAN_NG_W},
     "meta_pos":   {"needs": ("emitted", "pmi_open", "pmi_close"),          "warmup": True,  "weight": W_META},
     "meta_mul":   {"needs": ("emitted", "pmi_open", "pmi_close", "adv_corr"), "warmup": True, "weight": W_META},
     "meta_ctx":   {"needs": ("emitted", "pmi_self", "pmi_donor", "adv_corr"), "warmup": True, "weight": W_META},
@@ -1467,6 +1477,9 @@ ARM_SPECS: dict[str, dict] = {
     #   치환 A/B 로 확인된 유일한 내용 신호(막힘 +8.1, 2시드). 메타 텍스트를 사람이 채점하지 않는다.
     "PL": {"label": "plan",  "terms": _COMMON + ("plan",),               "meta_form": "new",
           "note": "★계획 보상. 1[next 해 생존] × 1[이행]. 데이터 _4num_p3."},
+    # ★0912 R7 PL_NG: PL 과 항 구조 동일 + 누출 게이트 + 무게 감량(PLAN_NG_W, 기본 0.5).
+    "PL_NG": {"label": "plan_ng", "terms": _COMMON + ("plan_ng",),        "meta_form": "new",
+          "note": "★PL 의 굿하트 수리판. 1[next 해 생존] × 1[이행] × 1[답 누출 없음], 무게 0.5. 데이터 _4num_p3."},
     "B": {"label": "cur",    "terms": _COMMON + ("meta_pos",),          "meta_form": "new",
           "note": "현행 재현. clip(shift,±2) + reversal(save 1.0/derail 2.0)."},
     "C": {"label": "mul",    "terms": _COMMON + ("meta_mul",),          "meta_form": "new",
@@ -1913,6 +1926,10 @@ def arm_reward(
         raw["meta_pos"] = r_meta_pos(row["pmi_open"], row["pmi_close"]) if emitted else 0.0
     if "plan" in terms:
         raw["plan"] = (1.0 if (emitted and _bool01(row["plan_ok"]) and _bool01(row["plan_followed"])) else 0.0)
+    if "plan_ng" in terms:
+        raw["plan_ng"] = (1.0 if (emitted and _bool01(row["plan_ok"])
+                                  and _bool01(row["plan_followed"])
+                                  and not _bool01(row["answer_leak"])) else 0.0)
     if "meta_mul" in terms:
         raw["meta_mul"] = (r_meta_mul(row["pmi_open"], row["pmi_close"], row["adv_corr"])
                            if emitted else 0.0)
@@ -2559,7 +2576,8 @@ META_TERMS: tuple = ("meta_pos", "meta_mul", "meta_ctx", "gate", "len", "osd",
                      #   arm_reward 자체의 보상 계산은 이 목록과 무관하게 정상 동작했다 —
                      #   영향은 rmeta_magnitude/그룹분산분해/AUC 관측치가 이 항들을
                      #   "쟀는데 0"과 "안 쟀다"를 구별 못 하고 통째로 빠뜨렸다는 것.
-                     "fclaim", "chk_fixed", "chk_evc", "chk_persist", "chk_solved", "len_bonus")
+                     "fclaim", "chk_fixed", "chk_evc", "chk_persist", "chk_solved", "len_bonus",
+                     "plan_ng")   # ★0912 R7
 
 
 def rmeta_magnitude(components: Sequence[Mapping[str, float]],
