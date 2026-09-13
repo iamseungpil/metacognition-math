@@ -1926,17 +1926,23 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
     #   계산한다. 사용자 지시로 wandb 를 끈 뒤(WANDB_MODE=disabled) PL 팔의 **사전등록
     #   기제 지표**(plan_hit_rate)가 어디에도 안 남아 판정 자체가 불가능해졌다 — 무효
     #   레버를 못 보게 되는 바로 그 조건이다. 콘솔로 항상 찍는다(로그는 로컬 파일).
-    if "plan" in _cdr.ARM_SPECS[arm]["terms"]:
+    # ★0913 재수리: 조건을 "plan" 에만 걸어 뒀다가 plan_ng(PL_NG) 팔이 자기 판정
+    #   지표를 못 보는 채로 돌았다 — 오늘 아침 META_TERMS 에서 낸 것과 같은 종류의
+    #   실수다(새 항을 만들고 계기 등록을 빠뜨림). 항 이름 집합으로 바꾼다.
+    _plan_terms = {"plan", "plan_ng"} & set(_cdr.ARM_SPECS[arm]["terms"])
+    if _plan_terms:
         _em = [r for r in rows if int(r.get("emitted", 0))]
         _n = max(1, len(_em))
         _ok = sum(int(r.get("plan_ok", 0)) for r in _em) / _n
         _fw = sum(int(r.get("plan_followed", 0)) for r in _em) / _n
         _hit = sum(1 for r in _em
                    if int(r.get("plan_ok", 0)) and int(r.get("plan_followed", 0))) / _n
-        _cp = sum(float(c.get("plan", 0.0)) for c in comps) / max(1, len(comps))
+        _tn = sorted(_plan_terms)[0]
+        _cp = sum(float(c.get(_tn, 0.0)) for c in comps) / max(1, len(comps))
+        _leak = sum(int(r.get("answer_leak", 0)) for r in _em) / _n
         print(f"[COUNTDOWN][PLAN] step={step} arm={arm} n_emitted={len(_em)} "
-              f"plan_ok={_ok:.3f} plan_followed={_fw:.3f} plan_hit={_hit:.3f} "
-              f"comp_plan={_cp:.4f}", flush=True)
+              f"term={_tn} plan_ok={_ok:.3f} plan_followed={_fw:.3f} plan_hit={_hit:.3f} "
+              f"answer_leak={_leak:.3f} comp={_cp:.4f}", flush=True)
 
     # ★0902 관측: 보상 구성 요소별 평균 · 발화율 · 계획 항(해 생존/이행) 비율 · 응답 표본 8개 → wandb (실패해도 학습은 계속)
     try:
