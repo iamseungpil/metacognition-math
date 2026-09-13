@@ -19,6 +19,18 @@ enabling self-assessment, error correction, and calibrated confidence.
 최종 목표는 **메타인지 행동 → 정확도 향상**이다. confidence 정렬은 "유용한 메타인지"의
 한 신호(언제 검산/전환할지 판단)일 때만 가치가 있다.
 
+## 현행 상태 (2026-09-14, cd9) — 이 절이 우선한다
+- **무대: 수학** (MATH-500 / AIME25 / HMMT25). Countdown 4수는 Qwen3.5-4B 학습 전 .876 으로 포화 → 종료
+  (cd6~cd8 문서는 `archive/docs_countdown_cd7_cd8_2026_09_14/`, 판정은 `docs/RESULTS_cd7.md`).
+- **모델: Qwen3.5-4B** (`/hdd_data/seungpil/scratch/models/Qwen3.5-4B`). 추론은 격리 env
+  `/hdd_data/seungpil/envs/qwen35`(vllm 0.29) — 공유 학습 env(simplerl)는 건드리지 않는다.
+- **사전등록: `docs/PREREGISTRATION_cd9_math_judgment.md`** (의도·라벨·자·팔·판정·중단 규칙). 원장은 `docs/RESULTS_cd9.md`.
+- 핵심 아이디어: 같은 자리 반사실로 **판단(verify/redirect)의 정답**을 만들고, 자기 메타의 판단 일치를
+  자기 증류 신호로 쓴다. 첫 판정 지표는 정확도가 아니라 **발화 선택성**(SAVE↑ DERAIL↓ NEUTRAL 불변).
+- 자동화: 큐 `scripts/local/gpu_queue.py`(GPU 2·3만), 트리거 `gate_judgment.py`, 사전등록 중단은 **rc 75**
+  (재시도 래퍼가 재시도하지 않음), 수학 파서는 `parse_meta(form="math")`(decision 줄 선택).
+- 아래 «Compute / Data / Current Results» 절은 **구세대(Qwen3-8B·amlt·Countdown) 참고용**이다.
+
 ## Key Tokens
 - 모든 토큰(GitHub PAT / HuggingFace / WandB)은 **.env에만** 둔다 —
   `set -a; source .env; set +a` 로 로드 (`GH_TOKEN`, `HF_TOKEN`,
@@ -29,7 +41,7 @@ enabling self-assessment, error correction, and calibrated confidence.
   제거해야 한다.
 - TRAPI scope: api://trapi/.default (endpoint: trapi.research.microsoft.com/gcr/shared)
 
-## Compute
+## Compute (구세대 참고용 — 현행은 위 «현행 상태» 절)
 
 **현재(0904) 실제로 도는 곳: 로컬 H100×8 박스, GPU 0~3.** amlt/클러스터가 아니다.
 `scripts/local/`의 GPU 큐(`gpu_queue.py`)가 워커·잡을 관리하고, 체크포인트·데이터·큐
@@ -123,7 +135,7 @@ Code snapshot:
 NOTE: Earlier draft mentioned metacot_v2_trapi.parquet — that file does NOT exist on HF.
 The v8 series replaced it.
 
-## Current Results (rq3 매치드 래더 — PRELIMINARY, 단일 시드·진행 중·미확정)
+## Current Results (구세대: rq3 매치드 래더 — PRELIMINARY, 단일 시드·진행 중·미확정)
 - RQ1(B2−B0): 매칭 val 3점 +0.151(gs25) / +0.164(gs50) / +0.189(gs75),
   9개 데이터셋 전부 양성.
 - RQ2(B3−B2): gs25 +0.042 한 점 — 어려운 과목 집중(int_algebra +0.125,

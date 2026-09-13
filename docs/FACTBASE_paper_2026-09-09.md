@@ -86,3 +86,16 @@
 - **E-134 프롬프트 불일치**: 런처 기본값 때문에 일부 팔이 «메타 강제» 데이터로 학습되고
   «메타 허용» 프롬프트로 평가됐다. 해당 결과 전량 폐기.
 - 단일 과제·단일 시드. 외부 사용자와 GPU를 공유해 일부 팔은 중단·재개됐다.
+
+## 8. cd9 수학 이식 (2026-09-13 관측, Qwen3.5-4B, 학습 없음) — 출처 `/hdd_data/seungpil/scratch/eval/<dir>/telemetry.json`
+| 항목 | 수치 | 출처 dir |
+|---|---|---|
+| MATH-500 메타 없음(plain) pass@1 / pass@8 | **.741 / .790** (8샘플, 예산 8,192, 잘림 1.4%) | math500_qwen35_plain_b8k |
+| MATH-500 메타 허용(opt) pass@1 | .733 → **세금 −0.8pp** | math500_qwen35_opt_b8k |
+| MATH-500 메타 강제(new) pass@1 / pass@8 | .735 / .782 → 세금 −0.6pp | math500_qwen35_new |
+| 허용 프롬프트에서 메타 블록 있는 응답 비율 | **73.3%** (구 Qwen3-4B 는 0%) | opt_b8k texts.jsonl 재계산 |
+| 그중 `decision:` 줄이 없는 블록 | 허용 22.5% 중 93% · 강제 54.7% 중 97% 가 «결정 단어 자체 없음» | texts.jsonl 재계산(0913) |
+| AIME 2025 pass@1 / pass@8 (32k 예산, 잘림 3.8%) | .558 / .833 | aime25_qwen35_plain_b32k |
+| HMMT Feb 2025 pass@1 / pass@8 (32k, 잘림 8.3%) | .271 / .500 | hmmt25_qwen35_plain_b32k |
+| Countdown 4수, Qwen3.5-4B 학습 없음 pass@1 / 채점기 선택 | .876 / .992 (N0 RL 100스텝 .805) | cd8_decisions.log 09-12 |
+- 수학 자리 라벨(SAVE/DERAIL 밀도, 판단 반사실)은 2026-09-14 계산 중 — 나올 때까지 `\todo{}`.
