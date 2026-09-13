@@ -80,6 +80,16 @@ def build_fed(mode: str, prefix: str, donor_meta: str | None) -> str:
     raise ValueError(f"unknown mode: {mode!r}")
 
 
+def _gen_prompt(tok, msgs) -> str:
+    """math_rollout.chat 과 같은 생성 프롬프트 — 롤아웃이 만들어진 문맥과 바이트 단위로 같아야
+    «같은 자리» 측정이 된다."""
+    try:
+        return tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True,
+                                       enable_thinking=False)
+    except TypeError:
+        return tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--rollouts", required=True, help="math_plain 롤아웃 texts.jsonl")
@@ -155,8 +165,13 @@ def main() -> int:
             msgs = [{"role": "system", "content": MATH_PROMPT_VARIANTS[variant]},
                     {"role": "user", "content": s["problem"]},
                     {"role": "assistant", "content": build_fed(mode, s["prefix"], dm)}]
-            reqs.append(tok.apply_chat_template(msgs, tokenize=False,
-                                                continue_final_message=True))
+            # ★0913 수리: continue_final_message 를 쓰지 않는다. Qwen3.5 템플릿은 assistant
+            #   본문의 끝 공백을 지운다 — 자리는 줄 경계라 앞부분이 늘 개행으로 끝나므로
+            #   (a) vLLM 토크나이저 래퍼는 «마지막 메시지가 안 보인다»며 거부해 3회 rc 1,
+            #   (b) transformers 는 통과시키되 개행을 **조용히 삭제**해 자리가 한 줄 옮겨진다
+            #   (실측: 렌더 522 vs 523 바이트, 차이는 끝 '\n' 하나). 롤아웃이 생성된 문맥은
+            #   «생성 프롬프트(enable_thinking=False) + 텍스트» 그 자체이므로 그걸 그대로 잇는다.
+            reqs.append(_gen_prompt(tok, msgs[:2]) + msgs[2]["content"])
             meta_ix.append((si, mode))
 
     print(f"[sites] 요청 {len(reqs)}개 x K={a.k}", flush=True)
