@@ -67,10 +67,24 @@ def cut_points(text: str, n_cuts: int, rng: random.Random) -> list[int]:
     return sorted(cand[:n_cuts])
 
 
+# ★0913 «판단 조건부 반사실»: 같은 자리에서 두 판단을 **심어** 이어 쓴다. 어느 쪽이 더 잘
+#   되는지가 그 자리의 정답 판단이고, 모델이 스스로 쓴 메타의 결정이 그것과 맞으면 «옳은
+#   메타인지»다. 정답 여부와 분리된 메타 내용 채점 — 결과 고정 검사를 정의상 통과한다.
+SEED_VERIFY = ("<meta>\nconfidence: 0.8\nThe current approach is sound. I will push it through "
+               "carefully and check the result.\ndecision: verify\n</meta>\n")
+SEED_REDIRECT = ("<meta>\nconfidence: 0.2\nThe current approach is not working. I will abandon it "
+                 "and solve the problem with a completely different method.\ndecision: redirect\n</meta>\n")
+ALL_MODES = ("nometa", "meta", "donor", "verify", "redirect")
+
+
 def build_fed(mode: str, prefix: str, donor_meta: str | None) -> str:
     """모델에게 «이미 이렇게 썼다»고 먹일 텍스트."""
     if mode == "nometa":
         return prefix
+    if mode == "verify":
+        return prefix.rstrip() + "\n" + SEED_VERIFY
+    if mode == "redirect":
+        return prefix.rstrip() + "\n" + SEED_REDIRECT
     if mode == "meta":
         return prefix.rstrip() + "\n<meta>\n"
     if mode == "donor":
@@ -102,8 +116,17 @@ def main() -> int:
     ap.add_argument("--max_tokens", type=int, default=4096)
     ap.add_argument("--gpu_util", type=float, default=0.4)
     ap.add_argument("--seed", type=int, default=11)
+    ap.add_argument("--movable_only", action="store_true",
+                    help="★0914 파일럿 교훈: 무작위 자리의 92.5%%는 이미 결판나 있어(K=8) 판단 대조가 "
+                         "무승부 93.5%%. 원 롤아웃 그룹 정답률이 0<p<1 인 문제에서만 자리를 뽑는다.")
+    ap.add_argument("--modes", default="nometa,meta,donor",
+                    help="쉼표 구분. nometa,meta,donor,verify,redirect 중 (donor 는 기증 롤아웃 필요)")
     ap.add_argument("--out_dir", required=True)
     a = ap.parse_args()
+    want = [m for m in a.modes.split(",") if m]
+    bad = set(want) - set(ALL_MODES)
+    if bad:
+        raise SystemExit(f"unknown modes: {sorted(bad)} (choose from {ALL_MODES})")
 
     _selftest()
     rng = random.Random(a.seed)
@@ -111,10 +134,19 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
 
     rolls = [json.loads(l) for l in open(a.rollouts)]
+    movable_groups = None
+    if a.movable_only:
+        acc: dict[str, list] = {}
+        for r in rolls:
+            acc.setdefault(r["group_id"], []).append(int(r["r_corr"]))
+        movable_groups = {g for g, v in acc.items() if 0 < sum(v) < len(v)}
+        print(f"[sites] movable_only: 문제 {len(movable_groups)}/{len(acc)} (0<p<1)", flush=True)
     # 한 문제당 롤아웃 하나만 자리 원천으로 쓴다(같은 문제가 자리를 독점하지 않게).
     seen, srcs = set(), []
     for r in rolls:
         if r["group_id"] in seen or r.get("truncated"):
+            continue
+        if movable_groups is not None and r["group_id"] not in movable_groups:
             continue
         seen.add(r["group_id"])
         srcs.append(r)
@@ -131,14 +163,15 @@ def main() -> int:
             break
     print(f"[sites] 자리 {len(sites)}개 (문제 {len(seen)}개에서)", flush=True)
 
-    donors: list[str] = []
-    if a.donor_rollouts:
+    donors: list[tuple[str, str]] = []    # (원천 problem 텍스트, 메타 블록)
+    if a.donor_rollouts and "donor" in want:
         for l in open(a.donor_rollouts):
-            m = _META_BLOCK.search(json.loads(l)["text"])
+            rr = json.loads(l)
+            m = _META_BLOCK.search(rr["text"])
             if m:
-                donors.append(m.group(0))
+                donors.append((rr["problem"], m.group(0)))
         print(f"[sites] 기증 메타 {len(donors)}개", flush=True)
-    modes = ["nometa", "meta"] + (["donor"] if donors else [])
+    modes = [m for m in want if m != "donor" or donors]
 
     from vllm import LLM, SamplingParams
     llm = LLM(model=a.model_path, dtype="bfloat16", seed=a.seed,
@@ -151,9 +184,11 @@ def main() -> int:
         # ★기증 메타는 **다른 문제**에서만 — 같은 문제면 내용 누출이다.
         dm = None
         if donors:
-            for _ in range(10):
-                cand = donors[rng.randrange(len(donors))]
-                if cand not in s["prefix"]:
+            # ★0913 감사 수리: 예전 검사(앞부분에 문자열 포함 여부)는 같은 문제의 다른 롤아웃에서
+            #   온 메타를 통과시켰다(내용 누출). 원천 문제 텍스트가 다른 것만 받는다.
+            for _ in range(20):
+                src_problem, cand = donors[rng.randrange(len(donors))]
+                if src_problem != s["problem"]:
                     dm = cand
                     break
         s["donor_meta"] = dm
@@ -193,8 +228,9 @@ def main() -> int:
     recs = []
     for si, s in enumerate(sites):
         p = {m: (sum(v) / len(v)) for (i, m), v in agg.items() if i == si}
-        if "nometa" not in p or "meta" not in p:
+        if "nometa" not in p:
             continue
+        p.setdefault("meta", p["nometa"])       # meta 모드가 빠진 실행(판단 파일럿)은 Δ̂=0
         d = p["meta"] - p["nometa"]
         dd = (p.get("donor") - p["nometa"]) if "donor" in p else None
         if p["nometa"] <= 0.25 and d >= 0.25:
@@ -203,10 +239,15 @@ def main() -> int:
             lab = "DERAIL"
         else:
             lab = "NEUTRAL"
+        pv, pr = p.get("verify"), p.get("redirect")
+        jud = None
+        if pv is not None and pr is not None:
+            jud = "redirect" if pr - pv >= 0.25 else ("verify" if pv - pr >= 0.25 else "tie")
         recs.append({"site_id": s["site_id"], "problem": s["problem"], "gold": s["gold"],
                      "prefix": s["prefix"], "donor_meta": s.get("donor_meta"),
                      "p_nometa": p["nometa"], "p_meta": p["meta"],
                      "p_donor": p.get("donor"), "delta": d, "delta_donor": dd,
+                     "p_verify": pv, "p_redirect": pr, "best_decision": jud,
                      "label": lab,
                      "movable": int(0.0 < p["nometa"] < 1.0)})
 
@@ -229,6 +270,24 @@ def main() -> int:
                              / max(1, sum(1 for r in recs if r["delta_donor"] is not None))),
         "mean_p_nometa": sum(r["p_nometa"] for r in recs) / max(1, n),
     }
+    # ★판단 반사실 텔레메트리: 전환 심기가 실제로 다른 접근을 내는가(파일럿 판정 지표).
+    jd = [r for r in recs if r["best_decision"] is not None]
+    if jd:
+        _sw = re.compile(r"\b(different|instead|alternative|another (?:approach|method|way)|"
+                         r"let'?s try|re-?think|start over)\b", re.I)
+        def _switch_rate(mode):
+            xs = [r for r in rows if r["mode"] == mode]
+            return sum(1 for r in xs if _sw.search(r["cont"][:400])) / max(1, len(xs))
+        summ.update({
+            "n_judged": len(jd),
+            "best_decision": {k: sum(1 for r in jd if r["best_decision"] == k)
+                              for k in ("verify", "redirect", "tie")},
+            "mean_p_verify": sum(r["p_verify"] for r in jd) / len(jd),
+            "mean_p_redirect": sum(r["p_redirect"] for r in jd) / len(jd),
+            "switch_phrase_rate_redirect": _switch_rate("redirect"),
+            "switch_phrase_rate_verify": _switch_rate("verify"),
+            "switch_phrase_rate_nometa": _switch_rate("nometa"),
+        })
     (out / "summary.json").write_text(json.dumps(summ, ensure_ascii=False, indent=2))
     for k, v in summ.items():
         print(f"  {k:18s} {v}")

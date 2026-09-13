@@ -12,6 +12,8 @@ for i in $(seq 1 "$MAX"); do
   echo "[retry_cmd] attempt $i/$MAX $(date -Is)"
   "$@" && { echo "[retry_cmd] done at attempt $i"; exit 0; }
   rc=$?
+  # ★0913: rc 75 = 사전등록 중단(의도된 정지). 재시도 대상이 아니다.
+  if [ "$rc" = "75" ]; then echo "[retry_cmd] preregistered ABORT (rc 75) — not retrying"; exit 75; fi
   echo "[retry_cmd] attempt $i failed (rc=$rc); sleeping ${WAIT}s"
   sleep "$WAIT"
 done

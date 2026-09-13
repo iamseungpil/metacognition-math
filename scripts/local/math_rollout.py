@@ -43,36 +43,13 @@ DATASETS = {
 }
 
 
-def _grade(pred_text: str, gold: str) -> int:
-    from math_verify import parse, verify
-    try:
-        return int(verify(parse(str(gold)), parse(pred_text)))
-    except Exception:
-        return 0
-
-
-def _selftest_math_verify() -> None:
-    """조용한 오채점 방지 — 깨져 있으면 즉사한다."""
-    cases = [("\\boxed{42}", "42", 1), ("\\boxed{\\frac{1}{2}}", "0.5", 1),
-             ("\\boxed{7}", "42", 0)]
-    got = [_grade(p, g) for p, g, _ in cases]
-    want = [e for *_, e in cases]
-    if got != want:
-        raise RuntimeError(
-            f"math_verify 자가검사 실패: got={got} want={want} — "
-            "scripts/patch_math_verify.py 를 먼저 적용하라(조용한 오채점 방지).")
-
-
-def _final_answer(text: str) -> str:
-    """마지막 \\boxed{...} 안의 문자열(없으면 "")."""
-    i = text.rfind("\\boxed{")
-    if i < 0:
-        return ""
-    j, depth = i + len("\\boxed{"), 1
-    while j < len(text) and depth:
-        depth += (text[j] == "{") - (text[j] == "}")
-        j += 1
-    return text[i + len("\\boxed{"): j - 1].strip() if depth == 0 else ""
+# ★0914: 채점·자가검사·\boxed 추출은 RL 트레이너(src/training/math_meta.py)와 **같은
+#   함수**다 — 롤아웃 평가와 학습 보상이 다른 채점기를 쓰면 팔 간 비교가 무의미해진다.
+from src.training.math_meta import (  # noqa: E402
+    grade_math as _grade,
+    last_boxed as _final_answer,
+    selftest_math_verify as _selftest_math_verify,
+)
 
 
 def main() -> int:
@@ -160,9 +137,9 @@ def main() -> int:
         "trunc_rate": n_trunc / max(1, n),
         "no_answer_rate": sum(1 for r in rows if not r["final_answer"]) / max(1, n),
         "len_mean": sum(r["n_tok"] for r in rows) / max(1, n),
-        "emit_rate": cdr.emit_rate(rows, form="new"),
-        "meta_position": cdr.meta_position_stats(rows, form="new"),
-        "boilerplate": cdr.boilerplate_rate(rows, form="new"),
+        "emit_rate": cdr.emit_rate(rows, form="math"),
+        "meta_position": cdr.meta_position_stats(rows, form="math"),
+        "boilerplate": cdr.boilerplate_rate(rows, form="math"),
     }
     # 오답 분포(디코이 후보) — PMI-shift 는 «모델이 실제로 낸 오답»을 디코이로 써야 한다
     # (규칙기반 오답은 구세대 수학 판에서 AUC 0.539 로 포화됐다 — pmi_shift.py 주석).

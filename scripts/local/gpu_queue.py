@@ -305,6 +305,24 @@ def _run_one_job(gpu: int, job_path: Path, lock_fd) -> None:
     job["exit_code"] = rc
     job["finished_at"] = _now()
     final_state = "done" if rc == 0 else "failed"
+    # ★0913 감사 수리(경쟁): gate_judgment 가 잡을 죽이고 running/→aborted/ 로 옮긴 뒤 여기서
+    #   write_text 하면 running/ 에 파일이 **되살아나** failed/ 로도 기록됐다(이중 기록).
+    #   running/ 에 파일이 없으면 aborted/ 쪽 기록에 종료 정보만 덧붙이고 끝낸다.
+    #   rc 75 는 사전등록 중단(verl_sdc.ABORT_EXIT_CODE) — failed 가 아니라 aborted 로 둔다.
+    if not job_path.exists():
+        alt = QUEUE_ROOT / "aborted" / job_path.name
+        if alt.exists():
+            try:
+                j2 = json.loads(alt.read_text()); j2.update(exit_code=rc, finished_at=job["finished_at"])
+                alt.write_text(json.dumps(j2, indent=2))
+            except Exception:
+                pass
+        print(f"[worker gpu={gpu}] {job_path.name} already moved out of running/ (rc={rc})")
+        return
+    if rc == 75:
+        final_state = "aborted"
+        job["aborted_reason"] = job.get("aborted_reason") or "preregistered abort (rc 75)"
+        (QUEUE_ROOT / "aborted").mkdir(parents=True, exist_ok=True)
     dest = QUEUE_ROOT / final_state / job_path.name
     job_path.write_text(json.dumps(job, indent=2))
     job_path.rename(dest)

@@ -76,8 +76,13 @@ def kill_job_exact_pid(job_path: Path, job: dict, arm_token: str) -> str:
     pid = job.get("pid")
     if pid is None:
         return "SKIP(no pid recorded — gpu_queue.py가 이 잡을 pid 배선 이전에 시작했을 수 있다, 수동 확인 필요)"
-    if not pid_cmdline_contains(int(pid), arm_token):
-        return f"SKIP(pid {pid}의 cmdline에 '{arm_token}' 없음 — 이미 끝났거나 pid 재활용, 죽이지 않음)"
+    # ★0913 감사 수리: 기본 토큰(--job-name)은 프로세스 cmdline 에 **없다** — gpu_queue 는
+    #   `bash -lc "<cmd>"` 로 띄우므로 cmdline 엔 잡 이름이 아니라 명령 문자열이 들어간다.
+    #   그래서 기본 호출은 항상 SKIP 이었고 트리거가 한 번도 실제로 죽인 적이 없다.
+    #   잡 json 의 cmd 문자열(그 잡만의 고유 문자열)도 토큰으로 인정한다.
+    _tokens = [t for t in (arm_token, job.get("cmd")) if t]
+    if not any(pid_cmdline_contains(int(pid), t) for t in _tokens):
+        return f"SKIP(pid {pid}의 cmdline에 '{arm_token}'/잡 cmd 없음 — 이미 끝났거나 pid 재활용, 죽이지 않음)"
     try:
         os.killpg(int(pid), signal.SIGTERM)
         time.sleep(5)

@@ -7,7 +7,11 @@ MAX="${1:-20}"; WAIT="${2:-240}"; shift 2; [ "$1" = "--" ] && shift
 for i in $(seq 1 "$MAX"); do
   echo "[retry] attempt $i/$MAX $(date -Is)"
   bash scripts/local/run_arm.sh "$@" && { echo "[retry] done at attempt $i"; exit 0; }
-  echo "[retry] attempt $i failed; sleeping ${WAIT}s"
+  rc=$?
+  # ★0913: 사전등록 중단(verl_sdc 가 rc 75 로 나온다)은 크래시가 아니다 — 재시도하면
+  #   ckpt 에서 이어져 같은 스텝에서 또 중단된다(PL_NG 41회 재발사, GPU3 하루 낭비).
+  if [ "$rc" = "75" ]; then echo "[retry] preregistered ABORT (rc 75) — not retrying"; exit 75; fi
+  echo "[retry] attempt $i failed (rc=$rc); sleeping ${WAIT}s"
   sleep "$WAIT"
 done
 echo "[retry] exhausted $MAX attempts"; exit 1

@@ -928,6 +928,32 @@ def countdown_arm_reward(completions, **kwargs):
     return [float(v) for v in total]
 
 
+# ── MATH_META reward-head wiring (ADDITIVE, cd9 2026-09-14) ───────────────────
+# COUNTDOWN_6ARM 과 같은 모양: 배치당 한 번 도는 프리패스(`_compute_math_arm_stash`)가
+# `_MATH_STASH` 를 채우고, 아래 얇은 헤드는 읽기만 한다. 수학엔 오라클이 없으므로
+# 항 정의는 전부 src/training/math_meta.py 에 있다(countdown_rewards 의 팔은 불변).
+# ★분리 채점: 시퀀스 보상(`total`)은 **답 스팬 몫(정답)만** 담는다. 메타 스팬 항은
+#   `_MATH_REGION_STASH` 에 따로 두었다가 `_math_add_meta_region_advantage` 가 GRPO
+#   어드밴티지 뒤 메타 토큰 구간에만 얹는다 — Countdown §13-b CHK_REGION 경로의 복제.
+_MATH_MODE = "MATH_META"
+_MATH_STASH: dict = {"step": None, "arm": None, "total": None, "n": 0, "rows": None}
+_MATH_REGION_STASH: dict = {"step": None, "bs": 0, "uid": [], "meta": [], "spans": []}
+_MATH_JUDGE_LABELS: dict = {"path": None, "table": None}
+
+
+def math_arm_reward(completions, **kwargs):
+    """MATH_META 의 유일한 보상 헤드 — 프리패스 스태시의 얇은 리더. 텍스트 폴백·0 채움 없음
+    (countdown_arm_reward 와 같은 이유: 조용한 0 = «선언된 레버, 배선 0»)."""
+    n = len(completions)
+    total = _MATH_STASH.get("total")
+    if total is None or len(total) != n:
+        raise RuntimeError(
+            "[MATH] arm-reward stash is missing or stale (have "
+            f"{'None' if total is None else len(total)} rows, batch has {n}): the "
+            "pre-pass did not run for this batch. Refusing to emit a silent 0.0 reward.")
+    return [float(v) for v in total]
+
+
 def _log_countdown_rmeta_wandb(*, step, arm, mag, gvd=None, mq=None, phat_of=None, uid=None):
     """R_meta 크기 스칼라를 wandb 로. 없으면 조용히 no-op (콘솔 전용 런 지원).
 
@@ -2168,6 +2194,91 @@ def _compute_countdown_arm_stash(self, data, decoded_responses, bs, prompt_lengt
     return totals
 
 
+def _math_judge_labels() -> dict:
+    """MATH_JUDGE_LABELS 표를 프로세스당 한 번 읽는다(경로가 바뀌면 다시)."""
+    from src.training import math_meta as _mm   # noqa: PLC0415
+    p = os.environ.get("MATH_JUDGE_LABELS", "")
+    if _MATH_JUDGE_LABELS["table"] is None or _MATH_JUDGE_LABELS["path"] != p:
+        _MATH_JUDGE_LABELS["table"] = _mm.load_judge_labels(p)
+        _MATH_JUDGE_LABELS["path"] = p
+        print(f"[MATH][LABELS] path={p!r} n={len(_MATH_JUDGE_LABELS['table'])}", flush=True)
+    return _MATH_JUDGE_LABELS["table"]
+
+
+def _compute_math_arm_stash(self, data, decoded_responses, bs, prompt_length, step):
+    r"""MATH_META 의 **유일한 발전기**. 배치당 한 번 돌며 `_MATH_STASH`(답 스팬 시퀀스 보상)
+    와 `_MATH_REGION_STASH`(메타 스팬 항 + 문자 구간)를 채운다. 학습·검증 두 배치 모두
+    `MetaCotSDCRewardManager.__call__` / `_math_populate_token_rewards` 를 지난다.
+    """
+    from src.training import math_meta as _mm   # noqa: PLC0415
+
+    arm = str(getattr(getattr(self.config, "algorithm", None), "math_arm", "") or "").upper()
+    spec = _mm.require_arm(arm)                      # fail-closed. 조용한 기본값 금지.
+    # ★E-131 가드(Countdown 과 같은 배치 기하 사고 — 프롬프트 폭 초과·길이 0 응답)를 재사용.
+    _countdown_batch_geometry_guard(
+        prompts_width=int(data.batch["prompts"].shape[-1]),
+        expected_width=int(getattr(getattr(self.config, "data", None), "max_prompt_length", 0) or 0),
+        response_valid_lengths=data.batch["attention_mask"][:, data.batch["prompts"].shape[-1]:].sum(-1).tolist(),
+        step=step,
+    )
+    nt = data.non_tensor_batch
+    problems = [str(x) for x in _mm.nt_col(nt, "problem")]
+    golds = [str(x) for x in _mm.nt_col(nt, "gold")]
+    uid = nt.get("uid", None)
+    if uid is None:
+        raise RuntimeError("[MATH] non_tensor_batch 에 uid 가 없다 — 메타 스팬 항의 그룹 중심화가 불가능하다.")
+    uid = [str(u) for u in uid]
+    if len(problems) != bs or len(golds) != bs:
+        raise RuntimeError(f"[MATH] 컬럼 길이 불일치: problem={len(problems)} gold={len(golds)} bs={bs}")
+
+    labels = _math_judge_labels() if spec["meta_term"] in ("judge", "judge_shuffled") else {}
+    if spec["meta_term"] in ("judge", "judge_shuffled") and not labels:
+        # ★라벨표 없는 판단 팔은 항이 전 행 0 → M_G1 과 바이트 동일해진다(무효 레버). 즉사.
+        raise RuntimeError(
+            f"[MATH] arm={arm} 는 판단 팔인데 MATH_JUDGE_LABELS 표가 비었다/없다 "
+            f"(MATH_JUDGE_LABELS={os.environ.get('MATH_JUDGE_LABELS', '')!r}). "
+            "scripts/local/math_sites.py 산출로 judgment_labels.json 을 만들고 경로를 넘겨라.")
+    rows = _mm.compute_rows(list(decoded_responses), golds, problems, arm, labels=labels,
+                            rng=__import__("random").Random(int(step) * 7919 + 17))
+    totals = [float(r["answer_total"]) for r in rows]
+    meta_vals = [float(r["meta_val"]) for r in rows]
+    spans = [_mm.meta_char_spans(r) for r in rows]
+    _MATH_STASH.update({"step": step, "arm": arm, "total": totals, "n": bs, "rows": rows})
+    _MATH_REGION_STASH.update({"step": step, "bs": bs, "uid": uid, "meta": meta_vals, "spans": spans})
+    n_lab = sum(1 for r in rows if r.get("best_decision") in ("verify", "redirect"))
+    print(f"[MATH][WIRED] step={step} arm={arm} spec={_mm.SPEC_VERSION} bs={bs} "
+          f"labeled_rows={n_lab} meta_rows_nonzero={sum(1 for v in meta_vals if v)} "
+          f"judge_w={_mm.judge_weight():.2f}", flush=True)
+
+    try:
+        rep = _mm.telemetry(rows, arm=arm, step=step)
+        print(_mm.format_tel(rep), flush=True)
+        try:
+            _ex = [r for r in rows if r.get("emitted")][:2]
+            for _r in _ex:
+                print(f"[MATH][SAMPLE] step={step} arm={arm} corr={_r['r_corr']} conf={_r['confidence']} "
+                      f"dec={_r['decision']} best={_r.get('best_decision')} judge={_r['judge']:+.0f} "
+                      f"| {' '.join((_r.get('body') or '').split())[:170]}", flush=True)
+        except Exception as _sexc:
+            print(f"[MATH][SAMPLE] step={step} 실패: {_sexc}", flush=True)
+        _all = _mm.check_abort(rep, arm=arm)
+        _hits = [h for h in _all if h.get("status") == "abort"]
+        for _hit in _hits:
+            print(f"[MATH][ABORT] step={step} {_hit}", flush=True)
+        for _miss in [h for h in _all if h.get("status") != "abort"]:
+            print(f"[MATH][BLIND] step={step} {_miss['metric']} 미측정 — 통과가 아니라 «못 봤다»다.", flush=True)
+        # ★Countdown 의 patience 기제(_ABORT_STREAK + get_abort_patience + _CountdownAbort rc 75)를 그대로 쓴다.
+        if _mm.update_streak(_ABORT_STREAK, f"math:{arm}", _hits):
+            raise _CountdownAbort(
+                f"[MATH][ABORT] arm={arm} step={step}: 중단 조건이 "
+                f"{_ABORT_STREAK[f'math:{arm}']} 스텝 연속 위반 — {_hits}. 정지한다.")
+    except _CountdownAbort:
+        raise
+    except Exception as _texc:
+        print(f"[MATH][TEL] step={step} 실패: {type(_texc).__name__}: {_texc}", flush=True)
+    return totals
+
+
 REWARD_CONFIGS = {
     "SDC_SHARED": {
         "funcs": [
@@ -2420,6 +2531,16 @@ REWARD_CONFIGS = {
         "funcs": [countdown_arm_reward],
         "weights": [1.0],
         "keys": ["countdown_arm"],
+    },
+    # MATH_META (ADDITIVE, cd9): 수학 무대. 정확히 한 헤드(답 스팬 정답 보상, 시퀀스
+    # GRPO). 메타 스팬 항은 REWARD 가 아니라 어드밴티지 후처리로 들어간다
+    # (`_math_add_meta_region_advantage`). 팔 선택은 algorithm.math_arm →
+    # src/training/math_meta.MATH_ARM_SPECS. COUNTDOWN_6ARM 과 같이 _REGION_ROUTED_MODES/
+    # _VANILLA_MODES 어디에도 안 들어간다(adv_estimator=grpo, sdc_enabled=false 전제).
+    "MATH_META": {
+        "funcs": [math_arm_reward],
+        "weights": [1.0],
+        "keys": ["math_arm"],
     },
 }
 
@@ -3463,6 +3584,54 @@ def _countdown_add_check_region_advantage(data, tokenizer=None):
     return data
 
 
+def _math_add_meta_region_advantage(data, tokenizer=None):
+    """★cd9 영역 분할: 메타 스팬 항(judge/probe)을 그룹 중심화(Dr.GRPO, /std 없음)해
+    **메타 토큰 구간에만** 더한다. 답 스팬 어드밴티지(GRPO, 정답만)는 그대로.
+    `_countdown_add_check_region_advantage` 의 복제 — 스태시와 구간 출처만 다르다."""
+    st = _MATH_REGION_STASH
+    if not st.get("meta") or not any(st["meta"]):
+        st["meta"] = []
+        return data
+    adv = data.batch["advantages"]
+    if adv.shape[0] != int(st.get("bs", -1)):
+        print(f"[MATH][META-REGION][WARN] stash bs {st.get('bs')} != batch {adv.shape[0]} — skip")
+        st["meta"] = []
+        return data
+    from src.training.dcpo_region import group_mean_subtract   # noqa: PLC0415
+    centered = group_mean_subtract(st["meta"], st["uid"]).reshape(-1)
+    tok = tokenizer or getattr(_ACTIVE_SDC_CONTEXT.get("trainer", None), "tokenizer", None)
+    if tok is None:
+        print("[MATH][META-REGION][WARN] tokenizer 없음 — skip")
+        st["meta"] = []
+        return data
+    resp = data.batch["responses"]
+    am = data.batch.get("response_mask", None)
+    n_rows = n_tok_total = 0
+    for i, spans in enumerate(st["spans"]):
+        if not spans:
+            continue
+        c = float(centered[i])
+        if abs(c) < 1e-9:
+            continue
+        L = int(am[i].sum().item()) if am is not None else int(resp.shape[1])
+        ids = resp[i][:L].tolist()
+        cache: dict[int, int] = {}
+        def _plen(t, _ids=ids, _cache=cache):
+            if t not in _cache:
+                _cache[t] = len(tok.decode(_ids[:t], skip_special_tokens=False))
+            return _cache[t]
+        for (c0, c1) in spans:
+            t0 = max(0, min(_char_to_tok(_plen, L, c0) - 1, L)); t1 = max(t0, min(_char_to_tok(_plen, L, c1 - 1), L))
+            if t1 > t0:
+                adv[i, t0:t1] = adv[i, t0:t1] + c
+                n_tok_total += (t1 - t0)
+        n_rows += 1
+    data.batch["advantages"] = adv
+    print(f"[MATH][META-REGION] step={st.get('step')} applied rows={n_rows} tokens={n_tok_total}", flush=True)
+    st["meta"] = []
+    return data
+
+
 def _bool01_local(v) -> int:
     try:
         return 1 if int(bool(v)) else 0
@@ -3946,6 +4115,9 @@ class _CountdownAbort(RuntimeError):
     """사전등록 §7 중단 조건. 계기 예외와 구분하기 위한 전용 타입."""
 
 
+ABORT_EXIT_CODE = 75   # ★단일 정의처: run_arm_retry.sh / retry_cmd.sh 가 이 rc 는 재시도하지 않는다.
+
+
 _RESCUE_EXPR = __import__("re").compile(r"[\d(][\d\s+\-*/().]{4,}")
 
 
@@ -4061,6 +4233,40 @@ def _countdown_populate_token_rewards(data, algo_config):
     totals = _compute_countdown_arm_stash(shim, data, decoded, bs, prompt_length, step)
 
     # 시퀀스 스칼라를 마지막 유효 토큰에 싣는다(verl 관례: token_level_rewards 합 = 시퀀스 보상).
+    tlr = _t.zeros_like(data.batch["responses"], dtype=_t.float32)
+    valid = data.batch["attention_mask"][:, prompt_length:].sum(dim=1) - 1
+    for i in range(bs):
+        j = int(valid[i])
+        if 0 <= j < tlr.shape[1]:
+            tlr[i, j] = float(totals[i])
+    data.batch["token_level_rewards"] = tlr
+    return data
+
+
+def _math_populate_token_rewards(data, algo_config):
+    """★MATH_META 메인프로세스 훅 — `_countdown_populate_token_rewards` 의 복제(같은 이유:
+    verl 0.7.1 async 경로는 동기 `__call__` 을 우회하므로 여기서 발전기를 돌려야 한다)."""
+    import torch as _t
+    from types import SimpleNamespace as _NS
+
+    tok = _ACTIVE_SDC_CONTEXT.get("tokenizer")
+    trainer = _ACTIVE_SDC_CONTEXT.get("trainer")
+    if tok is None:
+        raise RuntimeError("[MATH] tokenizer 가 컨텍스트에 없다 — 배선 버그다.")
+    bs = len(data)
+    prompt_length = data.batch["prompts"].shape[-1]
+    decoded = []
+    for i in range(bs):
+        item = data[i]
+        text, _ids = _decode_response(
+            tok, item.batch["prompts"], item.batch["responses"],
+            item.batch["attention_mask"], prompt_length)
+        decoded.append(text)
+    shim = _NS(tokenizer=tok, config=_NS(
+        algorithm=algo_config,
+        data=getattr(getattr(trainer, "config", None), "data", None)))
+    step = int(getattr(trainer, "global_steps", 0) or 0)
+    totals = _compute_math_arm_stash(shim, data, decoded, bs, prompt_length, step)
     tlr = _t.zeros_like(data.batch["responses"], dtype=_t.float32)
     valid = data.batch["attention_mask"][:, prompt_length:].sum(dim=1) - 1
     for i in range(bs):
@@ -4527,6 +4733,12 @@ class MetaCotSDCRewardManager:
                     self, data, decoded_responses, bs, prompt_length,
                     int(getattr(_ACTIVE_SDC_CONTEXT.get("trainer", None),
                                 "global_steps", 0) or 0))
+            elif _mode_pf == _MATH_MODE:
+                # MATH_META 의 발전기(같은 이유).
+                _compute_math_arm_stash(
+                    self, data, decoded_responses, bs, prompt_length,
+                    int(getattr(_ACTIVE_SDC_CONTEXT.get("trainer", None),
+                                "global_steps", 0) or 0))
             for func_idx, reward_fn in enumerate(self.reward_funcs):
                 key = self.reward_keys[func_idx]
                 try:
@@ -4539,7 +4751,7 @@ class MetaCotSDCRewardManager:
                 except Exception as exc:
                     # countdown 은 삼키지 않는다 — 조용한 0 보상으로 150스텝을 도는
                     # 것이 이 모드가 존재해서 막으려는 바로 그 실패다.
-                    if key == "countdown_arm":
+                    if key in ("countdown_arm", "math_arm"):
                         raise
                     print(f"[verl_sdc] reward {key} failed (pre-filled path): {exc}")
                     scores = [0.0] * bs
@@ -4589,6 +4801,13 @@ class MetaCotSDCRewardManager:
         #   텐서 4개를 만들었다 — 계산은 하고 결과는 아무도 안 읽는 순수 낭비다.
         #   0 마스크로 대체한다(shape 은 그대로라 아래 `torch.stack` 이 안 깨진다).
         _mode_sync = _ACTIVE_SDC_CONTEXT.get("mode", "")
+        _skip_sdc_masks = False
+        if _mode_sync == _COUNTDOWN_MODE:
+            _skip_sdc_masks = True
+        elif _mode_sync == _MATH_MODE:
+            # ★MATH_META 도 같은 우회 — `self.reward_funcs == [math_arm_reward]` 하나뿐이라
+            #   레거시 SDC 리전 마스크를 아무도 안 읽는다(결함7 과 같은 이유).
+            _skip_sdc_masks = True
         for i in range(bs):
             item = data[i]
             text, response_ids = _decode_response(
@@ -4604,7 +4823,7 @@ class MetaCotSDCRewardManager:
                 gt = gt.get("ground_truth", "")
             ground_truths.append(str(gt))
 
-            if _mode_sync == _COUNTDOWN_MODE:
+            if _skip_sdc_masks:
                 zeros = torch.zeros(response_length, dtype=torch.float32)
                 meta_masks.append(zeros)
                 post_shared_masks.append(zeros.clone())
@@ -4744,6 +4963,11 @@ class MetaCotSDCRewardManager:
                 self, data, decoded_responses, bs, prompt_length,
                 int(getattr(_ACTIVE_SDC_CONTEXT.get("trainer", None),
                             "global_steps", 0) or 0))
+        elif _ACTIVE_SDC_CONTEXT.get("mode", "") == _MATH_MODE:
+            _compute_math_arm_stash(
+                self, data, decoded_responses, bs, prompt_length,
+                int(getattr(_ACTIVE_SDC_CONTEXT.get("trainer", None),
+                            "global_steps", 0) or 0))
 
         for func_idx, reward_fn in enumerate(self.reward_funcs):
             key = self.reward_keys[func_idx]
@@ -4755,7 +4979,7 @@ class MetaCotSDCRewardManager:
                     answer_extracted=answer_extracted_list,
                 )
             except Exception as exc:
-                if key == "countdown_arm":            # 조용한 0 을 막는다 (위와 같은 이유)
+                if key in ("countdown_arm", "math_arm"):   # 조용한 0 을 막는다 (위와 같은 이유)
                     raise
                 print(f"[verl_sdc] reward {key} failed: {exc}")
                 traceback.print_exc()
@@ -5946,6 +6170,8 @@ def _patch_verl_for_sdc():
         # ★COUNTDOWN: async 우회로. 위 설명은 `_countdown_populate_token_rewards` 참조.
         if _adv_sdc_mode == _COUNTDOWN_MODE:
             data = _countdown_populate_token_rewards(data, config)
+        elif _adv_sdc_mode == _MATH_MODE:
+            data = _math_populate_token_rewards(data, config)
         data = original_compute_advantage(
             data,
             adv_estimator=adv_estimator,
@@ -5961,6 +6187,9 @@ def _patch_verl_for_sdc():
                 data = _countdown_add_dense_opd_advantage(data)
             if os.environ.get("CHK_REGION", "0") == "1" or _CHK_REGION_STASH.get("mask_on"):
                 data = _countdown_add_check_region_advantage(data)
+        elif _adv_sdc_mode == _MATH_MODE:
+            # ★cd9 분리 채점의 두 번째 절반: 답 스팬은 위 GRPO 그대로, 메타 스팬 항만 여기서.
+            data = _math_add_meta_region_advantage(data)
         return data
 
     ray_trainer_module.compute_advantage = patched_compute_advantage
@@ -6064,7 +6293,13 @@ def main(config):
             #   무시된다. 이 값은 boolean 플래그라 미설정 기본값 "0" 을 그대로 심는다.
             "COUNTDOWN_OSD": os.environ.get("COUNTDOWN_OSD", "0"),
         }
-        for _k in ("COUNTDOWN_ABORT_ARITH", "COUNTDOWN_ABORT_PATIENCE"):
+        # ★0914 감사: 아래 이름들은 워커(countdown_rewards 모듈 상수·verl_sdc 프리패스)에서
+        #   os.environ 으로 읽히는데 지금까지 드라이버에서만 export 됐다 — COUNTDOWN_INV 사고와
+        #   같은 모양의 «조용한 무시». 설정된 것만 조건부로 싣는다(미설정≠빈 문자열 규약).
+        for _k in ("COUNTDOWN_ABORT_ARITH", "COUNTDOWN_ABORT_PATIENCE",
+                   "MATH_JUDGE_LABELS", "MATH_JUDGE_W",
+                   "CHK_AMP", "CHK_AMP_NEG", "PLAN_NG_W", "W_PERSIST", "LEN_BONUS_CHARS",
+                   "NOSURR_FRAC", "VTR_TAU", "VTR_WHEN_W"):
             if os.environ.get(_k) is not None:
                 _local_ray_env_vars[_k] = os.environ[_k]
 
@@ -6086,7 +6321,24 @@ def main(config):
             runtime_env={"env_vars": _local_ray_env_vars},
         )
 
-    ray.get(main_task.remote(config))
+    # ★0913: 사전등록 중단(_CountdownAbort)은 크래시가 아니라 «의도된 정지»다. Ray 를 거치면
+    #   RayTaskError 로 감싸져 rc 1 이 되고, 재시도 래퍼가 OOM 과 구분 못 해 ckpt 에서 이어
+    #   같은 스텝에서 또 중단한다(PL_NG 41회 재발사). 고유 rc 75 + 마커 파일로 구분한다.
+    try:
+        ray.get(main_task.remote(config))
+    except Exception as _e:  # noqa: BLE001
+        if "_CountdownAbort" in type(_e).__name__ or "[COUNTDOWN][ABORT]" in str(_e) or "[MATH][ABORT]" in str(_e):
+            import os as _os, sys as _sys
+            try:
+                _d = str(config.trainer.default_local_dir)
+                _os.makedirs(_d, exist_ok=True)
+                with open(_os.path.join(_d, "ABORTED.txt"), "w") as _fh:
+                    _fh.write(str(_e)[:2000])
+            except Exception:
+                pass
+            print(f"[COUNTDOWN][ABORT] preregistered stop — exiting rc {ABORT_EXIT_CODE}", flush=True)
+            _sys.exit(ABORT_EXIT_CODE)
+        raise
 
 
 @ray.remote
@@ -6119,6 +6371,19 @@ def main_task(config):
                 f"COUNTDOWN_6ARM: algorithm.countdown_arm={_cd_arm!r} 가 미지정이거나 "
                 f"미지의 팔이다. 가능한 값: {sorted(_CD_ARM_SPECS)}")
         print(f"[SDC] countdown arm = {_cd_arm}")
+    if str(getattr(config, "mode", "")).upper() == _MATH_MODE:
+        # ★MATH_META: 팔 문자열은 load-bearing — 여기서 죽으면 GPU 를 안 태운다.
+        from src.training.math_meta import MATH_ARM_SPECS as _MM_ARM_SPECS
+        _mm_arm = str(getattr(getattr(config, "algorithm", None), "math_arm", "") or "").upper()
+        if _mm_arm not in _MM_ARM_SPECS:
+            raise ValueError(
+                f"MATH_META: algorithm.math_arm={_mm_arm!r} 가 미지정이거나 미지의 팔이다. "
+                f"가능한 값: {sorted(_MM_ARM_SPECS)}")
+        _mm_alg = getattr(config, "algorithm", None)
+        if str(getattr(_mm_alg, "adv_estimator", "")).lower() != "grpo" or bool(getattr(_mm_alg, "sdc_enabled", False)):
+            raise ValueError("MATH_META 는 algorithm.adv_estimator=grpo 이고 sdc_enabled=false 여야 한다 "
+                             "(시퀀스 GRPO + 메타 스팬 후처리 경로).")
+        print(f"[SDC] math arm = {_mm_arm}")
     # ⛔COUNTDOWN 을 이 게이트에 넣지 마라. 2026-08-19 에 넣었다가 7잡을 잃었다.
     #   core/KNOBS.yaml 은 **DCPO 세대의 계약**이다 — `dcpo_rmeta_source`(상호배타
     #   메타보상 세대 선택)와 `dcpo_ack_load_bearing` 을 요구하는데, COUNTDOWN_6ARM 은

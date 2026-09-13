@@ -2157,6 +2157,7 @@ def parse_meta(text: str, form: str = "new") -> dict:
       "new" — 사양의 A~G 형식.  <meta>\nconfidence: x\n…\ndecision: verify\n</meta>
       "old" — H 의 옛 형식.      confidence: 0.6 | 한 문장 | decision: verify
       "any" — new 를 먼저 시도하고 없으면 old.
+      "math" — new 와 같은 블록이되 **decision 줄은 선택**(신뢰도만 있으면 emitted=1).
 
     Returns dict:
       emitted    1 = 그 형식의 **완결된** 메타가 있다(신뢰도와 decision 을 둘 다 가진다)
@@ -2168,9 +2169,18 @@ def parse_meta(text: str, form: str = "new") -> dict:
       decision   "verify"/"redirect"/None
       n_blocks   그 형식의 블록이 몇 개 나왔나 (2 이상이면 형식 위반 신호)
     """
-    if form not in ("new", "old", "any"):
-        raise ValueError(f"parse_meta: form={form!r} 는 없다 (new/old/any).")
+    if form not in ("new", "old", "any", "math"):
+        raise ValueError(f"parse_meta: form={form!r} 는 없다 (new/old/any/math).")
     t = text or ""
+    if form == "math":
+        # ★0913 수학 무대: Qwen3.5 는 수학 메타의 93~97% 에서 decision 줄을 아예 쓰지 않는다
+        #   (math500 허용판 실측: 블록 있음 73% / new 파싱 57%). 결정을 필수로 두면 «신뢰도+
+        #   평가문» 메타가 전부 미발화로 잘못 세어지고, RL 은 메타의 질이 아니라 «decision:
+        #   verify 한 줄 붙이기»를 먼저 배운다. 그래서 수학은 신뢰도만 필수, 결정은 선택.
+        #   Countdown 의 "new" 는 그대로 둔다(기존 팔·자·테스트의 계약).
+        got = _parse_new(t)
+        got["emitted"] = 1 if (got["n_blocks"] > 0 and got["confidence"] is not None) else 0
+        return got
     if form in ("new", "any"):
         got = _parse_new(t)
         # "any" 에서도 <meta> 블록이 **있기만 하면** 그 결과를 돌려준다(불완전해도).

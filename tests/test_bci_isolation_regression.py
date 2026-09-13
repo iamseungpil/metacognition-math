@@ -225,7 +225,9 @@ def test_no_preexisting_mode_dropped(reward_configs):
     # or COUNTDOWN_6ARM (added 2026-08-18: Countdown 여섯 팔. 한 헤드가 배치당 한 번
     # 도는 프리패스 스태시를 읽는다 — 이 테스트가 그 추가를 의도적으로 승인한 자리다.
     # 기존 모드는 test_every_preexisting_mode_byte_identical 이 그대로 지킨다).
-    known = set(EXPECTED) | {"BCI_RLVR", "COUNTDOWN_6ARM"}
+    # MATH_META (added 2026-09-14, cd9): 수학 무대 — 같은 프리패스-스태시 구조, 한 헤드
+    # (답 스팬 정답), 메타 스팬 항은 어드밴티지 후처리. src/training/math_meta.py 참조.
+    known = set(EXPECTED) | {"BCI_RLVR", "COUNTDOWN_6ARM", "MATH_META"}
     extra = set(reward_configs) - known
     assert not extra, f"unexpected new modes (snapshot the test): {extra}"
     missing = set(EXPECTED) - set(reward_configs)
