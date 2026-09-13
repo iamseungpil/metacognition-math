@@ -112,4 +112,5 @@ def test_math_sites_seeded_modes():
     assert v.startswith(pre.rstrip()) and "decision: verify" in v
     assert r.startswith(pre.rstrip()) and "decision: redirect" in r
     assert v.replace(M.SEED_VERIFY, "") == r.replace(M.SEED_REDIRECT, "")
-    assert set(M.ALL_MODES) == {"nometa", "meta", "donor", "verify", "redirect"}
+    # ★0914: "own"(모델 자신의 블록, --site_source own_meta 전용)이 추가됐다.
+    assert set(M.ALL_MODES) == {"nometa", "meta", "donor", "verify", "redirect", "own"}
