@@ -243,6 +243,9 @@ def main() -> int:
     ap.add_argument("--movable_only", action="store_true",
                     help="★0914 파일럿 교훈: 무작위 자리의 92.5%%는 이미 결판나 있어(K=8) 판단 대조가 "
                          "무승부 93.5%%. 원 롤아웃 그룹 정답률이 0<p<1 인 문제에서만 자리를 뽑는다.")
+    ap.add_argument("--max_prefix_tokens", type=int, default=6144,
+                    help="★0914: own_meta 자리는 앞부분이 길다(중앙 상대위치 .82, 롤아웃 8k). 프롬프트+"
+                         "앞부분이 이보다 길면 그 자리를 버린다(vLLM 컨텍스트 초과로 잡 전체가 죽는 것 방지)")
     ap.add_argument("--modes", default=None,
                     help="쉼표 구분. nometa,meta,donor,verify,redirect,own 중 (donor 는 기증 롤아웃 "
                          "필요, own 은 own_meta 원천 전용). 기본: cut=nometa,meta,donor / "
@@ -298,7 +301,7 @@ def main() -> int:
     from vllm import LLM, SamplingParams
     llm = LLM(model=a.model_path, dtype="bfloat16", seed=a.seed,
               gpu_memory_utilization=a.gpu_util,
-              max_model_len=a.max_tokens + 4096, enforce_eager=True)
+              max_model_len=a.max_tokens + a.max_prefix_tokens + 512, enforce_eager=True)
     tok = llm.get_tokenizer()
 
     reqs, meta_ix = [], []
@@ -325,7 +328,13 @@ def main() -> int:
             reqs.append(gen_request(tok, variant, s["problem"], fed))
             meta_ix.append((si, mode))
 
-    print(f"[sites] 요청 {len(reqs)}개 x K={a.k}", flush=True)
+    # ★0914 s5/s6 사고: 앞부분 8,193 토큰 요청 하나가 잡 전체를 죽였다. 긴 자리는 버리고 센다.
+    lim = a.max_prefix_tokens + 256
+    keep_ix = [i for i, r in enumerate(reqs) if len(tok.encode(r)) <= lim]
+    n_drop = len(reqs) - len(keep_ix)
+    reqs = [reqs[i] for i in keep_ix]
+    meta_ix = [meta_ix[i] for i in keep_ix]
+    print(f"[sites] 요청 {len(reqs)}개 x K={a.k} (긴 앞부분으로 버린 요청 {n_drop}개, 한도 {lim} 토큰)", flush=True)
     outs = llm.generate(reqs, SamplingParams(n=a.k, temperature=1.0, top_p=1.0,
                                              max_tokens=a.max_tokens, seed=a.seed))
 
