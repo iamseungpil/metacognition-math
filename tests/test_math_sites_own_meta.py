@@ -129,3 +129,12 @@ def test_audit_fixes_prompt_variant_and_donor_boxed(tmp_path):
     assert "build_math_prompt(problem, variant)" in src                 # 버그10
     assert '"\\\\boxed" not in m.group(0)' in src                        # 버그6a
     assert 'c = _grade(s["prefix"] + x.text, s["gold"])' in src        # 버그6b
+
+
+def test_cut_points_respects_range():
+    import random
+    import math_sites as M
+    text = "\n".join(f"line{i}" for i in range(100)) + "\n"
+    cs = M.cut_points(text, 50, random.Random(1), 0.10, 0.50)
+    assert cs and all(0.10 * len(text) <= c <= 0.50 * len(text) for c in cs)
+    assert max(M.cut_points(text, 50, random.Random(1))) > 0.6 * len(text)   # 기본 .10~.80

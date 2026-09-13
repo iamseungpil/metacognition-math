@@ -54,7 +54,8 @@ from src.training.math_meta import (  # noqa: E402
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", choices=sorted(DATASETS), required=True)
+    ap.add_argument("--dataset", required=True,
+                    help=f"{sorted(DATASETS)} 또는 parquet:<path>[:<level>]")
     ap.add_argument("--model_path", required=True)
     # ★0913 수리: 선택지를 하드코딩했다가 math_new 추가 후 CLI 가 거부해 롤아웃 2건이
     #   죽었다. 단일 진실 원천(MATH_PROMPT_VARIANTS)에서 끌어와 다시 어긋나지 않게 한다.
@@ -66,9 +67,12 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--gpu_util", type=float, default=0.4)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--shuffle_seed", type=int, default=0, help="0 이 아니면 --limit 전에 섞는다")
     ap.add_argument("--out_dir", required=True)
     a = ap.parse_args()
 
+    if not a.dataset.startswith("parquet:") and a.dataset not in DATASETS:
+        raise SystemExit(f"unknown dataset {a.dataset!r}")
     _selftest_math_verify()
     out = Path(a.out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -76,9 +80,23 @@ def main() -> int:
     from datasets import load_dataset
     from vllm import LLM, SamplingParams
 
-    ds_id, cfg, split, qcol, acol = DATASETS[a.dataset]
-    ds = load_dataset(ds_id, cfg, split=split) if cfg else load_dataset(ds_id, split=split)
-    rows_in = [{"problem": r[qcol], "gold": str(r[acol])} for r in ds]
+    if a.dataset.startswith("parquet:"):
+        # ★0914 수정 2: 학습 파케이(hendrycks MATH train)에서 난이도별 문제를 뽑는다.
+        #   형식 parquet:<path>[:Level 5]. MATH-500 은 이 정책에 너무 쉬워(52% 문제 8/8) 자리 밀도가 없다.
+        import pandas as pd
+        parts = a.dataset.split(":", 2)
+        df = pd.read_parquet(parts[1])
+        lvl = parts[2] if len(parts) > 2 else None
+        rows_in = [{"problem": r["problem"], "gold": str(r["gold"])}
+                   for _, r in df.iterrows() if not lvl or (r["extra_info"] or {}).get("level") == lvl]
+        print(f"[math] parquet {parts[1]} level={lvl!r}: {len(rows_in)} 문제", flush=True)
+    else:
+        ds_id, cfg, split, qcol, acol = DATASETS[a.dataset]
+        ds = load_dataset(ds_id, cfg, split=split) if cfg else load_dataset(ds_id, split=split)
+        rows_in = [{"problem": r[qcol], "gold": str(r[acol])} for r in ds]
+    if a.shuffle_seed:
+        import random as _rnd
+        _rnd.Random(a.shuffle_seed).shuffle(rows_in)
     if a.limit:
         rows_in = rows_in[: a.limit]
     print(f"[math] {a.dataset}: {len(rows_in)} 문제 x {a.num_samples} 롤아웃 "

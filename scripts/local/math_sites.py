@@ -65,14 +65,16 @@ def _selftest() -> None:
         raise RuntimeError("math_verify 자가검사 실패 — 조용한 오채점 방지를 위해 즉사한다.")
 
 
-def cut_points(text: str, n_cuts: int, rng: random.Random) -> list[int]:
+def cut_points(text: str, n_cuts: int, rng: random.Random, lo_frac: float = 0.10,
+               hi_frac: float = 0.80) -> list[int]:
     """줄 경계에서 자리 후보를 뽑는다(수학엔 Countdown 의 «시도 경계»가 없다).
 
     응답 앞 10%·뒤 20% 는 버린다 — 너무 이르면 아무 진전이 없고, 너무 늦으면
     결과가 이미 정해져 Δ̂ 가 구조적으로 0 이 된다.
     """
     bounds = [m.end() for m in re.finditer(r"\n", text)]
-    lo, hi = int(len(text) * 0.10), int(len(text) * 0.80)
+    # ★0914 수정 2: 자기 멈춤 자리(.80)는 사후 진술이었다. 이른 위치(기본 .10~.80, 수정 2 는 .10~.50)로 제한 가능.
+    lo, hi = int(len(text) * lo_frac), int(len(text) * hi_frac)
     cand = [b for b in bounds if lo <= b <= hi]
     if not cand:
         return []
@@ -198,13 +200,14 @@ def own_meta_sites(r: dict, n_max: int, min_prefix_chars: int = 1) -> list[dict]
 
 
 def make_sites(srcs: list[dict], source: str, cuts_per_rollout: int, max_sites: int,
-               rng: random.Random, min_prefix_chars: int = 1) -> list[dict]:
+               rng: random.Random, min_prefix_chars: int = 1,
+               cut_lo: float = 0.10, cut_hi: float = 0.80) -> list[dict]:
     sites: list[dict] = []
     for r in srcs:
         if source == "cut":
             new = [{"site_id": f"{r['group_id']}@{c}", "problem": r["problem"],
                     "gold": r["gold"], "prefix": r["text"][:c]}
-                   for c in cut_points(r["text"], cuts_per_rollout, rng)]
+                   for c in cut_points(r["text"], cuts_per_rollout, rng, cut_lo, cut_hi)]
         elif source == "own_meta":
             new = own_meta_sites(r, cuts_per_rollout, min_prefix_chars)
         else:
@@ -243,6 +246,8 @@ def main() -> int:
     ap.add_argument("--movable_only", action="store_true",
                     help="★0914 파일럿 교훈: 무작위 자리의 92.5%%는 이미 결판나 있어(K=8) 판단 대조가 "
                          "무승부 93.5%%. 원 롤아웃 그룹 정답률이 0<p<1 인 문제에서만 자리를 뽑는다.")
+    ap.add_argument("--cut_lo", type=float, default=0.10)
+    ap.add_argument("--cut_hi", type=float, default=0.80)
     ap.add_argument("--max_prefix_tokens", type=int, default=6144,
                     help="★0914: own_meta 자리는 앞부분이 길다(중앙 상대위치 .82, 롤아웃 8k). 프롬프트+"
                          "앞부분이 이보다 길면 그 자리를 버린다(vLLM 컨텍스트 초과로 잡 전체가 죽는 것 방지)")
@@ -278,7 +283,8 @@ def main() -> int:
               flush=True)
     srcs = select_sources(rolls, a.movable_only, keep)
     rng.shuffle(srcs)
-    sites = make_sites(srcs, a.site_source, a.cuts_per_rollout, a.max_sites, rng, a.min_prefix_chars)
+    sites = make_sites(srcs, a.site_source, a.cuts_per_rollout, a.max_sites, rng, a.min_prefix_chars,
+                       a.cut_lo, a.cut_hi)
     n_meta_first = 0
     if a.site_source == "own_meta":
         n_meta_first = sum(1 for r in srcs if _META_BLOCK.search(r["text"]).start() < a.min_prefix_chars)
