@@ -1,0 +1,402 @@
+# MATH_META on verl 0.9 / vllm 0.20 / transformers 5.x — Qwen3.5-4B (cd9-verl09, 2026-09-14).
+#
+# WHAT THIS FILE IS. A copy of configs/countdown_6arm.yaml (the verl 0.7.1 budget/plumbing
+# half, unchanged where the 0.9 schema still accepts it) with the deltas needed to run the
+# MATH_META arms on Qwen3.5-4B inside the isolated env /hdd_data/seungpil/envs/verl09
+# (docs/ENV_verl09.md). countdown_6arm.yaml is left intact for the simplerl (0.7.1) runs.
+# The treatment key is algorithm.math_arm (launcher: ++algorithm.math_arm=$ARM, indexes
+# src/training/math_meta.MATH_ARM_SPECS); nothing about an arm's identity lives here.
+#
+# SCHEMA AUDIT vs verl 0.9.0 (probe: every _target_ subtree run through
+# verl.utils.config.omega_conf_to_dataclass + validate_config in the verl09 env):
+#   actor_rollout_ref.model / .actor / .rollout / rollout.checkpoint_engine   OK unchanged
+#   actor_rollout_ref.ref  log_prob_* keys are NOT FSDPActorConfig fields in 0.9, but
+#                          engine_workers.ActorRolloutRefWorker pops them (log_prob_* ->
+#                          ppo_*) before the dataclass conversion — keep as-is.
+#   critic                 only converted when critic.enable=True (never here).
+#   algorithm              never dataclass-converted by the trainer (sdc_*/math_arm extras OK).
+#   trainer.use_legacy_worker_impl   REMOVED in 0.9 (fsdp_workers.py is gone; the engine
+#                          worker is the only implementation). Dropped below.
+#   reward_model (legacy top-level block)  migrate_legacy_reward_impl raises on it in BOTH
+#                          0.7.1 and 0.9 (reward_model.num_workers / .rollout missing) and
+#                          verl_sdc swallows it; the `reward:` block already is the new layout.
+#   rollout.mode           0.9 accepts only `async` (RolloutConfig.__post_init__) — already async.
+#   data.val_batch_size    deprecated warning in 0.9 (validation goes as one batch) — harmless.
+#   distillation / transfer_queue / ray_kwargs / trainer.use_v1   only read by verl's own
+#                          main_ppo (we drive RayPPOTrainer directly) — not needed.
+#
+# DELTAS vs configs/countdown_6arm.yaml
+#   mode                       COUNTDOWN_6ARM -> MATH_META (launcher passes ++mode too)
+#   data.*                     math parquets (scripts/local/build_math_parquet.py), response 3072->4096,
+#                              apply_chat_template_kwargs.enable_thinking=false written here
+#                              (launcher passes ++data.apply_chat_template_kwargs.enable_thinking=false)
+#   model.path                 Qwen3.5-4B (Qwen3_5ForConditionalGeneration: text + vision tower;
+#                              text-only data, the vision tower is loaded but never sees pixels)
+#   rollout max_model_len / max_num_batched_tokens  4096 -> 5376 (=1024 prompt + 4096 resp + 256)
+#   algorithm.countdown_arm    -> algorithm.math_arm (null: launcher must set it, fail closed)
+#   trainer.*                  math names, /hdd_data paths, use_legacy_worker_impl dropped
+#
+# Qwen3.5 NOTES (verl 0.9 side): verl.models.transformers.qwen3_5 monkey-patches
+# Qwen3_5ForConditionalGeneration / GatedDeltaNet forward; the missing causal_conv1d package
+# is handled by verl's _packed_causal_conv1d_fallback; fla (flash-linear-attention) IS required
+# and installed. attn_implementation stays sdpa (full-attention layers); linear-attention
+# layers run through fla Triton kernels regardless of this key.
+
+mode: MATH_META
+num_examine: 1
+
+data:
+  tokenizer: null
+  # Countdown parquets (5 numbers, search budget 16). Staged by the launcher from
+  # DATA_REPO and guarded fail-closed there; these paths are also passed on the
+  # command line, so the two must agree.
+  train_files: /hdd_data/seungpil/scratch/data/math_train_math_plain.parquet
+  val_files: /hdd_data/seungpil/scratch/data/math_val_math_plain.parquet
+  prompt_key: prompt
+  # 512 -> 1024. Measured 2026-08-18 (Qwen3-4B tokenizer + chat template +
+  # add_generation_prompt, 200 instances, src/training/countdown_task.py:420):
+  # new-format prompt max 417 tokens, old-format max 317. truncation is `error`,
+  # so a 512 ceiling leaves only 95 tokens of headroom and any prompt edit kills
+  # the run at load time. 1024 is the value countdown_task.py recommends.
+  max_prompt_length: 1024
+  # Response cap 4096 (math; run_math_arm.sh RESP_LEN default).
+  max_response_length: 4096
+  # Qwen3.5 hybrid defaults to thinking ON — same condition as math_rollout.py (thinking OFF).
+  apply_chat_template_kwargs:
+    enable_thinking: false
+  # 64 prompts x rollout.n 8 = 512 sequences per step (spec budget).
+  train_batch_size: 64
+  val_batch_size: 64
+  return_raw_input_ids: False
+  return_raw_chat: False
+  shuffle: True
+  dataloader_num_workers: 4
+  filter_overlong_prompts: True
+  truncation: error
+  # verl 0.7.1 requires a sampler block; null values = use default random/sequential sampler.
+  sampler:
+    class_path: null
+    class_name: null
+
+actor_rollout_ref:
+  hybrid_engine: True
+  model:
+    _target_: verl.workers.config.HFModelConfig
+    # NO SFT. Stock Qwen3-4B, staged to /scratch/models/init by the launcher, which
+    # also passes this same path on the command line.
+    path: /hdd_data/seungpil/scratch/models/Qwen3.5-4B
+    external_lib: null
+    override_config:
+      attn_implementation: sdpa
+    enable_gradient_checkpointing: True
+    use_remove_padding: False
+  actor:
+    _target_: verl.workers.config.FSDPActorConfig
+    strategy: fsdp
+    rollout_n: ${actor_rollout_ref.rollout.n}
+    loss_agg_mode: token-mean
+    loss_scale_factor: null  # only used by 'seq-mean-token-sum-norm'; ray_trainer reads this attribute
+    data_loader_seed: 1      # ray_trainer._update_actor reads this; omegaconf strict mode requires explicit key
+    checkpoint:
+      save_contents: [model, optimizer, extra]
+      load_contents: [model, optimizer, extra]
+      async_save: false
+    ppo_mini_batch_size: 16
+    ppo_micro_batch_size: null
+    ppo_micro_batch_size_per_gpu: 1
+    use_dynamic_bsz: False
+    ppo_max_token_len_per_gpu: 16384
+    grad_clip: 1.0
+    clip_ratio: 0.2
+    entropy_coeff: 0.001
+    # KEEPS THE REF WORKER ALIVE — see the header note. Not a KL preference.
+    use_kl_loss: True
+    kl_loss_coef: 0.002
+    kl_loss_type: low_var_kl
+    ppo_epochs: 1
+    shuffle: False
+    ulysses_sequence_parallel_size: 1
+    # verl 0.7.1 dp_actor requires these on actor config
+    entropy_from_logits_with_chunking: false
+    entropy_checkpointing: false
+    use_torch_compile: false
+    use_fused_kernels: false
+    use_remove_padding: ${actor_rollout_ref.model.use_remove_padding}
+    optim:
+      _target_: verl.workers.config.FSDPOptimizerConfig
+      lr: 1e-6
+      lr_warmup_steps_ratio: 0.1
+      min_lr_ratio: 0.1
+      warmup_style: cosine
+      total_training_steps: -1
+      weight_decay: 0.01
+      lr_warmup_steps: -1
+      betas: [0.9, 0.999]
+      clip_grad: 1.0
+      optimizer: AdamW
+      optimizer_impl: torch.optim
+      override_optimizer_config: null
+    fsdp_config:
+      _target_: verl.workers.config.FSDPEngineConfig
+      wrap_policy:
+        min_num_params: 0
+      # MUST be True with vLLM async rollout: engine_workers.update_weights
+      # unconditionally offloads actor → CPU after weight sync; eval_mode only
+      # reloads model to GPU when is_param_offload_enabled=True.
+      param_offload: True
+      grad_offload: True
+      optimizer_offload: True
+      fsdp_size: -1
+  ref:
+    _target_: verl.workers.config.FSDPActorConfig
+    strategy: fsdp
+    rollout_n: ${actor_rollout_ref.rollout.n}
+    loss_agg_mode: token-mean
+    fsdp_config:
+      _target_: verl.workers.config.FSDPEngineConfig
+      param_offload: False
+      wrap_policy:
+        min_num_params: 0
+      fsdp_size: -1
+      forward_only: True
+    log_prob_micro_batch_size: null
+    # 16 -> 1: one H100 holding actor + ref + vLLM, responses up to 3072 tokens.
+    log_prob_micro_batch_size_per_gpu: 1
+    log_prob_use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
+    log_prob_max_token_len_per_gpu: ${actor_rollout_ref.actor.ppo_max_token_len_per_gpu}
+    ulysses_sequence_parallel_size: ${actor_rollout_ref.actor.ulysses_sequence_parallel_size}
+    # verl 0.7.1 dp_actor requires these on ref config
+    entropy_from_logits_with_chunking: false
+    entropy_checkpointing: false
+    use_torch_compile: false
+    use_fused_kernels: false
+    use_remove_padding: ${actor_rollout_ref.model.use_remove_padding}
+  rollout:
+    _target_: verl.workers.config.RolloutConfig
+    mode: async
+    name: vllm
+    data_parallel_size: 1
+    expert_parallel_size: 1
+    moe_tensor_parallel_size: 1
+    pipeline_model_parallel_size: 1
+    nnodes: ${trainer.nnodes}
+    n_gpus_per_node: ${trainer.n_gpus_per_node}
+    # UNBIASED GROUP. p_hat (the share of the group that actually hits the target)
+    # and the correctness advantage are both group statistics, so the group must be
+    # a plain sample from the policy: T=1.0, no top-k/top-p truncation.
+    temperature: 1.0
+    top_k: -1
+    top_p: 1.0
+    prompt_length: ${data.max_prompt_length}
+    response_length: ${data.max_response_length}
+    dtype: bfloat16
+    gpu_memory_utilization: 0.35
+    ignore_eos: False
+    enforce_eager: True
+    free_cache_engine: True
+    load_format: dummy
+    # One GPU per arm.
+    tensor_model_parallel_size: 1
+    # 1024 prompt + 4096 response + 256 headroom (run_math_arm.sh MAX_MODEL_LEN default).
+    max_model_len: 5376
+    max_num_batched_tokens: 5376
+    max_num_seqs: 128
+    log_prob_micro_batch_size: null
+    log_prob_micro_batch_size_per_gpu: 1
+    log_prob_use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
+    log_prob_max_token_len_per_gpu: ${actor_rollout_ref.actor.ppo_max_token_len_per_gpu}
+    do_sample: True
+    # The GRPO group. 8 rollouts per prompt (spec).
+    n: 8
+    enable_chunked_prefill: False
+    multi_turn:
+      enable: false
+    agent:
+      _target_: verl.workers.config.AgentLoopConfig
+      num_workers: 4
+      default_agent_loop: single_turn_agent
+      agent_loop_config_path: null
+      custom_async_server:
+        _target_: verl.workers.config.CustomAsyncServerConfig
+        path: null
+        name: null
+    prometheus:
+      enable: false
+    checkpoint_engine:
+      _target_: verl.workers.config.rollout.CheckpointEngineConfig
+      backend: naive
+      update_weights_bucket_megabytes: 4096
+    trace:
+      _target_: verl.workers.config.TraceConfig
+      project_name: ${trainer.project_name}
+      experiment_name: ${trainer.experiment_name}
+      backend: null
+      token2text: false
+      max_samples_per_step_per_worker: null
+    # Required by RayPPOTrainer._validate in verl 0.7.1
+    val_kwargs:
+      _target_: verl.workers.config.SamplingConfig
+      do_sample: False
+      temperature: 0.0
+      top_p: 1.0
+      top_k: -1
+      n: 1
+
+critic:
+  enable: False  # sequence-level GRPO does not need a critic
+  strategy: fsdp
+  optim:
+    _target_: verl.workers.config.FSDPOptimizerConfig
+    lr: 1e-5
+    lr_warmup_steps_ratio: 0.0
+    min_lr_ratio: null
+    warmup_style: constant
+    total_training_steps: -1
+    weight_decay: 0.01
+    lr_warmup_steps: -1
+    betas: [0.9, 0.999]
+    clip_grad: 1.0
+    optimizer: AdamW
+    optimizer_impl: torch.optim
+    override_optimizer_config: null
+  model:
+    path: ${actor_rollout_ref.model.path}
+    tokenizer_path: ${actor_rollout_ref.model.path}
+    override_config: {}
+    external_lib: ${actor_rollout_ref.model.external_lib}
+    enable_gradient_checkpointing: False
+    use_remove_padding: False
+    fsdp_config:
+      _target_: verl.workers.config.FSDPEngineConfig
+      param_offload: False
+      grad_offload: False
+      optimizer_offload: False
+      wrap_policy:
+        min_num_params: 0
+      fsdp_size: -1
+  ppo_mini_batch_size: ${actor_rollout_ref.actor.ppo_mini_batch_size}
+  ppo_micro_batch_size: null
+  ppo_micro_batch_size_per_gpu: 1
+  forward_micro_batch_size: null
+  forward_micro_batch_size_per_gpu: 1
+  use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
+  ppo_max_token_len_per_gpu: 32768
+  forward_max_token_len_per_gpu: ${critic.ppo_max_token_len_per_gpu}
+  ulysses_sequence_parallel_size: 1
+  ppo_epochs: ${actor_rollout_ref.actor.ppo_epochs}
+  shuffle: ${actor_rollout_ref.actor.shuffle}
+  grad_clip: 1.0
+  cliprange_value: 0.5
+
+reward_model:
+  enable: False
+  strategy: fsdp
+  model:
+    input_tokenizer: ${actor_rollout_ref.model.path}
+    path: ${actor_rollout_ref.model.path}
+    external_lib: ${actor_rollout_ref.model.external_lib}
+    use_remove_padding: False
+    fsdp_config:
+      _target_: verl.workers.config.FSDPEngineConfig
+      wrap_policy:
+        min_num_params: 0
+      param_offload: False
+  micro_batch_size: 8
+  max_length: null
+  ulysses_sequence_parallel_size: 1
+  use_dynamic_bsz: ${critic.use_dynamic_bsz}
+  forward_max_token_len_per_gpu: ${critic.forward_max_token_len_per_gpu}
+
+reward:
+  num_workers: 2
+  # verl 0.7.1 routes reward via reward.reward_model.enable.
+  # The countdown reward is an in-process reward manager (see SDCRayPPOTrainer), so
+  # reward_model is disabled here; our subclass intercepts _compute_reward_colocate
+  # and produces rm_scores + reward_extra_keys directly.
+  reward_model:
+    enable: False
+    enable_resource_pool: False
+    n_gpus_per_node: ${trainer.n_gpus_per_node}
+    nnodes: ${trainer.nnodes}
+    model_path: null
+  custom_reward_function:
+    path: null
+    name: null
+  reward_manager:
+    name: naive
+    source: register
+    module:
+      path: null
+      name: custom_reward_manager
+
+algorithm:
+  gamma: 1.0
+  lam: 1.0
+  # SEQUENCE-LEVEL GRPO. See the header: with `grpo` (not `gdpo`) and
+  # sdc_enabled=false, verl_sdc's patched_compute_advantage falls through to verl's
+  # own compute_advantage — one scalar per sequence, group-normalized over uid,
+  # broadcast on the response mask. No region routing.
+  adv_estimator: grpo
+  kl_penalty: kl
+  use_kl_in_reward: False
+  norm_adv_by_std_in_grpo: True
+  # NO TEACHER. Belt and braces with adv_estimator=grpo: even if the estimator name
+  # were changed, this keeps the SDC advantage-shaping branch shut.
+  sdc_enabled: false
+  # ── THE SINGLE TREATMENT KEY ────────────────────────────────────────────────
+  # The launcher passes ++algorithm.countdown_arm=$ARM (one of A B C E F G) and the
+  # trainer looks it up in src/training/countdown_rewards.ARM_SPECS. It is declared
+  # here as null ON PURPOSE: null is NOT a valid arm, so a launcher that loses its
+  # override must fail closed rather than fall back to a silent default. NO reward
+  # weight, warmup length or meta-form is written here — those are ARM_SPECS.
+  math_arm: null
+  # gdpo_reward_keys / gdpo_reward_weights are DELIBERATELY ABSENT. verl_sdc.py:3860
+  # falls back to REWARD_CONFIGS[mode]["keys"]/["weights"] when the yaml omits them,
+  # which keeps the reward head list in one place (the trainer) instead of two.
+  kl_ctrl:
+    type: fixed
+    kl_coef: 0.002
+
+trainer:
+  total_epochs: 20
+  # 150 steps (spec). The launcher also passes ++trainer.total_training_steps=150.
+  total_training_steps: 150
+  project_name: metacot-math-local
+  experiment_name: math_meta_verl09
+  logger: ['console']  # ★0911 사용자 지시: wandb 끄기 — 콘솔·파일 로그만, 전부 /hdd_data/seungpil 안에 남는다.
+  resume_mode: auto
+  resume_from_path: null
+  nnodes: 1
+  # One GPU per arm.
+  n_gpus_per_node: 1
+  # Standard-tier preemption is frequent; a 5-step save cadence bounds the loss.
+  save_freq: 5
+  test_freq: 25
+  val_before_train: false  # do NOT block the training start with a full step-0 val pass
+  critic_warmup: 0
+  default_hdfs_dir: null
+  default_local_dir: /hdd_data/seungpil/scratch/checkpoints/math_meta_verl09
+  remove_clip: False
+  remove_previous_ckpt: False
+  esi_redundant_time: 0  # elastic-shard-increase redundant wait time; 0 = no wait
+  log_val_generations: 0  # validation log sampler size (0 = disabled); ray_trainer reads this
+  del_local_ckpt_after_load: false  # resume path: don't delete local ckpt after engine loads it
+  device: cuda
+  # (verl 0.9: `use_legacy_worker_impl` no longer exists — fsdp_workers.py was deleted and
+  #  engine_workers is the only worker implementation, i.e. the 0.7.1 `disable` path.)
+  balance_batch: True
+  # ★수리(0904, 감사결함8): 기본값(null=무제한)이면 5스텝마다(save_freq) FSDP 샤드
+  # 전체가 /scratch 에 쌓여 디스크가 찬다. 판단 스텝(judgment step)의 체크포인트는
+  # FSDP 샤드를 보존해서가 아니라 scripts/local 파이프라인이 bf16 로 머지해 HF 에
+  # 올리는 방식으로 보존한다 — 그러니 로컬 FSDP 보관은 재개(resume)에 필요한
+  # 최근 것 몇 개면 충분하다.
+  max_actor_ckpt_to_keep: 2
+  max_critic_ckpt_to_keep: 2
+
+# verl 0.7.1 requires top-level global_profiler for optional torch-profiler integration
+global_profiler:
+  tool: null
+  steps: null
+  profile_continuous_steps: false
+  save_path: null
+  global_tool_config: null

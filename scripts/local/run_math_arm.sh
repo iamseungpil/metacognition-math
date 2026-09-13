@@ -51,6 +51,20 @@ RESP_LEN="${RESP_LEN:-4096}"
 source "${_SCRIPT_DIR}/env.sh"
 cd "${REPO_ROOT}"
 
+# ★cd9-verl09: VERL_ENV=<venv root> 로 격리 env(verl 0.9 / vllm 0.20 / transformers 5.x —
+#   Qwen3.5 학습용, docs/ENV_verl09.md)를 쓴다. env.sh 가 simplerl 을 PATH 앞에 붙인 뒤에
+#   이 venv 의 bin 을 그 앞에 다시 붙여 `python`·`verl.model_merger`·math_rollout.py 가 전부
+#   같은 env 에서 돌게 한다. 미설정이면 바이트 동일(simplerl).
+if [ -n "${VERL_ENV:-}" ]; then
+  if [ ! -x "${VERL_ENV}/bin/python" ]; then
+    echo "[run_math_arm] FATAL: VERL_ENV=${VERL_ENV} has no bin/python" >&2
+    exit 1
+  fi
+  export PATH="${VERL_ENV}/bin:${PATH}"
+  export VIRTUAL_ENV="${VERL_ENV}"
+  echo "[run_math_arm] VERL_ENV=${VERL_ENV} -> python=$(command -v python) ($(python -c 'import verl,vllm,transformers;print("verl",verl.__version__,"vllm",vllm.__version__,"tf",transformers.__version__)' 2>&1 | tail -1))"
+fi
+
 # ── ARM validity + prompt variant: 단일 진실 원천은 MATH_ARM_SPECS 다(fail closed). ──
 if ! VARIANT=$(python -c "
 from src.training.math_meta import MATH_ARM_SPECS
@@ -145,7 +159,7 @@ TRAIN_CMD=(python -u -m src.training.verl_sdc
   "data.val_files=${DATA_VAL}"
   "++data.seed=${SEED}"
   # ★Qwen3.5 하이브리드도 기본 thinking ON — math_rollout.py 와 같은 조건(enable_thinking=False).
-  "+data.apply_chat_template_kwargs.enable_thinking=false"
+  "++data.apply_chat_template_kwargs.enable_thinking=false"
   "data.train_batch_size=64"
   "data.max_prompt_length=${MAX_PROMPT}"
   "data.max_response_length=${MAX_RESP}"

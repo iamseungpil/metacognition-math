@@ -33,6 +33,33 @@ from tensordict import TensorDict
 from verl import DataProto
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer, ResourcePoolManager, Role
 
+
+# ── verl version gate (cd9-verl09, 2026-09-14) ───────────────────────────────
+# The trainer was written against verl 0.7.1; verl 0.9.x (needed for Qwen3.5
+# training: vllm 0.20 / transformers 5.x) moved or removed a handful of symbols
+# we import or monkeypatch. Every divergence below is keyed on this tuple so the
+# 0.7.1 path stays byte-identical. Symbols that moved:
+#   verl.trainer.main_ppo.{create_rl_dataset,create_rl_sampler}
+#       -> verl.trainer.ppo.utils (0.9)
+#   verl.workers.fsdp_workers.CriticWorker (module deleted in 0.9)
+#       -> verl.workers.engine_workers.TrainingWorker
+#   RayWorkerGroup.update_weights(global_steps) is now called with an extra
+#       `mode=` kwarg by verl.checkpoint_engine (0.9) — wrapper forwards **kwargs.
+#   vllm_async_server introspects `AsyncLLM.from_vllm_config`'s signature (0.9),
+#       so the 0.7.1-era _CompatAsyncLLM(*args, **kwargs) shim would strip every
+#       kwarg — it is only installed on verl < 0.8.
+def _verl_version_tuple() -> tuple:
+    try:
+        import verl as _verl
+        parts = str(getattr(_verl, "__version__", "0")).split("+")[0].split(".")
+        return tuple(int(p) for p in parts[:3] if p.isdigit())
+    except Exception:
+        return (0,)
+
+
+_VERL_VERSION = _verl_version_tuple()
+_VERL_GE_0_8 = _VERL_VERSION >= (0, 8)
+
 # ── DEADLOCK DIAGNOSTIC (gated; off by default — zero effect on normal runs) ──
 # When DCPO_FAULTHANDLER_SEC is set, dump EVERY thread's Python stack on a
 # repeating timer to /scratch/logs/faulthandler_trainer.log. A hung run (the
@@ -6232,8 +6259,12 @@ def _patch_verl_for_sdc():
     _patch_actor_loss_for_gfn()
 
     if not getattr(RayWorkerGroup, "_sdc_checkpoint_wrappers_applied", False):
-        def _wg_update_weights(self, global_steps=None):
-            return self.execute_all_async("update_weights", global_steps=global_steps)
+        # verl 0.9 CheckpointEngineManager calls `actor_wg.update_weights(global_steps=..., mode=...)`;
+        # forward **kwargs so the wrapper is signature-compatible on both versions. (On 0.9 the
+        # engine worker @register()s update_weights, so the instance-level binding made by
+        # RayWorkerGroup.__init__ shadows this class attribute anyway — the patch is inert there.)
+        def _wg_update_weights(self, global_steps=None, **kwargs):
+            return self.execute_all_async("update_weights", global_steps=global_steps, **kwargs)
 
         def _wg_execute_checkpoint_engine(self, methods, *args, **kwargs):
             return self.execute_all_async("execute_checkpoint_engine", methods, *args, **kwargs)
@@ -6242,6 +6273,12 @@ def _patch_verl_for_sdc():
         RayWorkerGroup.execute_checkpoint_engine = _wg_execute_checkpoint_engine
         RayWorkerGroup._sdc_checkpoint_wrappers_applied = True
         print("[SDC] patched RayWorkerGroup checkpoint wrappers for veRL 0.7.1")
+
+    if _VERL_GE_0_8:
+        # verl>=0.8 imports vllm.v1 AsyncLLM directly and inspects its from_vllm_config
+        # signature to filter kwargs; the (*args, **kwargs) shim below would erase them.
+        print(f"[SDC] verl {'.'.join(map(str, _VERL_VERSION))}: AsyncLLM compat shim not needed — skipped")
+        return
 
     try:
         import verl.workers.rollout.vllm_rollout.vllm_async_server as vllm_async_server
@@ -6382,7 +6419,10 @@ def main_task(config):
     from verl.utils import hf_processor, hf_tokenizer
     from verl.utils.fs import copy_to_local
     from verl.utils.dataset.rl_dataset import collate_fn
-    from verl.trainer.main_ppo import create_rl_dataset, create_rl_sampler
+    try:
+        from verl.trainer.main_ppo import create_rl_dataset, create_rl_sampler  # verl 0.7.x
+    except ImportError:
+        from verl.trainer.ppo.utils import create_rl_dataset, create_rl_sampler  # verl >= 0.9
     from verl.experimental.reward_loop import migrate_legacy_reward_impl
 
     pprint(OmegaConf.to_container(config, resolve=True))
@@ -6467,6 +6507,22 @@ def main_task(config):
     )
     tokenizer = hf_tokenizer(local_path, trust_remote_code=trust_remote_code)
     processor = hf_processor(local_path, trust_remote_code=trust_remote_code, use_fast=True)
+    # ★cd9-verl09: Qwen3.5 checkpoints ship a VL processor (Qwen3VLProcessor) whose
+    #   chat_template is None (the template lives in tokenizer_config.json). verl's
+    #   RLHFDataset prefers processor.apply_chat_template when a processor exists, so
+    #   every prompt failed the overlong filter ("Error processing one of the samples")
+    #   and the dataset came out EMPTY. verl 0.9's HFModelConfig does this same sync
+    #   for the agent-loop workers (workers/config/model.py); mirror it here for the
+    #   trainer-side dataset. No-op for text-only models (processor is None) and for
+    #   processors that already carry a template.
+    if (
+        processor is not None
+        and not getattr(processor, "chat_template", None)
+        and getattr(tokenizer, "chat_template", None)
+    ):
+        processor.chat_template = tokenizer.chat_template
+        print("[SDC] processor.chat_template was empty — synced from tokenizer "
+              f"({type(processor).__name__})", flush=True)
 
     mode = config.get("mode", "SDC_SHARED")
     if mode not in REWARD_CONFIGS:
@@ -6613,7 +6669,13 @@ def main_task(config):
     # class only provides them on a separate Async* subclass, which the current
     # RayPPOTrainer path does not instantiate here.
     from verl.workers.engine_workers import ActorRolloutRefWorker
-    from verl.workers.fsdp_workers import CriticWorker
+    try:
+        from verl.workers.fsdp_workers import CriticWorker  # verl 0.7.x legacy critic
+    except ImportError:
+        # verl >= 0.9 deleted fsdp_workers; the engine-based TrainingWorker is the
+        # critic for every backend (main_ppo_v0.add_critic_worker). critic.enable is
+        # False in every config we run, so this mapping is never instantiated.
+        from verl.workers.engine_workers import TrainingWorker as CriticWorker
     ray_worker_group_cls = RayWorkerGroup
 
     role_worker_mapping = {
