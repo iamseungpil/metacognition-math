@@ -55,7 +55,8 @@ sys.exit(1) if '${ARM}' not in MATH_ARM_SPECS else print(MATH_ARM_SPECS['${ARM}'
   exit 1
 fi
 
-MODEL_PATH="${MODEL_PATH:-/hdd_data/seungpil/scratch/models/Qwen3.5-4B}"
+# ★0914 amendment 1: 학습 env(transformers 4.57/vllm 0.10)가 qwen3_5 를 모른다 → 정책은 Instruct-2507.
+MODEL_PATH="${MODEL_PATH:-/hdd_data/seungpil/scratch/models/Qwen3-4B-Instruct-2507}"
 LINEAGE="cd9_${ARM}_s${SEED}"
 if [ "${RESP_LEN}" != "4096" ]; then
   LINEAGE="${LINEAGE}_r${RESP_LEN}"
