@@ -24,6 +24,10 @@ grep으로 아무 pid나 잡아 죽이지 않는다 — 이 프로젝트에서 �
 
 --min-acc 미달이면 종료 + (있으면) --on-abort-cmd 실행. 충분하면 아무 것도 안 하고
 (잡은 이미 스스로 s50/100까지 이어간다) 로그만 남기고 끝난다.
+
+★감사 10(0914): --abort-file <ckpt_dir>/ABORTED.txt 를 주면 telemetry 를 기다리는 동안 그 파일도
+같이 본다 — 트레이너가 사전등록 중단(rc 75)으로 스스로 죽으면 판정 스텝 eval 은 영영 안 나오므로,
+파일이 나타나면 바로 --on-abort-cmd(다음 팔 제출)를 실행하고 0 으로 끝난다(잡은 이미 죽었다).
 """
 from __future__ import annotations
 
@@ -122,6 +126,8 @@ def main() -> int:
     ap.add_argument("--min-acc", type=float, required=True)
     ap.add_argument("--baseline", default="", help="사람이 읽을 근거 설명(로그용)")
     ap.add_argument("--on-abort-cmd", default=None, help="문턱 미달 시 실행할 셸 커맨드(다음 실험 제출용)")
+    ap.add_argument("--abort-file", default=None,
+                    help="<ckpt_dir>/ABORTED.txt — 사전등록 중단 마커. 나타나면 --on-abort-cmd 를 실행한다")
     ap.add_argument("--poll-s", type=int, default=60)
     ap.add_argument("--timeout-s", type=int, default=6 * 3600)
     a = ap.parse_args()
@@ -130,6 +136,11 @@ def main() -> int:
     log(f"watching lineage={a.lineage} job={a.job_name} step={a.step} min_acc={a.min_acc} baseline='{a.baseline}'")
     deadline = time.time() + a.timeout_s
     while time.time() < deadline:
+        if a.abort_file and Path(a.abort_file).exists():
+            log(f"ABORTED.txt 감지({a.abort_file}) — 트레이너가 사전등록 중단으로 스스로 멈췄다: "
+                f"{Path(a.abort_file).read_text()[:200]!r}")
+            _run_on_abort(a)
+            return 0
         acc = read_acc(a.lineage, a.step)
         if acc is not None:
             break
@@ -162,14 +173,19 @@ def main() -> int:
         status = kill_job_exact_pid(jp, job, arm_token)
         log(f"abort action: {status}")
 
-    if a.on_abort_cmd:
-        log(f"다음 실험 제출 시도: {a.on_abort_cmd}")
-        r = subprocess.run(["bash", "-lc", a.on_abort_cmd], cwd=str(REPO), capture_output=True, text=True)
-        if r.returncode == 0:
-            log(f"다음 실험 제출 성공: {r.stdout.strip()[-300:]}")
-        else:
-            log(f"다음 실험 제출 실패 rc={r.returncode}: {r.stderr.strip()[-300:]}")
+    _run_on_abort(a)
     return 0
+
+
+def _run_on_abort(a) -> None:
+    if not a.on_abort_cmd:
+        return
+    log(f"다음 실험 제출 시도: {a.on_abort_cmd}")
+    r = subprocess.run(["bash", "-lc", a.on_abort_cmd], cwd=str(REPO), capture_output=True, text=True)
+    if r.returncode == 0:
+        log(f"다음 실험 제출 성공: {r.stdout.strip()[-300:]}")
+    else:
+        log(f"다음 실험 제출 실패 rc={r.returncode}: {r.stderr.strip()[-300:]}")
 
 
 if __name__ == "__main__":

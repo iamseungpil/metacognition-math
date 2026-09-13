@@ -304,28 +304,51 @@ def _run_one_job(gpu: int, job_path: Path, lock_fd) -> None:
 
     job["exit_code"] = rc
     job["finished_at"] = _now()
+    _finalize_job(gpu, job_path, job, rc)
+
+
+def _annotate_aborted(job_path: Path, rc: int, finished_at: str) -> None:
+    """gate_judgment 가 running/→aborted/ 로 옮긴 잡에 종료 정보만 덧붙인다."""
+    alt = QUEUE_ROOT / "aborted" / job_path.name
+    if alt.exists():
+        try:
+            j2 = json.loads(alt.read_text()); j2.update(exit_code=rc, finished_at=finished_at)
+            tmp = alt.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(j2, indent=2))
+            os.rename(tmp, alt)
+        except Exception:
+            pass
+
+
+def _finalize_job(gpu: int, job_path: Path, job: dict, rc: int) -> None:
+    """★0913 감사 수리(경쟁) + ★0914 감사 9: gate_judgment 가 잡을 죽이고 running/→aborted/ 로
+    옮기는 것과 경쟁한다. 옛 코드는 exists() 검사 **뒤에** job_path.write_text 를 했으므로 그 사이에
+    gate 가 옮기면 running/ 에 파일이 **되살아나** failed/ 로도 기록됐다(이중 기록). 이제
+    exists() 뒤에는 job_path 에 절대 쓰지 않는다: 최종 내용은 임시 파일에 쓰고, running/ 의 원본을
+    os.rename 으로 옮긴 다음(gate 가 먼저 옮겼으면 FileNotFoundError → aborted/ 기록만 갱신)
+    임시 파일을 그 위에 os.rename 한다. rc 75 는 사전등록 중단(verl_sdc.ABORT_EXIT_CODE) — aborted.
+    """
     final_state = "done" if rc == 0 else "failed"
-    # ★0913 감사 수리(경쟁): gate_judgment 가 잡을 죽이고 running/→aborted/ 로 옮긴 뒤 여기서
-    #   write_text 하면 running/ 에 파일이 **되살아나** failed/ 로도 기록됐다(이중 기록).
-    #   running/ 에 파일이 없으면 aborted/ 쪽 기록에 종료 정보만 덧붙이고 끝낸다.
-    #   rc 75 는 사전등록 중단(verl_sdc.ABORT_EXIT_CODE) — failed 가 아니라 aborted 로 둔다.
-    if not job_path.exists():
-        alt = QUEUE_ROOT / "aborted" / job_path.name
-        if alt.exists():
-            try:
-                j2 = json.loads(alt.read_text()); j2.update(exit_code=rc, finished_at=job["finished_at"])
-                alt.write_text(json.dumps(j2, indent=2))
-            except Exception:
-                pass
-        print(f"[worker gpu={gpu}] {job_path.name} already moved out of running/ (rc={rc})")
-        return
     if rc == 75:
         final_state = "aborted"
         job["aborted_reason"] = job.get("aborted_reason") or "preregistered abort (rc 75)"
         (QUEUE_ROOT / "aborted").mkdir(parents=True, exist_ok=True)
+    if not job_path.exists():
+        _annotate_aborted(job_path, rc, job["finished_at"])
+        print(f"[worker gpu={gpu}] {job_path.name} already moved out of running/ (rc={rc})")
+        return
     dest = QUEUE_ROOT / final_state / job_path.name
-    job_path.write_text(json.dumps(job, indent=2))
-    job_path.rename(dest)
+    tmp = dest.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(job, indent=2))
+    try:
+        os.rename(job_path, dest)              # running/ 원본을 옮긴다 — 부활 없음
+    except FileNotFoundError:
+        # gate 가 exists() 검사와 rename 사이에 옮겼다 — aborted/ 쪽만 갱신하고 끝.
+        tmp.unlink(missing_ok=True)
+        _annotate_aborted(job_path, rc, job["finished_at"])
+        print(f"[worker gpu={gpu}] {job_path.name} moved out of running/ during finalize (rc={rc})")
+        return
+    os.rename(tmp, dest)                       # 최종 내용(exit_code·finished_at)으로 덮는다
     print(f"[worker gpu={gpu}] {job_path.name} -> {final_state} (rc={rc})")
 
 

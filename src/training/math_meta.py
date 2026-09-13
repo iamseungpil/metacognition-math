@@ -21,12 +21,19 @@ GRPO 어드밴티지 계산 뒤 메타 토큰 구간에만 얹는다(Countdown �
   M_PROBE math_opt; 메타 스팬 = 외부 프로브 점수(`set_meta_scorer`; 기본 0, 한 번 경고).
   M_RAND  M_JUDGE 와 같되 라벨을 **배치 안에서 섞는다** — 대조군. 이 팔이 M_JUDGE 와
           같은 성적이면 판단 항은 내용이 아니라 «메타 스팬에 잡음을 얹은 효과»다.
+          ★감사 4(0914): 섞는 단위는 행이 아니라 **프롬프트 그룹(uid)** 이다 — uid→라벨
+          표를 순열해 같은 그룹의 8 롤아웃은 같은(섞인) 라벨을 받는다. tie/무라벨 그룹은
+          풀 밖. 행 단위로 섞으면 그룹 안 라벨이 갈려 «그룹 중심화 뒤 잡음»의 분산이
+          M_JUDGE 와 달라져 대조군이 아니게 된다.
 
 판단 일치 항 (M_JUDGE):
   +1  메타를 냈고 decision == best_decision
   −1  메타를 냈고 decision 이 best_decision 의 반대(verify↔redirect)
-   0  tie / decision 없음 / 미발화 / 문제가 라벨표에 없음
+   0  tie / decision 없음 / 미발화 / 문제가 라벨표에 없음 / n_blocks>1(형식 위반)
   가중치 MATH_JUDGE_W(기본 0.5). 라벨표는 MATH_JUDGE_LABELS(json, problem→best_decision).
+  ★감사 3: 위 «0» 은 보상 0 이 아니라 **항이 정의되지 않음**이다. 행마다 `meta_defined`
+  (0/1)를 같이 내고, 그룹 중심화(`verl_sdc._math_add_meta_region_advantage`)는 member=
+  meta_defined 로 미정의 행을 평균에서도 배제하고 중심화 값도 0 으로 둔다.
 """
 from __future__ import annotations
 
@@ -139,6 +146,30 @@ def load_judge_labels(path: str | None = None) -> dict[str, str]:
     return out
 
 
+def check_labels_cover(parquet_path: str, labels_path: str) -> dict:
+    """★감사 2: 라벨표 키가 학습 parquet 의 문제와 교집합이 0 이면 판단 항은 전 행 0 —
+    M_JUDGE/M_RAND 가 M_G1 과 바이트 동일해진다(무효 레버). 발사 전에 즉사시킨다.
+    반환 {n_train, n_labels, n_cover}. `problem` 컬럼이 없으면 extra_info.problem 을 쓴다."""
+    import pandas as pd  # noqa: PLC0415
+    df = pd.read_parquet(parquet_path)
+    if "problem" in df.columns:
+        probs = [norm_problem(x) for x in df["problem"].tolist()]
+    elif "extra_info" in df.columns:
+        probs = [norm_problem((e or {}).get("problem")) for e in df["extra_info"].tolist()]
+    else:
+        raise RuntimeError(f"[MATH][LABELS] {parquet_path}: problem/extra_info 컬럼이 없다: {list(df.columns)}")
+    probs_set = {x for x in probs if x}
+    labels = load_judge_labels(labels_path)
+    n_cover = len(probs_set & set(labels))
+    st = {"n_train": len(probs_set), "n_labels": len(labels), "n_cover": n_cover}
+    if n_cover == 0:
+        raise RuntimeError(
+            f"[MATH][LABELS] 라벨 키가 학습 문제와 교집합이 없다: n_train={st['n_train']} "
+            f"n_labels={st['n_labels']} n_cover=0 (parquet={parquet_path}, labels={labels_path}). "
+            "math_sites 의 문제 텍스트와 build_math_parquet 의 문제 텍스트가 같은 원문인지 확인하라.")
+    return st
+
+
 def judgment_term(emitted, decision, best_decision) -> float:
     """진리표 — 모듈 docstring 참조."""
     if not _cdr._bool01(emitted) or decision not in _OPPOSITE or best_decision not in _OPPOSITE:
@@ -190,39 +221,67 @@ def parse_row(text: str, gold: str, problem: str) -> dict:
     }
 
 
+def _permute_group_labels(best: list, keys: Sequence, rng: random.Random) -> list:
+    """★감사 4: 그룹(uid)→라벨 표를 순열한다. 풀 = verify/redirect 라벨이 있는 그룹만
+    (tie/None 은 그대로). 같은 그룹 안에 다른 문제·라벨이 섞여 있으면 즉사(규약 위반)."""
+    by_key: dict = {}
+    for k, b in zip(keys, best):
+        by_key.setdefault(k, set()).add(b)
+    mixed = {k for k, v in by_key.items() if len(v) > 1}
+    if mixed:
+        raise RuntimeError(f"[MATH][RAND] 같은 uid 그룹에 라벨(문제)이 둘 이상 섞였다: {sorted(map(str, mixed))[:5]}")
+    pool = [k for k, v in by_key.items() if next(iter(v)) in _OPPOSITE]
+    vals = [next(iter(by_key[k])) for k in pool]
+    rng.shuffle(vals)
+    table = dict(zip(pool, vals))
+    return [table.get(k, b) for k, b in zip(keys, best)]
+
+
 def compute_rows(texts: Sequence[str], golds: Sequence[str], problems: Sequence[str],
                  arm: str, *, labels: Mapping[str, str] | None = None,
-                 rng: random.Random | None = None) -> list[dict]:
+                 rng: random.Random | None = None, uids: Sequence | None = None) -> list[dict]:
     """배치 전체의 행 + 메타 항. 반환 행마다 `answer_total`(시퀀스 보상)과
-    `meta_val`(메타 스팬 전용 항)이 분리돼 있다.
+    `meta_val`(메타 스팬 전용 항), `meta_defined`(항이 정의된 행 = 그룹 중심화 member)이
+    분리돼 있다.
 
-    M_RAND: best_decision 을 **행 단위로 섞는다**(라벨 있는 행끼리 순열). 라벨 분포는
-    그대로고 문제↔라벨 대응만 깨진다 — 판단 «내용»만 제거한 대조군.
+    M_RAND: uid→best_decision **표**를 순열한다(`uids` 없으면 정규화 문제 텍스트가 그룹 키).
+    라벨 분포는 그대로고 그룹↔라벨 대응만 깨진다 — 판단 «내용»만 제거한 대조군.
+    ★감사 6: n_blocks>1 은 형식 위반 — 그 행의 메타 항은 0 이고 정의되지 않은 것으로 둔다.
     """
     spec = require_arm(arm)
     labels = labels or {}
     rows = [parse_row(t, g, p) for t, g, p in zip(texts, golds, problems)]
     best = [labels.get(norm_problem(r["problem"])) for r in rows]
     if spec["meta_term"] == "judge_shuffled":
-        idx = [i for i, b in enumerate(best) if b is not None]
-        vals = [best[i] for i in idx]
-        (rng or random.Random(0)).shuffle(vals)
-        for i, v in zip(idx, vals):
-            best[i] = v
+        keys = [str(u) for u in uids] if uids is not None else [norm_problem(r["problem"]) for r in rows]
+        if len(keys) != len(rows):
+            raise RuntimeError(f"[MATH][RAND] uids 길이 {len(keys)} != 행 {len(rows)}")
+        before = sum(1 for b in best if b in _OPPOSITE)
+        best = _permute_group_labels(best, keys, rng or random.Random(0))
+        n_lab = sum(1 for b in best if b in _OPPOSITE)
+        print(f"[MATH][RAND] uid→label 표 순열: n_groups={len(set(keys))} "
+              f"n_groups_in_pool={len({k for k, b in zip(keys, best) if b in _OPPOSITE})} "
+              f"n_lab={n_lab} (before={before})", flush=True)
     for r, b in zip(rows, best):
         r["best_decision"] = b
-        r["judge"] = judgment_term(r["emitted"], r["decision"], b)
+        r["multi_block"] = int(int(r.get("n_blocks", 0)) > 1)
+        r["judge"] = 0.0 if r["multi_block"] else judgment_term(r["emitted"], r["decision"], b)
         r["answer_total"] = float(r["r_corr"])
     if spec["meta_term"] in ("judge", "judge_shuffled"):
         w = judge_weight()
         for r in rows:
             r["meta_val"] = w * r["judge"]
+            r["meta_defined"] = int(bool(_cdr._bool01(r["emitted"]) and not r["multi_block"]
+                                        and r["decision"] in _OPPOSITE and r["best_decision"] in _OPPOSITE))
     elif spec["meta_term"] == "probe":
         for r, s in zip(rows, score_meta_probe(rows)):
-            r["meta_val"] = float(s) if r["emitted"] else 0.0
+            ok = bool(_cdr._bool01(r["emitted"]) and not r["multi_block"])
+            r["meta_val"] = float(s) if ok else 0.0
+            r["meta_defined"] = int(ok)
     else:
         for r in rows:
             r["meta_val"] = 0.0
+            r["meta_defined"] = 0
     return rows
 
 
@@ -240,8 +299,17 @@ ABORT_RULES = {
                          "why": "발화가 무너지면 메타 스팬 항이 얹힐 토큰이 없다"},
     "boxed_in_meta":    {"op": ">", "thr": 0.02, "meta_arms_only": False,
                          "why": "메타가 답을 담으면 메타 보상이 정답 보상의 사본이 된다"},
-    "boilerplate_rate": {"op": ">", "thr": 0.05, "meta_arms_only": False,
-                         "why": "최빈 메타 문장이 5% 를 넘으면 판단이 아니라 상투구다"},
+    # ★감사 1: 이 통계는 «최빈 메타 문장 하나의 점유율»(바닥 1/n_emitted)이라 0.05 는 n_emitted≤20
+    #   이면 무조건 발화하는 규칙이었다. Countdown 과 같은 0.5, 표본 30 미만이면 «못 쟀다»(missing).
+    "boilerplate_rate": {"op": ">", "thr": 0.5, "meta_arms_only": False, "min_n": ("n_emitted", 30),
+                         "why": "최빈 메타 문장이 발화 행의 절반을 넘으면 판단이 아니라 상투구다"},
+    # ★감사 6: 블록 둘 이상은 형식 위반(첫 블록만 채점되므로 나머지는 공짜 토큰).
+    "multi_block_rate":  {"op": ">", "thr": 0.10, "meta_arms_only": False,
+                         "why": "메타 블록이 둘 이상인 행이 10% 를 넘으면 형식이 무너진 것이다"},
+    # ★감사 7: 사전등록 «acc < M_G0 − 1pp». 문턱은 런처가 MATH_ACC_FLOOR 로 준다 — 미설정이면
+    #   이 규칙은 참여하지 않는다(check_abort 가 건너뛴다). 설정되면 3-스텝 연속 규칙에 참여.
+    "acc":              {"op": "<", "thr": None, "env_thr": "MATH_ACC_FLOOR", "meta_arms_only": False,
+                         "why": "정확도가 M_G0 − 1pp 아래로 3 스텝 연속이면 메타 항이 해롭다"},
 }
 
 
@@ -256,6 +324,7 @@ def telemetry(rows: Sequence[Mapping], *, arm: str, step) -> dict:
         "acc": sum(int(r["r_corr"]) for r in rows) / n,
         "emit_rate": len(emitted) / n,
         "n_blocks_mean": sum(int(r.get("n_blocks", 0)) for r in rows) / n,
+        "multi_block_rate": sum(1 for r in rows if int(r.get("n_blocks", 0)) > 1) / n,
         "decision_rate": n_dec / max(1, len(emitted)),
         # 라벨·결정이 둘 다 있는 발화 행 중 일치 비율(없으면 NaN — 0 으로 읽히면 안 된다)
         "judge_match": (sum(1 for r in emitted if r.get("judge", 0) > 0) / n_lab
@@ -277,6 +346,7 @@ def format_tel(rep: Mapping) -> str:
             return "nan"
     return (f"[MATH][TEL] step={rep['step']} arm={rep['arm']} acc={_f(rep['acc'])} "
             f"emit={_f(rep['emit_rate'])} n_blocks_mean={_f(rep['n_blocks_mean'])} "
+            f"multi_block={_f(rep.get('multi_block_rate'))} "
             f"decision_rate={_f(rep['decision_rate'])} judge_match={_f(rep['judge_match'])} "
             f"boxed_in_meta={_f(rep['boxed_in_meta'])} len_mean={_f(rep['len_mean'])} "
             f"boilerplate={_f(rep['boilerplate_rate'])} n_emitted={rep.get('n_emitted', 0)}")
@@ -289,14 +359,26 @@ def check_abort(rep: Mapping, *, arm: str) -> list[dict]:
     for name, rule in ABORT_RULES.items():
         if rule["meta_arms_only"] and not spec.get("require_meta", False):
             continue
+        thr = rule["thr"]
+        if rule.get("env_thr"):
+            ev = os.environ.get(rule["env_thr"])
+            if ev is None or ev == "":
+                continue                      # 문턱 미설정 → 규칙 불참(감사 7)
+            thr = float(ev)
         v = rep.get(name)
         if v is None or not _cdr._finite(v):
             out.append({"metric": name, "status": "missing", "value": v})
             continue
-        bad = (float(v) < rule["thr"]) if rule["op"] == "<" else (float(v) > rule["thr"])
+        if rule.get("min_n"):
+            nkey, nmin = rule["min_n"]
+            if int(rep.get(nkey, 0) or 0) < nmin:
+                out.append({"metric": name, "status": "missing", "value": float(v),
+                            "note": f"{nkey}={rep.get(nkey)}<{nmin}"})
+                continue
+        bad = (float(v) < thr) if rule["op"] == "<" else (float(v) > thr)
         if bad:
             out.append({"metric": name, "status": "abort", "value": float(v),
-                        "thr": rule["thr"], "why": rule["why"]})
+                        "thr": thr, "why": rule["why"]})
     return out
 
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/local/run_math_arm.sh ARM SEED [STEPS=100] [--dry-run]
+# scripts/local/run_math_arm.sh ARM SEED [STEPS=100] [--dry-run] [--check-labels-only]
 #
 # cd9 수학 무대: MATH_META 팔 하나를 GPU 하나에서 끝까지 돌린다(학습 → 판정 스텝 머지 →
 # math500 롤아웃 평가). run_arm.sh(Countdown) 의 관례를 그대로 따르되 팔·데이터·모델만
@@ -13,9 +13,13 @@
 # math_opt) — 호출자가 고를 수 없다(Countdown E-134/E-135 의 «대조군 프롬프트 불일치» 방지).
 #
 # 환경변수(선택): MATH_JUDGE_LABELS(판단 라벨 json; M_JUDGE/M_RAND 는 없으면 트레이너가 즉사)
-#   MATH_JUDGE_W(기본 0.5) MODEL_PATH RESP_LEN(기본 4096) SLIM PAGED REF_OFFLOAD ACTOR_OFFLOAD
-#   VLLM_UTIL. MATH_JUDGE_LABELS/MATH_JUDGE_W 는 verl_sdc.main 이 Ray runtime_env 로 실어
-#   워커까지 전달한다(드라이버 export 만으로는 워커가 못 본다).
+#   MATH_JUDGE_W(기본 0.5) MATH_ACC_FLOOR(사전등록 «acc < M_G0 − 1pp» 문턱; 설정 시 3-스텝
+#   연속 중단 규칙에 참여) MODEL_PATH RESP_LEN(기본 4096) SLIM PAGED REF_OFFLOAD ACTOR_OFFLOAD
+#   VLLM_UTIL. MATH_JUDGE_LABELS/MATH_JUDGE_W/MATH_ACC_FLOOR 는 verl_sdc.main 이 Ray runtime_env
+#   로 실어 워커까지 전달한다(드라이버 export 만으로는 워커가 못 본다).
+# ★감사 2: 판단 팔(M_JUDGE/M_RAND)은 발사 전에 math_meta.check_labels_cover 로 라벨 키가 학습
+#   parquet 의 문제와 교집합이 있는지 확인한다(0 이면 카운트를 찍고 즉사). --check-labels-only 는
+#   그 검사만 하고 끝낸다(테스트·수동 확인용).
 set -euo pipefail
 
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -26,10 +30,12 @@ usage() {
 }
 
 DRY_RUN=0
+CHECK_LABELS_ONLY=0
 POSITIONAL=()
 for a in "$@"; do
   case "$a" in
     --dry-run) DRY_RUN=1 ;;
+    --check-labels-only) CHECK_LABELS_ONLY=1 ;;
     *) POSITIONAL+=("$a") ;;
   esac
 done
@@ -62,8 +68,8 @@ if [ "${RESP_LEN}" != "4096" ]; then
   LINEAGE="${LINEAGE}_r${RESP_LEN}"
 fi
 CONFIG_NAME="${CONFIG_NAME:-countdown_6arm}"   # 예산/배관 절반만 쓴다; 처치 키는 아래 override
-DATA_TRAIN="${WORK}/data/math_train_${VARIANT}.parquet"
-DATA_VAL="${WORK}/data/math_val_${VARIANT}.parquet"
+DATA_TRAIN="${DATA_TRAIN:-${WORK}/data/math_train_${VARIANT}.parquet}"   # env 재지정 허용(테스트·수동 검사)
+DATA_VAL="${DATA_VAL:-${WORK}/data/math_val_${VARIANT}.parquet}"
 CKPT_DIR="${WORK}/checkpoints/${LINEAGE}"
 LOG_FILE="${WORK}/logs/${LINEAGE}.log"
 MAX_PROMPT="${MAX_PROMPT:-1024}"
@@ -92,6 +98,32 @@ export WANDB_RESUME=allow
 # ★워커 전달 대상(verl_sdc.main 의 _local_ray_env_vars 가 «설정된 것만» 싣는다).
 export MATH_JUDGE_W="${MATH_JUDGE_W:-0.5}"
 if [ -n "${MATH_JUDGE_LABELS:-}" ]; then export MATH_JUDGE_LABELS; fi
+if [ -n "${MATH_ACC_FLOOR:-}" ]; then export MATH_ACC_FLOOR; fi
+
+# ── ★감사 2: 판단 팔은 라벨↔학습 문제 교집합을 발사 전에 확인한다(교집합 0 → 즉사, 카운트 출력). ──
+check_labels_cover() {
+  python - "${DATA_TRAIN}" "${MATH_JUDGE_LABELS}" <<'PY'
+import sys
+from src.training.math_meta import check_labels_cover
+try:
+    st = check_labels_cover(sys.argv[1], sys.argv[2])
+except RuntimeError as e:
+    print(f"[run_math_arm] FATAL: {e}", file=sys.stderr); sys.exit(3)
+print(f"[run_math_arm] labels cover: n_train={st['n_train']} n_labels={st['n_labels']} n_cover={st['n_cover']}")
+PY
+}
+case "${ARM}" in
+  M_JUDGE|M_RAND)
+    if [ -n "${MATH_JUDGE_LABELS:-}" ] && { [ "${DRY_RUN}" = "0" ] || [ "${CHECK_LABELS_ONLY}" = "1" ]; }; then
+      [ -s "${DATA_TRAIN}" ] || { echo "[run_math_arm] FATAL: missing/empty data file ${DATA_TRAIN} (labels check needs it)" >&2; exit 1; }
+      check_labels_cover
+    fi
+    ;;
+esac
+if [ "${CHECK_LABELS_ONLY}" = "1" ]; then
+  echo "[run_math_arm] --check-labels-only: done."
+  exit 0
+fi
 
 TRAIN_CMD=(python -u -m src.training.verl_sdc
   "--config-name=${CONFIG_NAME}"
@@ -137,7 +169,7 @@ TRAIN_CMD=(python -u -m src.training.verl_sdc
   "++hydra.searchpath=[pkg://verl/trainer/config]"
 )
 
-echo "[run_math_arm] LINEAGE=${LINEAGE} ARM=${ARM} VARIANT=${VARIANT} SEED=${SEED} STEPS=${STEPS} RESP_LEN=${RESP_LEN} MODEL_PATH=${MODEL_PATH} MATH_JUDGE_LABELS=${MATH_JUDGE_LABELS:-unset} MATH_JUDGE_W=${MATH_JUDGE_W}"
+echo "[run_math_arm] LINEAGE=${LINEAGE} ARM=${ARM} VARIANT=${VARIANT} SEED=${SEED} STEPS=${STEPS} RESP_LEN=${RESP_LEN} MODEL_PATH=${MODEL_PATH} MATH_JUDGE_LABELS=${MATH_JUDGE_LABELS:-unset} MATH_JUDGE_W=${MATH_JUDGE_W} MATH_ACC_FLOOR=${MATH_ACC_FLOOR:-unset}"
 echo "[run_math_arm] data.train_files=${DATA_TRAIN}"
 echo "[run_math_arm] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset! queue should have set this>}"
 echo "[run_math_arm] exact train command:"

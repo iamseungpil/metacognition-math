@@ -89,3 +89,22 @@ def test_read_acc_reads_top_level_acc_field(tmp_path, monkeypatch):
     d.mkdir(parents=True)
     (d / "telemetry.json").write_text(json.dumps({"acc": 0.671, "n_rows": 4000}))
     assert G.read_acc("cd7_X_chk_s1", 30) == 0.671
+
+
+def test_abort_file_triggers_on_abort_cmd(tmp_path, monkeypatch):
+    """★감사 10: --abort-file 이 있으면 telemetry 를 기다리는 동안 ABORTED.txt 를 같이 보고,
+    나타나면 --on-abort-cmd 를 실행한 뒤 0 으로 끝난다(잡은 트레이너가 rc 75 로 스스로 죽었다)."""
+    monkeypatch.setattr(G, "WORK", tmp_path)
+    monkeypatch.setattr(G, "QUEUE", tmp_path / "queue")
+    monkeypatch.setattr(G, "LOG", tmp_path / "logs" / "dec.log")
+    for d in ("pending", "running", "failed"):
+        (tmp_path / "queue" / d).mkdir(parents=True)
+    ab = tmp_path / "ck" / "ABORTED.txt"; ab.parent.mkdir()
+    ab.write_text("[MATH][ABORT] arm=M_JUDGE step=12: ...")
+    out = tmp_path / "next.txt"
+    monkeypatch.setattr(sys, "argv", ["gate_judgment.py", "--lineage", "cd9_M_JUDGE_s1", "--job-name", "w_x",
+                                      "--step", "30", "--min-acc", "0.5", "--poll-s", "1", "--timeout-s", "20",
+                                      "--abort-file", str(ab), "--on-abort-cmd", f"echo next > {out}"])
+    assert G.main() == 0
+    assert out.read_text().strip() == "next"
+    assert "ABORTED.txt" in (tmp_path / "logs" / "dec.log").read_text()

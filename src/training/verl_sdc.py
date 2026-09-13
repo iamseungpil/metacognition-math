@@ -937,8 +937,10 @@ def countdown_arm_reward(completions, **kwargs):
 #   어드밴티지 뒤 메타 토큰 구간에만 얹는다 — Countdown §13-b CHK_REGION 경로의 복제.
 _MATH_MODE = "MATH_META"
 _MATH_STASH: dict = {"step": None, "arm": None, "total": None, "n": 0, "rows": None}
-_MATH_REGION_STASH: dict = {"step": None, "bs": 0, "uid": [], "meta": [], "spans": []}
+_MATH_REGION_STASH: dict = {"step": None, "bs": 0, "uid": [], "meta": [], "member": [], "spans": []}
 _MATH_JUDGE_LABELS: dict = {"path": None, "table": None}
+# ★감사 2: 판단 팔의 «라벨 키가 학습 문제와 교집합 0» 은 첫 배치에서 즉사시킨다(프로세스당 한 번).
+_MATH_LABEL_COVER: dict = {}
 
 
 def math_arm_reward(completions, **kwargs):
@@ -2238,14 +2240,29 @@ def _compute_math_arm_stash(self, data, decoded_responses, bs, prompt_length, st
             f"[MATH] arm={arm} 는 판단 팔인데 MATH_JUDGE_LABELS 표가 비었다/없다 "
             f"(MATH_JUDGE_LABELS={os.environ.get('MATH_JUDGE_LABELS', '')!r}). "
             "scripts/local/math_sites.py 산출로 judgment_labels.json 을 만들고 경로를 넘겨라.")
+    # ★감사 4: M_RAND 는 uid 그룹 단위로 라벨 표를 순열하므로 uid 를 넘긴다.
     rows = _mm.compute_rows(list(decoded_responses), golds, problems, arm, labels=labels,
-                            rng=__import__("random").Random(int(step) * 7919 + 17))
+                            rng=__import__("random").Random(int(step) * 7919 + 17), uids=uid)
     totals = [float(r["answer_total"]) for r in rows]
     meta_vals = [float(r["meta_val"]) for r in rows]
+    # ★감사 3: 항이 정의된 행만 그룹 중심화의 member — 미정의(tie/무결정/미발화/다중 블록) 행은
+    #   평균을 밀지도, 중심화 값을 받지도 않는다.
+    member = [int(r.get("meta_defined", 0)) for r in rows]
     spans = [_mm.meta_char_spans(r) for r in rows]
     _MATH_STASH.update({"step": step, "arm": arm, "total": totals, "n": bs, "rows": rows})
-    _MATH_REGION_STASH.update({"step": step, "bs": bs, "uid": uid, "meta": meta_vals, "spans": spans})
+    _MATH_REGION_STASH.update({"step": step, "bs": bs, "uid": uid, "meta": meta_vals, "member": member,
+                               "spans": spans})
     n_lab = sum(1 for r in rows if r.get("best_decision") in ("verify", "redirect"))
+    if spec["meta_term"] in ("judge", "judge_shuffled") and not _MATH_LABEL_COVER.get(arm):
+        # ★감사 2: 첫 배치에서 라벨이 한 행에도 안 붙으면 라벨 키와 학습 문제가 교집합이 없는 것이다
+        #   (문제 텍스트 원문 불일치). 조용히 M_G1 로 돌지 말고 즉사.
+        if n_lab == 0:
+            raise RuntimeError(
+                f"[MATH] arm={arm} step={step}: 첫 배치 {bs} 행 중 라벨이 붙은 행이 0 — "
+                f"MATH_JUDGE_LABELS 의 키({len(labels)}개)가 학습 문제와 교집합이 없다 "
+                f"(MATH_JUDGE_LABELS={os.environ.get('MATH_JUDGE_LABELS', '')!r}). "
+                "math_meta.check_labels_cover(parquet, labels) 로 원문 일치를 확인하라.")
+        _MATH_LABEL_COVER[arm] = True
     print(f"[MATH][WIRED] step={step} arm={arm} spec={_mm.SPEC_VERSION} bs={bs} "
           f"labeled_rows={n_lab} meta_rows_nonzero={sum(1 for v in meta_vals if v)} "
           f"judge_w={_mm.judge_weight():.2f}", flush=True)
@@ -3598,22 +3615,38 @@ def _math_add_meta_region_advantage(data, tokenizer=None):
         st["meta"] = []
         return data
     from src.training.dcpo_region import group_mean_subtract   # noqa: PLC0415
-    centered = group_mean_subtract(st["meta"], st["uid"]).reshape(-1)
+    member = st.get("member")
+    if member is None or len(member) != len(st["meta"]):
+        raise RuntimeError(
+            f"[MATH][META-REGION] 스태시에 member(정의된 항 표시)가 없거나 길이가 다르다 "
+            f"(meta={len(st['meta'])}, member={None if member is None else len(member)}) — "
+            "_compute_math_arm_stash 가 meta_defined 를 실었는지 확인하라.")
+    # ★감사 3: member=0(tie/무결정/미발화/다중 블록) 행은 그룹 평균에서 빠지고 중심화 값도 0 이다.
+    #   전 행 평균이면 무결정 발화 행이 −mean 을 받고, 정의된 행의 baseline 이 0 쪽으로 끌린다.
+    centered = group_mean_subtract(st["meta"], st["uid"], member=member).reshape(-1)
     tok = tokenizer or getattr(_ACTIVE_SDC_CONTEXT.get("trainer", None), "tokenizer", None)
     if tok is None:
         print("[MATH][META-REGION][WARN] tokenizer 없음 — skip")
         st["meta"] = []
         return data
     resp = data.batch["responses"]
-    am = data.batch.get("response_mask", None)
+    # ★감사 5: 응답 길이는 `_decode_response` 와 **같은 출처**(attention_mask[:, prompt_length:])다.
+    #   response_mask(loss mask)가 꼬리를 자르면 문자 구간이 토큰 구간으로 사상될 때 맨 끝 메타
+    #   블록이 잘린다(디코드된 텍스트엔 있는데 어드밴티지는 못 받음).
+    if "attention_mask" not in data.batch or "prompts" not in data.batch:
+        raise RuntimeError("[MATH][META-REGION] data.batch 에 attention_mask/prompts 가 없다 — 응답 길이 출처 불명")
+    _plen_tok = int(data.batch["prompts"].shape[-1])
+    resp_valid = data.batch["attention_mask"][:, _plen_tok:]
     n_rows = n_tok_total = 0
     for i, spans in enumerate(st["spans"]):
         if not spans:
             continue
+        if not int(member[i]):
+            continue                      # 정의되지 않은 항: 정확히 0 (스팬이 있어도 안 얹는다)
         c = float(centered[i])
         if abs(c) < 1e-9:
             continue
-        L = int(am[i].sum().item()) if am is not None else int(resp.shape[1])
+        L = min(int(resp_valid[i].sum().item()), int(resp.shape[1]))
         ids = resp[i][:L].tolist()
         cache: dict[int, int] = {}
         def _plen(t, _ids=ids, _cache=cache):
@@ -6297,7 +6330,7 @@ def main(config):
         #   os.environ 으로 읽히는데 지금까지 드라이버에서만 export 됐다 — COUNTDOWN_INV 사고와
         #   같은 모양의 «조용한 무시». 설정된 것만 조건부로 싣는다(미설정≠빈 문자열 규약).
         for _k in ("COUNTDOWN_ABORT_ARITH", "COUNTDOWN_ABORT_PATIENCE",
-                   "MATH_JUDGE_LABELS", "MATH_JUDGE_W",
+                   "MATH_JUDGE_LABELS", "MATH_JUDGE_W", "MATH_ACC_FLOOR",
                    "CHK_AMP", "CHK_AMP_NEG", "PLAN_NG_W", "W_PERSIST", "LEN_BONUS_CHARS",
                    "NOSURR_FRAC", "VTR_TAU", "VTR_WHEN_W"):
             if os.environ.get(_k) is not None:
