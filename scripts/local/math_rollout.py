@@ -28,7 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from src.metacot.math_meta_prompt import build_math_prompt  # noqa: E402
+from src.metacot.math_meta_prompt import MATH_PROMPT_VARIANTS, build_math_prompt  # noqa: E402
 from src.training import countdown_rewards as cdr  # noqa: E402
 
 # (hf id, config, split, 문제 컬럼, 정답 컬럼)
@@ -79,7 +79,9 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", choices=sorted(DATASETS), required=True)
     ap.add_argument("--model_path", required=True)
-    ap.add_argument("--variant", default="math_opt", choices=("math_opt", "math_plain"))
+    # ★0913 수리: 선택지를 하드코딩했다가 math_new 추가 후 CLI 가 거부해 롤아웃 2건이
+    #   죽었다. 단일 진실 원천(MATH_PROMPT_VARIANTS)에서 끌어와 다시 어긋나지 않게 한다.
+    ap.add_argument("--variant", default="math_opt", choices=sorted(MATH_PROMPT_VARIANTS))
     ap.add_argument("--num_samples", type=int, default=8)
     ap.add_argument("--max_tokens", type=int, default=3072)
     ap.add_argument("--temperature", type=float, default=1.0)
