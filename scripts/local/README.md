@@ -69,3 +69,16 @@ rm /hdd_data/seungpil/queue/STOP           # resume
 Never run `ray stop --force` from any of these scripts — GPUs 0-3 may host
 other users' Ray instances too; each `run_arm.sh` job gets its own
 `RAY_TMPDIR`/Ray instance instead.
+
+## Qwen3.5 학습 — 격리 env `verl09` (cd9-verl09)
+
+simplerl(verl 0.7.1)은 `qwen3_5` 를 모른다. Qwen3.5-4B 학습은 `/hdd_data/seungpil/envs/verl09`
+(verl 0.9.0 / vllm 0.20.2 / transformers 5.10.4 / torch 2.11+cu130 — 구축·검증·위험은
+`docs/ENV_verl09.md`) 에서 돌린다. `run_math_arm.sh` 는 `VERL_ENV` 를 받으면 그 venv 의 bin 을
+PATH 맨 앞에 붙인다(학습·`verl.model_merger`·`math_rollout.py` 전부 같은 env). yaml 은
+`configs/math_meta_verl09.yaml`(0.9 스키마 감사 결과는 그 헤더).
+
+```bash
+python scripts/local/gpu_queue.py submit --name cd9v09_smoke_M_G0_s0 --gpus 1 \
+  --cmd "cd /home/ubuntu/seungpil/metacognition-math && VERL_ENV=/hdd_data/seungpil/envs/verl09 CONFIG_NAME=math_meta_verl09 MODEL_PATH=/hdd_data/seungpil/scratch/models/Qwen3.5-4B bash scripts/local/run_math_arm.sh M_G0 0 5"
+```
