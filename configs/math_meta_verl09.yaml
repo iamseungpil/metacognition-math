@@ -70,8 +70,11 @@ data:
   return_raw_input_ids: False
   return_raw_chat: False
   shuffle: True
-  dataloader_num_workers: 4
+  # ★0914 스모크 사고: Ray 시작 직후 6h 정지. NFS(HF_HOME) 위 datasets.filter 다중 프로세스가 유력 원인
+  #   (env 구축 때 .nfs 'Device or resource busy' 경고 관측). 워커를 1/0 으로 낮춘다.
+  dataloader_num_workers: 0
   filter_overlong_prompts: True
+  filter_overlong_prompts_workers: 1
   truncation: error
   # verl 0.7.1 requires a sampler block; null values = use default random/sequential sampler.
   sampler:
