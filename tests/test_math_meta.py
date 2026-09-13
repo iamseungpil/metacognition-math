@@ -235,7 +235,7 @@ def test_run_math_arm_dry_run_has_expected_overrides():
     assert r.returncode == 0, r.stdout + r.stderr
     out = r.stdout
     for want in ("++mode=MATH_META", "++algorithm.math_arm=M_JUDGE", "LINEAGE=cd9_M_JUDGE_s3",
-                 "Qwen3.5-4B", "data.max_response_length=4096", "math_train_math_opt.parquet",
+                 "Qwen3-4B-Instruct-2507", "data.max_response_length=4096", "math_train_math_opt.parquet",
                  "++trainer.total_training_steps=50", "++data.seed=3", "MATH_JUDGE_W=0.7",
                  "--dry-run: not executing"):
         assert want in out, (want, out)
