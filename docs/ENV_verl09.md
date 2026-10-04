@@ -1,5 +1,9 @@
 # ENV verl09 — Qwen3.5 학습용 격리 환경 (cd9-verl09, 2026-09-14)
 
+> **상태(2026-09-14)**: Qwen3.5 학습 트랙 **보류**. Ray 시작 직후 정지가 두 번 재현됐다(스모크 1차·
+> 2차 모두 GPU 0%, 필터/로더 워커 문제로 추정 — `docs/RESULTS_cd9.md` 2026-09-14 08:30/09:40 절).
+> 정책은 Qwen3-4B-Instruct-2507 로 대체(사전등록 amendment 1). 이 env 는 이후 재개용으로 보존한다.
+
 `/hdd_data/seungpil/envs/verl09` — verl 0.9.0 + vllm 0.20.2 + transformers 5.x. 목적은 하나:
 **Qwen3.5-4B(`model_type=qwen3_5`, 하이브리드 gated-delta-net + full attention)를 우리 트레이너
 `src/training/verl_sdc.py`로 학습**하는 것. 공유 학습 env `simplerl`(verl 0.7.1 / vllm 0.10.2 /
@@ -23,8 +27,11 @@ export TMPDIR=/hdd_data/seungpil/tmp PIP_CACHE_DIR=/hdd_data/seungpil/tmp/pipcac
   env 에 별도 torch(cu13) 를 통째로 받고 CUDA 컴파일을 시작한다(한 번 시도 후 중단). verl 0.9 의
   `verl/models/transformers/qwen3_5.py` 가 `causal_conv1d_fn is None` 이면
   `_packed_causal_conv1d_fallback`(순수 torch) 로 처리하므로 학습에 필수가 아니다.
-- `flash-attn` 도 없다. 우리 설정은 `attn_implementation: sdpa`, `use_remove_padding: False` 라
-  필요 없다. (packed/varlen 경로를 켜려면 flash-attn 이 있어야 한다.)
+- `flash-attn` 은 없다(설치하지 않는다 — vllm 0.20 은 `flash_attn` 패키지가 보이면 `flash_attn.ops.triton.rotary` 까지
+  요구해 심(shim) 패키지로는 죽는다, 0921 실측). verl 0.9 는 sdpa·`use_remove_padding: False` 여도
+  `workers/utils/padding.py` 가 `flash_attn.bert_padding` 을 import 하므로, **verl 쪽만** 고쳤다:
+  `verl/utils/attention_utils.py` 의 import 를 try/except 로 감싸고 순수 torch 사본
+  `verl/utils/_bert_padding_torch.py`(BSD-3, flash-attn 2.8.3 의 bert_padding.py)로 폴백한다.
 
 ## 2. 설치된 핵심 버전 (`pip freeze` 전체 244 행은 `/hdd_data/seungpil/tmp/probe/verl09_freeze.txt`)
 
@@ -122,3 +129,9 @@ python scripts/local/gpu_queue.py submit --name cd9v09_smoke_M_G0_s0 --gpus 1 \
 5 스텝 스모크(`STEPS=5`, `save_freq=5` 라 `global_step_5` 가 남고, 판정 스텝 30/50/100 은
 없으므로 머지·평가 단계는 건너뛴다). 성공 판정: 로그에 `[SDC] processor.chat_template was
 empty — synced`, `[MATH]` 보상 라인, `update_weights` 타이밍이 5 번 찍히고 rc 0.
+
+## 0928 verl 0.9 패치 — vLLM 가중치 전송 소켓에 잡 꼬리표(동시 학습 충돌 방지)
+- 증상(0927 22:35): 두 학습 잡이 각자 Ray 를 띄워 job id 가 둘 다 `01000000` → 같은 `/tmp/rl-colocate-zmq-01000000-replica-0-rank-0.sock` → 한 잡이 다른 잡의 IPC 핸들을 받아 `TypeError: 'str' object is not callable` 로 정지.
+- 패치(원본 백업 `/hdd_data/seungpil/tmp/verl09_vllm_rollout.py.orig`, `verl09_utils.py.orig`):
+  `verl/workers/rollout/vllm_rollout/vllm_rollout.py`(송신) 와 `utils.py`(수신) 의 job_id 뒤에 `os.environ.get("MC_ZMQ_TAG", "")`.
+- `mc/trainer.py:_ray_env` 가 `MC_ZMQ_TAG = -mc<드라이버 pid>` 를 모든 Ray 워커에 넘김(vLLM 워커 프로세스는 상속) → 잡마다 다른 소켓. 꼬리표가 없으면 옛 동작 그대로.

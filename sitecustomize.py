@@ -10,6 +10,14 @@ from __future__ import annotations
 
 
 def _patch_verl_agent_loop() -> None:
+    # ★0921: 두 패치는 verl 0.7.1 전용이다(0.9 는 `_postprocess(..., validate=)` 시그니처가
+    # 다르고 chat_template 결함도 없다). verl09 env(mc/)에서는 손대지 않는다.
+    try:
+        import verl as _verl
+        if tuple(int(x) for x in str(getattr(_verl, "__version__", "0")).split(".")[:2]) >= (0, 8):
+            return
+    except Exception:
+        return
     try:
         import numpy as np
         import torch
@@ -227,6 +235,14 @@ def _patch_verl_agent_loop_chat_template() -> None:
     충돌할 자리가 애초에 없다. `initialize_system_prompt`(같은 파일 267행)는
     시스템 프롬프트 하나만 인코딩하는 별개 호출이라 손대지 않는다.
     """
+    # ★0921: 두 패치는 verl 0.7.1 전용이다(0.9 는 `_postprocess(..., validate=)` 시그니처가
+    # 다르고 chat_template 결함도 없다). verl09 env(mc/)에서는 손대지 않는다.
+    try:
+        import verl as _verl
+        if tuple(int(x) for x in str(getattr(_verl, "__version__", "0")).split(".")[:2]) >= (0, 8):
+            return
+    except Exception:
+        return
     try:
         from verl.experimental.agent_loop import agent_loop as ag
         from verl.utils.chat_template import apply_chat_template as _verl_apply_chat_template

@@ -19,17 +19,41 @@ enabling self-assessment, error correction, and calibrated confidence.
 최종 목표는 **메타인지 행동 → 정확도 향상**이다. confidence 정렬은 "유용한 메타인지"의
 한 신호(언제 검산/전환할지 판단)일 때만 가치가 있다.
 
-## 현행 상태 (2026-09-14, cd9) — 이 절이 우선한다
-- **무대: 수학** (MATH-500 / AIME25 / HMMT25). Countdown 4수는 Qwen3.5-4B 학습 전 .876 으로 포화 → 종료
-  (cd6~cd8 문서는 `archive/docs_countdown_cd7_cd8_2026_09_14/`, 판정은 `docs/RESULTS_cd7.md`).
-- **모델: Qwen3.5-4B** (`/hdd_data/seungpil/scratch/models/Qwen3.5-4B`). 추론은 격리 env
-  `/hdd_data/seungpil/envs/qwen35`(vllm 0.29) — 공유 학습 env(simplerl)는 건드리지 않는다.
-- **사전등록: `docs/PREREGISTRATION_cd9_math_judgment.md`** (의도·라벨·자·팔·판정·중단 규칙). 원장은 `docs/RESULTS_cd9.md`.
-- 핵심 아이디어: 같은 자리 반사실로 **판단(verify/redirect)의 정답**을 만들고, 자기 메타의 판단 일치를
-  자기 증류 신호로 쓴다. 첫 판정 지표는 정확도가 아니라 **발화 선택성**(SAVE↑ DERAIL↓ NEUTRAL 불변).
-- 자동화: 큐 `scripts/local/gpu_queue.py`(GPU 2·3만), 트리거 `gate_judgment.py`, 사전등록 중단은 **rc 75**
-  (재시도 래퍼가 재시도하지 않음), 수학 파서는 `parse_meta(form="math")`(decision 줄 선택).
-- 아래 «Compute / Data / Current Results» 절은 **구세대(Qwen3-8B·amlt·Countdown) 참고용**이다.
+## 현행 상태 (2026-09-24, cd9 수정 18) — 이 절이 우선한다
+- **의도(고정)**: 특정 언어 패턴인 메타인지(첫 `\boxed` 뒤 스스로 되짚어 틀린 답을 고치는 말)를 **모델 자신의 믿음 이동(PMI) 내부 신호**로 강화하는
+  셀프 디스틸레이션. 정확도가 목표, 버릇은 수단. **칭찬의 핵심은 PMI — 다른 신호로 대체 금지**(결함은 PMI 를 고쳐 해결, MC 다시 쓰기는 검증 전용).
+- **PMI(수정 18)**: 로그 단위, 되짚기 구간 안 새 답을 쓰기 전 자리에서 **방향**(정답 − 대안 평균 이동; 칭찬·벌)과 **크기**(첫 답에서 멀어짐; 말뿐인 되짚기 걸러내기).
+  틀린 첫 답: 방향 ±, 맞은 첫 답: 망침만 벌(데드밴드) + 긴 말뿐 되짚기 비용. 바탕 = 행 전체 GRPO. 가지치기 금지(가중치로).
+- **순서**: V1′(구별력·길이 통제) → V2′(실제 미래 대조) → 스텝1 부호표 → 1-B·1-P(gold) → 위약·질량 대조 → 20스텝 확증 → 2단계(다수결).
+- 사전등록 `docs/PREREGISTRATION_cd9_math_judgment.md` 수정 18 · 원장 `docs/RESULTS_cd9.md` · 코드 `mc/`(5,000줄 이하) · GPU 2(+5 임시), git/wandb 없음.
+
+## 현행 상태 (2026-09-18, cd9 수정 6) — 0924 수정 18 절로 대체됨
+- **축**: «자발적 답 수정 행위의 증폭»(0917 관측: 진술 기반 메타 신호는 문제 내 짝비교에서
+  전부 소멸, 자발적 답 수정만 유일하게 통과). `docs/RESULTS_cd9.md` "0917" 절, 사전등록 수정 6.
+- **크레딧**: 행 내부 반사실(같은 행 첫 답 대 마지막 답의 다수결 일치 차) — 형제 평균 대비
+  아님. 크레딧 구역 = 첫 박스 끝 → 마지막 박스.
+- **PMI 두 자리**: 첫 박스 직후 / 마지막 \boxed 직전.
+- **앵커 세 팔**: gold · 다수결 · 조합.
+- **네 팔 50스텝 계획**: 결과만 / 결과+정오개선 크레딧 / 결과+PMI gold / 결과+PMI 조합.
+- **멈춤 규칙**: 정밀도 <.6, 첫 답 정확도 하락(사행), 20스텝 수정률 무변화.
+- 아래 0914 절은 이 절로 대체됨(우선순위 1~3 은 폐기, 새 축으로 교체).
+
+## 현행 상태 (2026-09-14, cd9) — 0918 절로 대체됨
+- **의도**: 정책이 자기 풀이의 상태를 스스로 읽고(모니터링), 그 판단으로 다시 볼지·어디를 볼지
+  정하며(통제), 그 판단의 옳고 그름을 정책 자신의 롤아웃만으로 채점해 학습한다(자기 증류).
+  정확도는 결과이지 목표가 아니다. (사전등록 수정 5)
+- **우선순위 1**: M_DIST(정오 마스크 건 분포 이동 보상) — 관문 G2 «분포 수준에서 own ≠ donor».
+- **우선순위 2**: 자기 인용 자리 반사실(이행 게이트 + 무작위 자리 대조, 관문 «인용 자리 > 무작위 자리»).
+- ⛔**우선순위 3(형제 중심 거리 = 판단 라벨)은 기각됨**(0914 20:40) — G1 관문(Level 5 문제별
+  AUC ≥ .65) 미달, 실측 .511/.551/.569로 우연 수준. math500 소표본(.724/.794, 7문제)은 재현
+  실패. `docs/RESULTS_cd9.md` §G1 형제 기하학 관문 참조.
+- **그 밖**: M_RETRY(+강제 redirect)·M_AGREE 는 통제 축, DeepScaleR 코퍼스는 성능 축 대조로 완주.
+  관문 없는 팔은 올리지 않는다.
+- **무대: 수학**(MATH-500/AIME25/HMMT25) · **정책: Qwen3-4B-Instruct-2507** · Countdown 종료.
+- 평가 예산 `EVAL_MAX_TOKENS=8192`, 디렉터리 `math500_8k` / `math500_retry_8k`.
+- **사전등록 `docs/PREREGISTRATION_cd9_math_judgment.md`**(banner 수정 1~5) · 원장 `docs/RESULTS_cd9.md`.
+- 런처 `scripts/local/run_math_arm.sh ARM SEED [STEPS]`(`DATA_TRAIN`/`DATA_VAL`/`RESP_LEN`), ARM 은
+  `src.training.math_meta.MATH_ARM_SPECS`. 중단은 rc 75 + 큐 aborted/. GPU **2·3만**, git/wandb 없음.
 
 ## Key Tokens
 - 모든 토큰(GitHub PAT / HuggingFace / WandB)은 **.env에만** 둔다 —

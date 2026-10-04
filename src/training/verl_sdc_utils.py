@@ -337,7 +337,18 @@ def _compute_dcpo_region_advantage(
     # floor inside compose also spreads over the carved mask (the row TOTAL
     # stays +meta_floor — allocation only shifts off the conf tokens).
     _meta_c_mask = batch["dcpo_meta_content_mask"].to(device).float()
-    if bool(config.get("dcpo_meta_excl_conf", False)):
+    # REVISION credit (2026-09-18): the populator stacks `dcpo_rev_zone_mask` ONLY
+    # for dcpo_rmeta_source in {revision_cf, revision_pmi}. Its PRESENCE is the
+    # switch — R_meta routes onto the revision zone (end of first \boxed -> start
+    # of the last \boxed) INSTEAD of META_CONTENT, and is NOT group-centered
+    # (centering would reintroduce exactly the sibling comparison the design
+    # removes). ABSENCE-TOLERANT (.get None) -> every other path byte-identical.
+    _rev_zone = batch.get("dcpo_rev_zone_mask", None)
+    _rmeta_center = True
+    if _rev_zone is not None:
+        _meta_c_mask = _rev_zone.to(device).float()
+        _rmeta_center = False
+    if _rev_zone is None and bool(config.get("dcpo_meta_excl_conf", False)):
         _meta_c_mask = _meta_c_mask * (
             1.0 - batch["dcpo_conf_mask"].to(device).float()
         )
@@ -422,6 +433,7 @@ def _compute_dcpo_region_advantage(
             np.asarray(_rmeta_member, dtype=np.float32)
             if _rmeta_member is not None else None
         ),
+        rmeta_center=_rmeta_center,
         **_fmt_kwargs,
         **_emit_kwargs,
         **_anchor_kwargs,

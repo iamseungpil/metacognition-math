@@ -221,7 +221,7 @@ def _compute_dcpo_heads_stash(
 # open onto the deprecated CF-regeneration path (plausible nonzero values, no
 # log line) whenever the knob was missing OR the algorithm config was
 # unreadable (the reader swallows exceptions into its default).
-_V4_RMETA_SOURCES = ("cf", "none", "pmi_shift")
+_V4_RMETA_SOURCES = ("cf", "none", "pmi_shift", "revision_cf", "revision_pmi")
 _V4_RMETA_MISSING = object()
 
 
@@ -508,12 +508,48 @@ def _populate_dcpo_region_keys(data) -> None:
             )
             data.non_tensor_batch["meta_region_utility"] = _r_shift
             data.non_tensor_batch["dcpo_rmeta_member"] = _shift_member
+        elif _rmeta_src in ("revision_cf", "revision_pmi"):
+            # REVISION credit: 행 안에서(첫 답 vs 마지막 답) 계산하고 **수정 구간**
+            # 토큰에만 싣는다. `dcpo_rev_zone_mask` 의 존재가 곧 «이 R_meta 는
+            # 수정 구간으로 가고 중심화하지 않는다»는 신호다(verl_sdc_utils).
+            _v4_prompt_texts = [
+                _decode_prompt_only(
+                    tokenizer,
+                    data[i].batch["prompts"],
+                    data[i].batch["attention_mask"],
+                    prompt_length,
+                )
+                for i in range(bs)
+            ]
+            _rev_ids = [
+                data[i].batch["responses"][
+                    : int(data[i].batch["attention_mask"][prompt_length:].sum().item())
+                ].tolist()
+                for i in range(bs)
+            ]
+            _r_rev, _rev_member, _rev_zone, _rev_tel = _compute_revision_rmeta(
+                source=_rmeta_src,
+                tokenizer=tokenizer,
+                trainer=trainer,
+                data=data,
+                prompt_texts=_v4_prompt_texts,
+                response_texts=decoded_responses,
+                response_ids_list=_rev_ids,
+                ground_truths=ground_truths,
+                uids=_uid,
+                response_length=response_length,
+                read_knob=_v4_read,
+                step=_step,
+            )
+            data.non_tensor_batch["meta_region_utility"] = _r_rev
+            data.non_tensor_batch["dcpo_rmeta_member"] = _rev_member
+            data.batch["dcpo_rev_zone_mask"] = torch.as_tensor(_rev_zone, dtype=torch.float32)
         elif _rmeta_src == "none":
             data.non_tensor_batch["meta_region_utility"] = np.zeros(bs, dtype=np.float32)
             data.non_tensor_batch["dcpo_rmeta_member"] = np.zeros(bs, dtype=np.float32)
         # 'cf' (explicit opt-in): no-op — the dcpo_region_rewards value stands.
         # Invalid values already raised inside _v4_rmeta_source_strict.
-        if _rmeta_src in ("none", "pmi_shift"):
+        if _rmeta_src in ("none", "pmi_shift", "revision_cf", "revision_pmi"):
             # Observability truth: the rollout table + trend scalars below must
             # chart the R_meta that actually ROUTES, not the stale CF/text-
             # fallback stash value. REASSIGN (not mutate): _DCPO_HEAD_STASH
@@ -962,9 +998,17 @@ def countdown_arm_reward(completions, **kwargs):
 # ★분리 채점: 시퀀스 보상(`total`)은 **답 스팬 몫(정답)만** 담는다. 메타 스팬 항은
 #   `_MATH_REGION_STASH` 에 따로 두었다가 `_math_add_meta_region_advantage` 가 GRPO
 #   어드밴티지 뒤 메타 토큰 구간에만 얹는다 — Countdown §13-b CHK_REGION 경로의 복제.
+# ★수정 3(0914) M_RETRY/M_RETRY_RAND 도 **같은 모드·같은 스태시**다 — 팔 명세(math_meta.
+#   MATH_ARM_SPECS)만 다르고 배선은 한 줄도 갈리지 않는다(팔마다 경로가 갈리면 대조가 무의미).
+#   require_meta=True 라 emit<0.2 중단 규칙이 그대로 적용된다. 발사는 RESP_LEN=6144.
 _MATH_MODE = "MATH_META"
 _MATH_STASH: dict = {"step": None, "arm": None, "total": None, "n": 0, "rows": None}
-_MATH_REGION_STASH: dict = {"step": None, "bs": 0, "uid": [], "meta": [], "member": [], "spans": []}
+# ★"sl"/"sl_spans": M_RETRY_SL 의 결정 토큰 자기지도 항(행별 ±W)과 그 문자 구간.
+#   메타 스팬 항("meta")과 **별개 경로**다 — 중심화도 안 하고 얹는 자리도 다르다.
+_MATH_REGION_STASH: dict = {"step": None, "bs": 0, "uid": [], "meta": [], "member": [], "spans": [],
+                            "sl": [], "sl_spans": [],
+                            # ★수정(revision) 팔: 행별 크레딧 + 수정 구간 문자 범위. 중심화 안 한다.
+                            "rev": [], "rev_spans": [], "rev_tel": {}}
 _MATH_JUDGE_LABELS: dict = {"path": None, "table": None}
 # ★감사 2: 판단 팔의 «라벨 키가 학습 문제와 교집합 0» 은 첫 배치에서 즉사시킨다(프로세스당 한 번).
 _MATH_LABEL_COVER: dict = {}
@@ -1078,7 +1122,8 @@ def _osd_demote_check(step, auc, arm, *, n_pos=None, n_neg=None, n_unique=None) 
 
 
 def _countdown_batch_geometry_guard(*, prompts_width: int, expected_width: int,
-                                    response_valid_lengths: list, step) -> None:
+                                    response_valid_lengths: list, step,
+                                    active_mask: list | None = None) -> None:
     """E-131 배치 기하 가드 — 순수 함수(테스트 가능).
 
     * `prompts_width != expected_width`: 어떤 행의 프롬프트가 `data.max_prompt_length` 를 넘어
@@ -1087,6 +1132,10 @@ def _countdown_batch_geometry_guard(*, prompts_width: int, expected_width: int,
     * 길이 0 응답(abort) 이 있으면 같은 사건의 다른 얼굴이다 — 역시 죽인다. 정상 학습에서는
       길이 0 응답이 나올 수 없다(모델은 최소 EOS 한 토큰을 낸다).
     expected_width 가 0 이면(설정을 못 읽음) 폭 검사는 건너뛴다 — 단 abort 검사는 항상 한다.
+
+    `active_mask` (S3 2-시도 팔 전용, 기본 None = 전 행 활성 → **다른 팔은 바이트 동일**):
+    비활성 슬롯은 **설계상** 유효 응답 토큰이 0 인 행이다(`_s3_blank_dead_rows` 가 마스크를
+    지운다 — 설계 §5). 그 행들은 길이-0 집계에서 제외한다. 활성 행의 길이 0 은 여전히 사고다.
     """
     if expected_width and prompts_width != expected_width:
         raise RuntimeError(
@@ -1094,10 +1143,18 @@ def _countdown_batch_geometry_guard(*, prompts_width: int, expected_width: int,
             f"data.max_prompt_length {expected_width}. 프롬프트가 한도를 넘는 행이 데이터에 있다 "
             "(scripts/local/build_sites.py 의 토큰 상한 또는 mixed_train_v3c 참조). 이 배치는 "
             "모든 행의 응답 꼬리가 잘려 채점되므로 학습을 계속하면 안 된다.")
-    n_abort = sum(1 for v in response_valid_lengths if int(v) <= 0)
+    if active_mask is None:
+        live = list(range(len(response_valid_lengths)))
+    else:
+        if len(active_mask) != len(response_valid_lengths):
+            raise RuntimeError(
+                f"[COUNTDOWN][E-131] step={step}: active_mask 길이 {len(active_mask)} != "
+                f"행 수 {len(response_valid_lengths)} — 배선 버그다.")
+        live = [i for i, a in enumerate(active_mask) if int(a)]
+    n_abort = sum(1 for i in live if int(response_valid_lengths[i]) <= 0)
     if n_abort:
         raise RuntimeError(
-            f"[COUNTDOWN][E-131] step={step}: 길이 0 응답(abort) {n_abort}/{len(response_valid_lengths)} 행. "
+            f"[COUNTDOWN][E-131] step={step}: 길이 0 응답(abort) {n_abort}/{len(live)} 활성 행. "
             "verl 롤아웃이 요청을 중단했다 — 과장 프롬프트 행 또는 엔진 재시작. 조용히 채점하지 않는다.")
 
 
@@ -2244,13 +2301,23 @@ def _compute_math_arm_stash(self, data, decoded_responses, bs, prompt_length, st
     arm = str(getattr(getattr(self.config, "algorithm", None), "math_arm", "") or "").upper()
     spec = _mm.require_arm(arm)                      # fail-closed. 조용한 기본값 금지.
     # ★E-131 가드(Countdown 과 같은 배치 기하 사고 — 프롬프트 폭 초과·길이 0 응답)를 재사용.
+    nt = data.non_tensor_batch
+    # ★S3 2-시도 팔의 비활성 슬롯은 설계상 «유효 응답 토큰 0» 행이다(설계 §5) — E-131 의
+    #   길이-0 검사에서 빼고, 아래 per-row 통계·채점에서도 뺀다. 표식이 없는 배치(다른 팔·검증)는
+    #   `_s3_active = None` 이라 가드·채점 경로가 **바이트 동일**하다.
+    _s3_active = ([int(x) for x in nt["s3_active"]] if "s3_active" in nt else None)
     _countdown_batch_geometry_guard(
         prompts_width=int(data.batch["prompts"].shape[-1]),
         expected_width=int(getattr(getattr(self.config, "data", None), "max_prompt_length", 0) or 0),
         response_valid_lengths=data.batch["attention_mask"][:, data.batch["prompts"].shape[-1]:].sum(-1).tolist(),
         step=step,
+        active_mask=_s3_active,
     )
-    nt = data.non_tensor_batch
+    if _s3_active is not None:
+        # 죽은 행의 본문은 pad 뿐이다 — 디코드·채점 결과를 쓰지 않으므로 빈 문자열로 박아
+        # 파서·채점기가 pad 잔여물을 보지 않게 한다(보상은 아래에서 0 으로 고정한다).
+        decoded_responses = ["" if not a else t
+                             for t, a in zip(list(decoded_responses), _s3_active)]
     problems = [str(x) for x in _mm.nt_col(nt, "problem")]
     golds = [str(x) for x in _mm.nt_col(nt, "gold")]
     uid = nt.get("uid", None)
@@ -2260,6 +2327,14 @@ def _compute_math_arm_stash(self, data, decoded_responses, bs, prompt_length, st
     if len(problems) != bs or len(golds) != bs:
         raise RuntimeError(f"[MATH] 컬럼 길이 불일치: problem={len(problems)} gold={len(golds)} bs={bs}")
 
+    # ★inert 레버 (i, 0914): M_PROBE 는 scorer 미배선이면 score_meta_probe 가 조용히 0 을
+    #   돌린다(경고 한 번뿐) — 발사자가 모르고 M_G1 과 바이트 동일한 무효 레버로 돌릴 수 있다.
+    #   step 1 에서 fail-closed.
+    if spec["meta_term"] == "probe" and int(step) <= 1 and not _mm.scorer_registered():
+        raise RuntimeError(
+            f"[MATH] arm={arm} step={step}: M_PROBE scorer 미배선 — "
+            "src.training.math_meta.set_meta_scorer(fn) 으로 꽂아라. 미배선인 채로 돌리면 "
+            "메타 항이 전부 0 이라 M_G1 과 바이트 동일한 무효 레버가 된다.")
     labels = _math_judge_labels() if spec["meta_term"] in ("judge", "judge_shuffled") else {}
     if spec["meta_term"] in ("judge", "judge_shuffled") and not labels:
         # ★라벨표 없는 판단 팔은 항이 전 행 0 → M_G1 과 바이트 동일해진다(무효 레버). 즉사.
@@ -2268,17 +2343,115 @@ def _compute_math_arm_stash(self, data, decoded_responses, bs, prompt_length, st
             f"(MATH_JUDGE_LABELS={os.environ.get('MATH_JUDGE_LABELS', '')!r}). "
             "scripts/local/math_sites.py 산출로 judgment_labels.json 을 만들고 경로를 넘겨라.")
     # ★감사 4: M_RAND 는 uid 그룹 단위로 라벨 표를 순열하므로 uid 를 넘긴다.
+    # ★수정 3(M_RETRY/M_RETRY_RAND): 같은 스태시를 그대로 탄다(새 모드 없음). 두 재료만 더 넘긴다 —
+    #   ① truncated: 응답 유효 길이가 응답 폭(=max_response_length, verl 이 그 폭으로 패딩)에 닿은
+    #      행. 두 번째 시도가 잘리면 최종 \boxed 가 없어 «판단이 아니라 길이가 결과를 정한다» →
+    #      math_meta.ABORT_RULES["trunc_rate"]. ② tok_len_fn: 메타 뒤 토큰 수(정답인데 redirect 한
+    #      행의 길이 비용). 토크나이저가 없으면 math_meta 가 chars/4 로 근사한다.
+    _truncated = None
+    _tok_len_fn = None
+    # ★M_CRIT 도 truncated 가 필요하다(정답 형제 S+ 에서 잘린 롤아웃을 배제한다) — _NEEDS_TRUNC_TERMS.
+    if spec["meta_term"] in _mm._NEEDS_TRUNC_TERMS:
+        _resp_w = int(data.batch["responses"].shape[-1]) if "responses" in data.batch else None
+        if _resp_w is None:
+            _resp_w = int(getattr(getattr(self.config, "data", None), "max_response_length", 0) or 0)
+        _vl = data.batch["attention_mask"][:, data.batch["prompts"].shape[-1]:].sum(-1).tolist()
+        _truncated = [int(_resp_w > 0 and int(v) >= _resp_w) for v in _vl]
+        _tok = getattr(self, "tokenizer", None)
+        if _tok is not None:
+            _tok_len_fn = lambda _s, _t=_tok: len(_t.encode(_s, add_special_tokens=False))
+    # ★0914 forced-redirect(사전등록 수정): build_math_parquet.py --forced_frac 이 심은
+    #   extra_info.forced_redirect 를 읽는다. 없으면(비-RETRY 팔·구 parquet) 전부 0 —
+    #   기존 배선을 조용히 바꾸지 않는다(fail-open, RETRY 팔에서만 의미가 있다).
+    _forced = None
+    _gpr = None
+    if spec["meta_term"] in _mm._RETRY_LIKE_TERMS:
+        _forced = [int(bool(x)) for x in _mm.nt_col(nt, "forced_redirect", default=0)]
+        # ★0914 후속: build_math_parquet.py --forced_from_rollouts 가 심은 extra_info.group_pass_rate
+        #   — 있으면 retry_telemetry 의 within-problem 선택성 지표(mixed 판정)가 이 값을 쓴다.
+        #   없으면(구 parquet·비강제 팔) 전부 None — forced_redirect 와 같은 fail-open 규약.
+        _gpr = list(_mm.nt_col(nt, "group_pass_rate", default=None))
+    # ★0914d M_DIS: 후보 4개의 답(cand_answers)과 그 gold 정오(cand_correct)는 parquet 이 싣는다
+    #   (scripts/local/build_math_dis_parquet.py). cand_answers 가 통째로 없으면 진단 크레딧이
+    #   전 행 미정의가 되어 M_G1 과 바이트 동일한 무효 레버가 된다 — 첫 배치에서 즉사시킨다.
+    #   cand_correct 는 **지표 전용**이다(보상 경로가 읽지 않는다 — math_dis 모듈 docstring).
+    _cand_ans = _cand_corr = None
+    if spec["meta_term"] in _mm._DIS_TERMS:
+        _cand_ans = [list(x) if x is not None else [] for x in _mm.nt_col(nt, "cand_answers", default=None)]
+        _cand_corr = [list(x) if x is not None else [] for x in _mm.nt_col(nt, "cand_correct", default=None)]
+        if int(step) <= 1 and not any(_cand_ans):
+            raise RuntimeError(
+                f"[MATH] arm={arm} step={step}: parquet 에 cand_answers 가 없다 — 진단 크레딧이 "
+                "전 행 미정의가 되어 M_G1 과 바이트 동일한 무효 레버가 된다. "
+                "scripts/local/build_math_dis_parquet.py 로 만든 parquet 인지 확인하라.")
     rows = _mm.compute_rows(list(decoded_responses), golds, problems, arm, labels=labels,
-                            rng=__import__("random").Random(int(step) * 7919 + 17), uids=uid)
+                            rng=__import__("random").Random(int(step) * 7919 + 17), uids=uid,
+                            truncated=_truncated, tok_len_fn=_tok_len_fn, forced_redirect=_forced,
+                            group_pass_rate=_gpr, cand_answers=_cand_ans, cand_correct=_cand_corr)
+    # ★M_CRIT(사전등록 수정 6): 정보이득 항은 **얼어붙은 채점기**(초기 정책 HF 모델)가 필요해
+    #   math_meta.compute_rows 안에서 못 채운다 — 여기서 이어서 채운다(annotate_sl_rows 와 같은 규약).
+    #   채점기는 프로세스당 하나(get_scorer 싱글턴)이고 학습되지 않는다. 기본 경로는 actor init.
+    if spec["meta_term"] in _mm._CRIT_TERMS:
+        from src.training.critique_scorer import get_scorer   # noqa: PLC0415
+        _init_path = str(getattr(getattr(getattr(self.config, "actor_rollout_ref", None),
+                                         "model", None), "path", "") or "")
+        _sc = get_scorer(default_path=_init_path)
+        _mm.annotate_crit_ig(rows, uid, scorer=_sc, variant=spec["variant"],
+                             rng=__import__("random").Random(int(step) * 7919 + 23))
     totals = [float(r["answer_total"]) for r in rows]
     meta_vals = [float(r["meta_val"]) for r in rows]
     # ★감사 3: 항이 정의된 행만 그룹 중심화의 member — 미정의(tie/무결정/미발화/다중 블록) 행은
     #   평균을 밀지도, 중심화 값을 받지도 않는다.
     member = [int(r.get("meta_defined", 0)) for r in rows]
     spans = [_mm.meta_char_spans(r) for r in rows]
+    if _s3_active is not None:
+        # 비활성 슬롯: 보상 0 · 중심화 비member · 스팬 없음(설계 §5 — 손실·KL·엔트로피 어디에도
+        # 닿지 않는 불활성 더미다). 그룹 키는 `_math_trial2_recredit` 가 uid#dead 로 갈라 준다.
+        for i, a in enumerate(_s3_active):
+            if not a:
+                totals[i] = 0.0
+                meta_vals[i] = 0.0
+                member[i] = 0
+                spans[i] = []
+    # ★M_RETRY_SL: 결정 토큰 자기지도 항. 라벨은 행 자신의 first_correct 라 표·교사가 필요 없다
+    #   (무효 레버 위험 없음). 워밍업(MATH_SL_WARMUP_STEPS) 때문에 step 을 여기서 넘긴다.
+    sl_vals: list = []
+    sl_spans: list = []
+    if spec["meta_term"] in _mm._SL_TERMS:
+        _mm.annotate_sl_rows(rows, step=int(step))
+        sl_vals = [float(r.get("sl_val", 0.0)) for r in rows]
+        sl_spans = [list(r.get("sl_spans") or []) for r in rows]
+        print(f"[MATH][SL] step={step} arm={arm} w={_mm.sl_step_weight(step):.3f} "
+              f"(base={_mm.sl_weight():.3f} warmup<={_mm.sl_warmup_steps()}) "
+              f"sl_rows={sum(1 for r in rows if r.get('sl_defined'))} "
+              f"sl_match={sum(1 for r in rows if r.get('sl_match'))}", flush=True)
+    # ★0914e M_DIFF: 난이도 판단 항은 **중심화 경로를 타지 않는다**(아래 ★ 참조) — 그래서
+    #   `meta`(중심화 스태시)는 전 행 0 으로 두고, 같은 값·같은 구간을 별도 키(`diff`/`diff_spans`)
+    #   로 싣는다. `_math_add_diff_meta_advantage` 가 그룹 평균을 빼지 않고 그대로 얹는다.
+    #   ★왜 중심화하면 안 되는가: 라벨(LOO 형제 동의도 버킷)은 **그룹 안에서 사실상 같다** —
+    #   한 문제의 형제 8개가 전부 "hard" 라고 말하면 중심화 뒤 항이 정확히 0 이 되어, 정확히
+    #   이 팔이 되살리려는 «문제 간 난이도 축»이 지워진다(docs/HYPOTHESIS_LEDGER_cd9.md §C1).
+    diff_vals: list = []
+    diff_spans: list = []
+    if spec["meta_term"] in _mm._DIFF_TERMS:
+        diff_vals = list(meta_vals)
+        diff_spans = [list(x) for x in spans]
+        meta_vals = [0.0] * bs
+    # ★0918 수정(revision) 팔: 크레딧은 math_meta.compute_rows 가 못 채운다 — 행 안의 첫/마지막
+    #   답 비교(+ M_REV_PMI_* 는 frozen-ref forward)가 필요해서다. M_CRIT 의 annotate_crit_ig 와
+    #   같은 규약으로 **여기서** 이어 채운다. 메타 스팬(중심화) 경로는 쓰지 않는다 — M_DIFF 와
+    #   같은 이유(크레딧이 형제 비교가 아니라 행 내부 반사실이라 중심화하면 지워진다).
+    rev_vals: list = []
+    rev_spans: list = []
+    rev_tel: dict = {}
+    if spec["meta_term"] in _mm._REV_TERMS:
+        rev_vals, rev_spans, rev_tel = _math_revision_stash(
+            self, data, decoded_responses, golds, uid, bs, prompt_length, step, arm, spec)
     _MATH_STASH.update({"step": step, "arm": arm, "total": totals, "n": bs, "rows": rows})
     _MATH_REGION_STASH.update({"step": step, "bs": bs, "uid": uid, "meta": meta_vals, "member": member,
-                               "spans": spans})
+                               "spans": spans, "sl": sl_vals, "sl_spans": sl_spans,
+                               "diff": diff_vals, "diff_spans": diff_spans,
+                               "rev": rev_vals, "rev_spans": rev_spans, "rev_tel": rev_tel})
     n_lab = sum(1 for r in rows if r.get("best_decision") in ("verify", "redirect"))
     if spec["meta_term"] in ("judge", "judge_shuffled") and not _MATH_LABEL_COVER.get(arm):
         # ★감사 2: 첫 배치에서 라벨이 한 행에도 안 붙으면 라벨 키와 학습 문제가 교집합이 없는 것이다
@@ -2292,17 +2465,35 @@ def _compute_math_arm_stash(self, data, decoded_responses, bs, prompt_length, st
         _MATH_LABEL_COVER[arm] = True
     print(f"[MATH][WIRED] step={step} arm={arm} spec={_mm.SPEC_VERSION} bs={bs} "
           f"labeled_rows={n_lab} meta_rows_nonzero={sum(1 for v in meta_vals if v)} "
-          f"judge_w={_mm.judge_weight():.2f}", flush=True)
+          f"judge_w={_mm.judge_weight():.2f}"
+          + (f" retry_w={_mm.retry_weight():.2f} retry_len_cost={_mm.retry_len_cost():.2f} "
+             f"trunc_rows={sum(_truncated or [])}" if spec["meta_term"] in _mm._RETRY_LIKE_TERMS else "")
+          # ★M_DIS: 실제로 쓰인 가중치(M_DIS0 은 0)와 후보가 실린 행 수 — 둘 중 하나가 0 이면
+          #   메타 스팬이 아무 크레딧도 못 받는다(무효 레버 조기 경보).
+          + (f" dis_w={(0.0 if spec['meta_term'] == 'dis_zero' else _mm.dis_weight()):.2f} "
+             f"cand_rows={sum(1 for c in (_cand_ans or []) if c)}"
+             if spec["meta_term"] in _mm._DIS_TERMS else "")
+          # ★M_DIFF: 실제로 쓰인 가중치(M_DIFF0 은 0)와 크레딧이 정의된 행 수 — 둘 중 하나가 0 이면
+          #   메타 스팬이 아무 크레딧도 못 받는다(무효 레버 조기 경보).
+          + (f" diff_w={(0.0 if spec['meta_term'] == 'diff_zero' else _mm.diff_weight()):.2f} "
+             f"diff_defined_rows={sum(1 for r in rows if r.get('diff_defined'))}"
+             if spec["meta_term"] in _mm._DIFF_TERMS else ""),
+          flush=True)
 
     try:
         rep = _mm.telemetry(rows, arm=arm, step=step)
+        # ★수정 팔의 계기는 compute_rows 가 모르는 값이다(구간·구제/탈선·사행) — 스태시에서 합친다.
+        rep.update(_MATH_REGION_STASH.get("rev_tel") or {})
         print(_mm.format_tel(rep), flush=True)
         try:
             _ex = [r for r in rows if r.get("emitted")][:2]
             for _r in _ex:
-                print(f"[MATH][SAMPLE] step={step} arm={arm} corr={_r['r_corr']} conf={_r['confidence']} "
-                      f"dec={_r['decision']} best={_r.get('best_decision')} judge={_r['judge']:+.0f} "
-                      f"| {' '.join((_r.get('body') or '').split())[:170]}", flush=True)
+                # ★.get 인 이유: M_DIS 행엔 confidence/decision/body 가 없다(블록 문법이 다르다) —
+                #   대신 commit/diag_text 를 찍는다. 없는 키로 예외를 내면 샘플 로그가 통째로 죽는다.
+                print(f"[MATH][SAMPLE] step={step} arm={arm} corr={_r['r_corr']} conf={_r.get('confidence')} "
+                      f"dec={_r.get('decision')} commit={_r.get('commit')} best={_r.get('best_decision')} "
+                      f"judge={float(_r.get('judge', 0.0)):+.2f} "
+                      f"| {' '.join((_r.get('body') or _r.get('diag_text') or '').split())[:170]}", flush=True)
         except Exception as _sexc:
             print(f"[MATH][SAMPLE] step={step} 실패: {_sexc}", flush=True)
         _all = _mm.check_abort(rep, arm=arm)
@@ -3692,6 +3883,363 @@ def _math_add_meta_region_advantage(data, tokenizer=None):
     return data
 
 
+def _math_add_decision_sl_advantage(data, tokenizer=None):
+    r"""★M_RETRY_SL: 결정 토큰(`decision: verify|redirect` 의 단어)에만 자기지도 항을 더한다.
+
+        adv[i, t] += sl_val_i      (t ∈ 그 행의 결정 단어 토큰 구간)
+        sl_val_i = +W  표집한 결정 == 자기라벨,  −W  다르면,  0  행이 SL 에서 빠지면
+
+    `_math_add_meta_region_advantage` 의 복제이되 **두 가지가 다르다**:
+      ① 그룹 중심화를 하지 않는다 — 지도 신호라 상대 비교가 아니다. 지금 정책은 한 그룹이
+         전부 verify 라(redirect_rate 0.000) 중심화하면 신호가 정확히 0 으로 지워진다.
+      ② 구간이 메타 블록 전체가 아니라 결정 단어뿐이다 — 근거·신뢰도 문장은 건들지 않는다.
+    표집된 토큰 위의 ±W 가 왜 CE 인지는 math_meta.annotate_sl_rows docstring(REINFORCE 항등식).
+    """
+    st = _MATH_REGION_STASH
+    if not st.get("sl") or not any(st["sl"]):
+        st["sl"] = []
+        return data
+    adv = data.batch["advantages"]
+    if adv.shape[0] != int(st.get("bs", -1)):
+        print(f"[MATH][SL-REGION][WARN] stash bs {st.get('bs')} != batch {adv.shape[0]} — skip")
+        st["sl"] = []
+        return data
+    tok = tokenizer or getattr(_ACTIVE_SDC_CONTEXT.get("trainer", None), "tokenizer", None)
+    if tok is None:
+        print("[MATH][SL-REGION][WARN] tokenizer 없음 — skip")
+        st["sl"] = []
+        return data
+    if "attention_mask" not in data.batch or "prompts" not in data.batch:
+        raise RuntimeError("[MATH][SL-REGION] data.batch 에 attention_mask/prompts 가 없다 — 응답 길이 출처 불명")
+    resp = data.batch["responses"]
+    _plen_tok = int(data.batch["prompts"].shape[-1])
+    resp_valid = data.batch["attention_mask"][:, _plen_tok:]
+    spans_all = st.get("sl_spans") or []
+    n_rows = n_tok_total = n_pos = 0
+    for i, spans in enumerate(spans_all):
+        if not spans:
+            continue
+        c = float(st["sl"][i])
+        if abs(c) < 1e-9:
+            continue
+        L = min(int(resp_valid[i].sum().item()), int(resp.shape[1]))
+        ids = resp[i][:L].tolist()
+        cache: dict[int, int] = {}
+        def _plen(t, _ids=ids, _cache=cache):
+            if t not in _cache:
+                _cache[t] = len(tok.decode(_ids[:t], skip_special_tokens=False))
+            return _cache[t]
+        for (c0, c1) in spans:
+            t0 = max(0, min(_char_to_tok(_plen, L, c0) - 1, L)); t1 = max(t0, min(_char_to_tok(_plen, L, c1 - 1), L))
+            if t1 > t0:
+                adv[i, t0:t1] = adv[i, t0:t1] + c
+                n_tok_total += (t1 - t0)
+        n_rows += 1
+        n_pos += int(c > 0)
+    data.batch["advantages"] = adv
+    print(f"[MATH][SL-REGION] step={st.get('step')} applied rows={n_rows} tokens={n_tok_total} "
+          f"pos_rows={n_pos} neg_rows={n_rows - n_pos}", flush=True)
+    st["sl"] = []
+    return data
+
+
+def _math_add_diff_meta_advantage(data, tokenizer=None):
+    r"""★M_DIFF: 난이도 판단 크레딧을 메타 스팬(=<meta> 블록 전체)에 **중심화 없이** 더한다.
+
+        adv[i, t] += clip(diff_val_i, ±mean|answer adv|)    (t ∈ 그 행의 메타 블록 토큰 구간)
+        diff_val_i = W · credit_i   (credit ∈ {+1, 0, −1}; 미정의 행은 0 이라 자동으로 빠진다)
+
+    `_math_add_decision_sl_advantage` 와 같은 **비중심화** 경로다(`_math_add_meta_region_advantage`
+    가 아니다). 두 가지가 핵심이다:
+      ① ★**그룹 평균을 빼지 않는다**. 라벨은 그 문제의 형제들이 **공유**한다(LOO 동의도는 어느
+         형제를 빼도 거의 같다) — 중심화하면 «쉬운 문제인데 여덟 형제가 전부 hard 라고 말했다»가
+         정확히 0 이 되어 지워진다. 그 문제 간 축이 바로 이 팔이 되살리려는 것이다
+         (docs/HYPOTHESIS_LEDGER_cd9.md §C1: GRPO 중심화가 across-problem 성분을 소거한다).
+      ② ★보너스가 정답 신호를 **지배하지 못하게** 절댓값을 자른다 — 상한은 이 배치의 유효 응답
+         토큰 위 **평균 |답 어드밴티지|** 다(Cheng et al. 2506.14758 의 «보조 보너스는 과제 보상을
+         압도하면 안 된다»). 상한이 0(=답 어드밴티지가 전부 0, 그룹 안 정오가 균일)이면 이 스텝엔
+         아무것도 얹지 않는다 — 비교할 과제 신호가 없는 배치에서 메타 항만 미는 것을 막는다.
+    구간은 SL(결정 단어)과 달리 **메타 블록 전체**다 — 난이도 판단은 블록 안 한 줄이 아니라
+    «판단을 쓰는 습관» 자체이고, 이유 문장(why)까지가 그 판단이다.
+    """
+    st = _MATH_REGION_STASH
+    if not st.get("diff") or not any(st["diff"]):
+        st["diff"] = []
+        return data
+    adv = data.batch["advantages"]
+    if adv.shape[0] != int(st.get("bs", -1)):
+        print(f"[MATH][DIFF-REGION][WARN] stash bs {st.get('bs')} != batch {adv.shape[0]} — skip")
+        st["diff"] = []
+        return data
+    tok = tokenizer or getattr(_ACTIVE_SDC_CONTEXT.get("trainer", None), "tokenizer", None)
+    if tok is None:
+        print("[MATH][DIFF-REGION][WARN] tokenizer 없음 — skip")
+        st["diff"] = []
+        return data
+    if "attention_mask" not in data.batch or "prompts" not in data.batch:
+        raise RuntimeError("[MATH][DIFF-REGION] data.batch 에 attention_mask/prompts 가 없다 — 응답 길이 출처 불명")
+    resp = data.batch["responses"]
+    _plen_tok = int(data.batch["prompts"].shape[-1])
+    resp_valid = data.batch["attention_mask"][:, _plen_tok:]
+    # ★상한 = 유효 응답 토큰 위 평균 |답 어드밴티지|(메타 항을 얹기 **전** 값).
+    _mask = resp_valid[:, :adv.shape[1]].to(adv.dtype)
+    _den = float(_mask.sum().item())
+    cap = float((adv.abs() * _mask).sum().item() / _den) if _den > 0 else 0.0
+    if cap <= 0.0:
+        print(f"[MATH][DIFF-REGION] step={st.get('step')} cap=0 (답 어드밴티지가 전부 0) — skip",
+              flush=True)
+        st["diff"] = []
+        return data
+    spans_all = st.get("diff_spans") or []
+    n_rows = n_tok_total = n_clipped = 0
+    for i, spans in enumerate(spans_all):
+        if not spans:
+            continue
+        c = float(st["diff"][i])
+        if abs(c) < 1e-9:
+            continue                      # 미정의 행·크레딧 0(이웃 버킷)·M_DIFF0(W=0)
+        if abs(c) > cap:
+            c = cap if c > 0 else -cap
+            n_clipped += 1
+        L = min(int(resp_valid[i].sum().item()), int(resp.shape[1]))
+        ids = resp[i][:L].tolist()
+        cache: dict[int, int] = {}
+        def _plen(t, _ids=ids, _cache=cache):
+            if t not in _cache:
+                _cache[t] = len(tok.decode(_ids[:t], skip_special_tokens=False))
+            return _cache[t]
+        for (c0, c1) in spans:
+            t0 = max(0, min(_char_to_tok(_plen, L, c0) - 1, L)); t1 = max(t0, min(_char_to_tok(_plen, L, c1 - 1), L))
+            if t1 > t0:
+                adv[i, t0:t1] = adv[i, t0:t1] + c
+                n_tok_total += (t1 - t0)
+        n_rows += 1
+    data.batch["advantages"] = adv
+    print(f"[MATH][DIFF-REGION] step={st.get('step')} applied rows={n_rows} tokens={n_tok_total} "
+          f"cap={cap:.4f} clipped_rows={n_clipped} (non-centered)", flush=True)
+    st["diff"] = []
+    return data
+
+
+def _math_revision_stash(self, data, decoded_responses, golds, uid, bs, prompt_length,
+                         step, arm, spec):
+    r"""★MATH_META 수정(revision) 팔의 크레딧 발전기 — `_compute_revision_rmeta` 의 얇은 어댑터.
+
+    DCPO(TRIOBJ_DCPO_V4) 경로와 **같은 함수·같은 선택 규칙**을 쓴다(«무엇이 수정인가»의 단일
+    진실 원천은 src/training/revision.py). 다른 점은 둘뿐이다:
+      ① 구간을 토큰 마스크가 아니라 **문자 범위**로 받는다 — MATH_META 의 가산기
+         (`_math_add_revision_advantage`)가 `_char_to_tok` 으로 직접 옮기기 때문이다.
+      ② frozen-ref 스코어러가 `_math_ref_logprobs` 다(verl 0.9 에는 use_legacy_worker_impl 가
+         없다 — DCPO 쪽 assert 를 그대로 쓰면 step 1 에서 죽는다).
+    크레딧에는 여기서 MATH_REV_W 를 곱한다(계기 `rev_tel` 은 곱하기 **전** 값이다).
+    """
+    from src.training import math_meta as _mm   # noqa: PLC0415
+
+    tok = getattr(self, "tokenizer", None) or _ACTIVE_SDC_CONTEXT.get("tokenizer")
+    trainer = _ACTIVE_SDC_CONTEXT.get("trainer")
+    source = str(spec["meta_term"])
+    anchor = _mm.rev_anchor(arm)
+    confirm = _mm.rev_confirm(arm)
+    _alg = getattr(getattr(self, "config", None), "algorithm", None)
+
+    def _alg_get(name, default):
+        try:
+            if _alg is not None and hasattr(_alg, "get"):
+                return _alg.get(name, default)
+            return getattr(_alg, name, default) if _alg is not None else default
+        except Exception:
+            return default
+
+    def _read(name, default=None):
+        # 팔 이름/환경변수가 정한 앵커가 먼저, 그 밖의 손잡이는 algorithm 설정에서.
+        if name == "dcpo_revpmi_anchor":
+            return anchor
+        if name == "dcpo_rev_confirm":
+            # ★팔이 강제하는 값이 먼저다(런처가 env 를 잊어도 처치가 살아 있어야 한다).
+            return _mm.rev_confirm(arm)
+        return _alg_get(name, default)
+
+    # PMI 팔만 프롬프트가 필요하다(OPEN/CLOSE 문맥). CF 팔에선 디코드조차 하지 않는다.
+    if source == "revision_pmi":
+        prompt_texts = [
+            _decode_prompt_only(tok, data[i].batch["prompts"],
+                                data[i].batch["attention_mask"], prompt_length)
+            for i in range(bs)
+        ]
+    else:
+        prompt_texts = [""] * bs
+    vals, member, spans, tel = _compute_revision_rmeta(
+        source=source, tokenizer=tok, trainer=trainer, data=data,
+        prompt_texts=prompt_texts, response_texts=list(decoded_responses),
+        ground_truths=list(golds), uids=list(uid), read_knob=_read,
+        zone_output="char_spans", ref_logprobs_fn=_math_ref_logprobs, step=step)
+    w = _mm.rev_weight()
+    out_vals = [float(w) * float(v) for v in vals]
+    out_spans = [list(sp) if float(m) > 0.5 else [] for sp, m in zip(spans, member)]
+    tel = dict(tel or {})
+    tel["rev_anchor"] = anchor
+    tel["rev_confirm_on"] = float(confirm)
+    print(f"[MATH][REV] step={step} arm={arm} term={source} anchor={anchor} "
+          f"confirm={confirm:g} w={w:.3f} "
+          f"credit_rows={sum(1 for v in out_vals if abs(v) > 1e-9)} "
+          f"member_rows={int(sum(member))}", flush=True)
+    return out_vals, out_spans, tel
+
+
+def _rev_cap_mult() -> float:
+    """`dcpo_rev_cap_mult` — 수정 구간 크레딧 상한의 배수. algorithm 설정 우선, 없으면
+    런처 env MATH_REV_CAP_MULT, 그마저 없으면 1.0(종전 동작)."""
+    _algo = getattr(getattr(_ACTIVE_SDC_CONTEXT.get("trainer", None), "config", None),
+                    "algorithm", None)
+    for src in (_algo,):
+        try:
+            if src is not None and hasattr(src, "get"):
+                v = src.get("dcpo_rev_cap_mult", None)
+            else:
+                v = getattr(src, "dcpo_rev_cap_mult", None) if src is not None else None
+            if v is not None:
+                return abs(float(v))
+        except Exception:
+            pass
+    try:
+        return abs(float(os.environ.get("MATH_REV_CAP_MULT", "1.0") or 1.0))
+    except Exception:
+        return 1.0
+
+
+def _rev_mass_share() -> float:
+    r"""`dcpo_rev_mass_share` — 수정 크레딧이 차지할 **질량 몫**(0 = 끔, 종전 동작).
+
+    왜: 희소 행동에 «배치 평균 |어드밴티지|» 클립을 걸면 방향이 정반대다 — 크레딧 받는
+    행이 적을수록 정책에 닿는 총량이 같이 줄어든다(Weighted GRPO 2602.03452 의 같은 함정;
+    0919 중간 분석 실측 크레딧 질량 0.16%). 몫을 고정하면 크레딧 행 수와 무관하게 비중이
+    일정하다. 켜면 토큰별 크레딧을 s = share·M_ans/M_rev 로 재고, `cap` 은 한 행이 터무니
+    없는 값을 받지 않게 하는 **안전 클립**으로만 남는다.
+    설정 우선순위는 `_rev_cap_mult` 와 같다(algorithm 설정 → env MATH_REV_MASS_SHARE → 0)."""
+    _algo = getattr(getattr(_ACTIVE_SDC_CONTEXT.get("trainer", None), "config", None),
+                    "algorithm", None)
+    try:
+        if _algo is not None and hasattr(_algo, "get"):
+            v = _algo.get("dcpo_rev_mass_share", None)
+        else:
+            v = getattr(_algo, "dcpo_rev_mass_share", None) if _algo is not None else None
+        if v is not None:
+            return max(0.0, float(v))
+    except Exception:
+        pass
+    try:
+        return max(0.0, float(os.environ.get("MATH_REV_MASS_SHARE", "0") or 0.0))
+    except Exception:
+        return 0.0
+
+
+def _math_add_revision_advantage(data, tokenizer=None):
+    r"""★수정(revision) 팔: 행 내부 크레딧을 **수정 구간** 토큰에만, **중심화 없이** 더한다.
+
+        adv[i, t] += clip(rev_i, ±mean|answer adv|)   (t ∈ 첫 \boxed 끝 → 마지막 \boxed 시작)
+
+    `_math_add_diff_meta_advantage` 의 복제다 — 다른 것은 스태시 키와 구간 정의뿐이다.
+      ① ★**그룹 평균을 빼지 않는다**. 크레딧은 형제 비교가 아니라 «같은 행의 첫 답 대 마지막
+         답»이다(사전등록 수정 6). 중심화하면 한 그룹에서 수정한 행이 하나뿐일 때 나머지
+         일곱에게 −r/8 이 생기고, 바로 그 형제 비교가 결과 GRPO 가 이 습관을 죽인 기제다.
+      ② ★상한은 이 배치 유효 응답 토큰 위 **평균 |답 어드밴티지|** — 보조 크레딧이 정답
+         신호를 지배하지 못하게 한다(diff 팔과 같은 규약). 상한 0 이면 아무것도 얹지 않는다.
+    시퀀스 보상(gold 정오)은 한 글자도 건드리지 않는다.
+    """
+    st = _MATH_REGION_STASH
+    if not st.get("rev") or not any(st["rev"]):
+        st["rev"] = []
+        return data
+    adv = data.batch["advantages"]
+    if adv.shape[0] != int(st.get("bs", -1)):
+        print(f"[MATH][REV-ZONE][WARN] stash bs {st.get('bs')} != batch {adv.shape[0]} — skip")
+        st["rev"] = []
+        return data
+    tok = tokenizer or getattr(_ACTIVE_SDC_CONTEXT.get("trainer", None), "tokenizer", None) \
+        or _ACTIVE_SDC_CONTEXT.get("tokenizer")
+    if tok is None:
+        print("[MATH][REV-ZONE][WARN] tokenizer 없음 — skip")
+        st["rev"] = []
+        return data
+    if "attention_mask" not in data.batch or "prompts" not in data.batch:
+        raise RuntimeError("[MATH][REV-ZONE] data.batch 에 attention_mask/prompts 가 없다 — 응답 길이 출처 불명")
+    resp = data.batch["responses"]
+    _plen_tok = int(data.batch["prompts"].shape[-1])
+    resp_valid = data.batch["attention_mask"][:, _plen_tok:]
+    _mask = resp_valid[:, :adv.shape[1]].to(adv.dtype)
+    _den = float(_mask.sum().item())
+    m_ans = float((adv.abs() * _mask).sum().item())     # 배치 전체 |답 어드밴티지| 질량
+    cap = m_ans / _den if _den > 0 else 0.0
+    # ★0919 크레딧 세기 손잡이: 상한 배수(dcpo_rev_cap_mult, 런처 env MATH_REV_CAP_MULT).
+    #   1.0 = 종전과 바이트 동일. 0919 중간 분석에서 크레딧 질량이 |advantage| 의 0.16%
+    #   뿐이라 «선언은 있고 힘은 없는» 레버였다 — 배수로만 키우고 라우팅은 그대로 둔다.
+    cap_mult = _rev_cap_mult()
+    cap *= cap_mult
+    if cap <= 0.0:
+        print(f"[MATH][REV-ZONE] step={st.get('step')} cap=0 (답 어드밴티지가 전부 0) — skip",
+              flush=True)
+        st["rev"] = []
+        return data
+    spans_all = st.get("rev_spans") or []
+    # ── 1차: 행마다 «크레딧 값 + 구간 토큰 범위»만 모은다(어드밴티지는 아직 안 건드린다).
+    #    질량 몫 모드가 배치 전체의 원시 크레딧 질량 M_rev 를 먼저 알아야 하기 때문이다.
+    plan: list = []          # (i, c_raw, [(t0, t1), ...], n_tok_row)
+    for i, spans in enumerate(spans_all):
+        if not spans:
+            continue
+        c = float(st["rev"][i])
+        if abs(c) < 1e-9:
+            continue                      # 미선택 행·크레딧 0(개선도 악화도 아닌 수정)
+        L = min(int(resp_valid[i].sum().item()), int(resp.shape[1]))
+        ids = resp[i][:L].tolist()
+        cache: dict[int, int] = {}
+
+        def _plen(t, _ids=ids, _cache=cache):
+            if t not in _cache:
+                _cache[t] = len(tok.decode(_ids[:t], skip_special_tokens=False))
+            return _cache[t]
+
+        rng: list = []
+        n_row = 0
+        for (c0, c1) in spans:
+            t0 = max(0, min(_char_to_tok(_plen, L, c0) - 1, L))
+            t1 = max(t0, min(_char_to_tok(_plen, L, c1 - 1), L))
+            if t1 > t0:
+                rng.append((t0, t1))
+                n_row += (t1 - t0)
+        if rng:
+            plan.append((i, c, rng, n_row))
+
+    share = _rev_mass_share()
+    scale_s = 1.0
+    if share > 0.0:
+        m_rev_raw = sum(abs(c) * n for (_i, c, _r, n) in plan)
+        scale_s = (share * m_ans / m_rev_raw) if m_rev_raw > 0 else 1.0
+
+    # ── 2차: 실제로 얹는다. 질량 몫 모드에서도 `cap` 은 **안전 클립**으로 남는다.
+    n_rows = n_tok_total = n_clipped = 0
+    m_rev_applied = 0.0
+    for (i, c, rng, _n) in plan:
+        v = c * scale_s
+        if abs(v) > cap:
+            v = cap if v > 0 else -cap
+            n_clipped += 1
+        for (t0, t1) in rng:
+            adv[i, t0:t1] = adv[i, t0:t1] + v
+            n_tok_total += (t1 - t0)
+            m_rev_applied += abs(v) * (t1 - t0)
+        n_rows += 1
+    data.batch["advantages"] = adv
+    realized = (m_rev_applied / m_ans) if m_ans > 0 else 0.0
+    # ★credit_rows>0 인데 zone_rows=0 이면 크레딧이 어디에도 안 실린 것이다 — 두 줄을 맞춰 본다.
+    print(f"[MATH][REV-ZONE] step={st.get('step')} zone_rows={n_rows} zone_tokens={n_tok_total} "
+          f"cap={cap:.4f} cap_mult={cap_mult:.3f} clipped_rows={n_clipped} "
+          f"mass_share_target={share:.4f} mass_share_realized={realized:.6f} "
+          f"scale_s={scale_s:.4f} (non-centered)", flush=True)
+    st["rev"] = []
+    return data
+
+
 def _bool01_local(v) -> int:
     try:
         return 1 if int(bool(v)) else 0
@@ -4143,6 +4691,561 @@ def _compute_dcpo_v4_pmi_shift_rmeta(
     return r_meta, member, shift_raw
 
 
+# ══ REVISION credit (design 2026-09-18) ══════════════════════════════════════
+#   연구 의도: 정책이 스스로 답을 고치는 습관(첫 \boxed{X} → 재검토 → 마지막
+#   \boxed{Y})을 «형제 비교 없이, 행 안에서» 키운다. 평범한 결과 GRPO 는 이
+#   습관을 죽인다(수정 행은 이미 어긋난 행이라 형제 평균보다 낮다). 그래서
+#   크레딧은 (i) 행 안에서(첫 답 vs 마지막 답) 계산되고 (ii) **수정 구간**
+#   (첫 박스 끝 → 마지막 \boxed 시작) 토큰에만 간다. 중심화 없음.
+_REV_ANCHORS = ("gold_x", "self_mx", "combo")
+# 사행(sandbagging) 감시 이력 — 메인프로세스 전용(dcpo/first_correct_mean).
+_REV_FIRST_CORRECT_HISTORY: list = []
+#   0918 1차 발사에서 창 5·문턱 .05 가 배치 잡음(첫 답 정확도 스텝 SD ≈ .06, 대조군 M_G1 도
+#   같은 폭으로 요동)에 오발해 M_REV_PMI_GOLD 를 step 10 에서 죽였다(결정 로그 0918). 창 10·
+#   문턱 .10 = 10스텝 평균 SD(≈.02) 의 5배 — 진짜 사행만 잡는다. env 로 재지정 가능.
+REV_GUARD_WARMUP = int(os.environ.get("MATH_REV_GUARD_WINDOW", "10"))
+REV_GUARD_DROP = float(os.environ.get("MATH_REV_GUARD_DROP", "0.10"))
+
+
+def _rev_guard_reason(history, *, warmup: int = REV_GUARD_WARMUP,
+                      drop: float = REV_GUARD_DROP) -> str | None:
+    """첫 `warmup` 스텝 평균 대비 **마지막 `warmup` 스텝 평균**이 `drop` 넘게 낮으면 사유."""
+    xs = [float(x) for x in history]
+    if len(xs) < 2 * warmup:
+        return None
+    base = sum(xs[:warmup]) / warmup
+    tail = sum(xs[-warmup:]) / warmup
+    if tail < base - drop:
+        return (f"first_correct_mean 최근 {warmup} 스텝 평균 {tail:.4f} 이 첫 {warmup} 스텝 평균 "
+                f"{base:.4f} 보다 {drop:.3f} 넘게 낮다 — 첫 답을 깎아 수정을 쉽게 만드는 사행이다.")
+    return None
+
+
+def _rev_pmi_scalar(plus_lp, minus_lp, divergent_mask) -> float:
+    r"""한 문맥에서 A+ 대 A− 의 logp 합(= PMI_open 또는 PMI_close).
+
+    길이가 **같으면** 기존 `_pmi_position_scalar`(발산 토큰만 합)을 그대로 쓴다 — 지금
+    도는 팔의 값이 한 글자도 안 바뀐다. 길이가 **다르면** 각 후보의 **자기 토큰 전체**를
+    합한다(프로브와 같은 방식). 왜 괜찮은가: 보상이 쓰는 것은 SHIFT = PMI_close − PMI_open
+    이고, 두 자리에서 **같은 두 문자열**을 재므로 각 후보의 길이·사전확률 편향이 차분에서
+    지워진다. 비유한 입력은 NaN(호출자가 행을 떨군다)."""
+    g = np.asarray(plus_lp, dtype=np.float64).reshape(-1)
+    d = np.asarray(minus_lp, dtype=np.float64).reshape(-1)
+    if g.size == 0 or d.size == 0:
+        return float("nan")
+    if g.size == d.size:
+        return _pmi_position_scalar(g, d, divergent_mask)
+    if not (np.all(np.isfinite(g)) and np.all(np.isfinite(d))):
+        return float("nan")
+    return float(g.sum() - d.sum())
+
+
+def _rev_guard_check(fc_mean: float, step: int) -> None:
+    """사행(sandbagging) 감시 — 첫 답 정확도 이력에 한 점 찍고 위반이면 `_CountdownAbort`(rc 75).
+    DCPO(TRIOBJ_DCPO_V4) 경로와 MATH_META 경로가 **같은 이력·같은 규칙**을 쓴다."""
+    _REV_FIRST_CORRECT_HISTORY.append(float(fc_mean))
+    _why = _rev_guard_reason(_REV_FIRST_CORRECT_HISTORY)
+    if _why:
+        raise _CountdownAbort(f"[REVISION][ABORT] step={step} {_why}")
+
+
+def _math_ref_logprobs(trainer, tensors):
+    r"""MATH_META(verl 0.9) 용 frozen-ref 점수 — `_dcpo_v4_ref_logprobs` 와 같되
+    `trainer.use_legacy_worker_impl` 가 **없어도** 통과한다.
+
+    왜: verl 0.9 는 그 키를 **삭제**했다(엔진 워커가 유일한 구현 — configs/math_meta_verl09.yaml
+    스키마 감사 절). 0.7.1 의 assert 를 그대로 쓰면 math 팔은 step 1 에서 죽는다. 키가
+    **있는데** 'disable' 이 아니면 예전과 똑같이 fail-closed 다(레거시 워커가 T=1.0 을
+    rollout.temperature 로 덮어써 PMI 를 ~1.67배 압축한다)."""
+    try:
+        _legacy = trainer.config.trainer.use_legacy_worker_impl
+    except Exception:
+        _legacy = None      # 0.9: 키 자체가 없다 — 엔진 워커뿐이라 검사할 것이 없다
+    if _legacy is not None:
+        assert str(_legacy) == "disable", (
+            f"revision_pmi requires the engine worker path, got {_legacy!r}")
+    batch = DataProto.from_dict(tensors=tensors)
+    batch.meta_info["temperature"] = 1.0
+    return trainer._compute_ref_log_prob(batch).batch["ref_log_prob"]
+
+
+def _rev_zone_token_mask(tokenizer, resp_ids, zone_start: int, zone_end: int, T: int):
+    r"""수정 구간 char 범위 [zone_start, zone_end) → 응답 토큰 불리언 마스크 [T].
+
+    dcpo_region.build_dcpo_region_masks Pass B 와 **같은 방식**: 누적 char 오프셋표
+    offsets[j] = len(decode(ids[:j])) 를 만들고 [offsets[j], offsets[j+1]) 가 구간과
+    겹치는 토큰을 고른다. 겹치는 토큰이 없으면 전부 0(행은 member 0 으로 떨어진다).
+    """
+    out = np.zeros(T, dtype=bool)
+    ids = list(resp_ids)
+    n = min(len(ids), T)
+    if n <= 0 or zone_end <= zone_start:
+        return out
+    dec = lambda xs: tokenizer.decode(xs, skip_special_tokens=False)  # noqa: E731
+    # offsets[j] = len(decode(ids[:j])) 는 j 에 대해 단조라 **이분 탐색**으로 두 경계만
+    # 찾는다(전 토큰 누적표는 응답 4096 토큰에서 O(T^2) 디코드라 스텝마다 수십 초다).
+    def _off(j: int) -> int:
+        return len(dec(ids[:j]))
+
+    def _first_j_with_off_gt(c: int) -> int:
+        """offsets[j] > c 인 최소 j (없으면 n+1)."""
+        lo, hi = 0, n + 1
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if _off(mid) > c:
+                hi = mid
+            else:
+                lo = mid + 1
+        return lo
+
+    # offsets[j+1] > zone_start 인 최소 j = (offsets[k] > zone_start 인 최소 k) − 1
+    k0 = _first_j_with_off_gt(zone_start) - 1
+    # offsets[j] < zone_end 인 최대 j = (offsets[k] > zone_end−1 인 최소 k) − 1
+    k1 = _first_j_with_off_gt(zone_end - 1) - 1
+    k0 = max(0, k0)
+    k1 = min(n - 1, k1)
+    if k1 >= k0:
+        out[k0:k1 + 1] = True
+    return out
+
+
+def _compute_revision_rmeta(
+    *,
+    source: str,
+    tokenizer,
+    trainer,
+    data,
+    prompt_texts: list,
+    response_texts: list,
+    ground_truths: list,
+    uids,
+    read_knob,
+    response_ids_list: list | None = None,
+    response_length: int = 0,
+    zone_output: str = "token_mask",
+    ref_logprobs_fn=None,
+    step: int = 0,
+):
+    r"""`revision_cf` / `revision_pmi` R_meta + 수정-구간 토큰 마스크.
+
+    행 선택(두 소스 공통): ① 박스 2개 이상이고 `answers_equivalent_loose(X, Y)` 가
+    아닌 «실제로 고친» 행, ② 변화점이 **정확히 하나**인 행(중간 박스에서 두 번 이상
+    바뀌면 건너뛰고 센다), ③ 그룹 합의 상태가 `dcpo_revpmi_states` 안인 그룹의 행.
+    고르지 못한 행은 r_meta 0 · member 0 · 마스크 전 0 이다.
+
+    `revision_cf`: A = 1[Y≡gold] − 1[X≡gold] → +save / −derail (추가 forward 없음).
+    `revision_pmi`: 교사강제 믿음 이동. OPEN = prompt + response[:구간 시작],
+    CLOSE = prompt + response[:마지막 \boxed 시작](**최종 답을 쓰기 전**). 앵커는
+    `dcpo_revpmi_anchor` 가 고른다(gold_x / self_mx / combo). 4개 팔을 한 번의
+    frozen-ref forward 로 묶는다(`_build_pmi_score_batches` + `_dcpo_v4_ref_logprobs`).
+    ref 실패는 **fail-closed**: 전 행 0 + 시끄러운 출력.
+
+    `zone_output`: "token_mask" → 구간 토큰 마스크 float32[B,T](DCPO region 경로),
+    "char_spans" → 행마다 [(시작, 끝)] 문자 구간 리스트(MATH_META 경로 — 그쪽 어드밴티지
+    가산기는 `_char_to_tok` 으로 문자→토큰을 직접 한다). `ref_logprobs_fn` 은 frozen-ref
+    스코어러(기본 `_dcpo_v4_ref_logprobs`; MATH_META 는 `_math_ref_logprobs`).
+
+    반환 (r_meta float32[B], member float32[B], zones, telemetry dict).
+    """
+    from src.training.revision import (  # noqa: PLC0415
+        combo_save,
+        revision_cf_credit,
+        revision_zone,
+    )
+    from src.training.math_meta import answers_equivalent, grade_math  # noqa: PLC0415
+    from src.training.trial2 import agreement_state  # noqa: PLC0415
+
+    B = len(response_texts)
+    # ★0919 혼합 팔(revision_pmi_cf): 두 항을 **한 경로**에서 돌린다 — 선택 규칙·구간
+    #   라우팅·상한/질량 몫이 갈리면 그 순간 대조가 무의미해진다. 순수 팔은 상대 항의
+    #   가중치가 0 이라 바이트 동일하다.
+    if source == "revision_cf":
+        do_cf, do_pmi, w_cf, w_pmi = True, False, 1.0, 0.0
+    elif source == "revision_pmi":
+        do_cf, do_pmi, w_cf, w_pmi = False, True, 0.0, 1.0
+    elif source == "revision_pmi_cf":
+        do_cf, do_pmi = True, True
+
+        def _w(knob: str, env: str) -> float:
+            v = read_knob(knob, None)
+            if v is None:
+                v = os.environ.get(env, "1.0") or 1.0
+            return float(v)
+
+        w_pmi = _w("dcpo_rev_w_pmi", "MATH_REV_W_PMI")
+        w_cf = _w("dcpo_rev_w_cf", "MATH_REV_W_CF")
+    else:
+        raise ValueError(f"_compute_revision_rmeta: unknown source {source!r}")
+    r_meta = np.zeros(B, dtype=np.float32)
+    r_cf = np.zeros(B, dtype=np.float32)
+    r_pmi = np.zeros(B, dtype=np.float32)
+    member_cf = np.zeros(B, dtype=np.float32)
+    member_pmi = np.zeros(B, dtype=np.float32)
+    member = np.zeros(B, dtype=np.float32)
+    char_mode = (zone_output == "char_spans")
+    zones = ([[] for _ in range(B)] if char_mode
+             else np.zeros((B, response_length), dtype=np.float32))
+    ref_fn = ref_logprobs_fn or _dcpo_v4_ref_logprobs
+
+    def _zone_of(i: int, zone: dict):
+        """이 행의 구간 표현 + «비었는가». 문자 모드는 토크나이저를 전혀 안 부른다."""
+        if char_mode:
+            sp = [(int(zone["zone_start"]), int(zone["zone_end"]))]
+            return sp, zone["zone_end"] > zone["zone_start"]
+        zm = _rev_zone_token_mask(tokenizer, response_ids_list[i],
+                                  zone["zone_start"], zone["zone_end"], response_length)
+        return zm.astype(np.float32), bool(zm.any())
+
+    anchor = str(read_knob("dcpo_revpmi_anchor", "gold_x") or "gold_x")
+    if anchor not in _REV_ANCHORS:
+        raise ValueError(f"dcpo_revpmi_anchor={anchor!r} not in {_REV_ANCHORS}")
+    states_raw = str(read_knob("dcpo_revpmi_states", "ALL_SAME,DOMINANT") or "")
+    ok_states = {s.strip().upper() for s in states_raw.split(",") if s.strip()}
+    scale = float(read_knob("dcpo_revpmi_scale", 1.0))
+    rev_save = float(read_knob("dcpo_revpmi_reversal_save", 1.0))
+    rev_derail = float(read_knob("dcpo_revpmi_reversal_derail", 2.0))
+    clip = float(read_knob("dcpo_revpmi_clip", 2.0))
+    rev_eps = float(read_knob("dcpo_revpmi_reversal_min_magnitude", 0.5))
+    # ★0920 확인(confirm) 크레딧 — docs/analysis/WHY_NO_GAIN_0920.md §4.
+    #   누락 질량(틀렸고 끝까지 안 고친 행)의 63.45% 가 «박스를 두 번 쓰고도 같은 답».
+    #   의심은 하는데 못 바꾼다. 그 행들을 «가짜 확인»으로 보고 크레딧 후보에 넣는다.
+    #   모드(dcpo_rev_confirm): 0 = 끔(기본) / 1 = **첫 답이 틀린 확인 행만** / 2 = 전부.
+    #   ★1 이 기본 처치인 이유: 확인 행의 ~90% 는 첫 답이 맞는 행이다(참조 롤아웃 2,718 중
+    #   2,458). 그들까지 값을 주면 «맞은 답을 한 번 더 박스에 쓰기»(길이·재박스)를 키우고
+    #   정작 노리는 수정 신호를 질량으로 덮는다. 2 는 그 대조(ablation)로만 남긴다.
+    _conf_raw = read_knob("dcpo_rev_confirm", None)
+    if _conf_raw is None:
+        _conf_raw = os.environ.get("MATH_REV_CONFIRM", "0") or 0
+    try:
+        confirm_mode = int(float(_conf_raw))
+    except Exception:
+        confirm_mode = 0
+    confirm_on = confirm_mode > 0
+    cf_save = float(read_knob("dcpo_revcf_save", 1.0))
+    cf_derail = float(read_knob("dcpo_revcf_derail", 2.0))
+
+    # ── 그룹 합의 상태 + 다수답(최종 답 기준) ────────────────────────────────
+    from src.training.math_meta import last_boxed  # noqa: PLC0415
+    finals = [last_boxed(t or "") for t in response_texts]
+    groups: dict = {}
+    for i, u in enumerate(uids or [0] * B):
+        groups.setdefault(str(u), []).append(i)
+    g_state, g_major = {}, {}
+    for u, idxs in groups.items():
+        st = agreement_state([finals[i] for i in idxs])
+        g_state[u] = str(st["state"])
+        g_major[u] = str(st["dominant_answer"] or "")
+
+    # ── 행 선택 ──────────────────────────────────────────────────────────────
+    sel: list = []                 # (i, zone, gold, first_correct, last_correct, major)
+    n_revised = 0
+    # ★스킵 회계(0918 GPU 스모크 후속): credit_rows=0 이 **언제나 설명 가능**해야 한다.
+    #   각 continue 마다 칸이 하나씩 있다 — 합이 안 맞으면 세지 않은 경로가 생긴 것이다.
+    skipped_state = 0     # 그룹 합의 상태가 dcpo_revpmi_states 밖
+    skipped_multi = 0     # 변화점이 둘 이상(첫→마지막이 한 번 바뀐 행만 받는다)
+    skipped_nobox = 0     # 박스가 2개 미만 — 수정 구간 자체가 없다
+    skipped_unrevised = 0  # 박스는 둘 이상인데 첫 답 ≡ 마지막 답(loose)
+    skipped_nogold = 0    # gold 가 비었다(채점 불가)
+    skipped_anchor = 0    # 앵커가 무의미: X ≡ A+ (gold_x/combo 는 X ≡ gold, self_mx 는 X ≡ 다수답)
+    skipped_zone = 0      # 구간이 토큰을 하나도 안 덮는다
+    skipped_tok = 0       # A+/A− 토큰화가 비었거나 길이가 안 맞는다(PMI 정렬 불가)
+    skipped_pmi_nan = 0   # ref logp 가 비유한 — fail-closed
+    skipped_confirm_cf = 0  # 확인 행을 cf 경로가 버렸다(답이 안 바뀌어 결과 항이 미정의)
+    n_confirm = 0           # 후보로 잡힌 확인 행
+    confirm_x_wrong = confirm_x_right = 0
+    confirm_x_right_skipped = 0   # 모드 1 에서 «첫 답이 맞는» 확인 행을 돌려보낸 수
+    first_correct_all: list = []
+    for i in range(B):
+        zone = revision_zone(response_texts[i] or "")
+        gold = (ground_truths[i] or "").strip()
+        if zone is not None and gold:
+            first_correct_all.append(
+                1.0 if grade_math(boxed_answer_string(zone["first_answer"]), gold) else 0.0)
+        if zone is None:
+            skipped_nobox += 1
+            continue
+        # kind: "revise" = 첫 답과 마지막 답이 다르다 / "confirm" = 박스를 두 번 이상
+        #   쓰고도 **같은 답**을 재확인했다(knob 이 켜졌을 때만 후보).
+        if zone["revised"]:
+            kind = "revise"
+            n_revised += 1
+        else:
+            # ★순수 확인만 받는다 — 중간에 다른 답이 있었으면 그건 확인이 아니라 수정·복귀다.
+            if not confirm_on or zone["n_change_points"] != 0:
+                skipped_unrevised += 1
+                continue
+            kind = "confirm"
+            n_confirm += 1
+        if not gold:
+            skipped_nogold += 1
+            continue
+        if kind == "revise" and zone["n_change_points"] != 1:
+            skipped_multi += 1
+            continue
+        u = str((uids[i] if uids is not None else 0))
+        if ok_states and g_state.get(u, "") not in ok_states:
+            skipped_state += 1
+            continue
+        fc = bool(grade_math(boxed_answer_string(zone["first_answer"]), gold))
+        lc = bool(grade_math(boxed_answer_string(zone["last_answer"]), gold))
+        if kind == "confirm" and confirm_mode == 1 and fc:
+            # 모드 1 = 가짜 확인만. 첫 답이 맞는 확인 행은 오늘과 똑같이 돌려보낸다.
+            confirm_x_right_skipped += 1
+            n_confirm -= 1
+            skipped_unrevised += 1
+            continue
+        sel.append((i, zone, gold, fc, lc, g_major.get(u, ""), kind))
+
+    n_save = n_derail = 0
+    shift_vals: list = []
+    confirm_shifts: list = []
+    member_kind = np.zeros(B, dtype=np.float32)   # 1.0 = 크레딧 받은 «확인» 행
+
+    if do_cf:
+        for (i, zone, _gold, fc, lc, _mj, kind) in sel:
+            if kind == "confirm":
+                # 결과 항은 «첫 답 대 마지막 답»의 차이라 확인 행에서는 정의되지 않는다(항상 0).
+                skipped_confirm_cf += 1
+                continue
+            zm, ok = _zone_of(i, zone)
+            if not ok:
+                skipped_zone += 1
+                continue
+            r = revision_cf_credit(fc, lc, cf_save, cf_derail)
+            r_cf[i] = r
+            member_cf[i] = 1.0
+            zones[i] = zm
+            n_save += 1 if r > 0 else 0
+            n_derail += 1 if r < 0 else 0
+    if do_pmi:
+        attempted: list = []
+        arm_prompts, arm_resps = [], []
+        for (i, zone, gold, fc, lc, major, kind) in sel:
+            # 앵커: A+ (밀 답) / A− (첫 답 X). 스킵 규칙은 앵커마다 다르다.
+            x = zone["first_answer"]
+            a_minus = x
+            derail_i = rev_derail
+            if kind == "confirm":
+                # ★확인 행은 X ≡ gold 가 **좋은 경우**다 — 건너뛰지 않고 둘로 나눈다.
+                #   (i) X 오답: A+=gold, A−=X. 같은 오답을 다시 쓰려는데 믿음이 gold 쪽으로
+                #       움직였으면 연속항(+ 반전 보너스)을 받는다. 믿음이 X 에 그대로면 ≈0 이거나
+                #       음수 — 그것이 «가짜 확인» 신호다.
+                #   (ii) X 정답: A−를 규칙 기반 근사오답(decoy)으로 둔다(A+ ≡ A− 면 신호가
+                #       구조적으로 0 이다). 보너스는 주지 않는다 — 연속항만(스펙 지시).
+                a_plus = (major or gold) if anchor == "self_mx" else gold
+                if not a_plus:
+                    skipped_anchor += 1
+                    continue
+                if answers_equivalent(a_plus, x):
+                    confirm_x_right += 1
+                    try:
+                        a_minus = _rule_based_decoy(gold, seed=17, checker=_check_correctness)
+                    except Exception:
+                        a_minus = _rule_based_decoy(gold, seed=17)
+                    save_i = 0.0
+                    derail_i = 0.0
+                else:
+                    confirm_x_wrong += 1
+                    save_i = rev_save
+            elif anchor == "self_mx":
+                a_plus = major
+                if not a_plus or answers_equivalent(a_plus, x):
+                    skipped_anchor += 1
+                    continue
+                save_i = rev_save
+            else:  # gold_x / combo
+                a_plus = gold
+                if answers_equivalent(gold, x):
+                    # 첫 답이 이미 gold — gold_x/combo 앵커에는 밀 방향이 없다(신호 0).
+                    skipped_anchor += 1
+                    continue
+                save_i = rev_save
+                if anchor == "combo":
+                    mj_correct = bool(major) and bool(grade_math(
+                        boxed_answer_string(major), gold))
+                    save_i = combo_save(rev_save, mj_correct)
+            zm, ok = _zone_of(i, zone)
+            if not ok:
+                skipped_zone += 1
+                continue
+            plus_str = boxed_answer_string(a_plus)
+            minus_str = boxed_answer_string(a_minus)
+            plus_ids = list(tokenizer.encode(plus_str, add_special_tokens=False))
+            minus_ids = list(tokenizer.encode(minus_str, add_special_tokens=False))
+            # ★0919: 길이 동일 요구를 뺐다. SHIFT = PMI_close − PMI_open 은 **같은 두
+            #   문자열**을 두 문맥에서 재므로 각 후보의 길이 편향이 차분에서 상쇄된다
+            #   (프로브 math_pmi_shift_probe.pair_target_ids 도 길이가 다른 쌍을 잰다).
+            #   길이가 다르면 아래 집계가 «각 후보 자기 토큰 전체» 합으로 떨어진다.
+            #   빈 토큰화와 A+ ≡ A− 는 여전히 신호가 0 이라 거른다.
+            if (not plus_ids) or (not minus_ids) or plus_str == minus_str:
+                skipped_tok += 1
+                continue
+            txt = response_texts[i] or ""
+            ctx_open_text = (prompt_texts[i] or "") + txt[: zone["zone_start"]]
+            ctx_close_text = (prompt_texts[i] or "") + txt[: zone["zone_end"]]
+            ctx_open = list(tokenizer.encode(ctx_open_text, add_special_tokens=False))
+            ctx_close = list(tokenizer.encode(ctx_close_text, add_special_tokens=False))
+            arm_prompts.append(ctx_open);  arm_resps.append(plus_ids)
+            arm_prompts.append(ctx_open);  arm_resps.append(minus_ids)
+            arm_prompts.append(ctx_close); arm_resps.append(plus_ids)
+            arm_prompts.append(ctx_close); arm_resps.append(minus_ids)
+            attempted.append((i, zm, save_i, derail_i, kind, plus_ids, minus_ids,
+                              divergent_token_mask(plus_ids, minus_ids)))
+        if attempted:
+            try:
+                nnodes = int(trainer.config.trainer.nnodes)
+            except Exception:
+                nnodes = 1
+            try:
+                n_gpus_per_node = int(trainer.config.trainer.n_gpus_per_node)
+            except Exception:
+                n_gpus_per_node = 4
+            try:
+                micro_bs = int(
+                    trainer.config.actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu)
+            except Exception:
+                micro_bs = 4
+            tensors, real_n = _build_pmi_score_batches(
+                arm_prompts, arm_resps, nnodes * n_gpus_per_node * micro_bs)
+            assert real_n == 4 * len(attempted), (
+                f"revision_pmi arm bookkeeping broken: {real_n} != 4*{len(attempted)}")
+            try:
+                ref_lp = ref_fn(trainer, tensors)
+            except Exception as e:
+                print(f"[DCPO-V4] revision_pmi ref scoring FAILED ({type(e).__name__}: {e}) "
+                      f"— R_meta all-zero this batch (member 0).", flush=True)
+                if os.environ.get("DCPO_DEBUG", "1") == "1":
+                    traceback.print_exc()
+                _log_revision_wandb_scalars(
+                    step, member_rate=0.0, shift_mean=0.0, n_save=0, n_derail=0,
+                    first_correct_mean=(float(np.mean(first_correct_all))
+                                        if first_correct_all else 0.0),
+                    revision_rate=(n_revised / max(1, B)),
+                    skips={"rev_skipped_state": float(skipped_state),
+                           "rev_skipped_multi": float(skipped_multi)})
+                return r_meta, member, zones, {}
+            for k, (i, zm, save_i, derail_i, kind, plus_ids, minus_ids,
+                    dmask) in enumerate(attempted):
+                Lp, Lm = len(plus_ids), len(minus_ids)
+                base = 4 * k
+                # ★각 팔은 `_build_pmi_score_batches` 에서 **자기 길이 마스크**로 채점된다
+                #   (response_mask_full[i, p_max : p_max+r_len]) — 그래서 길이가 달라도
+                #   [:Lp] / [:Lm] 슬라이스가 각 후보의 온전한 답 토큰 구간이다.
+                pmi_open = _rev_pmi_scalar(
+                    ref_lp[base + 0, :Lp].float().cpu().numpy(),
+                    ref_lp[base + 1, :Lm].float().cpu().numpy(), dmask)
+                pmi_close = _rev_pmi_scalar(
+                    ref_lp[base + 2, :Lp].float().cpu().numpy(),
+                    ref_lp[base + 3, :Lm].float().cpu().numpy(), dmask)
+                if not (np.isfinite(pmi_open) and np.isfinite(pmi_close)):
+                    skipped_pmi_nan += 1
+                    continue
+                r_pmi[i] = pmi_shift_reward(
+                    pmi_open, pmi_close, scale=scale, reversal_save=save_i,
+                    reversal_derail=derail_i, clip=clip,
+                    reversal_min_magnitude=rev_eps)
+                member_pmi[i] = 1.0
+                member_kind[i] = 1.0 if kind == "confirm" else 0.0
+                zones[i] = zm
+                shift_vals.append(float(pmi_close - pmi_open))
+                if kind == "confirm":
+                    confirm_shifts.append(float(pmi_close - pmi_open))
+                if pmi_open < -abs(rev_eps) and pmi_close > abs(rev_eps):
+                    n_save += 1
+                elif pmi_open > abs(rev_eps) and pmi_close < -abs(rev_eps):
+                    n_derail += 1
+
+    # ★두 항 합산. 어느 한 경로만 크레딧을 준 행도 member 다(다른 항은 0) — 혼합 팔의
+    #   요점이 «PMI 앵커 규칙이 지운 derail 을 결과 항이 되살리는가» 이므로, pmi 가
+    #   건너뛴 행을 cf 가 잡는 것이 **의도된 동작**이다.
+    r_meta[:] = (w_pmi * r_pmi + w_cf * r_cf).astype(np.float32)
+    member[:] = np.maximum(member_cf, member_pmi)
+    # 구간 마스크는 있는데 두 항이 모두 0 인 행은 얹을 것이 없다 — member 로 남기되
+    #   아래 가산기가 |c|<1e-9 로 자연히 건너뛴다(라우팅 규약 불변).
+
+    fc_mean = float(np.mean(first_correct_all)) if first_correct_all else 0.0
+    shift_mean = float(np.mean(shift_vals)) if shift_vals else 0.0
+    skips = {
+        "rev_skipped_state": float(skipped_state),
+        "rev_skipped_multi": float(skipped_multi),
+        "rev_skip_nobox": float(skipped_nobox),
+        "rev_skip_unrevised": float(skipped_unrevised),
+        "rev_skip_nogold": float(skipped_nogold),
+        "rev_skip_anchor": float(skipped_anchor),
+        "rev_skip_zone": float(skipped_zone),
+        "rev_skip_tok": float(skipped_tok),
+        "rev_skip_pmi_nan": float(skipped_pmi_nan),
+        "rev_skip_confirm_cf": float(skipped_confirm_cf),
+    }
+    _pm = [float(r_pmi[i]) for i in range(B) if member_pmi[i] > 0.5]
+    _cm = [float(r_cf[i]) for i in range(B) if member_cf[i] > 0.5]
+    tel = {"rev_member_rate": float(member.mean()), "rev_shift_mean": shift_mean,
+           "rev_save": float(n_save), "rev_derail": float(n_derail),
+           "rev_credit_rows": float(int(member.sum())),
+           "rev_credit_rows_pmi": float(int(member_pmi.sum())),
+           "rev_credit_rows_cf": float(int(member_cf.sum())),
+           "rev_credit_rows_any": float(int(member.sum())),
+           "rev_pmi_mean": float(np.mean(_pm)) if _pm else 0.0,
+           "rev_cf_mean": float(np.mean(_cm)) if _cm else 0.0,
+           # ★0920 확인(confirm) 크레딧 계기
+           "rev_confirm_rows": float(n_confirm),
+           "rev_credit_rows_confirm": float(int(member_kind.sum())),
+           "rev_confirm_shift_mean": (float(np.mean(confirm_shifts))
+                                      if confirm_shifts else 0.0),
+           "rev_confirm_x_wrong": float(confirm_x_wrong),
+           "rev_confirm_x_right": float(confirm_x_right),
+           "rev_confirm_x_right_skipped": float(confirm_x_right_skipped),
+           "rev_confirm_mode": float(confirm_mode),
+           "first_correct_mean": fc_mean, "revision_rate_batch": n_revised / max(1, B),
+           **skips}
+    # ★스텝당 한 줄, 언제나 찍는다(DCPO_DEBUG 와 무관): credit_rows=0 인 스텝이 왜 0 인지
+    #   이 줄만 보고 답할 수 있어야 한다. B = credit + 모든 skip_* 의 합이 되어야 한다.
+    print(f"[MATH][REV] skip breakdown step={step} src={source} anchor={anchor} B={B} "
+          f"revised={n_revised} credit_rows={int(member.sum())} "
+          + " ".join(f"{k[4:] if k.startswith('rev_') else k}={int(v)}"
+                     for k, v in skips.items())
+          + f" | save={n_save} derail={n_derail} first_correct_mean={fc_mean:.4f}"
+          + (f" | w_pmi={w_pmi:.3f} w_cf={w_cf:.3f} "
+             f"rows_pmi={int(member_pmi.sum())} rows_cf={int(member_cf.sum())} "
+             f"rows_any={int(member.sum())} "
+             f"pmi_mean={tel['rev_pmi_mean']:.4f} cf_mean={tel['rev_cf_mean']:.4f}")
+          + (f" | confirm_mode={confirm_mode} rows={n_confirm} "
+             f"credited={int(member_kind.sum())} "
+             f"x_wrong={confirm_x_wrong} x_right={confirm_x_right} "
+             f"x_right_skipped={confirm_x_right_skipped} "
+             f"confirm_shift_mean={tel['rev_confirm_shift_mean']:.4f}"
+             if confirm_on else ""),
+          flush=True)
+    _log_revision_wandb_scalars(
+        step, member_rate=float(member.mean()), shift_mean=shift_mean,
+        n_save=n_save, n_derail=n_derail, first_correct_mean=fc_mean,
+        revision_rate=(n_revised / max(1, B)), skips=skips)
+    _rev_guard_check(fc_mean, step)
+    return r_meta, member, zones, tel
+
+
+def _log_revision_wandb_scalars(step: int, *, member_rate: float, shift_mean: float,
+                                n_save: int, n_derail: int, first_correct_mean: float,
+                                revision_rate: float, skips: dict | None = None) -> None:
+    """dcpo/rev_* 계기 한 점(학습을 절대 죽이지 않는다). `skips` 의 칸은 그대로 dcpo/ 로 간다."""
+    try:
+        import wandb
+        if wandb.run is not None:
+            scal = {
+                "dcpo/rev_member_rate": float(member_rate),
+                "dcpo/rev_shift_mean": float(shift_mean),
+                "dcpo/rev_save": float(n_save),
+                "dcpo/rev_derail": float(n_derail),
+                "dcpo/first_correct_mean": float(first_correct_mean),
+                "dcpo/revision_rate_batch": float(revision_rate),
+            }
+            for k, v in (skips or {}).items():
+                scal[f"dcpo/{k}"] = float(v)
+            wandb.log(scal, step=int(step))
+    except Exception:
+        pass
+
+
 def _log_pmi_shift_wandb_scalars(step: int, *, attempted_rate: float,
                                  member_rate: float, n_save: int, n_derail: int,
                                  rmeta_mean_scored: float) -> None:
@@ -4303,6 +5406,41 @@ def _countdown_populate_token_rewards(data, algo_config):
     return data
 
 
+# S3 중단 규칙(설계 §4)이 보는 스텝 단위 텔레메트리 이력 — 메인프로세스 전용.
+_TRIAL2_HISTORY: list = []
+
+
+def _math_trial2_recredit(data, totals, step):
+    """S3 2-시도 팔 전용. 스테이지 표식(`s3_stage`/`s3_active`/`s3_trial`)이 배치에 없으면
+    **무조건 no-op** — 다른 팔·검증 배치는 이 함수를 지나도 바이트 동일하다."""
+    nt = getattr(data, "non_tensor_batch", {}) or {}
+    if "s3_stage" not in nt:
+        return totals
+    import numpy as _np   # noqa: PLC0415
+
+    from src.training import trial2 as _t2   # noqa: PLC0415
+    term = str(_ACTIVE_SDC_CONTEXT.get("trial2_term", "") or "")
+    if term not in _t2.TRIAL2_TERMS:
+        raise RuntimeError(
+            f"[TRIAL2] 배치에 s3_stage 가 있는데 팔의 항이 {term!r} 이다 — 배선 버그다.")
+    stages = [str(x) for x in nt["s3_stage"]]
+    active = [int(x) for x in nt["s3_active"]]
+    tkeys = [str(x) for x in nt["s3_trial"]]
+    uids = [str(u) for u in nt["uid"]]
+    rew, keys, tel = _t2.recredit(term, [float(x) for x in totals], stages, active,
+                                  uids, tkeys, _t2.gamma_traj())
+    data.non_tensor_batch["uid"] = _np.array(keys, dtype=object)
+    print(f"[TRIAL2] step={step} term={term} " + " ".join(
+        f"{k}={v:.4f}" for k, v in sorted(tel.items())), flush=True)
+    # ── 중단 규칙(설계 §4) — 기존 `_CountdownAbort`(rc 75) 경로를 그대로 쓴다 ──────
+    _TRIAL2_HISTORY.append({"step": int(step), "r1_mean": float(tel["r1_mean"]),
+                            "note_generic": _ACTIVE_SDC_CONTEXT.get("trial2_note_generic")})
+    _why = _t2.stop_reason(_TRIAL2_HISTORY)
+    if _why:
+        raise _CountdownAbort(f"[TRIAL2][ABORT] step={step} {_why}")
+    return rew
+
+
 def _math_populate_token_rewards(data, algo_config):
     """★MATH_META 메인프로세스 훅 — `_countdown_populate_token_rewards` 의 복제(같은 이유:
     verl 0.7.1 async 경로는 동기 `__call__` 을 우회하므로 여기서 발전기를 돌려야 한다)."""
@@ -4315,8 +5453,15 @@ def _math_populate_token_rewards(data, algo_config):
         raise RuntimeError("[MATH] tokenizer 가 컨텍스트에 없다 — 배선 버그다.")
     bs = len(data)
     prompt_length = data.batch["prompts"].shape[-1]
+    # ★S3 2-시도 팔: 비활성 슬롯은 유효 응답 토큰이 0 인 불활성 더미다(설계 §5) — 디코드
+    #   자체를 건너뛴다(pad 만 든 행을 채점하지 않는다). 표식 없는 배치는 전 행 디코드.
+    _nt = getattr(data, "non_tensor_batch", {}) or {}
+    _act = ([int(x) for x in _nt["s3_active"]] if "s3_active" in _nt else None)
     decoded = []
     for i in range(bs):
+        if _act is not None and not _act[i]:
+            decoded.append("")
+            continue
         item = data[i]
         text, _ids = _decode_response(
             tok, item.batch["prompts"], item.batch["responses"],
@@ -4327,6 +5472,11 @@ def _math_populate_token_rewards(data, algo_config):
         data=getattr(getattr(trainer, "config", None), "data", None)))
     step = int(getattr(trainer, "global_steps", 0) or 0)
     totals = _compute_math_arm_stash(shim, data, decoded, bs, prompt_length, step)
+    # ★S3 2-시도 팔(docs/DESIGN_S3_trial2_0915.md)의 **유일한 보상 훅**. 다른 팔은 아래
+    #   분기에 절대 들어오지 않는다(meta_term 이 trial2_* 인 팔만). 하는 일 두 가지:
+    #   ① 시퀀스 보상을 크로스-에피소드 리턴으로 다시 쓰고 ② uid 를 단계별로 갈라
+    #   verl 기본 GRPO 중심화가 «단계별·문제별 평균 빼기»가 되게 한다(새 advantage 코드 0줄).
+    totals = _math_trial2_recredit(data, totals, step)
     tlr = _t.zeros_like(data.batch["responses"], dtype=_t.float32)
     valid = data.batch["attention_mask"][:, prompt_length:].sum(dim=1) - 1
     for i in range(bs):
@@ -5160,6 +6310,56 @@ class SDCRayPPOTrainer(RayPPOTrainer):
             _sdc_mode in ("TRIOBJ_DCPO_V3", "TRIOBJ_DCPO_V4")
             and bool(getattr(_algo, "dcpo_format_replace", True))
         )
+
+        # ─── S3 «2-시도 GRPO + 반성문 크레딧» 게이트 (ADDITIVE) ─────────────────
+        # docs/DESIGN_S3_trial2_0915.md. 팔이 M_TRIAL2_* 가 **아니면** 아래 셋 다 꺼져
+        # 롤아웃 경로가 바이트 동일하다(다른 팔은 이 코드를 한 줄도 지나지 않는다).
+        self._s3_trial2 = None
+        self._s3_orig_generate = None
+        self._s3_k = 0
+        try:
+            from src.training import math_meta as _s3mm   # noqa: PLC0415
+            from src.training import trial2 as _s3t2      # noqa: PLC0415
+            _arm = str(getattr(_algo, "math_arm", "") or "").upper()
+            _term = (_s3mm.MATH_ARM_SPECS.get(_arm) or {}).get("meta_term")
+            if _term in _s3t2.TRIAL2_TERMS:
+                _n = int(self.config.actor_rollout_ref.rollout.n)
+                if _n % 3 != 0:
+                    raise ValueError(
+                        f"[TRIAL2] arm={_arm} 는 슬롯 규약상 rollout.n 이 3 의 배수여야 한다"
+                        f"(3K: 시도1 K + 반성문 K + 시도2 K) — 지금 n={_n}. "
+                        "run_math_arm.sh 가 M_TRIAL2_* 에 n=24(K=8)를 넣는다.")
+                self._s3_trial2 = _term
+                self._s3_k = _n // 3
+                _s3t2.assert_no_sandbag(_s3t2.gamma_traj())
+                # ★0915 스모크 실패 수리: `cf_prefix_agent` 는 **Ray 워커** 레지스트리에도
+                #   있어야 한다(드라이버 @register 만으론 agent_loop.py:692 assert 로 죽는다).
+                #   init_workers 보다 앞선 이 자리에서 config 에 yaml 경로를 심는다.
+                _s3_agent_yaml = _s3t2.ensure_cf_agent_registered(
+                    self.config.actor_rollout_ref.rollout)
+                print(f"[TRIAL2] agent_loop_config_path={_s3_agent_yaml}", flush=True)
+                _ACTIVE_SDC_CONTEXT["trial2_term"] = _term
+                # ★무효 레버 방지(cd9 규약): ATTEMPT1_KL_COEF 는 «기본 = 트레이너의 기존 KL
+                #   설정»으로만 배선돼 있다(= 전 스팬 공통 KL). 다른 값을 주면 시도-1 스팬에만
+                #   거는 KL 이 필요한데 그건 actor loss 수술이라 아직 없다 — 조용히 무시하지
+                #   말고 즉사시킨다.
+                _kl_default = float(getattr(getattr(getattr(
+                    self.config, "actor_rollout_ref", None), "actor", None),
+                    "kl_loss_coef", 0.0) or 0.0)
+                if _s3t2.attempt1_kl_coef(_kl_default) != _kl_default:
+                    raise NotImplementedError(
+                        f"[TRIAL2] ATTEMPT1_KL_COEF={os.environ.get('ATTEMPT1_KL_COEF')!r} != "
+                        f"actor.kl_loss_coef={_kl_default} — 시도-1 스팬 전용 KL 은 아직 "
+                        "배선되지 않았다(actor loss 수술 필요). 값을 지우거나 "
+                        "actor.kl_loss_coef 를 그 값으로 맞춰라.")
+                print(f"[TRIAL2] arm={_arm} term={_term} K={self._s3_k} n={_n} "
+                      f"gamma={_s3t2.gamma_traj()} note_mode={_s3t2.note_mode()} "
+                      f"note_max_tokens={_s3t2.note_max_tokens()} "
+                      f"only_wrong={_s3t2.retry_only_wrong()} "
+                      f"retry_gate={_s3t2.retry_gate()} "
+                      f"retry_gate_states={','.join(_s3t2.retry_gate_states())}", flush=True)
+        except ImportError as _e:  # pragma: no cover — defensive
+            print(f"[TRIAL2] 게이트 확인 건너뜀: {_e}", flush=True)
         if self._bci_inject_conf:
             from .meta_inject import default_conf_bins
             _n = int(self.config.actor_rollout_ref.rollout.n)
@@ -5226,6 +6426,21 @@ class SDCRayPPOTrainer(RayPPOTrainer):
             self._dcpo_cf_orig_generate = mgr.generate_sequences
             mgr.generate_sequences = self._dcpo_cf_generate_sequences
             print("[DCPO-V3] counterfactual generate_sequences wrap INSTALLED.")
+
+        # ─── S3 2-시도 wrap (ADDITIVE, 게이트) ────────────────────────────────
+        # 위 두 wrap 과 **같은 자리·같은 규약**이다(엔진 replica 가 깨어 있는 동안 2·3차
+        # 생성을 더 부른다). 팔이 M_TRIAL2_* 가 아니면 설치하지 않는다.
+        if getattr(self, "_s3_trial2", None):
+            mgr = getattr(self, "async_rollout_manager", None)
+            if mgr is None:
+                raise RuntimeError("[TRIAL2] async_rollout_manager 가 None — wrap 설치 불가.")
+            try:
+                import src.training.cf_prefix_agent  # noqa: F401,PLC0415  (prefix 수용 loop 등록)
+            except Exception as _e:  # pragma: no cover
+                print(f"[TRIAL2] cf_prefix_agent import 경고: {_e}", flush=True)
+            self._s3_orig_generate = mgr.generate_sequences
+            mgr.generate_sequences = self._s3_generate_sequences
+            print("[TRIAL2] 2-시도 generate_sequences wrap INSTALLED.")
 
     def _bci_build_seed_ids(self):
         """Tokenize each bin's confidence seed into a list of token-id lists (one
@@ -5699,6 +6914,468 @@ class SDCRayPPOTrainer(RayPPOTrainer):
                 ids = [t for t in ids if t != int(meta_open)]
             texts.append(self.tokenizer.decode(ids, skip_special_tokens=True))
         return texts
+
+    # ─── S3 «2-시도 GRPO + 반성문 크레딧» (docs/DESIGN_S3_trial2_0915.md) ──────────
+    def _s3_size_divisor(self) -> int:
+        """엔진 호출의 청크 정합 단위. `_validate` 가 쓰는 것과 같은 값
+        (`rollout.agent.num_workers`) — DataProto.chunk 가 len % num_workers == 0 을 요구한다."""
+        try:
+            d = int(self.config.actor_rollout_ref.rollout.agent.num_workers)
+        except Exception:
+            d = 1
+        return max(1, d)
+
+    def _s3_gen(self, gen_batch, idxs, *, prefix_ids=None, max_tokens=None):
+        """`idxs` 행만 생성한다. `prefix_ids` 가 있으면 `cf_prefix_agent`(chat 템플릿 우회,
+        사전 토큰화된 프롬프트)로, 없으면 **원래 경로 그대로**(시도 1) 생성한다.
+        `_dcpo_cf_call_engine` 의 «청크 정합을 위해 패딩하고 뒤를 버린다» 규약을 그대로 쓴다."""
+        import numpy as _np
+
+        n_real = len(idxs)
+        if n_real == 0:
+            return None
+        div = self._s3_size_divisor()
+        pad = (-n_real) % div
+        padded = list(idxs) + [idxs[0]] * pad
+        sub = gen_batch.select_idxs(padded)
+        base_meta = dict(getattr(gen_batch, "meta_info", {}) or {})
+        base_meta["validate"] = False
+        sub.meta_info = base_meta
+        m = len(padded)
+        if prefix_ids is not None:
+            arr = _np.empty(m, dtype=object)
+            for j in range(m):
+                arr[j] = [int(t) for t in prefix_ids[j % n_real]]
+            sub.non_tensor_batch["agent_name"] = _np.array(["cf_prefix_agent"] * m, dtype=object)
+            sub.non_tensor_batch["prefix_ids"] = arr
+        elif max_tokens:
+            # ★A2_RESP_LEN(0916): 판 폭(`data.max_response_length`)은 시도 2 기준으로 넓히고
+            #   시도 1 은 **호출 단위 max_tokens** 로 좁힌다. chat-템플릿 경로를 유지해야 하므로
+            #   기본 single_turn 을 상속한 `capped_single_turn_agent` 로 보낸다(cf_max_tokens 가
+            #   없으면 그 루프는 기본 single_turn 과 바이트 동일).
+            sub.non_tensor_batch["agent_name"] = _np.array(
+                ["capped_single_turn_agent"] * m, dtype=object)
+        if max_tokens:
+            mt = _np.empty(m, dtype=object)
+            for j in range(m):
+                mt[j] = int(max_tokens)
+            sub.non_tensor_batch["cf_max_tokens"] = mt
+        out = self._s3_orig_generate(sub)
+        return out.slice(0, n_real) if pad else out
+
+    # 판(layout) 텐서에서 **토큰 id** 인 키 — 패딩값이 pad_token_id 다(나머지는 0).
+    _S3_ID_KEYS = ("prompts", "responses", "input_ids", "teacher_ids")
+    _S3_PROMPT_KEYS = ("prompts",)                       # 프롬프트 폭, 왼쪽 패딩
+    _S3_RESP_KEYS = ("responses", "response_mask", "rollout_log_probs", "rm_scores")
+    _S3_FULL_KEYS = ("input_ids", "attention_mask", "position_ids")  # 판 전체 폭
+
+    def _s3_harmonize(self, outs):
+        """세 단계 출력을 **공통 판**으로 맞춘다 — `DataProto.concat` 은 키 집합도 폭도
+        같아야 한다.
+
+        ① 키: 교집합으로 깎는다(시도 1 은 `rollout_log_probs` 를 갖고 cf_prefix_agent 는
+           안 갖는다). 어차피 verl 은 `old_log_prob` 를 별도 actor 패스에서 다시 계산한다
+           (ray_trainer:1585).
+        ② 폭: **엔진이 맞춰 주지 않는다.** `AgentLoopWorker._agent_loop_postprocess` 는
+           `_pad_token_ids(..., padding="max_length")` 로 패딩만 하고 **자르지 않는다**
+           (HF `tokenizer.pad` 는 max_length 보다 긴 입력을 그대로 돌려준다 — verl09 환경에서
+           실측). 폭을 `prompt_length + response_length` 로 고정해 주는 것은 chat-템플릿
+           경로의 `_handle_prompt` cap(agent_loop.py:444-460, 주석 그대로 "so that
+           _pad_token_ids (and downstream torch.cat) can rely on uniform shapes")인데,
+           `cf_prefix_agent` 는 `prefix_ids` 를 엔진에 바로 먹이며 그 cap 을 **우회**한다.
+           그래서 반성문 호출(시도-1 본문을 프롬프트에 싣는다)의 프롬프트 폭은
+           max(prompt_length, len(prefix)) 가 되고 판 폭이 시도-1 과 어긋났다
+           (0915 스모크: attention_mask [(5120,), (8788,)]).
+
+        고치는 방식은 `_dcpo_cf_call_engine` 의 규약과 같다 — **엔진의 관례에 맞춰 우리가
+        패딩한다**: 프롬프트 쪽은 최대 프롬프트 폭으로 **왼쪽**, 응답 쪽은 최대 응답 폭으로
+        **오른쪽**. id 텐서는 pad_token_id, 마스크·logprob 는 0. `position_ids` 는 verl 의
+        관례대로 마스크에서 다시 계산한다(`compute_position_id_with_mask` =
+        `clip(cumsum(mask)-1, 0)`, model.py:240) — 왼쪽 패딩 구간이 0 으로 눌리고 유효
+        토큰에서 단조 증가한다. 3D(mrope) `position_ids` 는 마지막 축만 0 으로 패딩한다.
+        """
+        import torch as _t
+        import torch.nn.functional as _F
+
+        bk = set.intersection(*[set(o.batch.keys()) for o in outs])
+        nk = set.intersection(*[set(o.non_tensor_batch.keys()) for o in outs])
+        for o in outs:
+            drop_b = [k for k in list(o.batch.keys()) if k not in bk]
+            drop_n = [k for k in list(o.non_tensor_batch.keys()) if k not in nk]
+            if drop_b or drop_n:
+                o.pop(batch_keys=drop_b, non_tensor_batch_keys=drop_n)
+
+        # ★E-131(0916): 하류 스태시는 «배치 프롬프트 폭 == data.max_prompt_length» 를 불변식으로
+        #   쓴다(`_countdown_batch_geometry_guard` — 폭이 밀리면 모든 행의 응답 꼬리가 채점에서
+        #   사라진 2026-09-06 사고). 그래서 관측된 최대 폭이 아니라 **config 폭**으로 맞춘다
+        #   (config 가 더 크면 그 값으로, 못 읽으면 관측 최대로).
+        cfg_p = int(getattr(getattr(self.config, "data", None), "max_prompt_length", 0) or 0)
+        pmax = max([int(o.batch["prompts"].shape[-1]) for o in outs] + [cfg_p])
+        if cfg_p and pmax > cfg_p:
+            raise RuntimeError(
+                f"[TRIAL2] 단계 프롬프트가 {pmax} 토큰으로 data.max_prompt_length={cfg_p} 를 "
+                "넘었다 — 반성문 프롬프트(문제 + 시도-1 꼬리 NOTE_CTX_MAX_TOKENS + NOTE_ASK)가 "
+                "예산을 넘었다. NOTE_CTX_MAX_TOKENS 를 줄이거나 run_math_arm.sh 의 MAX_PROMPT 를 "
+                "올려라(E-131 은 폭을 config 와 정확히 같게 요구하므로 여기서 잘라 낼 수 없다).")
+        rmax = max(int(o.batch["responses"].shape[-1]) for o in outs)
+        pad = getattr(getattr(self, "tokenizer", None), "pad_token_id", None)
+        pad = 0 if pad is None else int(pad)
+
+        for o in outs:
+            b = o.batch
+            p = int(b["prompts"].shape[-1])
+            r = int(b["responses"].shape[-1])
+            dp, dr = pmax - p, rmax - r
+            if dp == 0 and dr == 0:
+                continue
+            for key in sorted(bk):
+                t = b[key]
+                if not hasattr(t, "shape") or t.dim() < 2:
+                    continue
+                v = pad if key in self._S3_ID_KEYS else 0
+                w = int(t.shape[-1])
+                # 이름이 아는 키는 이름으로, 모르는 키는 폭으로 가른다. 폭이 겹칠 수 있으니
+                # (p == r == p+r 는 불가하나 p == r 은 가능) **판 → 응답 → 프롬프트** 순서로
+                # 본다: 시도별 판 텐서는 언제나 p+r 폭이고, 이름 없는 추가 키
+                # (rm_scores 등)는 응답 폭이다.
+                kind = ("prompt" if key in self._S3_PROMPT_KEYS else
+                        "resp" if key in self._S3_RESP_KEYS else
+                        "full" if key in self._S3_FULL_KEYS else
+                        "full" if w == p + r else "resp" if w == r else
+                        "prompt" if w == p else "?")
+                want = {"prompt": p, "resp": r, "full": p + r}.get(kind)
+                if want is not None and w != want:
+                    raise RuntimeError(
+                        f"[TRIAL2] '{key}' 는 {kind} 폭 {want} 이어야 하는데 {w} 다 "
+                        f"(프롬프트 {p} · 응답 {r}) — 패딩 규약을 정할 수 없다.")
+                if kind == "prompt":
+                    if dp:
+                        b[key] = _F.pad(t, (dp, 0), value=v)
+                elif kind == "resp":
+                    if dr:
+                        b[key] = _F.pad(t, (0, dr), value=v)
+                elif kind == "full":
+                    # 판 전체 폭(input_ids/attention_mask/loss_mask/position_ids) —
+                    # 프롬프트 구간은 왼쪽, 응답 구간은 오른쪽으로 늘린다.
+                    head, tailp = t[..., :p], t[..., p:]
+                    b[key] = _t.cat([_F.pad(head, (dp, 0), value=v),
+                                     _F.pad(tailp, (0, dr), value=v)], dim=-1)
+                else:
+                    raise RuntimeError(
+                        f"[TRIAL2] '{key}' 의 폭 {w} 이 프롬프트({p})·응답({r})·판({p + r}) "
+                        "어느 것도 아니다 — 패딩 규약을 정할 수 없다.")
+            if "position_ids" in bk and b["position_ids"].dim() == 2:
+                # verl 관례: 왼쪽 패딩된 프롬프트에서도 attention_mask 의 누적합−1.
+                b["position_ids"] = _t.clip(
+                    _t.cumsum(b["attention_mask"], dim=-1) - 1, min=0)
+        for key in sorted(bk):
+            widths = {tuple(o.batch[key].shape[1:]) for o in outs}
+            if len(widths) != 1:
+                raise RuntimeError(
+                    f"[TRIAL2] '{key}' 폭을 맞추지 못했다 {sorted(widths)} — "
+                    "패딩 규약(프롬프트 왼쪽/응답 오른쪽)이 이 키에 닿지 않았다.")
+        if cfg_p and int(outs[0].batch["prompts"].shape[-1]) != cfg_p:
+            raise RuntimeError(
+                f"[TRIAL2] 맞춘 프롬프트 폭 {int(outs[0].batch['prompts'].shape[-1])} != "
+                f"data.max_prompt_length {cfg_p} — E-131 불변식이 깨진다.")
+        self._s3_unify_meta_info(outs)
+        return outs
+
+    @staticmethod
+    def _s3_unify_meta_info(outs):
+        """세 단계의 `meta_info` 를 **하나의 객체**로 합쳐 전 파트에 심는다.
+
+        `DataProto.concat` 은 `metrics` 를 뺀 모든 겹치는 meta_info 키에 대해
+        `assert merged[k] == v` 를 걸고(protocol.py:936-952) 죽는다 — 호출마다
+        `AgentLoopManager.generate_sequences` 가 자기 `timing` 딕트를 달아 주므로
+        (agent_loop.py:1253-1255) 세 파트의 `timing` 이 서로 다르다
+        (0915 스모크: `AssertionError: Conflicting values for meta_info key 'timing'`).
+
+        규약: out1(시도 1)의 meta_info 를 정본으로 삼고 —
+          * `timing` 은 **수치 항목을 키별로 더한다**(총 생성 시간이 텔레메트리에 남는다;
+            수치가 아닌 항목은 out1 것을 쓴다),
+          * 그 밖에 값이 어긋나는 키는 out1 것을 쓰고 한 줄 경고를 남긴다.
+        """
+        if not outs:
+            return outs
+        canon = dict(getattr(outs[0], "meta_info", {}) or {})
+        timing: dict = {}
+        for o in outs:
+            for k, v in (dict(getattr(o, "meta_info", {}) or {})).get("timing", {}).items():
+                num = isinstance(v, (int, float)) and not isinstance(v, bool)
+                if not num or (k in timing and not isinstance(timing[k], (int, float))):
+                    timing.setdefault(k, v)      # 수치가 아니면 먼저 본 값을 지킨다
+                else:
+                    timing[k] = timing.get(k, 0) + v
+        for o in outs[1:]:
+            for k, v in (dict(getattr(o, "meta_info", {}) or {})).items():
+                if k in ("timing", "metrics"):
+                    continue
+                if k not in canon:
+                    canon[k] = v
+                elif canon[k] != v:
+                    print(f"[TRIAL2] meta_info['{k}'] 가 단계마다 다르다 — 시도-1 값을 쓴다 "
+                          f"({canon[k]!r} 유지, {v!r} 버림).", flush=True)
+        if timing:
+            canon["timing"] = timing
+        canon.pop("metrics", None)   # concat 이 파트별 metrics 를 다시 모은다
+        for o in outs:
+            o.meta_info = canon
+        return outs
+
+    def _s3_blank_dead_rows(self, out, dead):
+        """비활성 슬롯을 **불활성 더미**로 만든다(설계 §5).
+
+        슬롯 차용 규약상 비활성 행도 텐서에는 존재해야 한다(행 수를 줄일 수 없다). 그래서
+        **내용을 없애는 대신 마스크를 없앤다** — 응답 구간의 `attention_mask` /
+        `response_mask` / `loss_mask` 를 전부 0 으로 만들고 `responses` 를 pad 로 덮는다.
+        폭은 고정이므로 «1-토큰 더미»는 물리적 길이가 아니라 **유효 토큰 0** 을 뜻한다.
+
+        왜 이게 손실·KL·엔트로피 어디에도 안 닿는가(verl 0.9 실측):
+          * 손실  `agg_loss`(core_algos.py:1170-1202) — token-mean 은 `masked_sum/loss_mask.sum()`,
+            seq-mean 계열은 `seq_mask = (loss_mask.sum(-1) > 0)` 로 **전부 마스크된 행을 분모에서도
+            제외**한다. 네 모드 모두 기여 0 이고 토큰 수도 늘지 않는다.
+          * KL   `apply_kl_penalty`(ray_trainer.py:103-108) — `kld * response_mask` 뒤
+            `masked_mean(..., response_mask)`.
+          * 엔트로피 `agg_loss(entropys, response_masks, ...)`(ray_trainer.py:1563-1568).
+          * 어드밴티지 — GRPO 는 `advantages * response_mask` 를 싣는다(보상도 0 이다).
+        ★프롬프트 구간의 attention 은 **남긴다**: 전 구간 0 인 행은 varlen/packing 경로에서
+          길이-0 시퀀스가 되어 죽는다. 프롬프트 forward 비용(행당 1회)은 감수한다 —
+          그래도 학습 토큰은 설계 §5 의 1.26× 안에 있다.
+        """
+        if not dead:
+            return out
+        import torch as _t
+
+        b = out.batch
+        plen = int(b["prompts"].shape[-1])
+        pad = getattr(self.tokenizer, "pad_token_id", None)
+        pad = 0 if pad is None else int(pad)
+        idx = _t.as_tensor(sorted({int(i) for i in dead}), dtype=_t.long)
+        keys = set(b.keys())
+        b["responses"][idx] = pad
+        b["attention_mask"][idx, plen:] = 0
+        if "input_ids" in keys:
+            b["input_ids"][idx, plen:] = pad
+        for key in ("response_mask", "loss_mask"):
+            if key not in keys:
+                continue
+            t = b[key]
+            # response_mask 는 응답 폭, loss_mask 는 판(전체 폭)에 따라 다르다 — 폭으로 가른다.
+            if t.shape[-1] == b["attention_mask"].shape[-1]:
+                t[idx, plen:] = 0
+            else:
+                t[idx] = 0
+        if "rollout_log_probs" in keys:
+            b["rollout_log_probs"][idx] = 0.0
+        return out
+
+    @staticmethod
+    def _s3_resp_lengths(out) -> list[int]:
+        """한 단계 출력의 행별 **유효 응답 토큰 수**(오른쪽 패딩 앞부분)."""
+        if out is None:
+            return []
+        b = out.batch
+        p = int(b["prompts"].shape[-1])
+        return [int(v) for v in b["attention_mask"][:, p:].sum(-1).tolist()]
+
+    def _s3_stage_telemetry(self, out1, outN, out2, r1, r2_roll, wrong) -> dict:
+        """단계별 길이·절단률·구제율 한 줄. `resp_w` 는 그 호출의 응답 폭(=엔진 상한)이라
+        `len >= resp_w` 인 행이 **잘린 행**이다 — a2 가 잘리면 `\\boxed` 가 없어 R2=0 이
+        되므로, 낮은 r2 가 «판단»인지 «예산»인지는 이 수로만 갈린다."""
+        def _stat(out):
+            ls = self._s3_resp_lengths(out)
+            if not ls:
+                return {"n": 0, "mean": 0.0, "p50": 0, "max": 0, "trunc": 0.0}
+            w = int(out.batch["responses"].shape[-1])
+            s = sorted(ls)
+            return {"n": len(ls), "mean": sum(ls) / len(ls), "p50": s[len(s) // 2],
+                    "max": s[-1], "trunc": sum(1 for x in ls if x >= w) / len(ls)}
+        a1, nt, a2 = _stat(out1), _stat(outN), _stat(out2)
+        tel = {"a1": a1, "note": nt, "a2": a2,
+               "r1_roll": sum(r1) / max(1, len(r1)),
+               "r2_roll": sum(r2_roll) / max(1, len(r2_roll))}
+        print(f"[TRIAL2][LEN] a1 n={a1['n']} mean={a1['mean']:.0f} p50={a1['p50']} "
+              f"trunc={a1['trunc']:.3f} | note n={nt['n']} mean={nt['mean']:.0f} "
+              f"trunc={nt['trunc']:.3f} | a2 n={a2['n']} mean={a2['mean']:.0f} "
+              f"p50={a2['p50']} max={a2['max']} trunc={a2['trunc']:.3f} "
+              f"| r2_rollout={tel['r2_roll']:.4f} (하류 스태시 r2_mean 과 같아야 한다)",
+              flush=True)
+        return tel
+
+    def _s3_dump(self, problems, lay, wrong, notes, a2_texts, r2_roll, p2) -> str | None:
+        """`TRIAL2_DUMP=1` 일 때만 — a2 프롬프트·응답·R2 를 처음 몇 건 jsonl 로 떨군다.
+        프롬프트가 정말 `fact_prompt + note` 인지, 생성이 assistant 턴을 이어 쓰는지를
+        **눈으로** 확인하는 유일한 길이다(기본 OFF — 경로도 만들지 않는다)."""
+        if os.environ.get("TRIAL2_DUMP", "0") != "1":
+            return None
+        import json as _json
+
+        n = int(os.environ.get("TRIAL2_DUMP_N", "4"))
+        exp = str(getattr(getattr(self.config, "trainer", None), "experiment_name", "s3"))
+        path = f"/hdd_data/seungpil/scratch/logs/trial2_dump_{exp}.jsonl"
+        step = int(getattr(self, "global_steps", 0) or 0)
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "a", encoding="utf-8") as fh:
+                for j in range(min(n, len(a2_texts))):
+                    i = wrong[j]
+                    fh.write(_json.dumps({
+                        "step": step, "stage": "a2", "trial_row": int(i),
+                        "problem": problems[lay["a1"][i]][:400],
+                        "note": notes[i],
+                        "prompt_text": self.tokenizer.decode(p2[j]),
+                        "response_text": a2_texts[j],
+                        "r2": float(r2_roll[j]),
+                    }, ensure_ascii=False) + "\n")
+                for j in range(min(n, len(wrong))):
+                    i = wrong[j]
+                    fh.write(_json.dumps({"step": step, "stage": "note",
+                                          "trial_row": int(i), "note": notes[i]},
+                                         ensure_ascii=False) + "\n")
+        except Exception as _e:      # 계기 실패로 학습을 죽이지 않는다
+            print(f"[TRIAL2][DUMP] 실패: {type(_e).__name__}: {_e}", flush=True)
+            return None
+        return path
+
+    def _s3_generate_sequences(self, gen_batch: "DataProto"):
+        """S3 2-시도 롤아웃. 슬롯 규약(설계 §2): 문제 p 의 3K 행 중 0…K−1 = 시도 1,
+        K…2K−1 = 반성문, 2K…3K−1 = 시도 2. 행 수를 **늘리지 않으므로**
+        `fit()` 의 `batch.repeat(n).union(gen_batch_output)` 를 건드릴 필요가 없다.
+
+        검증 배치는 그대로 통과한다(평가는 시도 1 뿐 — 설계 §6).
+        """
+        if gen_batch.meta_info.get("validate", False):
+            return self._s3_orig_generate(gen_batch)
+        import numpy as _np
+
+        from src.training import math_meta as _mm
+        from src.training import trial2 as _t2
+
+        k = int(self._s3_k)
+        B = len(gen_batch)
+        if B % (3 * k) != 0:
+            raise RuntimeError(f"[TRIAL2] 배치 {B} 가 3K={3 * k} 의 배수가 아니다 — "
+                               "슬롯 규약이 깨졌다(rollout.n 과 interleave 확인).")
+        P = B // (3 * k)
+        lay = _t2.slot_layout(P, k)
+        nt = gen_batch.non_tensor_batch
+        problems = [str(x) for x in _mm.nt_col(nt, "problem")]
+        golds = [str(x) for x in _mm.nt_col(nt, "gold")]
+        variant = str((_mm.MATH_ARM_SPECS.get(
+            str(getattr(self.config.algorithm, "math_arm", "")).upper()) or {})
+            .get("variant", "math_opt"))
+        gamma = _t2.gamma_traj()
+        gate = _t2.retry_gate()
+        gate_states = _t2.retry_gate_states()
+        mode = _t2.note_mode()
+
+        # ── 1) 시도 1 (chat-템플릿 경로 그대로, 생성만 A1_RESP_LEN 으로 좁힌다) ──────
+        #   판 폭은 A2_RESP_LEN 기준으로 넓어져 있다(run_math_arm.sh 의 MAX_RESP) —
+        #   시도 1 은 여기서 4096 에서 멈춘다(`trial2.a1_max_tokens`).
+        _resp_w = int(getattr(getattr(self.config, "data", None), "max_response_length", 0) or 0)
+        out1 = self._s3_gen(gen_batch, lay["a1"],
+                            max_tokens=_t2.a1_max_tokens(_resp_w) if _resp_w else None)
+        a1_texts = self._dcpo_cf_decode_texts(out1, -1)
+        r1 = [float(_mm.grade_math(a1_texts[i], golds[lay["a1"][i]]))
+              for i in range(len(a1_texts))]
+        # ── 1.5) 재시도 게이트(0916) — 어느 a1 행이 시도 2 를 받는가 ─────────────
+        # gate=wrong  gold 채점이 틀린 행만(현행 기본, RETRY_ONLY_WRONG 의 옛 의미)
+        # gate=agree  **gold 없이** 같은 문제 K 개 a1 답의 합의 상태로 고른다 —
+        #             추론 프로토콜(`math_activation_gate.agreement_state`)과 같은 규칙.
+        # gate=all    전 행.
+        a1_answers = [str(_mm.last_boxed(t) or "") for t in a1_texts]
+        wrong, gate_tel = _t2.select_retry_rows(r1, k, gate=gate, states=gate_states,
+                                                answers=a1_answers)
+        _by_state = {s: int(v) for s, v in sorted(gate_tel["retried_by_state"].items())}
+        print(f"[TRIAL2][GATE] gate={gate_tel['gate']} states={gate_tel['states']!r} "
+              f"retried={gate_tel['n_retried']:.0f}/{gate_tel['n_rows']:.0f} "
+              f"by_state={_by_state} "
+              f"a1_correct_frac={gate_tel['retried_a1_correct_frac']:.4f}", flush=True)
+
+        # ── 2) 노트 단계(오답 trial 만, ≤ NOTE_MAX_TOKENS) ──────────────────────
+        # mode=self → 반성문(NOTE_ASK) · switch/switch_notx → 방법 라벨(LABEL_ASK,
+        # F1 사전 패스와 같은 질문) · none/notx → 사전 패스 없음(죽은 자리).
+        notes = [""] * (k * P)
+        reasons: list[str] = []
+        if wrong and _t2.note_stage_on(mode):
+            ask = [self.tokenizer.encode(
+                _t2.note_stage_prompt(self.tokenizer, variant, problems[lay["a1"][i]],
+                                      a1_texts[i], mode),
+                add_special_tokens=False) for i in wrong]
+            outN = self._s3_gen(gen_batch, [lay["note"][i] for i in wrong],
+                                prefix_ids=ask, max_tokens=_t2.note_max_tokens())
+            raw = self._dcpo_cf_decode_texts(outN, -1)
+            for j, i in enumerate(wrong):
+                n, why = _t2.clean_stage_text(mode, raw[j], _mm.last_boxed(a1_texts[i]))
+                notes[i] = n
+                reasons.append(why)
+            print(f"[TRIAL2] note leak {_t2.leak_stats(reasons)}", flush=True)
+        else:
+            outN = None
+
+        # ── 3) 시도 2 — **문맥 폐기**, 사실 줄 + (모드별) 한 문장만 ────────────────
+        # notx 계열의 X 는 a1 의 `\boxed` 값이다 — 채점기가 이미 R1=0 이라 말한 행만이므로
+        # gold 노출이 아니다. `\boxed` 가 없으면 그 절은 빠진다(trial2.attempt2_extra).
+        if wrong:
+            p2 = [self.tokenizer.encode(
+                _t2.attempt2_prompt(self.tokenizer, variant, problems[lay["a1"][i]],
+                                    notes[i], mode=mode, label=notes[i],
+                                    notx=_mm.last_boxed(a1_texts[i])),
+                add_special_tokens=False) for i in wrong]
+            # ★A2_RESP_LEN(0916): 재시도는 첫 풀이보다 길다(오프라인 중앙값 4,675 토큰 —
+            #   4096 에서 57% 절단). 판 폭 안에서 이 값까지 쓴다.
+            out2 = self._s3_gen(gen_batch, [lay["a2"][i] for i in wrong], prefix_ids=p2,
+                                max_tokens=_t2.a2_resp_len(_resp_w) if _resp_w else None)
+        else:
+            p2 = []
+            out2 = None
+
+        # ── 2.5) 단계별 길이·절단·구제 계기(0916) ────────────────────────────────
+        # 왜: r2 가 낮을 때 «판단이 아니라 길이가 결과를 정했다»를 가르려면 **a2 만의**
+        # 길이·절단률이 필요하다. verl 의 `response_length/*` 는 세 단계를 섞어 놓아 못 쓴다.
+        # 채점도 여기서 한 번 더 한다 — 하류 스태시(`_compute_math_arm_stash`)가 내는 r2 와
+        # 어긋나면 그건 재조립·슬라이스 버그이고, 같으면 생성 자체가 원인이다.
+        a2_texts: list[str] = []
+        if out2 is not None:
+            a2_texts = self._dcpo_cf_decode_texts(out2, -1)
+            r2_roll = [float(_mm.grade_math(a2_texts[j], golds[lay["a1"][i]]))
+                       for j, i in enumerate(wrong)]
+            self._s3_stage_telemetry(out1, outN, out2, r1, r2_roll, wrong)
+            self._s3_dump(problems, lay, wrong, notes, a2_texts, r2_roll, p2)
+
+        # ── 4) 슬롯 재조립 ─────────────────────────────────────────────────────
+        # 비활성 슬롯은 **모양을 빌리기 위해서만** 실재 행을 복제한다 — 그 뒤
+        # `_s3_blank_dead_rows` 가 응답 마스크를 전부 0 으로 만들어 불활성화한다(설계 §5).
+        # 복제를 그대로 두면 어드밴티지가 0 이어도 KL·엔트로피·token-mean 분모는
+        # 어드밴티지를 보지 않으므로 한 궤적이 배치의 2/3 를 차지한다(0915 감사 A).
+        pos = {i: j for j, i in enumerate(wrong)}
+        fillN = [pos.get(i, 0) for i in range(k * P)] if outN is not None else None
+        fill2 = [pos.get(i, 0) for i in range(k * P)] if out2 is not None else None
+        srcN = outN.select_idxs(fillN) if outN is not None else out1.select_idxs(list(range(k * P)))
+        src2 = out2.select_idxs(fill2) if out2 is not None else out1.select_idxs(list(range(k * P)))
+        parts = self._s3_harmonize([out1, srcN, src2])
+        cat = DataProto.concat(parts)
+        KP = k * P
+        perm, stages, active = _t2.reassembly_plan(P, k, pos.keys(), note_on=outN is not None)
+        uids = [str(u) for u in nt["uid"]]
+        # 세 단계 행을 잇는 연결 키 — uid 는 3K 블록 안에서 동일하므로 블록 머리에서 읽는다.
+        tkeys = [_t2.trial_id(i, k, uids[(i // (3 * k)) * 3 * k]) for i in range(B)]
+        gen_output = cat.select_idxs(perm)   # ★advanced indexing = 새 저장소(원본과 공유 안 함)
+        if len(gen_output) != B:
+            raise RuntimeError(f"[TRIAL2] 재조립 결과 {len(gen_output)} != 원 배치 {B}")
+        dead = [i for i in range(B) if not active[i]]
+        self._s3_blank_dead_rows(gen_output, dead)
+        gen_output.non_tensor_batch["s3_stage"] = _np.array(stages, dtype=object)
+        gen_output.non_tensor_batch["s3_active"] = _np.array(active, dtype=object)
+        gen_output.non_tensor_batch["s3_trial"] = _np.array(tkeys, dtype=object)
+        # 중단 규칙(설계 §4)이 읽는 «반성문이 전부 일반 문구인가» — 생성 자리에서만 안다.
+        _ACTIVE_SDC_CONTEXT["trial2_note_generic"] = (
+            _t2.leak_stats(reasons)["generic_rate"] if reasons else None)
+        print(f"[TRIAL2] rollout P={P} K={k} r1_mean={sum(r1) / max(1, len(r1)):.4f} "
+              f"retried={len(wrong)}/{KP} dead={len(dead)}/{B} "
+              f"note_mode={mode} gamma={gamma}", flush=True)
+        return gen_output
 
     def _compute_reward_colocate(self, batch: DataProto) -> DataProto:
         fn = self._sdc_reward_fn
@@ -6250,6 +7927,14 @@ def _patch_verl_for_sdc():
         elif _adv_sdc_mode == _MATH_MODE:
             # ★cd9 분리 채점의 두 번째 절반: 답 스팬은 위 GRPO 그대로, 메타 스팬 항만 여기서.
             data = _math_add_meta_region_advantage(data)
+            # ★M_RETRY_SL 전용(다른 팔은 스태시가 비어 즉시 no-op): 결정 토큰 자기지도 항.
+            data = _math_add_decision_sl_advantage(data)
+            # ★M_DIFF 전용(다른 팔은 스태시가 비어 즉시 no-op): 난이도 판단 항 — **중심화 없이**
+            #   메타 스팬에 얹고 배치 평균 |답 어드밴티지| 로 자른다.
+            data = _math_add_diff_meta_advantage(data)
+            # ★M_REV_* 전용(다른 팔은 스태시가 비어 즉시 no-op): 행 내부 수정 크레딧을
+            #   **중심화 없이** 수정 구간(첫 \boxed 끝 → 마지막 \boxed 시작)에만 얹는다.
+            data = _math_add_revision_advantage(data)
         return data
 
     ray_trainer_module.compute_advantage = patched_compute_advantage
@@ -6368,6 +8053,26 @@ def main(config):
         #   같은 모양의 «조용한 무시». 설정된 것만 조건부로 싣는다(미설정≠빈 문자열 규약).
         for _k in ("COUNTDOWN_ABORT_ARITH", "COUNTDOWN_ABORT_PATIENCE",
                    "MATH_JUDGE_LABELS", "MATH_JUDGE_W", "MATH_ACC_FLOOR",
+                   "MATH_RETRY_W", "MATH_RETRY_LEN_COST",     # ★수정 3: 재시도 팔 가중치·길이 비용(워커에서 읽음)
+                   "MATH_AGREE_MON_W", "MATH_AGREE_CTL_W",    # ★0914b: M_AGREE 모니터링/통제 가중치(워커에서 읽음)
+                   "MATH_SL_W", "MATH_SL_WARMUP_STEPS",       # ★0914 SL: 결정 토큰 자기지도 가중치·워밍업(워커에서 읽음)
+                   # ★수정 6 M_CRIT: 비평 정보이득 항의 가중치·자·표적 상한·얼어붙은 채점기 경로(워커에서 읽음)
+                   "MATH_CRIT_W", "MATH_CRIT_SCALE", "MATH_CRIT_MAX_TOK", "MATH_CRIT_SCORER_PATH",
+                   "MATH_DIS_W",                              # ★0914d M_DIS: 자기증류 판단 크레딧 가중치(워커에서 읽음)
+                   "MATH_DIFF_W",                             # ★0914e M_DIFF: 난이도 판단 크레딧 가중치(워커에서 읽음)
+                   # ★0918 M_REV_*: 수정 구간 크레딧 가중치·PMI 앵커(워커에서 읽음 — math_meta.rev_weight/rev_anchor)
+                   "MATH_REV_W", "MATH_REV_ANCHOR", "MATH_REV_CAP_MULT", "MATH_REV_MASS_SHARE",
+                   "MATH_REV_W_PMI", "MATH_REV_W_CF", "MATH_REV_CONFIRM",
+                   # ★S3 2-시도(0915/0916): 워커의 `_s3_generate_sequences`/`trial2.py` 가 읽는다.
+                   "GAMMA_TRAJ", "NOTE_MODE", "NOTE_MAX_TOKENS", "NOTE_CTX_MAX_TOKENS",
+                   "RETRY_ONLY_WRONG", "ATTEMPT1_KL_COEF",
+                   "RETRY_GATE", "RETRY_GATE_STATES",  # ★0916: gold 없는 재시도 게이트(워커에서 읽음)
+                   # ★H2 0921 M_TRIAL2_SCORE: 비대칭 Δ 계수(워커의 trial2.row_reward 가 읽는다)
+                   "SCORE_ALPHA_POS", "SCORE_ALPHA_NEG",
+                   "A1_RESP_LEN", "A2_RESP_LEN",   # ★0916: 시도별 생성 상한(판 폭은 config)
+                   # ★S3 2-시도 팔(0915): 크로스-에피소드 할인·반성문 상한·모드·재시도 범위·시도1 KL
+                   "GAMMA_TRAJ", "NOTE_MAX_TOKENS", "NOTE_MODE", "RETRY_ONLY_WRONG",
+                   "ATTEMPT1_KL_COEF",
                    "CHK_AMP", "CHK_AMP_NEG", "PLAN_NG_W", "W_PERSIST", "LEN_BONUS_CHARS",
                    "NOSURR_FRAC", "VTR_TAU", "VTR_WHEN_W"):
             if os.environ.get(_k) is not None:

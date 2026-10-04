@@ -1,0 +1,3 @@
+# SPONT_PFX 에이전트 루프 등록 — verl `actor_rollout_ref.rollout.agent.agent_loop_config_path`(mc/run.sh 가 PFX 에만).
+- name: mc_prefix
+  _target_: mc.trainer.prefix_agent_loop

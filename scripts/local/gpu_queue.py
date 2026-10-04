@@ -350,6 +350,9 @@ def _finalize_job(gpu: int, job_path: Path, job: dict, rc: int) -> None:
         return
     os.rename(tmp, dest)                       # 최종 내용(exit_code·finished_at)으로 덮는다
     print(f"[worker gpu={gpu}] {job_path.name} -> {final_state} (rc={rc})")
+    # 사이트 갱신 트리거(감시 없음) — 워커를 막지 않도록 백그라운드·timeout, 실패해도 무시.
+    subprocess.Popen("timeout 900 bash /hdd_data/seungpil/mc_site/refresh.sh >> /hdd_data/seungpil/mc_site/refresh.log 2>&1",
+                     shell=True, start_new_session=True)
 
 
 def _worker_loop(gpu: int, use_lock: bool, poll_s: float) -> None:

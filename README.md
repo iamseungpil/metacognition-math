@@ -13,13 +13,13 @@
 > **처음 오셨나요? 이 넷만 읽으면 됩니다.**
 > 1. 이 파일 — 무엇을 왜 하는가 · **지금 어디인가**
 > 2. [`docs/PREREGISTRATION_countdown_sc_round.md`](docs/PREREGISTRATION_countdown_sc_round.md) — **현재 라운드**(cd7)의 설계·판정 기준
-> 3. [`docs/CLAIMS.md`](docs/CLAIMS.md) — 과거(instruct·base 복제) 세대에서 무엇이 참이고 무엇이 닫혔는가
-> 4. [`docs/CONSTITUTION.md`](docs/CONSTITUTION.md) — 진단 원칙 · 지표 대시보드 · 발사 게이트
+> 3. [`docs/archive/CLAIMS.md`](docs/archive/CLAIMS.md) — 과거(instruct·base 복제) 세대에서 무엇이 참이고 무엇이 닫혔는가
+> 4. [`docs/archive/CONSTITUTION.md`](docs/archive/CONSTITUTION.md) — 진단 원칙 · 지표 대시보드 · 발사 게이트
 >
 > 아래 본문의 "메타-CoT 형식 + PMI-shift" 서술은 **instruct 세대**(2026-07)의 방법이다.
 > 그 방법을 Qwen3-8B-Base로 복제하는 시도, 그리고 그 다음 Countdown 과제로 전환해 모델
 > 내부 신호로 메타를 가려내려는 시도(cd6)는 모두 막혔다 — 자세한 경위는
-> [`docs/POSTMORTEM_cd6_rulers_2026-09-03.md`](docs/POSTMORTEM_cd6_rulers_2026-09-03.md).
+> [`docs/archive/POSTMORTEM_cd6_rulers_2026-09-03.md`](docs/archive/POSTMORTEM_cd6_rulers_2026-09-03.md).
 
 ---
 
@@ -28,7 +28,7 @@
 instruct 세대(§검증된 것)와 Qwen3-8B-Base 복제(§아래 한 줄)는 **모두 과거 라운드**다.
 base 복제가 처치 소멸로 막힌 뒤, 과제를 Countdown(다중해 산술 탐색)으로 바꾸고 "모델
 속 신호로 좋은 메타를 가려내는 자(ruler)" 25개를 검증했으나 **전부 탈락**했다
-(`docs/POSTMORTEM_cd6_rulers_2026-09-03.md`). 지금 도는 것은 그 다음 수:
+(`docs/archive/POSTMORTEM_cd6_rulers_2026-09-03.md`). 지금 도는 것은 그 다음 수:
 모델 **자신의** 신호(막힘·과신·행동)만으로 메타인지를 보상하는 **cd7 SC 라운드**다.
 
 - **머신**: 로컬 H100 80GB × 4 (GPU 0~3), 클러스터가 아니라 `scripts/local/` 큐.
@@ -53,7 +53,7 @@ Countdown으로 과제를 바꿔 모델 내부 신호로 메타를 가려내려 
 탈락했다(cd6 postmortem). 지금 검증 중인 것은 근거-진리 없이 모델 **자신의** 신호만으로
 메타인지를 보상해도 정답률이 오르는가이며, 아직 답이 없다.
 
-## 검증된 것 — 보존 산출물 독립 재채점 (전체는 [`docs/CLAIMS.md`](docs/CLAIMS.md))
+## 검증된 것 — 보존 산출물 독립 재채점 (전체는 [`docs/archive/CLAIMS.md`](docs/archive/CLAIMS.md))
 
 ⚠ **아래는 instruct 세대(2026-07) 결과다.** 같은 방법을 Qwen3-8B-Base로 복제하자
 프라이밍은 널(+0.18pp, C-026), 보상 패키지는 음수(−2.48pp, C-029)였다 — instruct
@@ -136,7 +136,7 @@ math-DCPO(클러스터 amlt) 재현은 아래 "HF 자산" 절 이전 세대 기�
 
 ## 협업
 
-협업자 온보딩과 실험 요청: [`docs/COLLABORATION_REQUEST.md`](docs/COLLABORATION_REQUEST.md)
+협업자 온보딩과 실험 요청: [`docs/archive/COLLABORATION_REQUEST.md`](docs/archive/COLLABORATION_REQUEST.md)
 
 ## 더 보기
 

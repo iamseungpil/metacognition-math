@@ -55,3 +55,5 @@ hf_data/
 outputs/
 *.bak_*
 tea_debug.log
+.jev-loop/
+.jev-audit/

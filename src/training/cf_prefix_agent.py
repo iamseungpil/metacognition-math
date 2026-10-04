@@ -64,6 +64,12 @@ class CFPrefixAgentLoop(SingleTurnAgentLoop):
             # vLLM SamplingParams.logit_bias = {token_id: bias}; -100.0 masks <|meta|>.
             sp["logit_bias"] = {int(k): float(v) for k, v in dict(lb).items()}
 
+        # S3 2-시도(trial2): 반성문 생성은 짧아야 한다(NOTE_MAX_TOKENS=64). 행별 상한을
+        # non_tensor 로 받는다 — DCPO 경로는 이 키를 절대 싣지 않으므로 그쪽은 바이트 동일.
+        _s3_mt = kwargs.get("cf_max_tokens")
+        if _s3_mt:
+            sp["max_tokens"] = int(_s3_mt)
+
         # s3b §3.2 (BEST-EFFORT, default OFF): bound the meta block by forcing a
         # close after a token budget. Same verbatim-splat path as logit_bias above
         # (vllm_async_server.py builds SamplingParams(**sp)), so a vLLM that accepts
@@ -106,3 +112,27 @@ class CFPrefixAgentLoop(SingleTurnAgentLoop):
         )
         out.extra_fields.update({"turn_scores": [], "tool_rewards": []})
         return out
+
+
+@register("capped_single_turn_agent")
+class CappedSingleTurnAgentLoop(SingleTurnAgentLoop):
+    """chat-템플릿 경로(= 기본 single_turn)를 그대로 쓰되 **행별 생성 상한**만 받는다.
+
+    왜(0916, S3 A2_RESP_LEN): verl 의 agent-loop 은 판 폭을
+    `rollout.response_length`(= `data.max_response_length`)로 패딩·절단한다
+    (agent_loop.py:775-789, single_turn_agent_loop.py `[: self.response_length]`).
+    시도 2 에 6144 를 주려면 그 폭을 6144 로 올려야 하는데, 그러면 시도 1 도 덩달아
+    6144 를 쓴다 — M_G0 기준선(4096)과 예산이 어긋난다. 이 루프는 `cf_max_tokens` 를
+    sampling_params 에 실어(vllm_async_server.py:555 가 pop 해서 쓴다) 시도 1 만
+    4096 에서 멈추게 한다. 판은 넓고 생성만 좁다 — 남는 자리는 오른쪽 패딩이라
+    채점·마스크에 영향이 없다.
+
+    `cf_max_tokens` 가 없으면 기본 single_turn 과 **바이트 동일**하다.
+    """
+
+    async def run(self, sampling_params: dict[str, Any], **kwargs):
+        mt = kwargs.pop("cf_max_tokens", None)
+        if mt:
+            sampling_params = dict(sampling_params)
+            sampling_params["max_tokens"] = int(mt)
+        return await super().run(sampling_params, **kwargs)

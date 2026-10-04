@@ -1,0 +1,19 @@
+# 자발적 수정 습관 증류 파일럿 (2026-09-17)
+# 데이터: scripts/local/build_revision_traces.py --label majority --states ALL_SAME,DOMINANT
+#   204행(정답 대조 정밀도 ALL_SAME .98 / DOMINANT .89, gold 는 데이터에 없음).
+#   wrong_prefix = 첫 박스까지 → sft._should_mask_prefix 가 마스크하므로 손실은
+#   **재도출 구간부터**만 걸린다(= 내용이 아니라 «언제 멈춰 되짚는가» 를 배운다).
+# 관문: 롤아웃 재측정에서 수정률이 base 2.91% 대비 오르고 정밀도 .77 이 유지되는가.
+# wandb 는 env.sh 가 끈다. 실행: scripts/local/run_sft.sh 이 파일.
+model_name_or_path: /hdd_data/seungpil/scratch/models/Qwen3-4B-Instruct-2507
+dataset_path: /hdd_data/seungpil/scratch/data/revision_v1/traces.parquet
+output_dir: /hdd_data/seungpil/scratch/checkpoints/sft_revision_v1   # ABSOLUTE
+run_name: sft-revision-v1
+wandb_project: metacot-math
+num_train_epochs: 2
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+learning_rate: 1.0e-5
+max_length: 12288
+save_strategy: epoch
+eval_strategy: "no"

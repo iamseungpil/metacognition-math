@@ -1237,6 +1237,7 @@ def compose_dcpo_region_advantage(
     trunc_penalty: float = 0.0,
     trunc_open_mask=None,
     rmeta_member_mask=None,
+    rmeta_center: bool = True,
     R_emit=None,
     w_emit: float = 0.0,
     emit_route: str = "global",
@@ -1321,7 +1322,21 @@ def compose_dcpo_region_advantage(
 
     _rmeta_member = rmeta_member_mask if rmeta_member_mask is not None else member_mask
     A_corr = group_mean_subtract(R_corr, index, member=member_mask).to(device)  # [B,1]
-    A_meta = group_mean_subtract(R_meta, index, member=_rmeta_member).to(device)  # [B,1]
+    if rmeta_center:
+        A_meta = group_mean_subtract(R_meta, index, member=_rmeta_member).to(device)  # [B,1]
+    else:
+        # REVISION credit: the R_meta scalar is computed WITHIN the row (first
+        # answer vs last answer), never against siblings — group-centering it
+        # would reintroduce the very sibling comparison the design removes (and
+        # a group of 8 with one revised row would hand the other 7 a spurious
+        # -r/8). Members keep their raw scalar; non-members are zeroed exactly
+        # like the centered path does.
+        _rm = torch.as_tensor(R_meta, dtype=torch.float32).reshape(-1, 1).to(device)
+        if _rmeta_member is not None:
+            _rm = _rm * torch.as_tensor(
+                np.asarray(_rmeta_member, dtype=np.float32), dtype=torch.float32
+            ).reshape(-1, 1).to(device)
+        A_meta = _rm
     A_cal = group_mean_subtract(R_cal, index, member=member_mask).to(device)    # [B,1]
 
     # Anchor-on-R_corr scale normalization (spec 2026-06-15 §3.1): keep R_corr as

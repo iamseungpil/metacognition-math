@@ -1,0 +1,17 @@
+# 설계 C «발화 = 결정, 실행 = 리셋» — 결정 발화 SFT v1 (2026-09-17)
+# 데이터: scripts/local/build_decision_traces.py 산출(시도-1 텍스트 + commit/restart 발화,
+#   wrong_prefix=시도-1 텍스트·scenario=redirect → 손실은 발화 토큰에만). gold 무.
+# 관문: math_decision_eval.py 문제 내 restart AUC ≥ .60, utter_gated 가 always/never 를 등토큰에서 이김.
+# wandb 는 env.sh 가 WANDB_MODE=disabled 로 끈다(0911 지시). 실행: scripts/local/run_sft.sh 이 파일.
+model_name_or_path: /hdd_data/seungpil/scratch/models/Qwen3-4B-Instruct-2507
+dataset_path: /hdd_data/seungpil/scratch/data/decision_v1/traces.parquet
+output_dir: /hdd_data/seungpil/scratch/checkpoints/sft_decision_v1   # ABSOLUTE
+run_name: sft-decision-v1
+wandb_project: metacot-math
+num_train_epochs: 1
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+learning_rate: 1.0e-5
+max_length: 12288
+save_strategy: epoch
+eval_strategy: "no"

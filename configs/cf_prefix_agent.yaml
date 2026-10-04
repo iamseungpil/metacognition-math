@@ -1,0 +1,22 @@
+# verl agent-loop 등록 파일(`actor_rollout_ref.rollout.agent.agent_loop_config_path`).
+#
+# 왜 필요한가: `@register("cf_prefix_agent")`(src/training/cf_prefix_agent.py) 는 **드라이버
+# 프로세스**의 `_agent_loop_registry` 만 채운다. 실제 생성은 Ray actor
+# `AgentLoopWorker` 안에서 일어나고, 그 프로세스의 레지스트리는 verl 이 import 하는 기본
+# 두 개(single_turn_agent / tool_agent)뿐이다 — 그래서 이 yaml 없이
+# `agent_name="cf_prefix_agent"` 를 실으면
+#   AssertionError: Agent loop cf_prefix_agent not registered,
+#   registered agent loops: dict_keys(['single_turn_agent', 'tool_agent'])
+# 로 죽는다(agent_loop.py:692). 워커는 __init__ 에서 이 파일을 읽어
+# 레지스트리에 넣는다(agent_loop.py:548-553).
+#
+# `name` 은 hydra.utils.instantiate 가 클래스의 **kwargs 로 흘려보내므로 무해하다.
+# `_target_` import 는 Ray 워커의 PYTHONPATH(레포 루트)로 해결된다 — verl_sdc.py 의
+# ray.init(runtime_env={"env_vars": {"PYTHONPATH": ...}}) 가 전파한다.
+- name: cf_prefix_agent
+  _target_: src.training.cf_prefix_agent.CFPrefixAgentLoop
+
+# ★S3 A2_RESP_LEN(0916): 시도-1 만 호출 단위 max_tokens 로 좁히는 chat-템플릿 루프.
+#   cf_max_tokens 가 없으면 기본 single_turn 과 동일하게 동작한다.
+- name: capped_single_turn_agent
+  _target_: src.training.cf_prefix_agent.CappedSingleTurnAgentLoop

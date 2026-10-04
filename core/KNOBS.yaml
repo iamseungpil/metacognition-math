@@ -181,7 +181,7 @@ load_bearing:
       read(\"dcpo_rmeta_source\", \"cf\") fell open onto the deprecated CF path silently
       whenever the knob was missing OR the config was unreadable."
     default: null
-    legal_values: "cf, none, pmi_shift
+    legal_values: "cf, none, pmi_shift, revision_cf, revision_pmi
       (src/training/verl_sdc.py, _V4_RMETA_SOURCES)"
     why_load_bearing: |
       This one knob selects which of eight mutually exclusive meta-reward generations runs,
@@ -396,6 +396,74 @@ default_only:
       So the confound guard against 'meta that just restates the body' has never been on, on
       any run, and nothing in any config or dashboard says so. Unlike meta_floor there is no
       measurement of what it costs — that is a gap, not a clearance."
+
+  # ── REVISION credit (2026-09-18). Read ONLY when dcpo_rmeta_source is
+  #    revision_cf / revision_pmi. Both route onto the revision zone (end of the
+  #    first \boxed -> start of the last \boxed) and are NOT group-centered.
+  dcpo_revpmi_anchor:
+    kind: knob
+    status: default-only
+    reached_by: [M_REV_PMI_GOLD, M_REV_PMI_COMBO]
+    set_at: "code default in _compute_revision_rmeta (src/training/verl_sdc.py)"
+    default: gold_x
+    legal_values: "gold_x, self_mx, combo"
+    role: "which (A+, A-) pair the teacher-forced belief shift is measured over"
+  dcpo_revpmi_states:
+    kind: knob
+    status: default-only
+    reached_by: [M_REV_CF, M_REV_PMI_GOLD, M_REV_PMI_COMBO]
+    set_at: "code default in _compute_revision_rmeta"
+    default: "ALL_SAME,DOMINANT"
+    role: "group agreement states whose rows may earn revision credit (SPLIT/SCATTER/NOANS skipped)"
+  dcpo_revpmi_scale:
+    kind: knob
+    status: default-only
+    reached_by: [M_REV_PMI_GOLD, M_REV_PMI_COMBO]
+    set_at: "code default in _compute_revision_rmeta"
+    default: 1.0
+    role: "magnitude multiplier on the clipped continuous belief-shift term"
+  dcpo_revpmi_reversal_save:
+    kind: knob
+    status: default-only
+    reached_by: [M_REV_PMI_GOLD, M_REV_PMI_COMBO]
+    set_at: "code default in _compute_revision_rmeta"
+    default: 1.0
+    role: "bonus magnitude on an A- -> A+ sign reversal (doubled by combo_save when the group majority is wrong, anchor=combo)"
+  dcpo_revpmi_reversal_derail:
+    kind: knob
+    status: default-only
+    reached_by: [M_REV_PMI_GOLD, M_REV_PMI_COMBO]
+    set_at: "code default in _compute_revision_rmeta"
+    default: 2.0
+    role: "penalty magnitude on an A+ -> A- sign reversal (asymmetric: derail >= save)"
+  dcpo_revpmi_clip:
+    kind: knob
+    status: default-only
+    reached_by: [M_REV_PMI_GOLD, M_REV_PMI_COMBO]
+    set_at: "code default in _compute_revision_rmeta"
+    default: 2.0
+    role: "symmetric clip on the raw shift PMI_close - PMI_open"
+  dcpo_revpmi_reversal_min_magnitude:
+    kind: knob
+    status: default-only
+    reached_by: [M_REV_PMI_GOLD, M_REV_PMI_COMBO]
+    set_at: "code default in _compute_revision_rmeta"
+    default: 0.5
+    role: "eps band both PMI positions must clear before a reversal counts (kills the zero-crossing discontinuity)"
+  dcpo_revcf_save:
+    kind: knob
+    status: default-only
+    reached_by: [M_REV_CF]
+    set_at: "code default in _compute_revision_rmeta"
+    default: 1.0
+    role: "outcome-improvement credit when a wrong first answer is revised to a correct last answer"
+  dcpo_revcf_derail:
+    kind: knob
+    status: default-only
+    reached_by: [M_REV_CF]
+    set_at: "code default in _compute_revision_rmeta"
+    default: 2.0
+    role: "outcome-worsening penalty when a correct first answer is revised to a wrong last answer"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 4 — LIVE (reached by b3p, explicitly set)
