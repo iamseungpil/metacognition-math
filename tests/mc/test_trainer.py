@@ -241,18 +241,15 @@ def test_run_sh_pfx_lineage_suffixes(tmp_path):
     assert lineage(PFX_FORK="ch") == "mc_SPONT_PFX_gold_s2_r4096_forkch_p1333sw"
     assert lineage(PFX_TRUNC="mask", PFX_FORK="ch", PFX_BREAK_W="2", PFX_REP="0.25") == "mc_SPONT_PFX_gold_s2_r4096_forkch_tm_bw2_rp0.25_p1333sw"
     assert lineage(PFX_FORK="ch", PFX_REP="0.25", PFX_ADV_CAP="4") == "mc_SPONT_PFX_gold_s2_r4096_forkch_rp0.25_ac4_p1333sw"
-    assert lineage(PFX_REP="0.25", PFX_REP_HARD="1", PFX_DISTILL="0.25") == "mc_SPONT_PFX_gold_s2_r4096_rp0.25h_ds0.25_p1333sw"
     assert lineage(PFX_REP="0.25", PFX_DISTILL="0.5", PFX_KEEP="0.5", KL_COEF="0.05") == \
         "mc_SPONT_PFX_gold_s2_r4096_rp0.25_ds0.5_kp0.5_kl0.05_p1333sw"                         # 수정 53
     assert lineage(PFX_REP="0.25", PFX_DISTILL="0.5", PFX_DISTILL_SHUF="1", KL_COEF="0.05") == \
         "mc_SPONT_PFX_gold_s2_r4096_rp0.25_ds0.5x_kl0.05_p1333sw"                               # 수정 55 위약
-    assert lineage(PFX_REP="0.25", PFX_DISTILL="0.5", PFX_DISTILL_ROWS="all", KL_COEF="0.05") == \
-        "mc_SPONT_PFX_gold_s2_r4096_rp0.25_ds0.5a_kl0.05_p1333sw"                               # 수정 59 모든 행
     assert lineage(PFX_REP="0.25", PFX_DISTILL="0.5", PFX_ALLOC="0.5", KL_COEF="0.05") == \
         "mc_SPONT_PFX_gold_s2_r4096_rp0.25_ds0.5_al0.5_kl0.05_p1333sw"                          # 수정 61 말 단위 배분
     assert lineage(PFX_REP="0.25", PFX_DISTILL="0.5", PFX_ALLOC="0.5", PFX_ALLOC_SHUF="1", KL_COEF="0.05") == \
         "mc_SPONT_PFX_gold_s2_r4096_rp0.25_ds0.5_al0.5x_kl0.05_p1333sw"                         # 수정 61e 배분 위약
-    assert lineage(PFX_REP="0.25", PFX_DISTILL="0.5", PFX_DISTILL_ROWS="wrong") == "mc_SPONT_PFX_gold_s2_r4096_rp0.25_ds0.5_p1333sw"
+    assert lineage(PFX_REP="0.25", PFX_DISTILL="0.5") == "mc_SPONT_PFX_gold_s2_r4096_rp0.25_ds0.5_p1333sw"
     cmd = subprocess.run(["bash", "mc/run.sh", "SPONT_PFX", "2", "20", "--dry-run"], cwd=root, env={**base, "KL_COEF": "0.05"},
                          capture_output=True, text=True).stdout
     assert "actor_rollout_ref.actor.kl_loss_coef=0.05" in cmd and "kl_loss_coef" not in subprocess.run(

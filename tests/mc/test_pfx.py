@@ -535,22 +535,6 @@ def test_pfx_rep_penalizes_only_after_third_same_box_even_on_cut_rows(pfx_env, m
     assert tel["mass_share"] <= H.REP_CAP + 1e-6
 
 
-def test_pfx_rep_hard_blocks_praise_on_loop_span_without_cap(pfx_env, monkeypatch):
-    """수정 46 PFX_REP_HARD: 정답으로 끝난 반복 행도 반복 구간 adv ≤ 0(정확히 −c) · 그 앞은 그대로 · 총량 상한 없음."""
-    pytest.importorskip("verl")
-    for k in ("PFX_FORK", "PFX_BREAK_W"):
-        monkeypatch.delenv(k, raising=False)
-    rep3 = r" \boxed{7} a \boxed{7} b \boxed{7}"
-    cases = [(r"x \boxed{3}", "7", FILL + rep3 + " tail tail tail."), (r"x \boxed{3}", "7", FILL + r" \boxed{9}")]
-    _fork_setup(monkeypatch, cases, ["g0"] * 2)
-    base, _ = _pfx_run(monkeypatch)
-    adv, (_, _, tel) = _pfx_run(monkeypatch, PFX_REP="0.5", PFX_REP_HARD="1")
-    j0, n0 = sorted(tel["rep_clamp"].items())[0][1], len(cases[0][2])
-    assert float(base[0, j0]) > 0 and tel["credit_cap"] == 0.0                     # 성공 행: 원래 꼬리도 칭찬
-    assert torch.allclose(adv[0, :j0], base[0, :j0]) and torch.allclose(adv[0, j0:n0], torch.full_like(adv[0, j0:n0], -0.5))
-    assert torch.allclose(adv[1], base[1])
-
-
 def test_pfx_adv_cap_bounds_spikes_and_leaves_small_rows(pfx_env, monkeypatch):
     """수정 48 PFX_ADV_CAP: CH·BREAK_W 곱 뒤 말 단위 adv 를 ±c 로 자름 — 상한 안 행은 그대로, 계기 adv_absmax."""
     pytest.importorskip("verl")
@@ -609,11 +593,43 @@ def test_pfx_distill_wrong_first_rows_per_token_credit_and_span_end(pfx_env, mon
         sv = t1["ds_credit"][i][1]
         assert t1["ds_credit"][i][0] == j0 and sorted(sv) == pytest.approx(sorted(vals)) and sv != pytest.approx(vals)
     monkeypatch.delenv("PFX_DISTILL_SHUF")
-    _, (_, _, ta) = _pfx_run(monkeypatch, PFX_DISTILL="0.25", PFX_DISTILL_ROWS="all")   # 수정 59: gold 라우팅 없음
-    assert sorted(ta["ds_credit"]) == [0, 1, 2, 3, 5] and ta["ds_credit"][0] == t0["ds_credit"][0]   # 맞은 첫 답 2·3 도 · 틀린 행은 그대로
-    assert ta["ds_rows_right"] == 2.0 and t0["ds_rows_right"] == 0.0 and ta["ds_credit"][2][0] == H.DS_FRONT
-    with pytest.raises(ValueError, match="PFX_DISTILL_ROWS"):
-        _pfx_run(monkeypatch, PFX_DISTILL="0.25", PFX_DISTILL_ROWS="right")
+    for k in ("PFX_DISTILL_ROWS", "PFX_REP_HARD"):                       # 지운 손잡이(59b·46) = 즉사
+        with pytest.raises(ValueError, match="지운 손잡이"):
+            _pfx_run(monkeypatch, PFX_DISTILL="0.25", **{k: "1"})
+        monkeypatch.delenv(k)
+
+
+def test_pfx_production_combo_mask_breakw_alloc_distill(pfx_env, monkeypatch):
+    """수정 62b — 실제 팔 조합(PFX_TRUNC=mask · BREAK_W 2 · ALLOC · DISTILL): 잘린 행 adv 0 · BREAK_W 는 배분 뒤 곱(맞→틀 행만 ×2) ·
+    증류 가산은 틀린 첫 답 행에만 · adv = 결과 adv × 무게 + 증류 크레딧."""
+    pytest.importorskip("verl")
+    for k in ("PFX_FORK", "PFX_REP", "PFX_KEEP", "PFX_BREAK_W"):
+        monkeypatch.delenv(k, raising=False)
+    cases = [(r"x \boxed{3}", "7", FILL + r" \boxed{7}"), (r"x \boxed{3}", "7", FILL + r" \boxed{3} again."),   # 틀→맞 · 틀→같은 오답
+             (r"y \boxed{7}", "7", FILL + " done."), (r"y \boxed{7}", "7", FILL + r" \boxed{4}"),             # 맞→맞 · 맞→틀
+             (r"w \boxed{3}", "7", FILL * 3), (r"w \boxed{3}", "7", FILL)]                                    # 잘림(가장 긴 행) · 외톨이
+    _fork_setup(monkeypatch, cases, ["g0", "g0", "g1", "g1", "g2", "g2"])
+    real_init = _PfxBatch.__init__
+
+    def init(self, cases=CASES):
+        real_init(self, cases)
+        self.batch["old_log_probs"] = torch.full(self.batch["responses"].shape, -1.0)
+        self.batch["ref_log_prob"] = torch.zeros(self.batch["responses"].shape)
+    monkeypatch.setattr(_PfxBatch, "__init__", init)
+    from mc import trainer as T
+    monkeypatch.setattr(T, "ref_tree_score", lambda tr, trees, per_token=False:
+                        [[0.3 * (t % 5) for t in range(bl[0][2])] for _, bl in trees])
+    base, _ = _pfx_run(monkeypatch, PFX_TRUNC="mask")
+    _, (_, _, t1) = _pfx_run(monkeypatch, PFX_TRUNC="mask", PFX_ALLOC="0.5", PFX_DISTILL="0.25")
+    adv, (_, _, t2) = _pfx_run(monkeypatch, PFX_TRUNC="mask", PFX_ALLOC="0.5", PFX_DISTILL="0.25", PFX_BREAK_W="2")
+    w1, w2, ds = t1["pfx_weights"], t2["pfx_weights"], t2["ds_credit"]
+    assert t2["pfx_drop"] == [4] and float(adv[4].abs().sum()) == 0.0 and sorted(ds) == [0, 1, 5]
+    assert w2[3] == pytest.approx([2 * v for v in w1[3]]) and all(w2[i] == pytest.approx(w1[i]) for i in (0, 1, 2))
+    for i in range(4):
+        n, cr = len(cases[i][2]), torch.zeros(len(cases[i][2]), dtype=adv.dtype)
+        if i in ds:
+            cr[ds[i][0]:ds[i][0] + len(ds[i][1])] = torch.tensor(ds[i][1], dtype=adv.dtype)
+        assert torch.allclose(adv[i, :n], base[i, :n] * torch.tensor(w2[i], dtype=adv.dtype) + cr)
 
 
 def test_pfx_alloc_mixed_groups_change_vs_keep_tokens(pfx_env, monkeypatch):

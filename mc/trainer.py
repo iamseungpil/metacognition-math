@@ -25,8 +25,8 @@ CTX: dict = {}
 #: 워커에 실을 환경변수 — Ray 워커는 드라이버 env 를 **상속하지 않는다**(사고 2회).
 WORKER_ENV_KEYS = ("LABEL", "MC_CKPT_DIR", "PROMPT_VARIANT", "MC_DUMP_ADV",
                    "OUTCOME_MODE", "PFX_WEIGHT_KEY", "PFX_TRUNC", "PFX_FORK", "PFX_REP",
-                   "PFX_BREAK_W", "PFX_REP_HARD", "PFX_ADV_CAP", "PFX_DISTILL", "PFX_DISTILL_SHUF",
-                   "PFX_DISTILL_ROWS", "PFX_ALLOC", "PFX_ALLOC_SHUF", "PFX_KEEP", "PFX_GUARD_ABS")
+                   "PFX_BREAK_W", "PFX_ADV_CAP", "PFX_DISTILL", "PFX_DISTILL_SHUF",
+                   "PFX_ALLOC", "PFX_ALLOC_SHUF", "PFX_KEEP", "PFX_GUARD_ABS")
 
 
 def reward_loop_score(data_source=None, solution_str="", ground_truth="", extra_info=None, **kw):
@@ -189,10 +189,6 @@ def add_span_credit(data, credit: dict, tel: dict, step=0):
         adv.clamp_(-cap, cap)
         if ret is not None:
             ret.clamp_(-cap, cap)
-    for i, j0 in (tel.get("rep_clamp") or {}).items():   # 수정 46: 반복 구간은 결과 칭찬을 받지 않는다(벌만)
-        adv[i, int(j0):] = adv[i, int(j0):].clamp(max=0.0)
-        if ret is not None:
-            ret[i, int(j0):] = ret[i, int(j0):].clamp(max=0.0)
     drop = list(tel.get("pfx_drop") or [])
     if drop and mask is not None:   # 수정 32c: 잘린 행은 token-mean 분모·KL 에서도 뺀다(DAPO). 사본(attention_mask 의 view
         orig = mask                 # 일 수 있음) · 첫 토큰(adv 0)은 남겨 전부 잘린 미니배치의 0/0 을 막는다

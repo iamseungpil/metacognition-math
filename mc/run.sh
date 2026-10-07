@@ -7,21 +7,22 @@
 # LABEL=gold(기본) · RESP_LEN 4096 · ROLLOUT_N 8 · 에이전트 루프 mc_prefix(mc/agent_loop.yaml) ·
 # MAX_PROMPT 8704. PFX_FORK=ch(수정 28) = 섞인 묶음을 교차 적합 이웃으로 재배분.
 # PFX_TRUNC=mask(수정 32) = 상한에서 잘린 이어쓰기는 학습에서 제외. PFX_BREAK_W=w(수정 43) = 맞은 첫 답을 뒤집은 실패 벌 × w.
-# PFX_REP=c(수정 43) = 같은 답 3번째 확인 뒤 말에만 작은 벌(끝낸·잘린 행 모두). PFX_REP_HARD=1(수정 46) = 그 구간 결과 칭찬 차단·벌 상한 없음.
+# PFX_REP=c(수정 43) = 같은 답 3번째 확인 뒤 말에만 작은 벌(끝낸·잘린 행 모두).
 # 앞부분 표집 무게 = extra_info[PFX_WEIGHT_KEY=weight](수정 25). 계보 mc_SPONT_PFX_<label>_s<seed>_r<len>
-# [_fork<mode>][_tm][_bw<w>][_rp<c>][_<TAG>]. (R2·zero·RIGHT_SHARE·STOP·TAIL0·loop 는 실패로 삭제 — 수정 33/38/43)
+# [_fork<mode>][_tm][_bw<w>][_rp<c>][_ac<c>][_ds<β>[x]][_al<κ>[x]][_kp<γ>][_kl<c>][_<TAG>].
+# (R2·zero·RIGHT_SHARE·STOP·TAIL0·loop·REP_HARD·DISTILL_ROWS 는 실패로 삭제 — 수정 33/38/43/46/59b)
 #
 # ★PROMPT_VARIANT=plain: 프롬프트는 parquet 의 `prompt` 컬럼에 구워져 있으므로(verl RLHFDataset)
 #   plain 으로 구운 DATA_TRAIN/DATA_VAL 을 함께 줘야 한다(mc/pool.py 가 PROMPT_VARIANT 로 굽는다;
 #   어긋나면 mc/trainer.check_prompt_lengths 가 즉사). 평가·롤아웃은 이 env 만으로 갈린다.
-# ★LR_SCHED=cosine(기본)|constant — constant 는 워밍업 0. 끊어 학습(STEPS 를 늘려 다시 부르면
+# ★LR_SCHED=constant(기본)|cosine — constant 는 워밍업 0. 끊어 학습(STEPS 를 늘려 다시 부르면
 #   resume)에서 일정이 안 갈리게 SPONT_PFX 기본은 constant 다.
 # ★TRAIN_DONE 마커 = `steps=<도달 스텝> <시각>`. 마커 스텝 ≥ STEPS 면 학습을 건너뛰고, 작으면
 #   resume_mode=auto 로 최신 global_step 에서 STEPS 까지 잇는다(옛 마커 = 스텝 없음 → 완료로 본다).
 # ★EVAL_STEPS: 미설정 = 모든 global_step 병합·12k 평가 · `10,25` = 그 스텝만 · `0` = 평가 없음.
 #
 # env   LABEL=gold|majority · RESP_LEN=4096 · OUTCOME_MODE=group · LR_SCHED
-#       PFX_FORK=ch · PFX_TRUNC=keep|mask · PFX_BREAK_W · PFX_REP · PFX_WEIGHT_KEY · PFX_DISTILL(_SHUF·_ROWS) · PFX_ALLOC(_SHUF) · PFX_KEEP · KL_COEF · PFX_GUARD_ABS
+#       PFX_FORK=ch · PFX_TRUNC=keep|mask · PFX_BREAK_W · PFX_REP · PFX_WEIGHT_KEY · PFX_DISTILL(_SHUF) · PFX_ALLOC(_SHUF) · PFX_KEEP · KL_COEF · PFX_GUARD_ABS
 #       MODEL_PATH · DATA_TRAIN · TRAIN_BATCH · VLLM_UTIL
 #       REF_OFFLOAD/ACTOR_OFFLOAD · TAG · SAVE_FREQ · EVAL_STEPS · MC_DUMP_ADV
 #
@@ -66,21 +67,19 @@ PFX_ARGS=("actor_rollout_ref.rollout.agent.agent_loop_config_path=${_SCRIPT_DIR}
 
 export OUTCOME_MODE="${OUTCOME_MODE:-group}"
 [ "${OUTCOME_MODE}" = "group" ] || { echo "[mc] FATAL: SPONT_PFX 는 OUTCOME_MODE=group 전용이다" >&2; exit 1; }
-LR_SCHED="${LR_SCHED:-cosine}"
 case "${LR_SCHED}" in cosine|constant) ;; *) echo "[mc] FATAL: LR_SCHED=${LR_SCHED} 은 cosine|constant" >&2; exit 1 ;; esac
 
 MODEL_PATH="${MODEL_PATH:-/hdd_data/seungpil/scratch/models/Qwen3-4B-Instruct-2507}"
-RESP_LEN="${RESP_LEN:-8192}"
 # ★계보 = ckpt 디렉터리. 프롬프트·체크비용·포크·LR 일정이 다른 런이 같은 디렉터리를 쓰면
 #   `resume_mode=auto` 가 **남의 체크포인트**에서 이어 버린다(0921 발견) — 다른 것은 전부 박는다.
-export PROMPT_VARIANT="${PROMPT_VARIANT:-math_opt}"
+export PROMPT_VARIANT
 V4=""                                    # PFX-B 기본은 옛 이름 그대로(계보에 아무것도 안 박는다)
 [ -n "${PFX_FORK:-}" ] && V4="${V4}_fork${PFX_FORK}"   # CH-Fork 수정 28
 [ "${PFX_TRUNC:-keep}" = "mask" ] && V4="${V4}_tm"                  # 수정 32: 잘린 이어쓰기 = 학습에서 제외
 [ -n "${PFX_BREAK_W:-}" ] && V4="${V4}_bw${PFX_BREAK_W}"             # 수정 43: 뒤집은 실패 벌 × w
-[ -n "${PFX_REP:-}" ] && V4="${V4}_rp${PFX_REP}$([ "${PFX_REP_HARD:-}" = 1 ] && echo h || true)"   # 수정 43: 반복 확인 벌(h = 수정 46 구간 칭찬 차단·상한 없음)
+[ -n "${PFX_REP:-}" ] && V4="${V4}_rp${PFX_REP}"                   # 수정 43: 반복 확인 벌
 [ -n "${PFX_ADV_CAP:-}" ] && V4="${V4}_ac${PFX_ADV_CAP}"           # 수정 48: 말 단위 adv 상한
-[ -n "${PFX_DISTILL:-}" ] && V4="${V4}_ds${PFX_DISTILL}$([ "${PFX_DISTILL_ROWS:-wrong}" = all ] && echo a || true)$([ "${PFX_DISTILL_SHUF:-}" = 1 ] && echo x || true)"   # 수정 51/52: 자기 풀이 가린 자기 자신 증류(말당 β·d) · a = 59 모든 행 · x = 55 위약(자리 섞기)
+[ -n "${PFX_DISTILL:-}" ] && V4="${V4}_ds${PFX_DISTILL}$([ "${PFX_DISTILL_SHUF:-}" = 1 ] && echo x || true)"   # 수정 51/52: 자기 풀이 가린 자기 자신 증류(말당 β·d) · x = 55 위약(자리 섞기)
 [ -n "${PFX_ALLOC:-}" ] && V4="${V4}_al${PFX_ALLOC}$([ "${PFX_ALLOC_SHUF:-}" = 1 ] && echo x || true)"   # 수정 61: 눈 가린 나 − 어제의 나 말 단위 배분(곱) · x = 61e 위약
 [ -n "${PFX_KEEP:-}" ] && V4="${V4}_kp${PFX_KEEP}"           # 수정 53: 맞은 줄 원래의 나 유지
 [ -n "${KL_COEF:-}" ] && V4="${V4}_kl${KL_COEF}"                   # 수정 53: 전역 KL 손실 계수(기본 yaml .002)
@@ -92,18 +91,13 @@ LINEAGE="mc_${ARM}_${LABEL:-gold}_s${SEED}_r${RESP_LEN}${V4}"
 # CKPT_DIR 는 덮어쓸 수 있다(테스트가 마커 로직을 임시 디렉터리에서 검증한다).
 CKPT_DIR="${CKPT_DIR:-${WORK}/checkpoints/${LINEAGE}}"
 LOG_FILE="${WORK}/logs/${LINEAGE}.log"
-DATA_TRAIN="${DATA_TRAIN:-${WORK}/data/math_train_math_opt.parquet}"
-DATA_VAL="${DATA_VAL:-${WORK}/data/math_val_math_opt.parquet}"
 
-ROLLOUT_N="${ROLLOUT_N:-16}"
 export LABEL="${LABEL:-gold}"
 export MC_CKPT_DIR="${CKPT_DIR}"
 # ★MC_DUMP_ADV=N (기본 0) — step ≤ N 에서 어드밴티지를 가산 전/후로 떨군다.
 if [ -n "${MC_DUMP_ADV:-}" ]; then export MC_DUMP_ADV; fi
 
-# ★학습 풀 math_opt 1턴 프롬프트 max 1,891 · p99 1,079 토큰 — 1024/1536 이면 verl 이 긴(어려운)
-#   문제를 **조용히 버린다**. 2048 로 두고 트레이너가 발사 전에 전 행을 검사한다.
-MAX_PROMPT="${MAX_PROMPT:-2048}"
+# ★MAX_PROMPT(기본 8704, 위) 보다 긴 프롬프트는 verl 이 **조용히 버린다** — 트레이너가 발사 전에 전 행을 검사한다.
 MAX_RESP="${RESP_LEN}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-$((MAX_PROMPT + MAX_RESP + 256))}"
 
@@ -186,11 +180,9 @@ RUN_ENV="LR=${LR:-1e-6} DATA_TRAIN=${DATA_TRAIN} PFX_WEIGHT_KEY=${PFX_WEIGHT_KEY
 [ "${PFX_TRUNC:-keep}" = "keep" ] || RUN_ENV="${RUN_ENV} PFX_TRUNC=${PFX_TRUNC}"          # 기본값이면 옛 기록과 같은 문자열
 [ -z "${PFX_BREAK_W:-}" ] || RUN_ENV="${RUN_ENV} PFX_BREAK_W=${PFX_BREAK_W}"
 [ -z "${PFX_REP:-}" ] || RUN_ENV="${RUN_ENV} PFX_REP=${PFX_REP}"
-[ -z "${PFX_REP_HARD:-}" ] || RUN_ENV="${RUN_ENV} PFX_REP_HARD=${PFX_REP_HARD}"
 [ -z "${PFX_ADV_CAP:-}" ] || RUN_ENV="${RUN_ENV} PFX_ADV_CAP=${PFX_ADV_CAP}"
 [ -z "${PFX_DISTILL:-}" ] || RUN_ENV="${RUN_ENV} PFX_DISTILL=${PFX_DISTILL}"
 [ -z "${PFX_DISTILL_SHUF:-}" ] || RUN_ENV="${RUN_ENV} PFX_DISTILL_SHUF=${PFX_DISTILL_SHUF}"
-[ -z "${PFX_DISTILL_ROWS:-}" ] || RUN_ENV="${RUN_ENV} PFX_DISTILL_ROWS=${PFX_DISTILL_ROWS}"
 [ -z "${PFX_KEEP:-}" ] || RUN_ENV="${RUN_ENV} PFX_KEEP=${PFX_KEEP}"
 [ -z "${PFX_ALLOC:-}" ] || RUN_ENV="${RUN_ENV} PFX_ALLOC=${PFX_ALLOC}"
 [ -z "${PFX_ALLOC_SHUF:-}" ] || RUN_ENV="${RUN_ENV} PFX_ALLOC_SHUF=${PFX_ALLOC_SHUF}"
