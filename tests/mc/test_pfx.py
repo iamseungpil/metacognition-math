@@ -370,18 +370,14 @@ def test_pfx_fork_reweights_only_mixed_groups_and_preserves_row_mass(pfx_env, mo
     base, *_ = _pfx_run(monkeypatch)
     seen = []
 
-    def fake(tr, trees, per_token=False):                              # 문맥에 이웃 글이 있으면 앞 3 토큰 +1
+    def fake(tr, trees, per_token=False):                              # 성공 이웃 문맥(짝의 앞)이면 앞 3 토큰 +1
         seen.extend(trees)
-        out = []
-        for head, [(t, toks, m)] in trees:
-            bump = 1.0 if "<<<" in "".join(chr(c) for c in head if c < 0x110000) else 0.0
-            out.append([bump if j < 3 else 0.0 for j in range(m)])
-        return out
+        return [[(1.0 if q % 2 == 0 else 0.0) if j < 3 else 0.0 for j in range(m)] for q, (_, [(t, toks, m)]) in enumerate(trees)]
     from mc import context as ctx
     from mc import trainer as T
     monkeypatch.setattr(T, "ref_tree_score", fake)
     monkeypatch.setattr(ctx, "turn1_prompt", lambda tok, prob, v: "P:" + prob)
-    adv, (_, credit, tel) = _pfx_run(monkeypatch, PFX_FORK="hsd")
+    adv, (_, credit, tel) = _pfx_run(monkeypatch, PFX_FORK="ch")
     w = tel["pfx_weights"]
     assert sorted(w) == [0, 1, 2, 3] and tel["fork_rows"] == 4.0 and len(seen) == 8 and not credit
     for i in range(4):
@@ -390,10 +386,8 @@ def test_pfx_fork_reweights_only_mixed_groups_and_preserves_row_mass(pfx_env, mo
         up = abs(float(adv[i, 0])) > abs(float(base[i, 0]))                                   # 성공 행: 선생님이 좋아한
         assert up == (i in (0, 3))                                                             # 앞 토큰에 칭찬↑, 실패 행: 벌↓
     assert torch.allclose(adv[4:], base[4:])                                                   # 결과 상수 묶음 = B
-    adv3, (_, _, tel3) = _pfx_run(monkeypatch, PFX_FORK="chshuf")                              # 위약: 같은 값, 다른 자리
-    w_ch = _pfx_run(monkeypatch, PFX_FORK="ch")[1][2]["pfx_weights"]
-    for i, v in tel3["pfx_weights"].items():
-        assert sorted(v) == pytest.approx(sorted(w_ch[i])) and sum(v) == pytest.approx(len(v))
+    with pytest.raises(ValueError, match="ch 만"):
+        _pfx_run(monkeypatch, PFX_FORK="hsd")
 
 
 def test_fork_weights_tiny_rows_uniform_and_neighbor_masks_answer():
@@ -445,22 +439,6 @@ def test_pfx_fork_zone_only_lone_success_fallback_and_oom(pfx_env, monkeypatch):
     assert torch.allclose(adv[2], base[2])                            # OOM 행 = B
 
 
-def test_dir_weights_only_outcome_side_tokens_mean_one():
-    """수정 45: 결과 쪽으로 기운 말만 몫(반대쪽·τ 안 = 균등 mix 만) · 실패 행은 대조를 뒤집어 실패 쪽 말에 · 평균 1 · 상한."""
-    from mc import credit as C
-    sc = [0.0, 0.0, 2.0, 0.0, -2.0, 0.0, 0.04, 2.0]
-    w, v = C.dir_weights(sc, 1.0, min_n=2), C.dir_weights(sc, -1.0, min_n=2)
-    assert sum(w) / len(w) == pytest.approx(1.0) and sum(v) / len(v) == pytest.approx(1.0)
-    assert w[2] == w[7] == max(w) and w[4] == w[6] == pytest.approx(0.3)          # 성공 행: 성공 쪽 말만, 나머지 = 균등 몫
-    assert v[4] == max(v) and v[2] == v[7] == min(v)                             # 실패 행: 대조를 뒤집어 실패 쪽 말에
-    assert C.dir_weights([-1.0] * 20, 1.0) == [1.0] * 20 and C.dir_weights([5.0], 1.0) == [1.0]   # 기운 말 없음·짧은 행 = 균등
-    for sc in ([9.0] + [0.1] * 99, [9.0] + [0.0] * 99):               # 한 말만 기운 행: 그 말 몫 ≤ 20% · 평균 1
-        big = C.dir_weights(sc, 1.0)
-        assert max(big) == pytest.approx(20.0) and big[0] == max(big) and sum(big) == pytest.approx(100.0)
-    few = C.dir_weights([2.0 if j % 100 == 0 else 0.0 for j in range(400)], 1.0)     # 드문 4 말이 몫 대부분(≥ 70%)
-    assert sum(few[j] for j in range(0, 400, 100)) / 400 >= 0.7
-
-
 def test_pfx_fork_lone_row_borrows_bank_neighbor(pfx_env, monkeypatch):
     """수정 45: 외톨이 성공 행은 `succ_bank`(base 거르기 이어쓰기)에서 s⁺ 를 빌린다 — 문맥 없음 대조로 약해지지 않게."""
     pytest.importorskip("verl")
@@ -483,7 +461,7 @@ def test_pfx_fork_lone_row_borrows_bank_neighbor(pfx_env, monkeypatch):
         return [[1.0 if ("BANKTEXT" in _heads_str(h)) == (j % 2 == 0) else 0.0 for j in range(bl[0][2])] for h, bl in trees]
     from mc import trainer as T
     monkeypatch.setattr(T, "ref_tree_score", fake)
-    _, (_, _, tel) = _pfx_run(monkeypatch, PFX_FORK="chdir")
+    _, (_, _, tel) = _pfx_run(monkeypatch, PFX_FORK="ch")
     assert "BANKTEXT" in heads[0] and "<<<" in heads[1] and tel["fork_bank"] == 1.0 and tel["fork_rows"] == 3.0
     assert all(sum(w) == pytest.approx(len(w)) for w in tel["pfx_weights"].values())
 
@@ -504,23 +482,6 @@ def _fork_setup(monkeypatch, cases, uids):
 
 def _heads_str(h):
     return "".join(chr(c) for c in h if c < 0x110000)
-
-
-def test_pfx_fork_hsd_draws_same_success_neighbors_as_ch(pfx_env, monkeypatch):
-    """수정 28e/28g 회귀: 대기 중 HSD 팔이 끝난 CH 팔과 같은 성공 이웃을 뽑는다(가지 추가·삭제가 rng 순서를 바꾸지 않음)."""
-    pytest.importorskip("verl")
-    for k in ("PFX_REP", "PFX_FORK"):
-        monkeypatch.delenv(k, raising=False)
-    cases = [(r"x \boxed{3}", "7", FILL + a) for a in (r" \boxed{7}", r" \boxed{9}", " one.", r" re \boxed{7}", " two.")]
-    _fork_setup(monkeypatch, cases, ["g0"] * 5)
-    got = {}
-    from mc import trainer as T
-    for mode in ("ch", "hsd"):
-        seen = got.setdefault(mode, [])
-        monkeypatch.setattr(T, "ref_tree_score", lambda tr, trees, per_token=False, s=seen: (
-            s.extend(_heads_str(h) for h, _ in trees) or [[0.0] * m for _, [(t, toks, m)] in trees]))
-        _pfx_run(monkeypatch, PFX_FORK=mode)
-    assert got["hsd"][0::2] == [h for h in got["ch"][0::2] if "<<<" in h] and got["hsd"][0::2]
 
 
 def test_pfx_truncated_continuation_masked_under_trunc_mask(pfx_env, monkeypatch):
@@ -640,6 +601,95 @@ def test_pfx_distill_wrong_first_rows_per_token_credit_and_span_end(pfx_env, mon
     assert H.DS_FRONT + len(ds[1][1]) == H.loop_char(cases[1][2])          # 반복 시작에서 끊김(꼬리 미포함)
     assert torch.allclose(adv[2:4], base[2:4])
     assert 0 < tel["ds_share"] <= tel["mass_share"]
+    monkeypatch.setattr(T, "ref_tree_score", lambda tr, trees, per_token=False:
+                        [[-1.0 + 0.1 * (t % 7) for t in range(bl[0][2])] for _, bl in trees])   # 말마다 다른 d
+    _, (_, _, t0) = _pfx_run(monkeypatch, PFX_DISTILL="0.25")
+    _, (_, _, t1) = _pfx_run(monkeypatch, PFX_DISTILL="0.25", PFX_DISTILL_SHUF="1")   # 수정 55 위약
+    for i, (j0, vals) in t0["ds_credit"].items():
+        sv = t1["ds_credit"][i][1]
+        assert t1["ds_credit"][i][0] == j0 and sorted(sv) == pytest.approx(sorted(vals)) and sv != pytest.approx(vals)
+    monkeypatch.delenv("PFX_DISTILL_SHUF")
+    _, (_, _, ta) = _pfx_run(monkeypatch, PFX_DISTILL="0.25", PFX_DISTILL_ROWS="all")   # 수정 59: gold 라우팅 없음
+    assert sorted(ta["ds_credit"]) == [0, 1, 2, 3, 5] and ta["ds_credit"][0] == t0["ds_credit"][0]   # 맞은 첫 답 2·3 도 · 틀린 행은 그대로
+    assert ta["ds_rows_right"] == 2.0 and t0["ds_rows_right"] == 0.0 and ta["ds_credit"][2][0] == H.DS_FRONT
+    with pytest.raises(ValueError, match="PFX_DISTILL_ROWS"):
+        _pfx_run(monkeypatch, PFX_DISTILL="0.25", PFX_DISTILL_ROWS="right")
+
+
+def test_pfx_alloc_mixed_groups_change_vs_keep_tokens(pfx_env, monkeypatch):
+    """수정 61/61c PFX_ALLOC: 섞인 묶음 행만(만장일치·짧은 행·틀→다른 틀 제외) · 바꾸기 점수 c = 눈 가린 나 − 어제의 나(ref_log_prob) ·
+    답을 바꾼 행은 c 큰 말에, 지킨 행은 c 작은 말에 무게 · 구간 [16, j1) 평균 1 · 밖 1 · 길이 n_tok · CH 와 배타."""
+    pytest.importorskip("verl")
+    for k in ("PFX_FORK", "PFX_REP", "PFX_BREAK_W", "PFX_TRUNC", "PFX_DISTILL"):
+        monkeypatch.delenv(k, raising=False)
+    rep4 = r" \boxed{9} a \boxed{9} b \boxed{9} c \boxed{9} tail"
+    cases = [(r"x \boxed{3}", "7", FILL + r" \boxed{7}"), (r"x \boxed{3}", "7", FILL + rep4),
+             (r"y \boxed{7}", "7", FILL + " done."), (r"y \boxed{7}", "7", FILL + r" \boxed{4}"),
+             (r"w \boxed{3}", "7", " ok."), (r"w \boxed{3}", "7", FILL)]
+    _fork_setup(monkeypatch, cases, ["g0", "g0", "g1", "g1", "g2", "g2"])
+    real_init = _PfxBatch.__init__
+
+    def init(self, cases=CASES):
+        real_init(self, cases)
+        self.batch["old_log_probs"] = torch.full(self.batch["responses"].shape, -1.0)
+        self.batch["ref_log_prob"] = torch.zeros(self.batch["responses"].shape)
+    monkeypatch.setattr(_PfxBatch, "__init__", init)
+    from mc import trainer as T
+    monkeypatch.setattr(T, "ref_tree_score", lambda tr, trees, per_token=False:
+                        [[0.3 * (t % 5) for t in range(bl[0][2])] for _, bl in trees])          # c_t = 0, .3, .6, .9, 1.2, …
+    base, _ = _pfx_run(monkeypatch)
+    adv, (_, _, tel) = _pfx_run(monkeypatch, PFX_ALLOC="0.5")
+    w = tel["pfx_weights"]
+    assert sorted(w) == [0, 2, 3] and tel["alloc_skip_ww"] == 1.0                    # g2 만장일치 · 4 짧음 · 1 틀→다른 틀(61c) 제외
+    assert tel["alloc_changed"] == pytest.approx(2 / 3) and torch.allclose(adv[1], base[1])
+    for i, ch in ((0, True), (2, False), (3, True)):
+        n = len(w[i])
+        assert w[i][:H.DS_FRONT] == [1.0] * H.DS_FRONT and sum(w[i]) == pytest.approx(n)        # 구간 평균 1 · 밖 1 = 합 보존
+        a, b = w[i][19], w[i][20]                                                        # 말 19: c 1.2 · 말 20: c 0
+        assert (a > b) if ch else (a < b)
+        assert torch.allclose(adv[i, :n], base[i, :n] * torch.tensor(w[i], dtype=adv.dtype))
+    _, (_, _, ts) = _pfx_run(monkeypatch, PFX_ALLOC="0.5", PFX_ALLOC_SHUF="1")                   # 61e 위약: 같은 행·같은 무게 묶음, 자리만 섞임
+    monkeypatch.delenv("PFX_ALLOC_SHUF")
+    assert ts["alloc_shuf"] == 1.0 and sorted(ts["pfx_weights"]) == [0, 2, 3]
+    assert all(sorted(ts["pfx_weights"][i]) == pytest.approx(sorted(w[i])) and ts["pfx_weights"][i] != w[i] for i in (0, 2, 3))
+    with pytest.raises(ValueError, match="PFX_ALLOC"):
+        _pfx_run(monkeypatch, PFX_ALLOC="0.5", PFX_FORK="ch")
+    monkeypatch.delenv("PFX_FORK")
+    with pytest.raises(ValueError, match="양수만"):
+        _pfx_run(monkeypatch, PFX_ALLOC="0")
+
+
+def test_pfx_keep_right_first_rows_only_and_abs_guard(pfx_env, monkeypatch, tmp_path):
+    """수정 53 PFX_KEEP: 맞은 첫 답 행만 · 이어쓰기 전체에 γ·clip(ref − old, ±2) 가산(선생님 = 같은 문맥 원래 모델) ·
+    틀린 첫 답 행 adv 무변 · keep_share 계기. PFX_GUARD_ABS: 파괴 가드가 «2 × 기준선» 대신 절대 한계를 쓴다."""
+    pytest.importorskip("verl")
+    for k in ("PFX_FORK", "PFX_REP", "PFX_BREAK_W", "PFX_TRUNC", "PFX_DISTILL"):
+        monkeypatch.delenv(k, raising=False)
+    cases = [(r"x \boxed{3}", "7", FILL + r" \boxed{7}"), (r"x \boxed{3}", "7", FILL + " no."),
+             (r"y \boxed{7}", "7", FILL + " done."), (r"y \boxed{7}", "7", FILL + r" \boxed{4}")]
+    _fork_setup(monkeypatch, cases, ["g0", "g0", "g1", "g1"])
+    real_init = _PfxBatch.__init__
+
+    def init(self, cases=CASES):
+        real_init(self, cases)
+        self.batch["old_log_probs"] = torch.full(self.batch["responses"].shape, -1.0)
+        self.batch["ref_log_prob"] = torch.full(self.batch["responses"].shape, 2.0)   # d = 3 → clip 2
+    monkeypatch.setattr(_PfxBatch, "__init__", init)
+    base, _ = _pfx_run(monkeypatch)
+    adv, (_, _, tel) = _pfx_run(monkeypatch, PFX_KEEP="0.5")
+    kc = tel["keep_credit"]
+    assert sorted(kc) == [2, 3] and tel["keep_rows"] == 2.0 and tel["keep_d_mean"] == pytest.approx(H.DS_CLIP)
+    for i, (j0, vals) in kc.items():
+        n = len(cases[i][2])
+        assert j0 == 0 and vals == pytest.approx([0.5 * H.DS_CLIP] * len(vals))
+        assert torch.allclose(adv[i, :n] - base[i, :n], torch.full((n,), 0.5 * H.DS_CLIP, dtype=adv.dtype))
+    assert torch.allclose(adv[:2], base[:2]) and 0 < tel["keep_share"] <= tel["mass_share"]
+    monkeypatch.setenv("MC_CKPT_DIR", str(tmp_path))
+    steps = [{"pfx_break_right_live": v} for v in (.10, .10, .10, .15, .15, .15)]
+    assert H.pfx_guard(steps) is None                                           # 2 × 기준선 .10 = .20 > .15
+    (tmp_path / "FIRST_REF_PFX.json").unlink()
+    monkeypatch.setenv("PFX_GUARD_ABS", "0.12")
+    assert "0.1200" in H.pfx_guard(steps)                                       # 절대 한계 .12 < .15
 
 
 def test_pfx_break_w_scales_only_right_first_failures(pfx_env, monkeypatch):

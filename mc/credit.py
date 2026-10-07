@@ -123,18 +123,3 @@ def fork_weights(scores, sign: float, lam: float = 1.0, cap: float = 3.0, min_n:
     mw = sum(w) / n
     return [v / mw for v in w]
 
-
-def dir_weights(scores, sign: float, mix: float = 0.3, tau: float = 0.05, cap_frac: float = 0.2, min_n: int = 16) -> list[float]:
-    r"""수정 45 방향 비례(`PFX_FORK=chdir`) — 행 결과 쪽으로 기운 만큼만 몫: p_t = max(sign·CH_t − τ, 0)(성공 행은 성공 쪽,
-    실패 행은 대조를 거꾸로 한 실패 쪽 말에만; 반대쪽·애매한 말 0), 균등 mix 섞음 → 평균 1. 상한은 **행 총량의 몫**으로:
-    말 하나 ≤ max(cap_frac, 4/n)(가중 ≤ max(4, cap_frac·n)). 기운 말이 드문 행(대부분)에서 «평균의 k 배» 상한은 몫을 k/n 로 묶어 균등과
-    같아졌다(10-02 chdir 첫 실행 fork_moved .03–.07 = ch 와 같음) — 결정적인 몇 말에 벌·상을 실제로 몰아주려면 몫 상한이어야 한다.
-    `fork_weights` 는 행 안 표준화라 반대쪽 말도 바닥 몫을 받고 균등과 ~7% 만 달랐다(hc 학습 계기 fork_moved)."""
-    n = len(scores)
-    p = [max(sign * float(v) - tau, 0.0) for v in scores]
-    if n < max(2, min_n) or sum(p) <= 1e-12:
-        return [1.0] * n
-    d = [v * n / sum(p) for v in p]                                   # 평균 1
-    mx, cap = max(d), max(4.0, cap_frac * n)
-    m = max(mix, (mx - cap) / (mx - 1.0)) if mx > cap else mix       # 몰린 행은 균등 몫을 늘려 최댓값 = cap(평균 1 유지)
-    return [m + (1.0 - m) * v for v in d]

@@ -5,7 +5,7 @@
 #
 # SPONT_PFX(0923·0925) = 고정 첫 박스 앞부분(DATA_TRAIN) 뒤 K 이어 쓰기 · verl GRPO · plain · constant ·
 # LABEL=gold(기본) · RESP_LEN 4096 · ROLLOUT_N 8 · 에이전트 루프 mc_prefix(mc/agent_loop.yaml) ·
-# MAX_PROMPT 8704. PFX_FORK=ch|hsd|chshuf|chdir(수정 28/28e/45) = 섞인 묶음을 교차 적합 이웃으로 재배분.
+# MAX_PROMPT 8704. PFX_FORK=ch(수정 28) = 섞인 묶음을 교차 적합 이웃으로 재배분.
 # PFX_TRUNC=mask(수정 32) = 상한에서 잘린 이어쓰기는 학습에서 제외. PFX_BREAK_W=w(수정 43) = 맞은 첫 답을 뒤집은 실패 벌 × w.
 # PFX_REP=c(수정 43) = 같은 답 3번째 확인 뒤 말에만 작은 벌(끝낸·잘린 행 모두). PFX_REP_HARD=1(수정 46) = 그 구간 결과 칭찬 차단·벌 상한 없음.
 # 앞부분 표집 무게 = extra_info[PFX_WEIGHT_KEY=weight](수정 25). 계보 mc_SPONT_PFX_<label>_s<seed>_r<len>
@@ -21,7 +21,7 @@
 # ★EVAL_STEPS: 미설정 = 모든 global_step 병합·12k 평가 · `10,25` = 그 스텝만 · `0` = 평가 없음.
 #
 # env   LABEL=gold|majority · RESP_LEN=4096 · OUTCOME_MODE=group · LR_SCHED
-#       PFX_FORK=ch|hsd|chshuf|chdir · PFX_TRUNC=keep|mask · PFX_BREAK_W · PFX_REP · PFX_WEIGHT_KEY
+#       PFX_FORK=ch · PFX_TRUNC=keep|mask · PFX_BREAK_W · PFX_REP · PFX_WEIGHT_KEY · PFX_DISTILL(_SHUF·_ROWS) · PFX_ALLOC(_SHUF) · PFX_KEEP · KL_COEF · PFX_GUARD_ABS
 #       MODEL_PATH · DATA_TRAIN · TRAIN_BATCH · VLLM_UTIL
 #       REF_OFFLOAD/ACTOR_OFFLOAD · TAG · SAVE_FREQ · EVAL_STEPS · MC_DUMP_ADV
 #
@@ -80,7 +80,10 @@ V4=""                                    # PFX-B 기본은 옛 이름 그대로(
 [ -n "${PFX_BREAK_W:-}" ] && V4="${V4}_bw${PFX_BREAK_W}"             # 수정 43: 뒤집은 실패 벌 × w
 [ -n "${PFX_REP:-}" ] && V4="${V4}_rp${PFX_REP}$([ "${PFX_REP_HARD:-}" = 1 ] && echo h || true)"   # 수정 43: 반복 확인 벌(h = 수정 46 구간 칭찬 차단·상한 없음)
 [ -n "${PFX_ADV_CAP:-}" ] && V4="${V4}_ac${PFX_ADV_CAP}"           # 수정 48: 말 단위 adv 상한
-[ -n "${PFX_DISTILL:-}" ] && V4="${V4}_ds${PFX_DISTILL}"           # 수정 51/52: 자기 풀이 가린 자기 자신 증류(말당 β·d)
+[ -n "${PFX_DISTILL:-}" ] && V4="${V4}_ds${PFX_DISTILL}$([ "${PFX_DISTILL_ROWS:-wrong}" = all ] && echo a || true)$([ "${PFX_DISTILL_SHUF:-}" = 1 ] && echo x || true)"   # 수정 51/52: 자기 풀이 가린 자기 자신 증류(말당 β·d) · a = 59 모든 행 · x = 55 위약(자리 섞기)
+[ -n "${PFX_ALLOC:-}" ] && V4="${V4}_al${PFX_ALLOC}$([ "${PFX_ALLOC_SHUF:-}" = 1 ] && echo x || true)"   # 수정 61: 눈 가린 나 − 어제의 나 말 단위 배분(곱) · x = 61e 위약
+[ -n "${PFX_KEEP:-}" ] && V4="${V4}_kp${PFX_KEEP}"           # 수정 53: 맞은 줄 원래의 나 유지
+[ -n "${KL_COEF:-}" ] && V4="${V4}_kl${KL_COEF}"                   # 수정 53: 전역 KL 손실 계수(기본 yaml .002)
 [ "${PROMPT_VARIANT}" = "plain" ] || V4="${V4}_${PROMPT_VARIANT}"
 [ "${LR_SCHED}" = "constant" ] || V4="${V4}_${LR_SCHED}"
 LINEAGE="mc_${ARM}_${LABEL:-gold}_s${SEED}_r${RESP_LEN}${V4}"
@@ -164,6 +167,7 @@ TRAIN_CMD=(python -u -m mc.trainer
   "actor_rollout_ref.actor.fsdp_config.param_offload=$([ "${ACTOR_OFFLOAD:-0}" = "1" ] && echo true || echo false)"
   # 엔트로피 항이 10k토큰 × 152k 어휘 로짓 사본을 남겨 1행 backward +17GB — 끈다(수정 10).
   "actor_rollout_ref.actor.entropy_coeff=0"
+  ${KL_COEF:+"actor_rollout_ref.actor.kl_loss_coef=${KL_COEF}"}
   "++actor_rollout_ref.model.enable_activation_offload=true"
   "actor_rollout_ref.rollout.enforce_eager=true"
   "++trainer.total_training_steps=${STEPS}"
@@ -185,6 +189,13 @@ RUN_ENV="LR=${LR:-1e-6} DATA_TRAIN=${DATA_TRAIN} PFX_WEIGHT_KEY=${PFX_WEIGHT_KEY
 [ -z "${PFX_REP_HARD:-}" ] || RUN_ENV="${RUN_ENV} PFX_REP_HARD=${PFX_REP_HARD}"
 [ -z "${PFX_ADV_CAP:-}" ] || RUN_ENV="${RUN_ENV} PFX_ADV_CAP=${PFX_ADV_CAP}"
 [ -z "${PFX_DISTILL:-}" ] || RUN_ENV="${RUN_ENV} PFX_DISTILL=${PFX_DISTILL}"
+[ -z "${PFX_DISTILL_SHUF:-}" ] || RUN_ENV="${RUN_ENV} PFX_DISTILL_SHUF=${PFX_DISTILL_SHUF}"
+[ -z "${PFX_DISTILL_ROWS:-}" ] || RUN_ENV="${RUN_ENV} PFX_DISTILL_ROWS=${PFX_DISTILL_ROWS}"
+[ -z "${PFX_KEEP:-}" ] || RUN_ENV="${RUN_ENV} PFX_KEEP=${PFX_KEEP}"
+[ -z "${PFX_ALLOC:-}" ] || RUN_ENV="${RUN_ENV} PFX_ALLOC=${PFX_ALLOC}"
+[ -z "${PFX_ALLOC_SHUF:-}" ] || RUN_ENV="${RUN_ENV} PFX_ALLOC_SHUF=${PFX_ALLOC_SHUF}"
+[ -z "${KL_COEF:-}" ] || RUN_ENV="${RUN_ENV} KL_COEF=${KL_COEF}"
+[ -z "${PFX_GUARD_ABS:-}" ] || RUN_ENV="${RUN_ENV} PFX_GUARD_ABS=${PFX_GUARD_ABS}"
 if [ -f "${CKPT_DIR}/RUN_ENV.txt" ] && [ "$(cat "${CKPT_DIR}/RUN_ENV.txt")" != "${RUN_ENV}" ]; then
   echo "[mc] FATAL: ${CKPT_DIR}/RUN_ENV.txt 와 설정이 다르다 — 이어 학습 금지" >&2
   diff <(tr ' ' '\n' < "${CKPT_DIR}/RUN_ENV.txt") <(tr ' ' '\n' <<< "${RUN_ENV}") >&2

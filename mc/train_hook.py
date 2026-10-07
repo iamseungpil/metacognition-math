@@ -14,7 +14,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mc.credit import dir_weights, fork_weights
+from mc.credit import fork_weights
 from mc.grade import boxed_answer, boxed_spans, grade_answer
 from mc.shift_check import _enc, leak_point
 
@@ -89,10 +89,11 @@ def pfx_guard(steps) -> str | None:
             if p is not None:
                 p.write_text(json.dumps(ref))
         m = sum(xs[-PFX_BREAK_SPAN:]) / PFX_BREAK_SPAN if len(xs) >= PFX_BREAK_SPAN else 0.0
-        lim = max(PFX_BREAK_LIMIT, 2 * ref.get(key, PFX_BREAK_LIMIT))
+        lim = _f("PFX_GUARD_ABS", 0.0) or max(PFX_BREAK_LIMIT, 2 * ref.get(key, PFX_BREAK_LIMIT))   # 수정 53: 씨앗 무관 절대 한계
         if key in ref and m > lim:
             return (f"PFX 파괴 가드 — {key} 최근 {PFX_BREAK_SPAN}스텝 평균 {m:.4f} > {lim:.4f}"
-                    f"(= max(.05, 2 × 기준선 {ref[key]:.4f})): 맞은 첫 답을 깨고 있다.")
+                    f"({'절대 한계 PFX_GUARD_ABS' if _f('PFX_GUARD_ABS', 0.0) else 'max(.05, 2 × 기준선)'}, 기준선 {ref[key]:.4f})"
+                    ": 맞은 첫 답을 깨고 있다.")
     return None
 
 
@@ -139,9 +140,12 @@ def pfx_rewards(data, tok, trainer, step, spec) -> tuple[list, dict, dict]:
     최종 답 ≡ L](`mc.probe.score` — 새 박스가 없으면 앞부분의 첫 답; L = gold 또는 parquet 다수결 `label`)을 마지막
     토큰에 → verl GRPO(같은 앞부분 K 개 = 같은 uid). 앞부분 무게는 **표집**에서만(`trainer.pfx_sampler`, 수정 25).
     PFX_TRUNC: keep(도중 박스로 채점) · mask(32/32c, 학습에서 제외 — 묶음 통계·손실 분모·KL 밖).
-    PFX_FORK(ch|hsd|chshuf|chdir, 수정 28/28e/45): 섞인 묶음의 결과 adv 를 내부 대조 PMI 로 재배분(곱).
+    PFX_FORK=ch(수정 28): 섞인 묶음의 결과 adv 를 내부 대조 PMI 로 재배분(곱; hsd·chshuf·chdir 는 닫힌 축이라 10-07 삭제).
     PFX_BREAK_W=w(수정 43): 맞은 첫 답을 뒤집어 실패한 행의 결과 adv × w(수정 18 «맞은 첫 답: 망침만 벌» — 어느 말에 몰릴지는 CH).
-    PFX_DISTILL=β(수정 51, `pfx_distill`): 틀린 첫 답 행에 «자기 풀이를 못 본 자기 자신» 증류 가산 크레딧.
+    PFX_DISTILL=β(수정 51, `pfx_distill`): 틀린 첫 답 행(PFX_DISTILL_ROWS=all 이면 모든 행, 59)에 «자기 풀이를 못 본 자기 자신» 증류 가산 크레딧.
+    PFX_ALLOC=κ(수정 61, `pfx_alloc`): 섞인 묶음 결과 adv 를 «눈 가린 나 − 어제의 나» 바꾸기 점수로 말 단위 재배분(곱, PFX_FORK 와 배타).
+    PFX_KEEP=γ(수정 53, `pfx_keep`): 맞은 첫 답 행에 «원래의 나» 유지 가산(맞은 줄 한정 KL).
+    PFX_GUARD_ABS: 파괴 가드 절대 한계.
     PFX_REP=c(수정 43, `pfx_rep`): 같은 답 LOOP_RUN 번째 확인 뒤 말에만 −c 가산(끝낸·잘린 행 모두; PFX_REP_HARD=1 = 그 구간 결과
     adv ≤ 0 · 총량 상한 없음, 수정 46). 계기 = 탐침과 같은 자 + 정보 묶음 수·고친 행 수."""
     from mc.probe import per_problem, score  # noqa: PLC0415
@@ -193,16 +197,36 @@ def pfx_rewards(data, tok, trainer, step, spec) -> tuple[list, dict, dict]:
             raise ValueError(f"[MC] PFX_REP_HARD={hd!r} — 미설정 또는 1(계보 `_rp<c>h` 와 동작이 어긋나지 않게)")
         tel.update(pfx_rep(tok, data, texts, n_tok, c, credit, drop, hard=hd == "1"))
     fork = (os.environ.get("PFX_FORK") or "").strip().lower()
-    if fork:                                  # 수정 28 CH-Fork · HSD 절제 · chshuf 위약
+    if fork:                                  # 수정 28 CH-Fork
         tel.update(pfx_fork(trainer, tok, data, nt, pre, texts, r, n_tok, L, step, fork))
         print(f"[MC][FORK] step={step} mode={fork} rows={int(tel['fork_rows'])} succ={int(tel['fork_rows_succ'])} "
               f"oom={int(tel['fork_oom'])} bank={int(tel['fork_bank'])} moved={tel['fork_moved']:.3f} top5={tel['fork_top5_share']:.3f} w_front16={tel['fork_w_front16']:.3f} "
               f"w_max={tel['fork_w_max']:.3f} score_succ={tel['fork_score_succ']:.3f} "
               f"score_fail={tel['fork_score_fail']:.3f}", flush=True)
-    if (beta := _f("PFX_DISTILL", 0.0)) > 0:   # 수정 51: 자기 풀이를 못 본 자기 자신으로부터의 문맥 증류(가산)
-        tel.update(pfx_distill(trainer, tok, data, nt, pre, texts, rows[""], n_tok, drop, beta))
-        print(f"[MC][DS] step={step} rows={int(tel['ds_rows'])} oom={int(tel['ds_oom'])} "
+    beta, kappa = _f("PFX_DISTILL", 0.0), _f("PFX_ALLOC", 0.0)
+    cls = {"wrong": ("wrong",), "all": ("wrong", "right")}.get((os.environ.get("PFX_DISTILL_ROWS") or "wrong").strip())
+    if cls is None:
+        raise ValueError(f"[MC] PFX_DISTILL_ROWS={os.environ.get('PFX_DISTILL_ROWS')!r} — wrong|all")
+    if os.environ.get("PFX_ALLOC") and kappa <= 0:
+        raise ValueError(f"[MC] PFX_ALLOC={os.environ['PFX_ALLOC']!r} — 양수만(미설정 = 끔; 계보 `_al` 과 동작이 어긋나지 않게)")
+    if kappa > 0 and fork:
+        raise ValueError("[MC] PFX_ALLOC 와 PFX_FORK 는 둘 다 결과 adv 재배분(pfx_weights) — 하나만")
+    di = ds_rows(rows[""], n_tok, drop, cls) if beta > 0 else []
+    ai = [i for i in ds_rows(rows[""], n_tok, drop, ("wrong", "right"))
+          if len(groups.get(str(nt["uid"][i]), ())) > 1] if kappa > 0 else []   # 섞인 묶음만(만장일치는 adv 0)
+    bl, tried = blind_scores(trainer, tok, data, nt, pre, texts, sorted(set(di) | set(ai)), n_tok) if di or ai else ({}, set())
+    if kappa > 0:                              # 수정 61: 말 단위 배분(곱) — 바꾼 행은 바꾸는 말, 지킨 행은 지키는 말
+        tel.update(pfx_alloc(data, {i: bl[i] for i in ai if i in bl}, rows[""], n_tok, kappa))
+        tel["alloc_oom"] = float(sum(i in tried and i not in bl for i in ai))
+        print(f"[MC][ALLOC] step={step} rows={int(tel['alloc_rows'])} oom={int(tel['alloc_oom'])} skip_ww={int(tel['alloc_skip_ww'])} changed={tel['alloc_changed']:.3f} "
+              f"moved={tel['alloc_moved']:.3f} w_rowmax={tel['alloc_w_rowmax']:.2f} w_max={tel['alloc_w_max']:.2f}", flush=True)
+    if beta > 0:                               # 수정 51: 자기 풀이를 못 본 자기 자신으로부터의 문맥 증류(가산)
+        tel.update(pfx_distill(data, {i: bl[i] for i in di if i in bl}, sum(i in tried and i not in bl for i in di), rows[""], beta))
+        print(f"[MC][DS] step={step} rows={int(tel['ds_rows'])} right={int(tel['ds_rows_right'])} oom={int(tel['ds_oom'])} "
               f"neg={tel['ds_neg_frac']:.3f} d_mean={tel['ds_d_mean']:.3f} tok_absmax={tel['ds_tok_absmax']:.2f}", flush=True)
+    if (gamma := _f("PFX_KEEP", 0.0)) > 0:     # 수정 53: 맞은 첫 답 행 = 원래의 나 유지(맞은 줄 한정 말 단위 KL 규제)
+        tel.update(pfx_keep(data, rows[""], n_tok, drop, gamma))
+        print(f"[MC][KEEP] step={step} rows={int(tel['keep_rows'])} d_mean={tel['keep_d_mean']:.4f}", flush=True)
     if (bw := _f("PFX_BREAK_W", 1.0)) != 1.0:   # 수정 43: 맞은 첫 답을 뒤집어 실패 = 결과 벌 × bw(CH 가중 뒤 곱)
         pw = tel.setdefault("pfx_weights", {})
         brk = [i for i in range(B) if rows[""][i]["cls"] == "right" and r[i] <= 0 and n_tok[i] > 0 and i not in drop]
@@ -296,14 +320,13 @@ def _groups(nt) -> dict:
 def pfx_fork(trainer, tok, data, nt, pre, texts, r, n_tok, L, step, mode: str) -> dict:
     r"""수정 28/28b CH-Fork — 섞인 묶음(같은 약속 앞부분 이어쓰기 중 성공·실패 모두)의 행마다 교차 적합 이웃(자기 제외)
     s⁺·s⁻ 를 문제 뒤 **중립 문구**로 붙인 선생님 문맥(`fork_head`: 정답·판정 문구 없음, 이웃의 박스 답 가림)에서 동결 ref 로
-    응답 토큰별 log p. ch: CH_t = log p(·|s⁺) − log p(·|s⁻)(외톨이 성공·실패는 없는 쪽 = 문맥 없음) · hsd(절제):
-    log p(·|s⁺) − log p(·|없음) · chshuf = 같은 가중값을 섞은 위약 · chdir(수정 45) = ch 대조 + `credit.dir_weights`(방향 비례).
+    응답 토큰별 log p. CH_t = log p(·|s⁺) − log p(·|s⁻)(외톨이 성공·실패는 없는 쪽 = 문맥 없음).
     가중은 **누설 전 구간**[0,tL)(첫 새 답 진술 전 = 되짚기 말)에만(결과 방향, 구간 평균 1), 누설 뒤 1 → `pfx_weights`
     (trainer.add_span_credit 가 결과 adv 에 곱한다). 외톨이(같은 쪽 형제 없음) 행은 데이터의 `succ_bank`·`fail_bank`(같은
     앞부분의 base 거르기 이어쓰기, 수정 45)에서 그쪽 이웃을 빌린다 — 별도 rng 라 형제 뽑기 순서(HSD 짝 맞춤)는 그대로."""
     from mc.trainer import col, ref_tree_score  # noqa: PLC0415
-    if mode not in ("ch", "hsd", "chshuf", "chdir"):
-        raise ValueError(f"[MC] PFX_FORK={mode!r} — ch|hsd|chshuf|chdir (anchor 는 28g 관문 실패로 삭제)")
+    if mode != "ch":
+        raise ValueError(f"[MC] PFX_FORK={mode!r} — ch 만(anchor·hsd·chshuf·chdir 는 닫힌 축으로 삭제)")
     probs, rng = col(nt, "problem"), random.Random(int(step))
     ei = list(nt.get("extra_info", []))
     bank = {k: [[str(x) for x in ((e or {}).get(k) if (e or {}).get(k) is not None else ())] for e in ei]
@@ -317,12 +340,11 @@ def pfx_fork(trainer, tok, data, nt, pre, texts, r, n_tok, L, step, mode: str) -
             br = random.Random(int(step) * 7919 + i)
             tp, tf = (texts[j] if j is not None else (br.choice(bank[k][i]) if bank[k] and bank[k][i] else None)
                       for j, k in ((jp, "succ_bank"), (jf, "fail_bank")))
-            ctxs = (tp, None) if mode == "hsd" else (tp, tf)
-            if n_tok[i] < 1 or ctxs[0] == ctxs[1] or (mode == "hsd" and tp is None):
+            if n_tok[i] < 1 or tp == tf:
                 continue
-            n_bank += (jp is None and tp is not None) + (mode != "hsd" and jf is None and tf is not None)
+            n_bank += (jp is None and tp is not None) + (jf is None and tf is not None)
             resp = [int(t) for t in data.batch["responses"][i, :n_tok[i]]]
-            trees += [tree(fork_head(tok, probs[i], pre[i], c), resp) for c in ctxs]
+            trees += [tree(fork_head(tok, probs[i], pre[i], c), resp) for c in (tp, tf)]
             fin = boxed_answer(pre[i] + texts[i]) or ""
             owner.append((i, char_to_tok(tok, resp, leak_point(texts[i], (L[i], fin)))))
     lps = ref_tree_score(trainer, trees, per_token=True) if trees else []
@@ -336,9 +358,7 @@ def pfx_fork(trainer, tok, data, nt, pre, texts, r, n_tok, L, step, mode: str) -
         sc = [a[t] - b[t] for t in range(tl)]
         if sc:
             zs[r[i] > 0].append(sum(sc) / len(sc))
-        zf = (dir_weights if mode == "chdir" else fork_weights)(sc, 1.0 if r[i] > 0 else -1.0)
-        if mode.endswith("shuf"):            # 위약(수정 28e): 같은 가중값을 구간 안에서 섞음 — 크기 분포 유지, 토큰 정렬 파괴
-            random.Random(int(step) * 100003 + i).shuffle(zf)
+        zf = fork_weights(sc, 1.0 if r[i] > 0 else -1.0)
         w[i] = zf + [1.0] * (len(a) - tl)
         moved.append(sum(abs(v - 1.0) for v in w[i]) / max(1, len(w[i])))
         if zf:                                # 구간 안 상위 5% 말이 가진 몫(균등 = .05) — 신호가 실제로 몰리는가
@@ -356,38 +376,94 @@ def pfx_fork(trainer, tok, data, nt, pre, texts, r, n_tok, L, step, mode: str) -
 DS_FRONT, DS_CLIP = 16, 2.0   #: 수정 51 — 앞 말 보호(«Wait, let me…» 구조 인공물) · d_t 자르기
 
 
-def pfx_distill(trainer, tok, data, nt, pre, texts, rows, n_tok, drop, beta: float) -> dict:
-    r"""수정 51 문맥 증류(단순판) — **틀린 첫 답** 행의 이어쓰기 말 [DS_FRONT, 끝)(끝 = 마지막 박스 끝·반복 시작 중 앞)에
-    말당 가산 크레딧 β·clip(d_t, ±DS_CLIP), d_t = log π_ref(y_t | 문제 + FACT_TMPL(X)) − log π_old(y_t | 문제 + 앞부분)
-    (말 단위 역-KL 온폴리시 증류 — 수정 52: 51b 의 행 총량 고정(128/n)은 긴 행에서 몫이 결과 질량의 0.3–1% 로 꺼져 뺐다).
-    선생님 = 자기 풀이를 못 본 얼린 자기 자신 → 풀이에 끌려간 말은 벌, 새로 푸는 말은 칭찬(정박 해소의 단일 패스 내재화).
-    말당 ≤ β·DS_CLIP. E[d_t] = −KL ≤ 0 이라 평균 음수는 구조적. 결과 부호와 무관해 모든 묶음(만장일치 포함)에 닿는다.
-    `compute_advantage` 훅 안에서 불리므로 `old_log_probs` 가 이미 있다(verl: reward → old_log_prob → ref → advantage)."""
+def ds_rows(rows, n_tok, drop, cls) -> list[int]:
+    """눈 가린 나가 채점할 수 있는 행 — 첫 답 부류 cls · 학습에 남음 · 앞 DS_FRONT 말보다 긺."""
+    return [i for i, x in enumerate(rows) if x["cls"] in cls and i not in drop and n_tok[i] > DS_FRONT]
+
+
+def blind_scores(trainer, tok, data, nt, pre, texts, idx, n_tok) -> tuple[dict, set]:
+    r"""눈 가린 나(수정 51 선생님) 채점 — 행 i → (j1, log π_ref(y_t | 문제 + FACT_TMPL(X)) 말 목록), 구간 끝 j1 = 마지막 박스 끝·반복
+    시작 중 앞. 한 forward/행을 리셋(`pfx_distill`)·배분(`pfx_alloc`)이 함께 쓴다. 둘째 값 = 채점을 요청한 행(oom 계기)."""
     from mc import context as ctx  # noqa: PLC0415
     from mc.trainer import col, ref_tree_score  # noqa: PLC0415
-    probs, olp = col(nt, "problem"), data.batch["old_log_probs"]
-    spans, trees = [], []
-    for i, t in enumerate(texts):
-        if rows[i]["cls"] != "wrong" or i in drop or n_tok[i] <= DS_FRONT:
-            continue
-        resp = [int(x) for x in data.batch["responses"][i, :n_tok[i]]]
+    probs, spans, trees = col(nt, "problem"), [], []
+    for i in idx:
+        t, resp = texts[i], [int(x) for x in data.batch["responses"][i, :n_tok[i]]]
         sp, e = boxed_spans(t), loop_char(t)
         j1 = min(n_tok[i], char_to_tok(tok, resp, min(sp[-1][2] if sp else len(t), e if e is not None else len(t))))
         if j1 - DS_FRONT >= 1:
             spans.append((i, j1))
             trees.append(tree(fork_head(tok, probs[i] + ctx.FACT_TMPL.format(answer=boxed_answer(pre[i]) or ""), "", None), resp))
     lps = ref_tree_score(trainer, trees, per_token=True) if trees else []
+    return {i: (j1, lp) for (i, j1), lp in zip(spans, lps) if lp is not None}, {i for i, _ in spans}
+
+
+def pfx_distill(data, bl: dict, n_oom: int, rows, beta: float) -> dict:
+    r"""수정 51 문맥 증류(단순판) — `ds_rows`(기본 **틀린 첫 답** 행)의 이어쓰기 말 [DS_FRONT, j1)에
+    말당 가산 크레딧 β·clip(d_t, ±DS_CLIP), d_t = log π_ref(y_t | 문제 + FACT_TMPL(X)) − log π_old(y_t | 문제 + 앞부분)
+    (말 단위 역-KL 온폴리시 증류 — 수정 52: 51b 의 행 총량 고정(128/n)은 긴 행에서 몫이 결과 질량의 0.3–1% 로 꺼져 뺐다).
+    선생님 = 자기 풀이를 못 본 얼린 자기 자신(`blind_scores`) → 풀이에 끌려간 말은 벌, 새로 푸는 말은 칭찬(정박 해소의 단일 패스 내재화).
+    말당 ≤ β·DS_CLIP. E[d_t] = −KL ≤ 0 이라 평균 음수는 구조적. 결과 부호와 무관해 모든 묶음(만장일치 포함)에 닿는다.
+    `PFX_DISTILL_SHUF=1`(수정 55): 위약 — 행 안에서 d_t 의 자리를 섞는다(크기·부호 분포·행 총량 보존; 10-07 probe: 고침 −.122).
+    `PFX_DISTILL_ROWS=all`(수정 59): gold 라우팅 없이 맞은 첫 답 행에도(행 선택은 `pfx_rewards`).
+    `compute_advantage` 훅 안에서 불리므로 `old_log_probs` 가 이미 있다(verl: reward → old_log_prob → ref → advantage)."""
+    olp, shuf = data.batch["old_log_probs"], os.environ.get("PFX_DISTILL_SHUF") == "1"
     out, ds = {}, []
-    for (i, j1), lp in zip(spans, lps):
-        if lp is None:
-            continue
+    for i, (j1, lp) in bl.items():
         d = [max(-DS_CLIP, min(DS_CLIP, lp[t] - float(olp[i, t]))) for t in range(DS_FRONT, j1)]
+        if shuf:                       # 수정 55 위약: 같은 값·같은 행 총량, 말 자리만 섞음(선생님 «내용» 제거)
+            random.Random(len(d) * 1009 + i).shuffle(d)
         out[i] = (DS_FRONT, [beta * v for v in d])
         ds += d
-    return {"ds_credit": out, "ds_rows": float(len(out)), "ds_oom": float(len(spans) - len(out)),
+    return {"ds_credit": out, "ds_rows": float(len(out)), "ds_oom": float(n_oom), "ds_shuf": float(shuf),
+            "ds_rows_right": float(sum(rows[i]["cls"] == "right" for i in out)),
             "ds_neg_frac": sum(v < 0 for v in ds) / len(ds) if ds else float("nan"),
             "ds_d_mean": sum(ds) / len(ds) if ds else float("nan"),
             "ds_tok_absmax": max((abs(v) for _, vals in out.values() for v in vals), default=0.0)}
+
+
+def pfx_alloc(data, bl: dict, rows, n_tok, kappa: float) -> dict:
+    r"""수정 61 말 단위 배분 — 섞인 묶음 행(결과 adv ≠ 0)의 결과 adv 를 «바꾸기 점수»
+    c_t = clip(log π_ref(y_t | 문제 + FACT_TMPL(X)) − log π_ref(y_t | 문제 + 앞부분 + 이어쓰기), ±DS_CLIP) (눈 가린 나 − 어제의 나, 정답 없음)
+    로 행 안 재배분(곱): 답을 바꾼 행(마지막 박스 ≠ X)은 w_t ∝ exp(κ c_t) — 바꾸는 말, 지킨 행은 exp(−κ c_t) — 지키는 말에 칭찬·꾸중을
+    몰아준다. 구간 [DS_FRONT, j1) 안 평균 1(합 보존), 밖 1. 방향은 결과 adv(RLSD 형) — 교사는 크기만 정하므로 결과와 부딪히지 않는다.
+    틀→다른 틀(첫 답 틀림 · 바꿈 · 끝도 틀림)은 균등(61c): 바꾸려는 시도 자체는 옳아 «바꾸는 말 벌» 이 리셋과 부딪힌다.
+    «바꿨다» = `score` 의 revised(탐침·계기판과 같은 자 — 마지막 새 박스가 X 와 loose 동치 아님).
+    `PFX_ALLOC_SHUF=1`(수정 61e): 위약 — 행 안에서 w_t 의 자리를 섞는다(칸 배정·무게 분포 보존 = «칸 단위만», 말 내용 제거)."""
+    import math  # noqa: PLC0415
+    ref = data.batch["ref_log_prob"]
+    out, nch, nww, shuf = {}, 0, 0, os.environ.get("PFX_ALLOC_SHUF") == "1"
+    for i, (j1, lp) in bl.items():
+        ch = rows[i]["revised"]
+        if ch and rows[i]["cls"] == "wrong" and not rows[i]["final_correct"]:
+            nww += 1
+            continue
+        w = [math.exp((kappa if ch else -kappa) * max(-DS_CLIP, min(DS_CLIP, lp[t] - float(ref[i, t])))) for t in range(DS_FRONT, j1)]
+        if shuf:
+            random.Random(len(w) * 1013 + i).shuffle(w)
+        m = sum(w) / len(w)
+        out[i] = [1.0] * DS_FRONT + [v / m for v in w] + [1.0] * (n_tok[i] - j1)
+        nch += ch
+    rm = [max(v) for v in out.values()]
+    return {"pfx_weights": out, "alloc_rows": float(len(out)), "alloc_shuf": float(shuf), "alloc_changed": nch / max(1, len(out)), "alloc_skip_ww": float(nww),
+            "alloc_w_max": max(rm, default=1.0), "alloc_w_rowmax": sum(rm) / len(rm) if rm else 1.0,   # 행별 최대의 평균 = fork_w_max 와 같은 자
+            "alloc_moved": sum(sum(abs(x - 1) for x in v) / len(v) for v in out.values()) / max(1, len(out))}   # 행 질량 중 옮겨진 몫(평균 |w−1|)
+
+
+def pfx_keep(data, rows, n_tok, drop, gamma: float) -> dict:
+    r"""수정 53 — 첫 답이 **맞은** 행의 이어쓰기 전체에 가산 γ·clip(log π_ref − log π_old, ±DS_CLIP). 선생님 = 같은 문맥의
+    얼린 원래 모델(verl `ref_log_prob`, 추가 forward 없음) — 맞은 줄 한정 말 단위 역-KL 규제로, 리셋 증류(틀린 줄)의
+    «처음부터 다시» 가 맞은 첫 답으로 번지는 것을 원래 행동 쪽으로 당긴다(내부 신호가 아니라 규제). 스텝 1 은 π_old = π_ref 라 0.
+    (54 «결정 구간만» 판은 잘림 .155 로 실패 — 10-06, 삭제)"""
+    ref, olp = data.batch["ref_log_prob"], data.batch["old_log_probs"]
+    out, ks = {}, []
+    for i, r in enumerate(rows):
+        if r["cls"] != "right" or i in drop or n_tok[i] < 1:
+            continue
+        d = (ref[i, :n_tok[i]] - olp[i, :n_tok[i]]).clamp(-DS_CLIP, DS_CLIP).tolist()
+        out[i] = (0, [gamma * v for v in d])
+        ks += d
+    return {"keep_credit": out, "keep_rows": float(len(out)), "keep_d_mean": sum(ks) / len(ks) if ks else float("nan")}
 
 
 LOOP_RUN = 3   #: 수정 42/43 — 같은 답(동치) 박스 연속 3번 = 쓸데없는 확인 시작(평가 «같은 답 3번 멈춤» 모의: 손실 ≈0, 0929)

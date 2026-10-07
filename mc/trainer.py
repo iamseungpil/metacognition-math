@@ -25,7 +25,8 @@ CTX: dict = {}
 #: 워커에 실을 환경변수 — Ray 워커는 드라이버 env 를 **상속하지 않는다**(사고 2회).
 WORKER_ENV_KEYS = ("LABEL", "MC_CKPT_DIR", "PROMPT_VARIANT", "MC_DUMP_ADV",
                    "OUTCOME_MODE", "PFX_WEIGHT_KEY", "PFX_TRUNC", "PFX_FORK", "PFX_REP",
-                   "PFX_BREAK_W", "PFX_REP_HARD", "PFX_ADV_CAP", "PFX_DISTILL")
+                   "PFX_BREAK_W", "PFX_REP_HARD", "PFX_ADV_CAP", "PFX_DISTILL", "PFX_DISTILL_SHUF",
+                   "PFX_DISTILL_ROWS", "PFX_ALLOC", "PFX_ALLOC_SHUF", "PFX_KEEP", "PFX_GUARD_ABS")
 
 
 def reward_loop_score(data_source=None, solution_str="", ground_truth="", extra_info=None, **kw):
@@ -155,18 +156,28 @@ def add_span_credit(data, credit: dict, tel: dict, step=0):
     from mc.train_hook import outcome_mode  # noqa: PLC0415
     dump_n = int(float(os.environ.get("MC_DUMP_ADV") or 0))
     om = outcome_mode()
-    if not credit and dump_n <= 0 and not tel.get("pfx_weights") and not tel.get("ds_credit") and not os.environ.get("PFX_ADV_CAP"):
+    if not credit and dump_n <= 0 and not any(tel.get(k) for k in ("pfx_weights", "ds_credit", "keep_credit")) \
+            and not os.environ.get("PFX_ADV_CAP"):
         return data
     adv, ret = _split_returns(data)
     mask = data.batch.get("response_mask")
     T = adv.shape[-1]
     before = adv.detach().clone() if dump_n > 0 else None
+    cnum = cden = 0.0
     for i, ws in (tel.get("pfx_weights") or {}).items():   # CH-Fork(수정 28): 행 안 합 보존 재배분(곱) — 결과 adv 유지
         k = min(len(ws), T)
         w = torch.as_tensor(ws[:k], dtype=adv.dtype, device=adv.device)
+        if ds := (tel.get("ds_credit") or {}).get(i):      # 56c: CH 이동 adv·(w−1) 과 리셋 가산의 부호 충돌 몫(계기만)
+            j0, v = int(ds[0]), torch.as_tensor(ds[1], dtype=adv.dtype, device=adv.device)
+            n = max(0, min(k, j0 + len(v)) - j0)
+            mv, v = adv[i, j0:j0 + n] * (w[j0:j0 + n] - 1), v[:n]
+            cnum, cden = cnum + float(v.abs()[mv * v < 0].sum()), cden + float(v.abs().sum())
         adv[i, :k] *= w
         if ret is not None:
             ret[i, :k] *= w
+    if cden > 0:
+        tel["ch_ds_conflict"] = cnum / cden
+        print(f"[MC][CONFLICT] step={step} ch_ds_conflict={tel['ch_ds_conflict']:.4f}", flush=True)
     if (cap := os.environ.get("PFX_ADV_CAP", "")):     # 수정 48: CH×BREAK_W 말 단위 adv 스파이크 상한(첫 풀이 보호 가설)
         cap = float(cap)
         if cap <= 0:
@@ -194,8 +205,9 @@ def add_span_credit(data, credit: dict, tel: dict, step=0):
         tot = sum(abs(v) for _, vals in credit.values() for v in vals)
         tel["credit_scale"] = k = min(1.0, cap / (1.0 - cap) * outcome_mass / max(tot, 1e-9))
         credit = {i: (j0, [k * v for v in vals]) for i, (j0, vals) in credit.items()}
-    credit_mass, ds_mass, ds = 0.0, 0.0, tel.get("ds_credit") or {}
-    for k, (i, (j0, vals)) in enumerate([*ds.items(), *credit.items()]):   # 수정 51/52 증류(앞쪽 len(ds) 개)는 상한 밖
+    credit_mass, extra = 0.0, {k: 0.0 for k in ("ds_credit", "keep_credit")}   # 수정 51–53 증류·유지는 상한 밖(가산)
+    spans = [(k, i, j0, vals) for k in extra for i, (j0, vals) in (tel.get(k) or {}).items()]
+    for src, i, j0, vals in [*spans, *((None, i, j0, vals) for i, (j0, vals) in credit.items())]:
         for t, v in enumerate(vals):
             j = int(j0) + t
             if j >= T or (mask is not None and float(mask[i, j]) <= 0):
@@ -204,7 +216,8 @@ def add_span_credit(data, credit: dict, tel: dict, step=0):
             if ret is not None:
                 ret[i, j] += float(v)
             credit_mass += abs(float(v))
-            ds_mass += abs(float(v)) if k < len(ds) else 0.0
+            if src:
+                extra[src] += abs(float(v))
     mode = str(getattr(getattr(getattr(getattr(CTX.get("trainer"), "config", None),
                                        "actor_rollout_ref", None), "actor", None),
                        "loss_agg_mode", "token-mean") or "token-mean")
@@ -214,9 +227,10 @@ def add_span_credit(data, credit: dict, tel: dict, step=0):
               "mass_share 가 «손실에 실제 들어가는 몫»과 갈린다(token-mean 기준 정의).",
               flush=True)
     tel["mass_share"] = credit_mass / max(1e-9, credit_mass + outcome_mass)
-    tel["ds_share"] = ds_mass / max(1e-9, credit_mass + outcome_mass)   # 수정 52 검출력 확인(스텝 1–2 ≥ .02)
+    for k, m in extra.items():                 # ds_share(수정 52 검출력 ≥ .02) · keep_share(수정 53 ≤ .30)
+        tel[k.replace("credit", "share")] = m / max(1e-9, credit_mass + outcome_mass)
     print(f"[MC] step={step} credit_mass={credit_mass:.4f} credit_scale={tel.get('credit_scale', 1.0):.3f} "
-          f"outcome_mass={outcome_mass:.4f} mass_share={tel['mass_share']:.4f} ds_share={tel['ds_share']:.4f} "
+          f"outcome_mass={outcome_mass:.4f} mass_share={tel['mass_share']:.4f} ds_share={tel['ds_share']:.4f} keep_share={tel['keep_share']:.4f} "
           f"outcome_mode={om}", flush=True)
     if dump_n > 0 and int(step) <= dump_n:
         dump_advantages(data, credit, tel, step, before)

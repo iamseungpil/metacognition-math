@@ -232,3 +232,15 @@ def test_mc_dump_adv_carries_text_and_token_credit(patched, monkeypatch, tmp_pat
     assert len(z["credit_1"]) == j1 - j0               # 구간 토큰 수와 같다
     assert any(not m["rows"][str(i)]["credited"]       # 대조용 무크레딧 행
                for i in m["detail_rows"] if i != 1)
+
+
+def test_add_span_credit_ch_distill_conflict_share():
+    """수정 56c: CH 곱 이동(adv·(w−1))과 리셋 가산 d 가 같은 말을 반대로 미는 몫 = Σ|d|(충돌)/Σ|d| — 계기만, adv 계산 불변."""
+    import torch
+    from mc import trainer as T
+    adv = torch.ones(1, 6)
+    data = type("D", (), {"batch": {"advantages": adv, "response_mask": torch.ones(1, 6)}})()
+    tel = {"pfx_weights": {0: [1.0, 1.0, 2.0, 0.5, 2.0, 0.5]}, "ds_credit": {0: (2, [-1.0, -1.0, 1.0, 3.0])}}
+    T.add_span_credit(data, {}, tel)
+    assert abs(tel["ch_ds_conflict"] - 4 / 6) < 1e-6        # 자리 2(이동 +, d −1)·5(이동 −, d +3) 충돌 = (1+3)/6
+    assert torch.allclose(adv[0], torch.tensor([1.0, 1.0, 1.0, -0.5, 3.0, 3.5]))   # 곱 뒤 가산(기존 동작)
