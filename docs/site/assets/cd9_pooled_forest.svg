@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 420" width="860" height="420" role="img" aria-label="리셋+KL 학습과 균등 GRPO의 차이(씨앗 2·3 합산)와 95% 신뢰구간">
+<rect width="860" height="420" fill="#fff"/>
+<text x="20" y="30" font-size="15" font-weight="700" fill="#17181b" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">리셋+KL 대 균등 GRPO — 씨앗 2·3 합산, hdev 288문제</text>
+<line x1="330.0" y1="56" x2="330.0" y2="340" stroke="#e6e7ea"/>
+<text x="330.0" y="360" font-size="12" font-weight="400" fill="#5f6671" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">-16</text>
+<line x1="388.6" y1="56" x2="388.6" y2="340" stroke="#e6e7ea"/>
+<text x="388.57142857142856" y="360" font-size="12" font-weight="400" fill="#5f6671" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">-12</text>
+<line x1="447.1" y1="56" x2="447.1" y2="340" stroke="#e6e7ea"/>
+<text x="447.1428571428571" y="360" font-size="12" font-weight="400" fill="#5f6671" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">-8</text>
+<line x1="505.7" y1="56" x2="505.7" y2="340" stroke="#e6e7ea"/>
+<text x="505.71428571428567" y="360" font-size="12" font-weight="400" fill="#5f6671" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">-4</text>
+<line x1="564.3" y1="56" x2="564.3" y2="340" stroke="#e6e7ea"/>
+<text x="564.2857142857142" y="360" font-size="12" font-weight="400" fill="#5f6671" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">0</text>
+<line x1="622.9" y1="56" x2="622.9" y2="340" stroke="#e6e7ea"/>
+<text x="622.8571428571429" y="360" font-size="12" font-weight="400" fill="#5f6671" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">+4</text>
+<line x1="681.4" y1="56" x2="681.4" y2="340" stroke="#e6e7ea"/>
+<text x="681.4285714285713" y="360" font-size="12" font-weight="400" fill="#5f6671" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">+8</text>
+<line x1="740.0" y1="56" x2="740.0" y2="340" stroke="#e6e7ea"/>
+<text x="740.0" y="360" font-size="12" font-weight="400" fill="#5f6671" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">+12</text>
+<line x1="564.3" y1="56" x2="564.3" y2="340" stroke="#17181b" stroke-width="1.5"/>
+<text x="535.0" y="384" font-size="12" font-weight="400" fill="#5f6671" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">퍼센트포인트 차이 (문제 짝 부트스트랩 95% 구간)</text>
+<text x="570.2857142857142" y="52" font-size="11.5" font-weight="400" fill="#5f6671" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">균등 GRPO보다 높음 →</text>
+<text x="20" y="86" font-size="14" font-weight="700" fill="#17181b" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">엄격 정확도</text>
+<text x="20" y="104" font-size="11.5" font-weight="400" fill="#5f6671" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">32k에서 안 끝나면 오답</text>
+<line x1="643.4" y1="88" x2="713.6" y2="88" stroke="#1a9850" stroke-width="3"/>
+<line x1="643.4" y1="82" x2="643.4" y2="94" stroke="#1a9850" stroke-width="2"/>
+<line x1="713.6" y1="82" x2="713.6" y2="94" stroke="#1a9850" stroke-width="2"/>
+<circle cx="678.5" cy="88" r="6.5" fill="#1a9850" stroke="#1a9850" stroke-width="2.5"/>
+<text x="760" y="92" font-size="13" font-weight="700" fill="#1a9850" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">+7.8</text>
+<text x="808" y="92" font-size="11" font-weight="400" fill="#17181b" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif"></text>
+<text x="20" y="142" font-size="14" font-weight="700" fill="#17181b" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">관대 정확도</text>
+<text x="20" y="160" font-size="11.5" font-weight="400" fill="#5f6671" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">도중 박스로 채점</text>
+<line x1="539.4" y1="144" x2="606.8" y2="144" stroke="#5f6671" stroke-width="3"/>
+<line x1="539.4" y1="138" x2="539.4" y2="150" stroke="#5f6671" stroke-width="2"/>
+<line x1="606.8" y1="138" x2="606.8" y2="150" stroke="#5f6671" stroke-width="2"/>
+<circle cx="574.5" cy="144" r="6.5" fill="#fff" stroke="#5f6671" stroke-width="2.5"/>
+<text x="760" y="148" font-size="13" font-weight="700" fill="#5f6671" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">+0.7</text>
+<text x="808" y="148" font-size="11" font-weight="400" fill="#17181b" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif"></text>
+<text x="20" y="198" font-size="14" font-weight="700" fill="#17181b" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">첫 박스 정답</text>
+<text x="20" y="216" font-size="11.5" font-weight="400" fill="#5f6671" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">처음 쓴 답이 맞은 비율</text>
+<line x1="510.1" y1="200" x2="581.9" y2="200" stroke="#5f6671" stroke-width="3"/>
+<line x1="510.1" y1="194" x2="510.1" y2="206" stroke="#5f6671" stroke-width="2"/>
+<line x1="581.9" y1="194" x2="581.9" y2="206" stroke="#5f6671" stroke-width="2"/>
+<circle cx="545.2" cy="200" r="6.5" fill="#fff" stroke="#5f6671" stroke-width="2.5"/>
+<text x="760" y="204" font-size="13" font-weight="700" fill="#5f6671" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">-1.3</text>
+<text x="808" y="204" font-size="11" font-weight="400" fill="#17181b" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif"></text>
+<text x="20" y="254" font-size="14" font-weight="700" fill="#17181b" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">틀린 첫 답을 고침</text>
+<text x="20" y="272" font-size="11.5" font-weight="400" fill="#5f6671" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">최종적으로 정답</text>
+<line x1="543.8" y1="256" x2="637.5" y2="256" stroke="#5f6671" stroke-width="3"/>
+<line x1="543.8" y1="250" x2="543.8" y2="262" stroke="#5f6671" stroke-width="2"/>
+<line x1="637.5" y1="250" x2="637.5" y2="262" stroke="#5f6671" stroke-width="2"/>
+<circle cx="590.6" cy="256" r="6.5" fill="#fff" stroke="#5f6671" stroke-width="2.5"/>
+<text x="760" y="260" font-size="13" font-weight="700" fill="#5f6671" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">+1.8</text>
+<text x="808" y="260" font-size="11" font-weight="400" fill="#17181b" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif"></text>
+<text x="20" y="310" font-size="14" font-weight="700" fill="#17181b" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">같은 오답에 머묾</text>
+<text x="20" y="328" font-size="11.5" font-weight="400" fill="#5f6671" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">다시 열고도 X 그대로 (낮을수록 좋음)</text>
+<line x1="350.5" y1="312" x2="485.2" y2="312" stroke="#1a9850" stroke-width="3"/>
+<line x1="350.5" y1="306" x2="350.5" y2="318" stroke="#1a9850" stroke-width="2"/>
+<line x1="485.2" y1="306" x2="485.2" y2="318" stroke="#1a9850" stroke-width="2"/>
+<circle cx="422.2" cy="312" r="6.5" fill="#1a9850" stroke="#1a9850" stroke-width="2.5"/>
+<text x="760" y="316" font-size="13" font-weight="700" fill="#1a9850" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">-9.7</text>
+<text x="808" y="316" font-size="11" font-weight="400" fill="#17181b" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif"></text>
+<circle cx="480" cy="402" r="5.5" fill="#1a9850" stroke="#1a9850" stroke-width="2"/><text x="492" y="406" font-size="11.5" font-weight="400" fill="#5f6671" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">구간이 0을 배제하고 좋은 방향</text>
+<circle cx="710" cy="402" r="5.5" fill="#fff" stroke="#5f6671" stroke-width="2.5"/><text x="722" y="406" font-size="11.5" font-weight="400" fill="#5f6671" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">0을 포함</text>
+</svg>

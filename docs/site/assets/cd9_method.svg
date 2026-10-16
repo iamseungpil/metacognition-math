@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 470" width="900" height="470" role="img" aria-label="리셋 증류의 구조: 학생은 자기 풀이를 보고, 교사는 풀이를 가린 채 같은 말을 채점한다">
+<defs><marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#5f6671"/></marker></defs>
+<rect width="900" height="470" fill="#fff"/>
+<text x="20" y="30" font-size="15" font-weight="700" fill="#17181b" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">같은 되짚기 구간의 말 y₁ … y_T 를 두 문맥으로 채점한다</text>
+<text x="20" y="66" font-size="13" font-weight="700" fill="#3f5bd6" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">학생 = 지금 학습 중인 정책</text>
+<rect x="20" y="76" width="150" height="64" rx="10" fill="#edeffc" stroke="#3f5bd6" stroke-width="1.5"/>
+<text x="95" y="103" font-size="14" font-weight="600" fill="#17181b" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">문제</text>
+<text x="95" y="123" font-size="11.5" font-weight="400" fill="#5f6671" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">(전체 지문)</text>
+<rect x="180" y="76" width="250" height="64" rx="10" fill="#edeffc" stroke="#3f5bd6" stroke-width="1.5"/>
+<text x="305" y="103" font-size="14" font-weight="600" fill="#17181b" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">자기 풀이 … \boxed{X}</text>
+<text x="305" y="123" font-size="11.5" font-weight="400" fill="#5f6671" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">X = 틀린 첫 답 · 문맥에 그대로 보임</text>
+<rect x="440" y="76" width="200" height="64" rx="10" fill="#fff" stroke="#3f5bd6" stroke-width="1.5"/>
+<text x="540" y="103" font-size="14" font-weight="700" fill="#3f5bd6" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">되짚기 y₁ … y_T</text>
+<text x="540" y="123" font-size="11.5" font-weight="400" fill="#5f6671" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">여기를 채점한다</text>
+<text x="20" y="196" font-size="13" font-weight="700" fill="#c47d12" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">교사 = 얼린 base (학습하지 않음)</text>
+<rect x="20" y="206" width="150" height="64" rx="10" fill="#fef6e6" stroke="#c47d12" stroke-width="1.5"/>
+<text x="95" y="233" font-size="14" font-weight="600" fill="#17181b" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">문제</text>
+<text x="95" y="253" font-size="11.5" font-weight="400" fill="#5f6671" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">(전체 지문)</text>
+<rect x="180" y="206" width="250" height="64" rx="10" fill="#fef6e6" stroke="#c47d12" stroke-width="1.5"/>
+<text x="305" y="233" font-size="14" font-weight="600" fill="#17181b" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">«이전 답은 X였다»</text>
+<text x="305" y="253" font-size="11.5" font-weight="400" fill="#5f6671" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">풀이는 가려짐 · 정답은 알려주지 않음</text>
+<rect x="440" y="206" width="200" height="64" rx="10" fill="#fff" stroke="#c47d12" stroke-width="1.5"/>
+<text x="540" y="233" font-size="14" font-weight="700" fill="#c47d12" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">같은 y₁ … y_T</text>
+<text x="540" y="253" font-size="11.5" font-weight="400" fill="#5f6671" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">같은 말을 채점한다</text>
+<path d="M640 108 H680 V158" fill="none" stroke="#5f6671" stroke-width="1.8" marker-end="url(#a)"/>
+<path d="M640 238 H680 V186" fill="none" stroke="#5f6671" stroke-width="1.8" marker-end="url(#a)"/>
+<rect x="600" y="160" width="280" height="24" rx="10" fill="#fff" stroke="#fff" stroke-width="1.5"/>
+<rect x="660" y="160" width="220" height="28" rx="6" fill="#f4f6fb" stroke="#5f6671" stroke-width="1.5"/>
+<text x="770" y="179" font-size="11.5" font-weight="600" fill="#17181b" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">d_t = log p교사(y_t) − log p학생(y_t)</text>
+<text x="770" y="206" font-size="11.5" font-weight="400" fill="#5f6671" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">교사가 더 그럴듯하다고 본 말에 +</text>
+<path d="M770 214 V300" fill="none" stroke="#5f6671" stroke-width="1.8" marker-end="url(#a)"/>
+<text x="20" y="326" font-size="13" font-weight="700" fill="#17181b" text-anchor="start" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">학습 신호 = 세 항의 합</text>
+<rect x="20" y="336" width="270" height="110" rx="10" fill="#e8f5ec" stroke="#1a9850" stroke-width="1.5"/>
+<text x="155" y="362" font-size="14" font-weight="700" fill="#1a9850" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">① 결과 보상</text>
+<text x="155" y="384" font-size="12" font-weight="400" fill="#17181b" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">모든 행에 GRPO</text>
+<text x="155" y="404" font-size="12" font-weight="400" fill="#17181b" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">최종 답이 맞으면 +</text>
+<text x="155" y="424" font-size="11.5" font-weight="400" fill="#5f6671" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">(균등 GRPO와 같은 바탕)</text>
+<rect x="310" y="336" width="290" height="110" rx="10" fill="#fef6e6" stroke="#c47d12" stroke-width="1.5"/>
+<text x="455" y="362" font-size="14" font-weight="700" fill="#c47d12" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">② 증류 가산</text>
+<text x="455" y="384" font-size="12" font-weight="400" fill="#17181b" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">β·clip(d_t, ±2), β = 0.5</text>
+<text x="455" y="404" font-size="12" font-weight="400" fill="#17181b" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">정답지로 첫 답이 틀렸다고 판정된</text>
+<text x="455" y="424" font-size="12" font-weight="400" fill="#17181b" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">행의 되짚기 구간에만 적용</text>
+<rect x="620" y="336" width="260" height="110" rx="10" fill="#f4f5f8" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="750" y="362" font-size="14" font-weight="700" fill="#475569" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">③ KL 끈 0.05</text>
+<text x="750" y="384" font-size="12" font-weight="400" fill="#17181b" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">기준 모델에서 멀어지면 벌</text>
+<text x="750" y="404" font-size="12" font-weight="400" fill="#17181b" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">(기본값 0.002의 25배)</text>
+<text x="750" y="424" font-size="11.5" font-weight="400" fill="#5f6671" text-anchor="middle" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">맞은 답이 깨지는 것을 막음</text>
+</svg>
