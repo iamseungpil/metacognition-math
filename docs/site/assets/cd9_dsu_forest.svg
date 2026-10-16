@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 400" width="780" height="400" role="img" aria-label="dsu의 정확도 차이와 95% 신뢰구간">
+<rect width="780" height="400" fill="#fff"/>
+<line x1="250.0" y1="50" x2="250.0" y2="350" stroke="#e6e7ea"/>
+<text x="250.0" y="372" font-size="12" text-anchor="middle" fill="#5f6671" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">-6</text>
+<line x1="292.5" y1="50" x2="292.5" y2="350" stroke="#e6e7ea"/>
+<text x="292.5" y="372" font-size="12" text-anchor="middle" fill="#5f6671" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">-4</text>
+<line x1="335.0" y1="50" x2="335.0" y2="350" stroke="#e6e7ea"/>
+<text x="335.0" y="372" font-size="12" text-anchor="middle" fill="#5f6671" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">-2</text>
+<line x1="377.5" y1="50" x2="377.5" y2="350" stroke="#e6e7ea"/>
+<text x="377.5" y="372" font-size="12" text-anchor="middle" fill="#5f6671" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">0</text>
+<line x1="420.0" y1="50" x2="420.0" y2="350" stroke="#e6e7ea"/>
+<text x="420.0" y="372" font-size="12" text-anchor="middle" fill="#5f6671" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">+2</text>
+<line x1="462.5" y1="50" x2="462.5" y2="350" stroke="#e6e7ea"/>
+<text x="462.5" y="372" font-size="12" text-anchor="middle" fill="#5f6671" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">+4</text>
+<line x1="505.0" y1="50" x2="505.0" y2="350" stroke="#e6e7ea"/>
+<text x="505.0" y="372" font-size="12" text-anchor="middle" fill="#5f6671" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">+6</text>
+<line x1="547.5" y1="50" x2="547.5" y2="350" stroke="#e6e7ea"/>
+<text x="547.5" y="372" font-size="12" text-anchor="middle" fill="#5f6671" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">+8</text>
+<line x1="590.0" y1="50" x2="590.0" y2="350" stroke="#e6e7ea"/>
+<text x="590.0" y="372" font-size="12" text-anchor="middle" fill="#5f6671" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">+10</text>
+<line x1="377.5" y1="50" x2="377.5" y2="350" stroke="#17181b" stroke-width="1.5"/>
+<text x="420.0" y="394" font-size="12" text-anchor="middle" fill="#5f6671" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">정확도 차이 (퍼센트포인트, 문제 짝 부트스트랩 95% 구간)</text>
+<text x="20" y="34" font-size="15" font-weight="700" fill="#17181b" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">리셋 셀프 디스틸(dsu)의 효과 — hdev 한 문항 288</text>
+<text x="20" y="74" font-size="13" font-weight="600" fill="#17181b" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">dsu − base</text>
+<text x="112" y="74" font-size="13" fill="#5f6671" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">엄격 정확도</text>
+<line x1="434.7" y1="70" x2="569.4" y2="70" stroke="#3f5bd6" stroke-width="3"/>
+<line x1="434.7" y1="64" x2="434.7" y2="76" stroke="#3f5bd6" stroke-width="2"/>
+<line x1="569.4" y1="64" x2="569.4" y2="76" stroke="#3f5bd6" stroke-width="2"/>
+<circle cx="498.4" cy="70" r="6.5" fill="#3f5bd6" stroke="#3f5bd6" stroke-width="2.5"/>
+<text x="579.4" y="74" font-size="12" fill="#5f6671" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">+5.69 [+2.69, +9.03]</text>
+<text x="20" y="120" font-size="13" font-weight="600" fill="#17181b" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">dsu − base</text>
+<text x="112" y="120" font-size="13" fill="#5f6671" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">관대 정확도</text>
+<line x1="386.6" y1="116" x2="522.2" y2="116" stroke="#3f5bd6" stroke-width="3"/>
+<line x1="386.6" y1="110" x2="386.6" y2="122" stroke="#3f5bd6" stroke-width="2"/>
+<line x1="522.2" y1="110" x2="522.2" y2="122" stroke="#3f5bd6" stroke-width="2"/>
+<circle cx="449.5" cy="116" r="6.5" fill="#3f5bd6" stroke="#3f5bd6" stroke-width="2.5"/>
+<text x="532.2" y="120" font-size="12" fill="#5f6671" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">+3.39 [+0.43, +6.81]</text>
+<text x="20" y="166" font-size="13" font-weight="600" fill="#17181b" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">dsu − base</text>
+<text x="112" y="166" font-size="13" fill="#5f6671" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">첫 박스</text>
+<line x1="337.8" y1="162" x2="471.6" y2="162" stroke="#3f5bd6" stroke-width="3"/>
+<line x1="337.8" y1="156" x2="337.8" y2="168" stroke="#3f5bd6" stroke-width="2"/>
+<line x1="471.6" y1="156" x2="471.6" y2="168" stroke="#3f5bd6" stroke-width="2"/>
+<circle cx="402.4" cy="162" r="6.5" fill="#fff" stroke="#3f5bd6" stroke-width="2.5"/>
+<text x="481.6" y="166" font-size="12" fill="#5f6671" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">+1.17 [-1.87, +4.43]</text>
+<text x="20" y="226" font-size="13" font-weight="600" fill="#17181b" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">dsu − uhc2</text>
+<text x="112" y="226" font-size="13" fill="#5f6671" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">엄격 정확도</text>
+<line x1="428.3" y1="222" x2="570.2" y2="222" stroke="#c47d12" stroke-width="3"/>
+<line x1="428.3" y1="216" x2="428.3" y2="228" stroke="#c47d12" stroke-width="2"/>
+<line x1="570.2" y1="216" x2="570.2" y2="228" stroke="#c47d12" stroke-width="2"/>
+<circle cx="500.1" cy="222" r="6.5" fill="#c47d12" stroke="#c47d12" stroke-width="2.5"/>
+<text x="580.2" y="226" font-size="12" fill="#5f6671" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">+5.77 [+2.39, +9.07]</text>
+<text x="20" y="272" font-size="13" font-weight="600" fill="#17181b" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">dsu − uhc2</text>
+<text x="112" y="272" font-size="13" fill="#5f6671" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">관대 정확도</text>
+<line x1="320.3" y1="268" x2="455.1" y2="268" stroke="#c47d12" stroke-width="3"/>
+<line x1="320.3" y1="262" x2="320.3" y2="274" stroke="#c47d12" stroke-width="2"/>
+<line x1="455.1" y1="262" x2="455.1" y2="274" stroke="#c47d12" stroke-width="2"/>
+<circle cx="390.5" cy="268" r="6.5" fill="#fff" stroke="#c47d12" stroke-width="2.5"/>
+<text x="465.1" y="272" font-size="12" fill="#5f6671" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">+0.61 [-2.69, +3.65]</text>
+<text x="20" y="318" font-size="13" font-weight="600" fill="#17181b" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">dsu − uhc2</text>
+<text x="112" y="318" font-size="13" fill="#5f6671" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">첫 박스</text>
+<line x1="266.8" y1="314" x2="400.7" y2="314" stroke="#c47d12" stroke-width="3"/>
+<line x1="266.8" y1="308" x2="266.8" y2="320" stroke="#c47d12" stroke-width="2"/>
+<line x1="400.7" y1="308" x2="400.7" y2="320" stroke="#c47d12" stroke-width="2"/>
+<circle cx="334.1" cy="314" r="6.5" fill="#fff" stroke="#c47d12" stroke-width="2.5"/>
+<text x="410.7" y="318" font-size="12" fill="#5f6671" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">-2.04 [-5.21, +1.09]</text>
+<circle cx="640" cy="34" r="5.5" fill="#3f5bd6" stroke="#3f5bd6" stroke-width="2"/><text x="652" y="38" font-size="12" fill="#5f6671" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">구간이 0을 배제</text>
+<circle cx="640" cy="54" r="5.5" fill="#fff" stroke="#3f5bd6" stroke-width="2.5"/><text x="652" y="58" font-size="12" fill="#5f6671" font-family="-apple-system,Segoe UI,Helvetica,Arial,Apple SD Gothic Neo,Malgun Gothic,sans-serif">0을 포함</text>
+</svg>
