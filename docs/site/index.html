@@ -1,1138 +1,187 @@
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>PMI-shift 메타인지 자기증류</title>
-<meta name="description" content="스팬-이동 · 디코이 대조 · 메타 지역화로 좋은 메타인지 행동을 보상하는 자기증류 — 매치드-베이스 인과 설계" />
+<!doctype html>
+<html lang="ko"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>틀린 첫 답을 스스로 고치게 하는 학습 · 메타인지 셀프 디스틸</title>
+<meta name="description" content="수학 풀이에서 모델이 첫 답 뒤에 스스로 되짚어 틀린 답을 고치는 습관을, 풀이를 가린 자기 자신을 교사로 삼아 키우는 셀프 디스틸레이션. 지금 말할 수 있는 것과 없는 것.">
+<link rel="stylesheet" href="main.css">
+</head><body>
 
-<style>
-  :root{
-    --ink:#17181b; --muted:#5f6671; --line:#e6e7ea; --bg:#ffffff; --soft:#fafbfc;
-    --green:#1a9850; --green-soft:#e8f5ec; --green-ink:#147a41;
-    --red:#d24040; --red-soft:#fdecec; --red-ink:#b3271e;
-    --blue:#3f5bd6; --blue-soft:#edeffc; --blue-ink:#2f45b8;
-    --amber:#c47d12; --amber-soft:#fef6e6;
-    --purple:#7c3aed; --purple-soft:#f2ecfd;
-    --slate:#475569;
-    --meta:#3f5bd6; --meta-soft:#edeffc;
-  }
-  *{box-sizing:border-box}
-  html{scroll-behavior:smooth; scroll-padding-top:60px}
-  body{
-    margin:0; background:var(--bg); color:var(--ink);
-    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;
-    font-size:16.5px; line-height:1.72; -webkit-font-smoothing:antialiased;
-  }
-  .wrap{max-width:880px; margin:0 auto; padding:0 22px}
-  h1{font-size:2.15rem; line-height:1.18; letter-spacing:-.02em; margin:.2em 0 .2em; font-weight:760}
-  h2{font-size:1.5rem; letter-spacing:-.01em; margin:0 0 .3em; font-weight:720; scroll-margin-top:60px}
-  h3{font-size:1.08rem; margin:0 0 .25em; font-weight:680}
-  p{margin:.6em 0}
-  a{color:var(--blue-ink); text-decoration:none}
-  a:hover{text-decoration:underline}
-  code,.mono{font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace}
-  .muted{color:var(--muted)}
-  .small{font-size:.84rem}
-  svg{max-width:100%; height:auto; display:block}
-
-  /* sticky nav */
-  nav.sticky{position:sticky; top:0; z-index:50; background:rgba(255,255,255,.93);
-    backdrop-filter:saturate(180%) blur(9px); border-bottom:1px solid var(--line)}
-  nav.sticky .inner{max-width:880px; margin:0 auto; padding:8px 22px; display:flex; flex-wrap:wrap; gap:4px 5px; align-items:center}
-  nav.sticky a{color:var(--ink); font-size:.82rem; font-weight:560; padding:3px 8px; border-radius:6px}
-  nav.sticky a.brand{font-weight:760}
-  nav.sticky a:hover{background:#eef1f5; text-decoration:none}
-  nav.sticky .rq{color:var(--muted); font-variant-numeric:tabular-nums}
-
-  header.hero{padding:48px 0 26px; border-bottom:1px solid var(--line)}
-  .eyebrow{font-size:.76rem; font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:var(--blue-ink); margin-bottom:.7em}
-  .subtitle{font-size:1.14rem; color:#2c2d31; margin:.35em 0 1em; line-height:1.5}
-  .subtitle b{color:var(--green-ink)}
-  .lede{font-size:.98rem; color:#2c2c30; background:var(--soft); border:1px solid var(--line);
-        border-radius:12px; padding:15px 17px}
-  .lede code{background:#eceff6; padding:1px 5px; border-radius:4px; font-size:.9em}
-  .lede .tag{font-weight:700; color:var(--blue-ink)}
-
-  section{padding:42px 0; border-bottom:1px solid var(--line)}
-  section:last-of-type{border-bottom:none}
-  .rqtag{display:inline-flex; align-items:center; gap:7px; font-size:.74rem; font-weight:700; letter-spacing:.06em;
-    text-transform:uppercase; color:var(--blue-ink); background:var(--blue-soft); padding:3px 10px; border-radius:999px; margin-bottom:.6em}
-  .rqtag.real{color:var(--green-ink); background:var(--green-soft)}
-  .rqtag.pending{color:var(--amber); background:var(--amber-soft)}
-  .sectlead{font-size:1rem; color:#3d3f44; margin-top:.2em}
-
-  /* status pills */
-  .pill{display:inline-block; font-size:.7rem; font-weight:700; letter-spacing:.03em; padding:2px 9px;
-    border-radius:999px; white-space:nowrap; vertical-align:middle}
-  .pill.prelim{background:var(--amber-soft); color:var(--amber); border:1px solid #f0d9a8}
-  .pill.pending{background:#f1f3f6; color:var(--slate); border:1px dashed #b8bec7}
-  .pill.real{background:var(--green-soft); color:var(--green-ink); border:1px solid #bfe3cc}
-  .pill.run{background:#f4f5f8; color:var(--slate); border:1px solid var(--line); font-family:"SFMono-Regular",Consolas,monospace; font-weight:600}
-
-  /* trace bar */
-  .trace{display:flex; flex-wrap:wrap; gap:7px; align-items:center; margin:10px 0 2px; font-size:.78rem}
-  .trace .t{font-family:"SFMono-Regular",Consolas,monospace; background:#f4f5f8; border:1px solid var(--line);
-    border-radius:6px; padding:2px 8px; color:var(--slate)}
-  .trace .t b{color:var(--ink)}
-
-  /* figure shell */
-  figure{margin:16px 0 6px; padding:0}
-  .figbox{border:1px solid var(--line); border-radius:14px; background:#fff; padding:16px 16px 12px;
-    box-shadow:0 1px 3px rgba(0,0,0,.03)}
-  .figtitle{font-size:.75rem; font-weight:700; letter-spacing:.05em; text-transform:uppercase; color:var(--muted); margin-bottom:10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap}
-  .figcap{font-size:.85rem; color:var(--muted); margin:11px 3px 0; line-height:1.55}
-  .figcap b{color:#3a3a3f}
-  .hoverhint{font-size:.72rem; color:var(--muted); font-style:italic; margin-left:auto; font-weight:500; letter-spacing:0; text-transform:none}
-
-  /* legend */
-  .legendbar{display:flex; flex-wrap:wrap; gap:8px 16px; margin:12px 0 2px; padding:11px 15px;
-    background:var(--soft); border:1px solid var(--line); border-radius:10px; font-size:.86rem}
-  .legendbar .li{display:inline-flex; align-items:center; gap:7px}
-  .swatch{width:14px; height:14px; border-radius:4px; flex:0 0 auto}
-
-  /* animated svg: hover to pause */
-  .anim *{animation-play-state:running}
-  .anim:hover *{animation-play-state:paused}
-
-  /* prior-work cards */
-  .cards{display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:16px}
-  .pcard{border:1px solid var(--line); border-radius:14px; background:#fff; overflow:hidden; display:flex; flex-direction:column}
-  .pcard .ph{padding:12px 15px 10px; border-bottom:1px solid var(--line)}
-  .pcard .ph .nm{font-weight:720; font-size:1rem}
-  .pcard .ph .sub{font-size:.78rem; color:var(--muted); font-family:"SFMono-Regular",Consolas,monospace}
-  .pcard .pv{padding:12px 15px; background:var(--soft); border-bottom:1px solid var(--line)}
-  .pcard .pb{padding:12px 15px; font-size:.87rem; line-height:1.55; color:#3a3c41}
-  .pcard .pb .them{color:var(--slate)}
-  .pcard .pb .us{display:block; margin-top:8px; padding-top:8px; border-top:1px dashed var(--line); color:var(--green-ink)}
-  .pcard .pb .us b{color:var(--green-ink)}
-  .pcard.ours{border-color:var(--green); box-shadow:0 0 0 1px var(--green-soft)}
-  .pcard.ours .ph{background:var(--green-soft)}
-
-  /* before/after bars */
-  .bars{margin-top:6px}
-  .barrow{display:grid; grid-template-columns:112px 1fr; gap:12px; align-items:center; margin:12px 0}
-  .barrow .lab{font-size:.85rem; font-weight:640; text-align:right}
-  .barrow .lab .sub{display:block; font-size:.72rem; color:var(--muted); font-weight:500}
-  .pair{display:flex; flex-direction:column; gap:5px}
-  .b{display:flex; align-items:center; gap:8px}
-  .b .track{flex:1; background:#eef0f4; border-radius:6px; height:22px; position:relative; overflow:hidden}
-  .b .fill{height:100%; border-radius:6px; display:flex; align-items:center; justify-content:flex-end; padding-right:8px; color:#fff; font-size:.76rem; font-weight:700; white-space:nowrap; transform-origin:left center}
-  .b .fill.base{background:#9aa0a8}
-  .b .fill.meta{background:var(--green)}
-  .b .who{width:38px; font-size:.68rem; font-weight:700; color:var(--muted); text-align:right; flex:0 0 auto; letter-spacing:.02em}
-  .b .dv{width:64px; font-size:.82rem; font-weight:800; color:var(--green-ink); flex:0 0 auto}
-  .b .dv.sat{color:var(--muted); font-weight:600}
-  /* grow animation */
-  .anim .fill{animation:grow 1.4s ease-out both}
-  @keyframes grow{from{transform:scaleX(.02)}to{transform:scaleX(1)}}
-
-  /* dchips */
-  .deltas{display:flex; flex-wrap:wrap; gap:9px; margin-top:12px}
-  .dchip{border:1px solid var(--line); border-radius:10px; padding:8px 12px; font-size:.82rem; background:#fff; min-width:120px}
-  .dchip .k{color:var(--muted); font-size:.76rem}
-  .dchip .v{font-weight:800; font-size:1.02rem; display:block}
-  .dchip .v.pos{color:var(--green-ink)} .dchip .v.neg{color:var(--red-ink)} .dchip .v.neu{color:var(--slate)}
-  .dchip .p{font-size:.72rem; color:var(--muted)}
-
-  /* callout */
-  .callout{background:var(--amber-soft); border:1px solid #f0d9a8; border-left:4px solid var(--amber);
-    border-radius:10px; padding:12px 15px; margin-top:14px; font-size:.9rem; color:#6b4a12}
-  .callout b{color:#5a3d0c}
-  .callout.blue{background:var(--blue-soft); border-color:#c7cef4; border-left-color:var(--blue); color:#2f3a72}
-  .callout.blue b{color:var(--blue-ink)}
-  .callout.red{background:var(--red-soft); border-color:#f2c9c9; border-left-color:var(--red); color:#7a2a24}
-  .callout.red b{color:var(--red-ink)}
-
-  /* ladder */
-  .ladder{display:flex; flex-direction:column; gap:0; margin-top:14px}
-  .rung{display:grid; grid-template-columns:44px 1fr; gap:14px; align-items:stretch}
-  .rung .step{display:flex; flex-direction:column; align-items:center}
-  .rung .dot{width:30px; height:30px; border-radius:50%; background:#fff; border:2px solid #cbd2dc; color:var(--slate);
-    display:flex; align-items:center; justify-content:center; font-weight:800; font-size:.82rem; flex:0 0 auto}
-  .rung .line{flex:1; width:2px; background:#e2e6ec; min-height:12px}
-  .rung:last-child .line{display:none}
-  .rung .body{padding-bottom:16px}
-  .rung .body h3{font-size:.98rem; margin-bottom:2px}
-  .rung .body .arm{font-family:"SFMono-Regular",Consolas,monospace; font-size:.78rem; color:var(--blue-ink)}
-  .rung .body p{margin:.25em 0; font-size:.88rem; color:#3d3f44}
-  .rung .body .rule{font-size:.82rem; color:var(--slate); background:var(--soft); border:1px solid var(--line); border-radius:8px; padding:7px 11px; margin-top:6px}
-  .rung .body .rule b{color:var(--ink)}
-
-  /* limits */
-  .limits{display:grid; grid-template-columns:1fr; gap:10px; margin-top:12px}
-  .lim{border:1px solid var(--line); border-radius:11px; padding:12px 15px; background:#fff; border-left:4px solid #cbd2dc}
-  .lim h3{font-size:.94rem; margin-bottom:2px; display:flex; align-items:center; gap:8px}
-  .lim p{margin:.2em 0 0; font-size:.87rem; color:#3d3f44}
-  .lim .mk{font-size:1.05rem}
-  .lim.tension{border-left-color:var(--purple)}
-  .lim.data{border-left-color:var(--amber)}
-  .lim.pkg{border-left-color:var(--blue)}
-
-  /* tldr + gloss */
-  .tldr{display:flex; gap:14px; align-items:flex-start; background:var(--green-soft); border:1px solid #bfe3cc;
-    border-left:4px solid var(--green); border-radius:12px; padding:14px 17px; margin:.2em 0 1em}
-  .tldr .lbl{font-size:.7rem; font-weight:800; letter-spacing:.08em; color:var(--green-ink); text-transform:uppercase; padding-top:3px; white-space:nowrap}
-  .tldr .txt{font-size:1.02rem; color:#243027; line-height:1.5}
-  .tldr .txt b{color:var(--green-ink); font-variant-numeric:tabular-nums}
-  .tldr .txt .cav{color:var(--amber); font-weight:700}
-  .gloss{font-size:.95rem; color:#3d3f44; background:var(--soft); border:1px solid var(--line); border-radius:10px; padding:11px 15px; margin:.2em 0 1em; line-height:1.62}
-  .gloss b{color:var(--ink)}
-  .gloss code{background:#eceff6; padding:1px 5px; border-radius:4px; font-size:.9em}
-
-  /* method pillars */
-  .pillars{list-style:none; padding:0; margin:14px 0 4px; display:flex; flex-direction:column; gap:8px}
-  .pillars li{font-size:.94rem; color:#3d3f44; background:var(--soft); border:1px solid var(--line);
-    border-left:3px solid var(--meta); border-radius:9px; padding:9px 13px; line-height:1.5}
-  .pillars .nm{font-weight:720; color:var(--ink)}
-  .pillars li b{color:#2f45b8}
-
-  /* stacked definition block */
-  .defblock{margin:12px 0 8px; border:1px solid var(--line); border-radius:10px; overflow:hidden}
-  .defrow{display:grid; grid-template-columns:118px 1fr; gap:12px; align-items:baseline; padding:8px 13px; border-bottom:1px solid var(--line)}
-  .defrow:last-child{border-bottom:none}
-  .defrow .dl{font-size:.8rem; font-weight:700; color:var(--slate)}
-  .defrow .df{font-family:"SFMono-Regular",Consolas,monospace; font-size:.82rem; color:#33353a; min-width:0; overflow-x:auto; white-space:nowrap}
-  .defrow.res{background:var(--soft)}
-  .defrow.res .dl{color:var(--blue-ink)}
-
-  /* recipe / stats table */
-  .tablewrap{overflow-x:auto; margin:12px 0 6px}
-  .rtable{width:100%; border-collapse:collapse; font-size:.85rem}
-  .rtable th,.rtable td{border:1px solid var(--line); padding:6px 11px; text-align:left; color:#33353a; background:#fff}
-  .rtable th{background:var(--soft); font-weight:700; color:var(--slate); font-size:.74rem; letter-spacing:.03em; text-transform:uppercase; white-space:nowrap}
-  .rtable td.num{font-variant-numeric:tabular-nums; font-family:"SFMono-Regular",Consolas,monospace; text-align:right; white-space:nowrap}
-
-  /* ladder decision rules */
-  .ruleset{margin-top:6px; display:flex; flex-direction:column; gap:6px}
-  .ruleline{display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; font-size:.82rem;
-    background:var(--soft); border:1px solid var(--line); border-radius:8px; padding:6px 11px; color:#3d3f44}
-  .ruleline .cond{font-family:"SFMono-Regular",Consolas,monospace; font-weight:700; color:var(--ink); white-space:nowrap}
-  .ruleline .arrow{color:var(--muted); font-weight:800}
-  .ruleline b{color:var(--ink)}
-  .rule-lbl{margin:9px 0 0; font-size:.78rem; font-weight:700; color:var(--slate)}
-
-  footer{padding:30px 0 52px; color:var(--muted); font-size:.82rem; text-align:center}
-  footer a{color:var(--muted); text-decoration:underline}
-
-  @media (max-width:720px){
-    body{font-size:16px}
-    h1{font-size:1.7rem}
-    .cards{grid-template-columns:1fr}
-    .barrow{grid-template-columns:88px 1fr; gap:9px}
-    .barrow .lab{font-size:.8rem}
-    svg text{font-size:12px}
-  }
-
-  /* ===== lineage(내부 계보) — archive.html에서 이식한 보상설계 카드 스타일 ===== */
-  :root{ --c-sel:#2563eb; --c-on:#dc2626; --c-form:#c2410c; --c-couple:#7c3aed; --c-ceil:#0f766e; --c-inert:#6b7280; }
-  .chip{display:inline-block; font-size:.74rem; font-weight:650; letter-spacing:.02em; color:#fff; padding:2px 9px; border-radius:6px}
-  .chip.sel{background:var(--c-sel)} .chip.on{background:#c81e1e} .chip.form{background:var(--c-form)}
-  .chip.couple{background:var(--c-couple)} .chip.ceil{background:var(--c-ceil)} .chip.inert{background:var(--c-inert)}
-  .lcard{border:1px solid var(--line); border-radius:14px; padding:17px 19px; margin:15px 0; background:#fff}
-  .lcard .hd{display:flex; align-items:center; gap:9px; flex-wrap:wrap; margin-bottom:7px}
-  .lcard .hd h3{margin:0; font-size:1.06rem}
-  .selfdistill{font-size:.74rem; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:#11633a; background:var(--green-soft); padding:2px 9px; border-radius:6px}
-  .badge{display:inline-block; font-size:.8rem; padding:2px 8px; border-radius:5px; background:#eef1f5; color:#334155; margin-left:6px}
-  .intent{display:inline-flex; gap:8px; align-items:baseline; font-size:.92rem; margin:4px 0}
-  .intent b{font-size:.7rem; text-transform:uppercase; letter-spacing:.08em; color:var(--blue)}
-  .formulabox{font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace; font-size:.88rem; line-height:1.65; background:var(--soft); border:1px solid var(--line); border-radius:9px; padding:10px 14px; margin:8px 0; overflow-x:auto}
-  .intuition{font-size:.97rem; color:#333; margin:6px 0}
-  .why{border-left:4px solid var(--c-ceil); background:#fbfbfc; border-radius:0 9px 9px 0; padding:9px 13px; font-size:.92rem; line-height:1.55}
-  .why b{display:block; margin-bottom:2px}
-  .why.sel{border-color:var(--c-sel)} .why.sel b{color:var(--c-sel)}
-  .why.on{border-color:var(--c-on)} .why.on b{color:var(--c-on)}
-  .why.form{border-color:var(--c-form)} .why.form b{color:var(--c-form)}
-  .why.couple{border-color:var(--c-couple)} .why.couple b{color:var(--c-couple)}
-  .why.ceil{border-color:var(--c-ceil)} .why.ceil b{color:var(--c-ceil)}
-  .why.inert{border-color:var(--c-inert)} .why.inert b{color:var(--c-inert)}
-  .twoaxes{display:grid; grid-template-columns:96px repeat(3,1fr); gap:7px; margin-top:4px}
-  .twoaxes .ta-col{font-size:.78rem; font-weight:680; color:#475569; text-align:center; padding:6px 4px; background:var(--soft); border-radius:7px; display:flex; flex-direction:column; align-items:center; justify-content:center}
-  .twoaxes .ta-sub{font-weight:500; color:var(--muted); font-size:.92em}
-  .twoaxes .ta-row{font-size:.78rem; font-weight:680; color:#475569; text-align:center; padding:6px 4px; background:var(--soft); border-radius:7px; display:flex; align-items:center; justify-content:center}
-  .twoaxes .ta-cell{border:1px solid var(--line); border-radius:9px; padding:9px 10px; background:#fff; display:flex; flex-direction:column; gap:5px; align-items:flex-start; min-height:62px; justify-content:center}
-  .twoaxes .ta-cell.ta-empty{background:repeating-linear-gradient(135deg,#fbfbfc,#fbfbfc 7px,#f1f3f6 7px,#f1f3f6 14px); color:#b6bcc4; align-items:center; font-size:1.1rem; font-weight:700}
-  .twoaxes .ta-note{font-size:.76rem; color:#555; line-height:1.35}
-  .ta-axislabels{display:flex; flex-wrap:wrap; gap:6px 22px; margin-top:9px; font-size:.78rem; color:var(--muted)}
-
-
-  /* lineage 애니메이션 (arc-codenative 스타일: inline SVG + 8s loop keyframes) */
-  .lg-animfig{margin:10px 0 4px; border:1px solid var(--line); border-radius:10px; background:#fff; padding:6px 8px}
-  .lg-animfig svg{width:100%; height:auto; display:block}
-  .lg-cap{font-size:.88rem; color:#444; margin:6px 2px 0; line-height:1.5}
-  .lgbar{transform-box:fill-box; transform-origin:bottom}
-  /* PMI: meta 켜지면 전부 상승 */
-  .lgp-meta{opacity:0; animation:lgpMeta 8s linear infinite}
-  @keyframes lgpMeta{0%,22%{opacity:0} 30%,88%{opacity:1} 96%,100%{opacity:0}}
-  .lgp-b{animation:lgpB 8s ease-in-out infinite}
-  @keyframes lgpB{0%,28%{transform:scaleY(.45)} 42%,84%{transform:scaleY(.88)} 96%,100%{transform:scaleY(.45)}}
-  .lgp-warn{opacity:0; animation:lgpWarn 8s linear infinite}
-  @keyframes lgpWarn{0%,55%{opacity:0} 65%,88%{opacity:1} 96%,100%{opacity:0}}
-  /* CF: 뒤집을 때만 보상 */
-  .lgc-x1{opacity:1; animation:lgcX1 9s linear infinite}
-  @keyframes lgcX1{0%,38%{opacity:1} 42%,100%{opacity:0}} 48%,100%{opacity:0}}
-  .lgc-v1{opacity:0; animation:lgcV1 9s linear infinite}
-  @keyframes lgcV1{0%,38%{opacity:0} 42%,95%{opacity:1} 99%,100%{opacity:0}} 48%,100%{opacity:1}}
-  .lgc-r1{opacity:0; animation:lgcR1 9s linear infinite}
-  @keyframes lgcR1{0%,44%{opacity:0} 48%,66%{opacity:1} 72%,100%{opacity:0}} 20%,42%{opacity:1} 50%,100%{opacity:0}}
-  .lgc-r0{opacity:0; animation:lgcR0 9s linear infinite}
-  @keyframes lgcR0{0%,72%{opacity:0} 78%,92%{opacity:1} 98%,100%{opacity:0}}
-  .lgc-x2{opacity:1; animation:lgcX2 9s linear infinite}
-  @keyframes lgcX2{0%,70%{opacity:1} 74%,95%{opacity:0} 99%,100%{opacity:1}}
-  .lgc-v2{opacity:0; animation:lgcV2 9s linear infinite}
-  @keyframes lgcV2{0%,70%{opacity:0} 74%,95%{opacity:1} 99%,100%{opacity:0}} 66%,88%{opacity:1} 96%,100%{opacity:0}}
-  /* gm: 진짜 catch는 gold만 올린다 */
-  .lgg-gm{animation:lggGm 10s ease-in-out infinite}
-  @keyframes lggGm{0%,18%{transform:scaleY(.4)} 26%,44%{transform:scaleY(.9)} 52%,68%{transform:scaleY(.4)} 74%,92%{transform:scaleY(.85)} 100%{transform:scaleY(.4)}}
-  .lgg-rest{animation:lggRest 10s ease-in-out infinite}
-  @keyframes lggRest{0%,52%{transform:scaleY(.4)} 74%,92%{transform:scaleY(.8)} 100%{transform:scaleY(.4)}}
-  .lgg-pos{opacity:0; animation:lggPos 10s linear infinite}
-  @keyframes lggPos{0%,26%{opacity:0} 32%,46%{opacity:1} 52%,100%{opacity:0}}
-  .lgg-zero{opacity:0; animation:lggZero 10s linear infinite}
-  @keyframes lggZero{0%,74%{opacity:0} 80%,94%{opacity:1} 100%{opacity:0}}
-  /* asym_cf: 비대칭 게이트 */
-  .lga-up{opacity:0; animation:lgaUp 8s linear infinite}
-  @keyframes lgaUp{0%,10%{opacity:0} 18%,38%{opacity:1} 46%,100%{opacity:0}}
-  .lga-dn{opacity:0; animation:lgaDn 8s linear infinite}
-  @keyframes lgaDn{0%,52%{opacity:0} 60%,88%{opacity:1} 96%,100%{opacity:0}}
-  /* PMI-shift: 바늘이 decoy에서 gold로 */
-  .lgs-needle{transform-box:fill-box; transform-origin:50% 100%; animation:lgsNeedle 9s ease-in-out infinite}
-  @keyframes lgsNeedle{0%,30%{transform:rotate(-38deg)} 52%,86%{transform:rotate(32deg)} 97%,100%{transform:rotate(-38deg)}}
-  .lgs-probe{animation:lgsProbe 9s ease-in-out infinite}
-  @keyframes lgsProbe{0%,30%{transform:translateX(0)} 52%,100%{transform:translateX(118px)}}
-  .lgs-save{opacity:0; animation:lgsSave 9s linear infinite}
-  @keyframes lgsSave{0%,56%{opacity:0} 64%,86%{opacity:1} 94%,100%{opacity:0}}
-
-
-  /* lineage 사분면 그리드 + 토글 */
-  .lgrid{display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:12px 0}
-  @media (max-width:720px){.lgrid{grid-template-columns:1fr}}
-  .lgrid .lcard{margin:0; padding:13px 15px}
-  .lcard details{margin-top:7px}
-  .lcard summary{cursor:pointer; font-size:.84rem; color:var(--blue); font-weight:650; user-select:none}
-  .lcard summary:hover{text-decoration:underline}
-  .lcard details .formulabox{margin-top:8px}
-
-</style>
-</head>
-<body>
-
-<!-- ===== HISTORICAL NOTICE (2026-07-17) ===== -->
-<div style="background:#7c2d12;color:#fff7ed;padding:14px 18px;text-align:center;font-size:.92rem;line-height:1.55;position:relative;z-index:60">
-  ⚠️ <b>HISTORICAL — 이 페이지의 수치는 폐기(decertified)된 pre-rq3(instruct 세대) 결과입니다.</b>
-  2026-07-14 감사에서 해당 체크포인트가 불인증 판정·삭제되었습니다. 현행 실험은
-  Qwen3-8B-<b>Base</b> 기반 <b>rq3 매치드 래더</b>(B0 · B2 · B3pkg · B3-noPMI)로 fresh 재시작되었으며,
-  gs300 held-out 1030 최종 비교는 진행 중입니다. 아래 내용은 방법론 설명과 역사적 기록으로만 유효합니다.
-  &nbsp;<a href="history/index.html" style="color:#fed7aa;text-decoration:underline">현행 상태는 히스토리 →</a>
-</div>
-
-<!-- ===== NAV ===== -->
 <nav class="sticky"><div class="inner">
-  <a href="#top" class="brand">PMI-shift 메타인지</a>
+  <a href="#top" class="brand">메타인지 셀프 디스틸</a>
+  <a href="#claims">한눈에</a>
+  <a href="#terms">용어</a>
   <a href="#method">방법</a>
-  <a href="#prior">선행연구</a>
-  <a href="#rq1" class="rq">RQ1</a>
-  <a href="#rq2" class="rq">RQ2</a>
-  <a href="#rq3" class="rq">RQ3</a>
-  <a href="#rq4" class="rq">RQ4</a>
+  <a href="#eval">평가</a>
+  <a href="#result">결과</a>
   <a href="#limits">한계</a>
-  <a href="#lineage">내부 계보</a>
-  <a href="history/index.html" style="font-weight:700;color:var(--blue-ink)">히스토리 →</a>
+  <a href="#now">진행 중</a>
+  <span class="sp"></span>
+  <a href="history/index.html">날짜별 로그 →</a>
 </div></nav>
+
+<div class="status"><div class="wrap">
+  <b>기록 기준일 2026-10-07.</b> 저장소에 남은 마지막 실험 기록까지만 반영했다. 실험은 <b>10-16까지 계속 진행 중</b>이라
+  이후 결과는 아직 이 페이지에 없다. 모든 수치는 예비(PRELIMINARY)이며 평가 세트는 하나, 핵심 비교는 씨앗 2개다.
+</div></div>
 
 <div class="wrap" id="top">
 
-<!-- ===== HERO / INTENT ===== -->
 <header class="hero">
-  <div class="eyebrow">PMI-shift · 매치드-베이스 인과 설계</div>
-  <h1>좋은 메타인지 행동을 보상하는 자기증류</h1>
-
-  <div class="tldr">
-    <span class="lbl">TL;DR</span>
-    <span class="txt"><b>매치드-베이스</b> 대비 <b>6/6 벤치 우위</b>, 가장 어려운 문제(Q4)에서 <b>+34.8pp</b>.
-    <span class="cav">단, 단일 시드 예비 결과.</span></span>
-  </div>
-
-  <div class="gloss">
-    <b>먼저 용어.</b> <b>decoy</b> = 그럴듯한 오답 하나, <b>gold</b> = 정답.
-    둘 중 어느 쪽으로 모델의 믿음이 기우는지를 본다. 그 기울기가 <b>gold−decoy 마진</b>이다.
-    <b>PMI</b>(pointwise mutual information) = 두 로그확률의 차이.
-  </div>
-
-  <div class="subtitle">
-    모델이 <code>&lt;|meta|&gt;</code> 블록을 지나는 동안 <b>gold−decoy 마진이 정답 쪽으로 얼마나 움직이는지</b>를
-    측정해, 그 움직임(<b>SHIFT</b>)에 보상을 준다.
-  </div>
+  <div class="eyebrow">cd9 · 수학 추론 · Qwen3-4B-Instruct-2507</div>
+  <h1>틀린 첫 답을 스스로 고치게 하는 학습</h1>
+  <p>수학 문제를 푸는 언어 모델은 가끔 첫 답(<code>\boxed{…}</code>)을 쓴 뒤 스스로 다시 풀어 답을 바꾼다.
+  이 연구는 그 <b>되짚어 고치는 습관</b>을 키우면 정확도가 오르는지를 묻는다.
+  정답지나 외부 교사 모델 없이, 모델 자신을 교사로 쓰는 셀프 디스틸레이션이다.</p>
   <div class="lede">
-    <span class="tag">의도.</span>
-    메타인지는 목적이 아니라 정확도를 끌어올리는 <i>수단</i>이다. 우리는 모델이 신뢰도 숫자를 흉내내게 하지 않는다.
-    대신 메타 블록을 여는 순간(<code>ctx_open</code>)과 닫는 순간(<code>ctx_close</code>) 사이에서
-    마진이 실제로 얼마나 벌어졌는지를 보상 신호로 삼는다. 그 <b>SHIFT</b>가 곧 "유용한 메타인지"의 증거다.
+    <b>지금까지의 결론 한 문장.</b> 모델이 틀린 첫 답에 붙잡혀 같은 오답으로 돌아오는 현상(<b>닻</b>)은 줄일 수 있다.
+    그러나 <b>최종 정답률이 오른다고는 아직 말할 수 없다.</b> 눈에 띄는 이득(엄격 정확도 +7.8pp)은 대부분 «끝까지 끝내기», 곧 반복과 잘림이 줄어든 효과다.
   </div>
-  <div class="trace">
-    <span class="t">checkpoint <b>pmishift · gs300</b></span>
-    <span class="t">eval <b>pmishift_1030_v2</b></span>
-    <span class="t">held-out <b>1030</b> (GSM8K 500 · MATH500 · AIME 30)</span>
-    <span class="pill prelim">PRELIMINARY · single seed</span>
+  <div class="meta">
+    <span class="pill prelim">PRELIMINARY</span>
+    <span class="pill">평가 세트 1개 (hdev 288문제)</span>
+    <span class="pill">핵심 비교 씨앗 2개</span>
+    <span class="pill">표준 벤치마크 결과 아직 없음</span>
   </div>
 </header>
 
-<!-- ===== METHOD ===== -->
+<section id="claims">
+  <span class="tag">한눈에</span>
+  <h2>말할 수 있는 것과 없는 것</h2>
+  <p>주장마다 근거와 상태를 같은 표에 적었다. «확인»은 신뢰구간이 0을 배제한 경우만이다.</p>
+  <div class="scroll"><table>
+    <tr><th style="width:34%">주장</th><th>근거</th><th style="width:15%">상태</th></tr>
+    <tr><td>자기 오답이 문맥에 있으면 모델은 그 답에 끌려간다 (닻)</td>
+      <td>문맥 안에서 두 번째 답이 정답인 경우 0/1,248. 풀이를 가리고 새로 풀면 고침이 .353 대 .121(약 3배, 학습 없음)</td><td><span class="chip ok">확인</span></td></tr>
+    <tr><td>풀이를 가린 자기 자신을 교사로 증류하면 닻이 풀린다</td>
+      <td>다시 열고도 같은 오답에 머무는 비율 <b>−9.7pp [−14.6, −5.4]</b> (균등 GRPO 대비, 씨앗 2·3 합산)</td><td><span class="chip ok">확인</span></td></tr>
+    <tr><td>엄격 정확도가 오른다</td>
+      <td><b>+7.8pp [+5.4, +10.2]</b>. 단 잘림이 16.6pp 줄어든 효과가 대부분. 평가에 «같은 답 3번 연속이면 멈춤» 규칙을 넣으면 차이는 약 +1pp</td><td><span class="chip part">해석 주의</span></td></tr>
+    <tr><td>틀린 첫 답을 더 잘 고친다</td>
+      <td>쉬운 앞부분 probe에서는 위약 대비 +.12 [+.09, +.16]. 어려운 hdev 합산은 +1.8pp [−1.4, +5.0]</td><td><span class="chip part">부분</span></td></tr>
+    <tr><td>최종 정답률(관대 정확도)이 오른다</td>
+      <td>균등 GRPO 대비 +0.7pp [−1.7, +2.9]. 같은 수준</td><td><span class="chip no">미확인</span></td></tr>
+    <tr><td>표준 벤치마크(MATH-500 · AIME · HMMT)에서 base를 넘는다</td>
+      <td>측정이 큐에 있고 결과가 아직 없다</td><td><span class="chip na">미측정</span></td></tr>
+  </table></div>
+</section>
+
+<section id="terms">
+  <span class="tag">먼저 용어</span>
+  <h2>이 페이지에서 쓰는 말</h2>
+  <dl class="gloss">
+    <dt>첫 박스</dt><dd>풀이 중 처음 쓴 <code>\boxed{…}</code> 답.</dd>
+    <dt>되짚기</dt><dd>첫 박스 뒤에 모델이 스스로 다시 풀거나 검산하는 구간. 마지막 박스까지.</dd>
+    <dt>닻 (anchoring)</dt><dd>틀린 첫 답이 문맥에 그대로 보이면, 되짚어도 같은 오답으로 돌아오는 현상.</dd>
+    <dt>base</dt><dd>학습 전의 Qwen3-4B-Instruct-2507.</dd>
+    <dt>균등 GRPO</dt><dd><b>대조군.</b> 같은 데이터, 같은 20스텝, 최종 답의 정오만으로 보상하는 보통의 GRPO. «우리 방법이 그냥 학습보다 나은가»는 이것과 비교한다.</dd>
+    <dt>리셋+KL</dt><dd><b>우리 방법.</b> 균등 GRPO에 «풀이를 가린 자기 자신»의 증류와 KL 끈을 더한 것.</dd>
+    <dt>고침</dt><dd>첫 답이 틀린 행 중 최종 답이 정답인 비율.</dd>
+    <dt>같은 오답</dt><dd>첫 답이 틀린 행 중, 다시 열고도 틀린 첫 답 그대로인 비율. 낮을수록 좋다.</dd>
+    <dt>엄격 / 관대</dt><dd>32k 토큰 안에 끝나지 않은 풀이를 <b>엄격</b>은 오답으로, <b>관대</b>는 도중에 쓴 박스로 채점한다.</dd>
+    <dt>잘림</dt><dd>32k 토큰에 닿아 끝나지 않은 풀이의 비율. 반복에 빠지면 높아진다.</dd>
+  </dl>
+</section>
+
 <section id="method">
-  <span class="rqtag">방법 · PMI-shift</span>
-  <h2>메타 블록을 지나며 믿음이 이동하는 만큼 보상한다</h2>
-  <p class="sectlead">
-    <b>언제.</b> 한 rollout이 <code>&lt;|meta|&gt;…&lt;|/meta|&gt;</code> 블록을 담으면 계산이 켜진다.
-  </p>
-  <p class="sectlead">
-    <b>어떻게 재나.</b> 고정된 <b>참조 모델</b>(학습 중 갱신되지 않는 채점용 사본)로 <b>teacher-forcing</b> 한다 — 정해진 텍스트를 그대로 먹여 확률만 읽어낸다.
-  </p>
-  <p class="sectlead">
-    <b>무엇을.</b> 블록 <b>직전</b>과 <b>직후</b> 두 지점에서 gold−decoy 마진을 재고, 두 값의 차이 <b>SHIFT</b>를 신호로 삼는다.
-  </p>
-
-  <ul class="pillars">
-    <li><span class="nm">스팬-이동 (= SHIFT)</span> — 한 지점이 아니라 <b>구간의 변화</b>를 본다.</li>
-    <li><span class="nm">디코이 대조</span> — 정답 확률이 아니라 <b>gold−decoy 판별 마진</b>을 본다.</li>
-    <li><span class="nm">메타 지역화</span> — 보상을 <b>메타-콘텐츠 토큰에만</b> 라우팅한다.</li>
+  <span class="tag">방법</span>
+  <h2>풀이를 가린 «새 눈»이 같은 말을 어떻게 보는가</h2>
+  <p>닻 때문에 모델은 자기 풀이가 보이는 문맥에서 되짚으면 같은 오답을 반복한다. 풀이를 가리고 «이전 답은 X였다»만 보여 주면
+  같은 모델이 훨씬 잘 고친다. 이 <b>가린 눈</b>의 판단을, 풀이가 보이는 단일 패스의 행동으로 옮기는 것이 목표다.</p>
+  <figure>
+    <img src="assets/cd9_method.svg" alt="학생은 자기 풀이를 보고, 교사는 풀이를 가린 채 같은 되짚기 말을 채점한다. 결과 보상, 증류 가산, KL 끈을 합쳐 학습한다.">
+    <figcaption>교사는 학습하지 않는 얼린 base다. 두 문맥이 같은 말 y₁…y_T를 채점하고, 차이 d_t가 말 단위 신호가 된다.</figcaption>
+  </figure>
+  <ul>
+    <li><b>학습</b>: 20스텝. 문제는 DeepScaleR에서 평가 세트와 겹치지 않는 것을 쓴다. 롤아웃은 base가 쓴 풀이의 앞부분 뒤에 이어쓰기 8개를 뽑는다.</li>
+    <li><b>정답지는 어디에 쓰이나</b>: 결과 보상과, «첫 답이 틀린 행»을 가려내는 데 쓴다(학습 때만). 증류를 모든 행에 적용하면 맞은 첫 답이 깨져 학습이 중단됐다.</li>
+    <li><b>KL 끈이 왜 필요한가</b>: 증류만 쓴 설계는 학습 후반에 맞은 답을 깨뜨리는 일이 반복됐다. KL 0.05를 더하자 두 씨앗이 완주했다.</li>
   </ul>
+</section>
 
-  <div style="border-left:3px solid var(--meta); background:rgba(150,150,160,.06); padding:.7em 1em; margin:.2em 0 1.1em; border-radius:4px;">
-    <b>왜 그냥 GRPO로는 안 되나.</b> 일반 GRPO는 <b>최종 답이 맞았는지</b>라는 한 비트만 보상한다.
-    그 신호는 궤적 전체에 뭉개져서, <i>결정적인 검산</i>과 <i>장식적인 망설임</i>을 구분하지 못한다.
-    어느 메타인지 단계가 정답을 만들었는지 짚을 수 없다.
-    <b>PMI-shift는 각 메타 블록을 그 인과 효과로 보상한다.</b> 블록이 모델 자신의 증거를 오답에서 정답 쪽으로
-    얼마나 옮겼는지를 잰다. 그래서 "유용한 메타인지"에만 상이 가고, 형식만 흉내 낸 블록은 상을 받지 못한다.
-  </div>
+<section id="eval">
+  <span class="tag">평가</span>
+  <h2>무엇으로 어떻게 쟀는가</h2>
+  <ul>
+    <li><b>hdev 288문제</b>: DeepScaleR에서 표준 벤치마크·학습 풀과 겹치는 문제를 뺀 뒤, base가 4번 중 1~3번 맞힌 문제만 모은 <b>자체 연습 시험지</b>다.
+      너무 쉽거나 못 푸는 문제를 뺀 것이므로 <b>표준 벤치마크가 아니다.</b></li>
+    <li>문제당 8번 풀고 32k 토큰까지 허용한다. 문제 짝 부트스트랩 2,000회로 95% 구간을 낸다.</li>
+    <li>그래서 «균등 GRPO 대비 차이»를 핵심으로 읽는다. base 대비 차이는 씨앗 3 기준 점추정이 +1~2pp로 작고, 원장에 신뢰구간이 없다.</li>
+    <li>표준 벤치마크(MATH-500 · AIME24/25 · HMMT25)는 base, 균등, 리셋+KL로 씨앗 둘을 큐에 올려 두었다. 결과가 나오면 이 페이지에 넣는다.</li>
+  </ul>
+</section>
 
-  <div class="legendbar">
-    <span class="li"><span class="swatch" style="background:var(--green)"></span> gold(정답) 방향</span>
-    <span class="li"><span class="swatch" style="background:var(--red)"></span> decoy(오답) 방향</span>
-    <span class="li"><span class="swatch" style="background:var(--meta)"></span> <code>&lt;|meta|&gt;</code> 블록</span>
-    <span class="li"><span class="swatch" style="background:#9aa0a8"></span> 일반 추론</span>
-  </div>
-
+<section id="result">
+  <span class="tag">결과</span>
+  <h2>균등 GRPO보다 낫다: 엄격 정확도와 닻에서, 최종 정답률에서는 아니다</h2>
   <figure>
-    <div class="figbox">
-      <div class="figtitle">실제 예시 · 부호 실수 → 메타에서 자각 → gold로 복귀
-        <span class="hoverhint">↪ 커서를 올리면 멈춥니다</span></div>
-      <div class="anim">
-      <!-- ANIMATED PMI-SHIFT WALKTHROUGH -->
-      <svg viewBox="0 0 840 360" role="img" aria-label="PMI-shift walkthrough">
-        <defs>
-          <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-            <path d="M0 0 L10 5 L0 10 z" fill="#9aa0a8"/>
-          </marker>
-          <linearGradient id="axisg" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0" stop-color="#f6d5d3"/><stop offset="0.5" stop-color="#eef0f4"/><stop offset="1" stop-color="#cfeeda"/>
-          </linearGradient>
-        </defs>
-
-        <!-- token stream row -->
-        <text x="20" y="28" font-size="12" font-weight="700" fill="#5f6671" letter-spacing="1">ROLLOUT (실제 텍스트)</text>
-
-        <!-- body token -->
-        <rect x="20" y="40" width="235" height="52" rx="9" fill="#f4f5f8" stroke="#e6e7ea"/>
-        <text x="32" y="60" font-size="11.5" fill="#5f6671" font-weight="700">body · 부호 실수</text>
-        <text x="32" y="80" font-size="12" fill="#33353a" font-family="monospace">2−5=−3, 3·(−3)=−9, 7−9 = −2</text>
-
-        <!-- meta block -->
-        <rect x="268" y="34" width="300" height="64" rx="10" fill="#edeffc" stroke="#c7cef4"/>
-        <text x="280" y="52" font-size="11.5" fill="#2f45b8" font-weight="800">&lt;|meta|&gt; · 자각/검산</text>
-        <text x="280" y="72" font-size="11.5" fill="#33337a" font-family="monospace">"잠깐 — 7−(−9)=7+9=16,</text>
-        <text x="280" y="88" font-size="11.5" fill="#33337a" font-family="monospace"> 부호 오류였다." </text>
-
-        <!-- continuation -->
-        <rect x="581" y="40" width="238" height="52" rx="9" fill="#e8f5ec" stroke="#bfe3cc"/>
-        <text x="593" y="60" font-size="11.5" fill="#147a41" font-weight="700">continuation</text>
-        <text x="593" y="80" font-size="12" fill="#147a41" font-family="monospace">"따라서 답은 16."</text>
-
-        <!-- ctx_open / ctx_close markers -->
-        <line x1="266" y1="30" x2="266" y2="250" stroke="#3f5bd6" stroke-width="1.5" stroke-dasharray="4 3"/>
-        <text x="266" y="115" font-size="11" font-weight="700" fill="#2f45b8" text-anchor="middle">ctx_open</text>
-        <line x1="570" y1="30" x2="570" y2="250" stroke="#3f5bd6" stroke-width="1.5" stroke-dasharray="4 3"/>
-        <text x="570" y="115" font-size="11" font-weight="700" fill="#2f45b8" text-anchor="middle">ctx_close</text>
-
-        <!-- belief axis -->
-        <text x="20" y="150" font-size="12" font-weight="700" fill="#5f6671" letter-spacing="1">믿음 축 · logp(gold) − logp(decoy) · 양끝=후보 답</text>
-        <rect x="60" y="176" width="720" height="14" rx="7" fill="url(#axisg)"/>
-        <text x="52" y="187" font-size="11" fill="#b3271e" font-weight="800" text-anchor="end">decoy(−2)</text>
-        <text x="788" y="187" font-size="11" fill="#147a41" font-weight="800" text-anchor="start">gold(16)</text>
-        <line x1="420" y1="170" x2="420" y2="196" stroke="#9aa0a8" stroke-width="1.5"/>
-        <text x="420" y="210" font-size="10.5" fill="#9aa0a8" text-anchor="middle">0 (동률)</text>
-
-        <!-- belief dot: dwells at open (decoy side), slides to close (gold side), fades back -->
-        <g>
-          <circle cx="235" cy="183" r="9" fill="#d24040" stroke="#fff" stroke-width="2">
-            <animate attributeName="cx" values="235;235;720;720;235" keyTimes="0;0.22;0.55;0.92;1" dur="6.5s" repeatCount="indefinite"/>
-            <animate attributeName="fill" values="#d24040;#d24040;#1a9850;#1a9850;#d24040" keyTimes="0;0.34;0.6;0.92;1" dur="6.5s" repeatCount="indefinite"/>
-            <animate attributeName="opacity" values="1;1;1;1;0.1;1" keyTimes="0;0.2;0.55;0.9;0.96;1" dur="6.5s" repeatCount="indefinite"/>
-          </circle>
-        </g>
-
-        <!-- PMI_open / PMI_close -->
-        <text x="235" y="238" font-size="11" fill="#b3271e" font-weight="700" text-anchor="middle">PMI_open ≈ −0.8</text>
-        <text x="720" y="238" font-size="11" fill="#147a41" font-weight="700" text-anchor="middle">PMI_close ≈ +1.5</text>
-
-        <!-- SHIFT arrow -->
-        <line x1="235" y1="258" x2="720" y2="258" stroke="#3f5bd6" stroke-width="2.5" marker-end="url(#arr)"/>
-        <rect x="400" y="266" width="220" height="26" rx="7" fill="#edeffc" stroke="#c7cef4"/>
-        <text x="510" y="284" font-size="11.5" font-weight="800" fill="#2f45b8" text-anchor="middle">SHIFT = +2.3 (clip ±2 → +2.0)</text>
-
-        <!-- reward routing (localization pillar) -->
-        <rect x="268" y="312" width="300" height="34" rx="9" fill="#e8f5ec" stroke="#bfe3cc"/>
-        <text x="418" y="333" font-size="12" font-weight="800" fill="#147a41" text-anchor="middle">＋보상 → 메타-콘텐츠 토큰에만</text>
-      </svg>
-      </div>
-      <div class="figcap">
-        <b>계산.</b> 고정된 참조 모델로 teacher-forcing 한 뒤, 아래를 순서대로 구한다.
-      </div>
-      <div class="defblock">
-        <div class="defrow"><span class="dl">열 때 마진</span><span class="df">PMI_open = logp(gold|ctx_open) − logp(decoy|ctx_open)</span></div>
-        <div class="defrow"><span class="dl">닫을 때 마진</span><span class="df">PMI_close = logp(gold|ctx_close) − logp(decoy|ctx_close)</span></div>
-        <div class="defrow res"><span class="dl">그 차이 = SHIFT</span><span class="df">SHIFT = PMI_close − PMI_open</span></div>
-        <div class="defrow res"><span class="dl">보상</span><span class="df">scale·clip(SHIFT, ±2) + reversal bonus → 메타-콘텐츠 토큰</span></div>
-      </div>
-      <div class="figcap small">
-        <b>PMI 값은 예시(illustrative)</b>이고, 텍스트·정답·decoy·리전 경계는 실제 rollout이다.
-      </div>
-    </div>
+    <img src="assets/cd9_pooled_forest.svg" alt="리셋+KL과 균등 GRPO의 차이와 95% 신뢰구간. 엄격 정확도와 같은 오답 유지에서만 구간이 0을 배제한다.">
+    <figcaption>씨앗 2·3 합산(리셋+KL − 균등 GRPO), hdev 288문제. 초록 = 구간이 0을 배제하고 좋은 방향.</figcaption>
   </figure>
+  <p>같은 씨앗(3)에서 절대값은 다음과 같다. 균등 GRPO는 첫 박스를 올렸지만 <b>32k 반복 폭주</b>(잘림 .296)로 엄격 정확도가 base 아래로 내려갔다.
+  리셋+KL은 이 폭주를 막았고(잘림 .094) 맞은 첫 답도 지켰다(.926).</p>
+  <div class="scroll"><table>
+    <tr><th>팔 (씨앗 3)</th><th class="num">관대</th><th class="num">엄격</th><th class="num">첫 박스</th><th class="num">잘림</th><th class="num">고침</th><th class="num">같은 오답</th><th class="num">맞은 첫 답 엄격</th></tr>
+    <tr><td>base</td><td class="num">.621</td><td class="num">.598</td><td class="num">.588</td><td class="num">.061</td><td class="num">.137</td><td class="num">.518</td><td class="num">.934</td></tr>
+    <tr><td>균등 GRPO (대조군)</td><td class="num">.641</td><td class="num">.514</td><td class="num">.607</td><td class="num">.296</td><td class="num">.143</td><td class="num">.688</td><td class="num">.793</td></tr>
+    <tr class="hl"><td><b>리셋+KL</b></td><td class="num">.642</td><td class="num"><b>.609</b></td><td class="num">.587</td><td class="num"><b>.094</b></td><td class="num">.181</td><td class="num"><b>.584</b></td><td class="num"><b>.926</b></td></tr>
+  </table></div>
+  <p class="small">출처: <code>docs/RESULTS_cd9.md</code> «10-06 08:xx». base 대비 차이는 점추정으로 관대 +2.1pp, 엄격 +1.1pp이며 원장에 신뢰구간이 없다.</p>
 
-  <div class="callout blue">
-    <b>왜 한 지점이 아니라 SHIFT인가.</b> 한 지점의 gold 확률만 높으면 "원래부터 답을 알던" 경우와
-    "메타에서 고쳐낸" 경우를 구별하지 못한다. 두 지점의 <b>차이</b>를 보상하면, 메타 블록이
-    <i>인과적으로</i> 믿음을 옮겼을 때에만 점수가 붙는다. gold와 decoy가 함께 움직이면 SHIFT ≈ 0. 장식적 메타는 걸러진다.
-  </div>
+  <h3>이 결과를 읽는 세 가지 방법</h3>
+  <div class="callout fix"><span class="t">① 닻은 풀렸다</span>
+    같은 오답 감소는 위약(교사 신호 d의 자리를 섞은 것)도 균등 대비 −14.3pp [−19.9, −8.7](씨앗 3)로 재현했다. 즉 이 효과는 교사의 «말 내용»이 아니라 <b>교사 쪽으로 당기는 행 수준의 힘</b>에서 온다.</div>
+  <div class="callout warn"><span class="t">② 엄격 정확도 이득은 «끝내는 능력»이다</span>
+    균등 GRPO가 반복 폭주로 잃은 점수를 되찾은 부분이 크다. 같은 답 3번 연속이면 멈추는 규칙을 평가에 넣은 모의에서는 리셋과 균등의 엄격 차이가 약 +1pp였다.</div>
+  <div class="callout"><span class="t">③ 교사의 «말 내용»은 고침을 올린다</span>
+    교사 신호 d의 자리를 행 안에서 섞은 위약과 비교하면 진짜 신호가 <b>고침 +6.0pp [+1.0, +10.6]</b>, <b>엄격 +4.5pp [+1.7, +7.3]</b> 더 높다(씨앗 3 하나).
+    다만 어려운 hdev에서 고침의 합산 증가는 불확실하다.</div>
 </section>
 
-<!-- ===== PRIOR WORK / POSITIONING ===== -->
-<section id="prior">
-  <span class="rqtag">위치 짓기 · 선행연구 vs 우리</span>
-  <h2>필드는 "정답-우도 신호"로 수렴했다. 우리는 스팬-이동·디코이·메타 구석에 선다</h2>
-  <p class="sectlead">
-    자기증류로 추론을 강화하려는 최근 흐름은 대부분 <b>참조 정답의 로그확률</b>을 신호로 삼는다.
-    우리의 신호도 그 이웃에 있지만, 좌표가 다르다. 각 카드는 <b>그들이 한 일</b>과 <b>우리가 다르게 가는 지점</b>을 짝짓는다.
-  </p>
-
-  <div class="cards">
-
-    <!-- AntiSD -->
-    <div class="pcard">
-      <div class="ph">
-        <div class="nm">AntiSD</div>
-        <div class="sub">arXiv 2605.11609 · 가장 가까운 선행</div>
-      </div>
-      <div class="pv">
-        <svg viewBox="0 0 300 92" role="img" aria-label="AntiSD per-token PMI sign reversal">
-          <text x="8" y="16" font-size="10.5" fill="#5f6671" font-weight="700">토큰별 조건 PMI  u_t = log[π(y|x,c,y&lt;t)/π(y|x,y&lt;t)]</text>
-          <!-- structural tokens up, deliberation down -->
-          <line x1="12" y1="60" x2="288" y2="60" stroke="#e6e7ea"/>
-          <rect x="24" y="40" width="16" height="20" fill="#9aa0a8"/><text x="32" y="76" font-size="8.5" fill="#5f6671" text-anchor="middle">so</text>
-          <rect x="52" y="34" width="16" height="26" fill="#9aa0a8"/><text x="60" y="76" font-size="8.5" fill="#5f6671" text-anchor="middle">=</text>
-          <rect x="100" y="60" width="16" height="18" fill="#d24040"/><text x="108" y="88" font-size="8.5" fill="#b3271e" text-anchor="middle">Wait</text>
-          <rect x="128" y="60" width="16" height="22" fill="#d24040"/><text x="136" y="88" font-size="8.5" fill="#b3271e" text-anchor="middle">Maybe</text>
-          <text x="210" y="30" font-size="10" fill="#7c3aed" font-weight="800">↑ 부호 반전</text>
-          <path d="M200 46 q40 -18 78 4" stroke="#7c3aed" stroke-width="1.6" fill="none" marker-end="url(#arr)"/>
-        </svg>
-      </div>
-      <div class="pb">
-        <span class="them"><b>그들:</b> 검증된 해답 c를 조건으로 한 자기증류가 구조·지름길 토큰을 부풀리고
-        deliberation 토큰("Wait","Maybe")을 깎는다고 진단 → JS divergence를 <b>상승</b>(부호 반전).</span>
-        <span class="us"><b>우리:</b> 메타 스팬에서 gold−<b>decoy</b> 마진의 <b>SHIFT</b>를 보상하고, 메타만 뺀 <b>매치드-베이스</b>로 인과 분리한다.
-        <span class="muted">지름길/보일러플레이트 위험은 공유 — 우리의 verify-boilerplate = 그들의 shortcut bias.</span></span>
-      </div>
-    </div>
-
-    <!-- RLPR / CRM -->
-    <div class="pcard">
-      <div class="ph">
-        <div class="nm">RLPR · CRM</div>
-        <div class="sub">Universal / Conditional Reward Modeling</div>
-      </div>
-      <div class="pv">
-        <svg viewBox="0 0 300 92" role="img" aria-label="reference answer likelihood reward">
-          <text x="8" y="16" font-size="10.5" fill="#5f6671" font-weight="700">reward ∝ logp(정답 | 추론)</text>
-          <rect x="18" y="34" width="120" height="30" rx="7" fill="#f4f5f8" stroke="#e6e7ea"/>
-          <text x="78" y="53" font-size="10.5" fill="#33353a" text-anchor="middle">reasoning</text>
-          <line x1="140" y1="49" x2="176" y2="49" stroke="#9aa0a8" stroke-width="1.6" marker-end="url(#arr)"/>
-          <rect x="178" y="34" width="104" height="30" rx="7" fill="#e8f5ec" stroke="#bfe3cc"/>
-          <text x="230" y="53" font-size="10.5" fill="#147a41" text-anchor="middle" font-weight="700">logp(gold)</text>
-          <text x="150" y="82" font-size="9.5" fill="#5f6671" text-anchor="middle">디코이 대조 없음 · 전역 스칼라</text>
-        </svg>
-      </div>
-      <div class="pb">
-        <span class="them"><b>그들:</b> 추론을 <b>참조 정답의 로그확률</b>로 직접 보상(process reward 합 = 정답 로그확률).
-        필드가 수렴한 "정답-우도" 신호.</span>
-        <span class="us"><b>우리:</b> 전역 우도 대신 두 지점 사이 <b>gold−decoy 마진의 SHIFT</b>를 본다.
-        <span class="muted">decoy 대조 · 메타 지역화로 좁힌다.</span></span>
-      </div>
-    </div>
-
-    <!-- Kim RLSD -->
-    <div class="pcard">
-      <div class="ph">
-        <div class="nm">RLSD (self-distillation)</div>
-        <div class="sub">gold-conditioned teacher → 부작용</div>
-      </div>
-      <div class="pv">
-        <svg viewBox="0 0 300 92" role="img" aria-label="RLSD suppresses hedging">
-          <text x="8" y="16" font-size="10.5" fill="#5f6671" font-weight="700">gold 조건 증류 → hedging 억제</text>
-          <rect x="18" y="30" width="70" height="24" rx="6" fill="#edeffc" stroke="#c7cef4"/>
-          <text x="53" y="46" font-size="9.5" fill="#2f45b8" text-anchor="middle">Wait…</text>
-          <rect x="18" y="60" width="70" height="18" rx="6" fill="#f4f5f8" stroke="#e6e7ea" opacity="0.5"/>
-          <text x="53" y="73" font-size="8.5" fill="#9aa0a8" text-anchor="middle">Maybe</text>
-          <path d="M96 44 L150 44" stroke="#d24040" stroke-width="1.6" marker-end="url(#arr)"/>
-          <text x="200" y="40" font-size="9.5" fill="#b3271e" text-anchor="middle" font-weight="700">망설임 토큰</text>
-          <text x="200" y="54" font-size="9.5" fill="#b3271e" text-anchor="middle" font-weight="700">체계적 억제</text>
-          <text x="200" y="76" font-size="9" fill="#5f6671" text-anchor="middle">→ 어려운 문제 경로 단축</text>
-        </svg>
-      </div>
-      <div class="pb">
-        <span class="them"><b>그들:</b> 학생이 스스로의 교사가 되어 정답 조건 분포를 증류하고 RLVR과 결합한다.
-        그러나 gold 조건은 망설임 토큰을 억제해 hard 문제에서 추론 경로를 줄인다.</span>
-        <span class="us"><b>우리:</b> 증류 위에 <b>행동-통제 층</b>을 얹되 priming하지 않는다.
-        신호는 모델 자신의 rollout 대조에서만 나온다.</span>
-      </div>
-    </div>
-
-    <!-- OURS -->
-    <div class="pcard ours">
-      <div class="ph">
-        <div class="nm">OURS · PMI-shift</div>
-        <div class="sub">span-shift + decoy + meta + twin</div>
-      </div>
-      <div class="pv">
-        <svg viewBox="0 0 300 92" role="img" aria-label="our span-shift decoy meta">
-          <line x1="18" y1="46" x2="282" y2="46" stroke="#eef0f4" stroke-width="10" stroke-linecap="round"/>
-          <text x="18" y="30" font-size="9" fill="#b3271e" font-weight="700">decoy</text>
-          <text x="282" y="30" font-size="9" fill="#147a41" font-weight="700" text-anchor="end">gold</text>
-          <line x1="120" y1="34" x2="120" y2="58" stroke="#3f5bd6" stroke-dasharray="3 2"/>
-          <text x="120" y="72" font-size="8" fill="#2f45b8" text-anchor="middle">ctx_open</text>
-          <line x1="220" y1="34" x2="220" y2="58" stroke="#3f5bd6" stroke-dasharray="3 2"/>
-          <text x="220" y="72" font-size="8" fill="#2f45b8" text-anchor="middle">ctx_close</text>
-          <circle cx="105" cy="46" r="6" fill="#d24040" stroke="#fff" stroke-width="1.5"/>
-          <circle cx="235" cy="46" r="6" fill="#1a9850" stroke="#fff" stroke-width="1.5"/>
-          <line x1="112" y1="46" x2="228" y2="46" stroke="#3f5bd6" stroke-width="2.2" marker-end="url(#arr)"/>
-          <text x="170" y="88" font-size="9.5" fill="#2f45b8" text-anchor="middle" font-weight="800">SHIFT (구간의 변화)</text>
-        </svg>
-      </div>
-      <div class="pb">
-        <span class="them"><b>방법:</b> gold−decoy 마진을 메타 스팬의 <b>여는 지점과 닫는 지점</b>에서 재고, 그 <b>SHIFT</b>를
-        메타-콘텐츠 토큰에만 보상. 메타만 뺀 <b>매치드-베이스</b>로 인과 분리.</span>
-        <span class="us"><b>왜 decoy + 분해가 필요한가:</b> 지름길/보일러플레이트 위험을 AntiSD와 공유하므로,
-        RQ2 분해 + placebo 검정이 필수다.</span>
-      </div>
-    </div>
-
-  </div>
-</section>
-
-<!-- ===== RQ1 ===== -->
-<section id="rq1">
-  <span class="rqtag real">RQ1 · 실측</span>
-  <h2>meta arm이 6/6 벤치에서 매치드-베이스를 넘는다</h2>
-  <p class="sectlead">
-    PMI-shift(gs300)와 <b>메타 기제만 제거한</b> 매치드-베이스(gs300)를 문제-쌍 부트스트랩으로 비교했다.
-    이득은 문제가 어려울수록 커진다.
-    <span class="muted">여기서 <b>meta arm</b> = PMI-shift로 학습한 모델, <b>매치드-베이스</b> = 메타 기제만 뺀 대조군.</span>
-  </p>
-  <div class="trace">
-    <span class="t">pmishift <b>gs300</b> vs matched-base <b>gs300</b></span>
-    <span class="t">avg@8 · AIME 16k <b>avg@16</b></span>
-    <span class="t">problem-paired bootstrap</span>
-  </div>
-
-  <figure>
-    <div class="figbox">
-      <div class="figtitle">직전 / 직후 · 매치드-베이스(회색) → meta arm(초록)</div>
-      <div class="anim bars">
-
-        <div class="barrow">
-          <div class="lab">GSM8K<span class="sub">avg@8</span></div>
-          <div class="pair">
-            <div class="b"><span class="who">base</span><div class="track"><div class="fill base" style="width:89.9%">89.9</div></div></div>
-            <div class="b"><span class="who">meta</span><div class="track"><div class="fill meta" style="width:93.9%">93.9</div></div><span class="dv">+4.0</span></div>
-          </div>
-        </div>
-
-        <div class="barrow">
-          <div class="lab">MATH500<span class="sub">avg@8</span></div>
-          <div class="pair">
-            <div class="b"><span class="who">base</span><div class="track"><div class="fill base" style="width:62.7%">62.7</div></div></div>
-            <div class="b"><span class="who">meta</span><div class="track"><div class="fill meta" style="width:81.5%">81.5</div></div><span class="dv">+18.8</span></div>
-          </div>
-        </div>
-
-        <div class="barrow">
-          <div class="lab">AIME<span class="sub">@4k avg@8</span></div>
-          <div class="pair">
-            <div class="b"><span class="who">base</span><div class="track"><div class="fill base" style="width:5%">5.0</div></div></div>
-            <div class="b"><span class="who">meta</span><div class="track"><div class="fill meta" style="width:19.2%">19.2</div></div><span class="dv">+14.2</span></div>
-          </div>
-        </div>
-
-        <div class="barrow">
-          <div class="lab">AIME<span class="sub">@16k avg@16</span></div>
-          <div class="pair">
-            <div class="b"><span class="who">base</span><div class="track"><div class="fill base" style="width:4.8%">4.8</div></div></div>
-            <div class="b"><span class="who">meta</span><div class="track"><div class="fill meta" style="width:18.5%">18.5</div></div><span class="dv" title="unrounded 18.54−4.79">+13.8</span></div>
-          </div>
-        </div>
-
-      </div>
-      <div class="deltas">
-        <div class="dchip"><span class="k">GSM8K</span><span class="v pos">+4.0pp</span><span class="p">p&lt;.001</span></div>
-        <div class="dchip"><span class="k">MATH500</span><span class="v pos">+18.8pp</span><span class="p">p&lt;.001</span></div>
-        <div class="dchip"><span class="k">AIME @4k</span><span class="v pos">+14.2pp</span><span class="p">bootstrap p&lt;.001</span></div>
-        <div class="dchip"><span class="k">AIME @16k</span><span class="v pos">+13.8pp</span><span class="p">McNemar p≈.06 (n=30)</span></div>
-      </div>
-      <div class="figcap">
-        <b>읽는 법.</b> 4k→16k는 두 arm 모두 평탄 — 토큰을 더 줘도 이득이 없다.
-        그런데 매치드-베이스는 모든 예산에서 <b>더 많이 잘린다</b>(비종료 degeneration).
-        즉 잘림은 base/데이터 성질이고, 메타 기제는 이를 <b>유발이 아니라 완화</b>한다.
-      </div>
-      <div class="tablewrap">
-      <table class="rtable">
-        <thead><tr><th>잘림률 (truncation)</th><th>매치드-베이스</th><th>meta arm</th></tr></thead>
-        <tbody>
-          <tr><td>MATH500</td><td class="num">~19%</td><td class="num">6%</td></tr>
-          <tr><td>AIME @16k</td><td class="num">~73%</td><td class="num">50%</td></tr>
-        </tbody>
-      </table>
-      </div>
-    </div>
-  </figure>
-
-  <div class="callout">
-    <b>정직한 caveat: 이건 "패키지" 효과다.</b> 발사된 meta arm은 아래 보상 head들에 format/length shaping을 더한 묶음이다.
-    따라서 RQ1은 <b>패키지 vs vanilla GRPO</b> 효과이지 <i>PMI-shift 단독</i>이 아니다.
-    분리는 <a href="#rq2">RQ2(PENDING)</a>에서 다룬다.
-    <div class="tablewrap">
-    <table class="rtable">
-      <thead><tr><th>구성요소</th><th>가중치</th><th>역할</th></tr></thead>
-      <tbody>
-        <tr><td>correctness</td><td class="num">—</td><td>최종 답 정답 여부</td></tr>
-        <tr><td>meta / pmi-shift</td><td class="num">—</td><td>SHIFT 신호 (핵심 레버)</td></tr>
-        <tr><td>cal</td><td class="num">0.3</td><td>신뢰도 보정</td></tr>
-        <tr><td>emit</td><td class="num">0.1</td><td>메타 블록 발화 유도</td></tr>
-        <tr><td>format</td><td class="num">0.35</td><td>출력 형식 shaping</td></tr>
-        <tr><td>len_cost</td><td class="num">0.08</td><td>길이 패널티 shaping</td></tr>
-      </tbody>
-    </table>
-    </div>
-    <span class="small">추가로 <b>cf_group rollout split</b> 사용. 가중치가 "—"인 두 head가 핵심이고 나머지는 보조다.</span>
-  </div>
-</section>
-
-<!-- ===== RQ2 PENDING ===== -->
-<section id="rq2">
-  <span class="rqtag pending">RQ2 · 아직 안 돌림</span>
-  <h2>분해 사다리: PMI-shift를 단독으로 분리하기 <span class="pill pending">PENDING · not yet run</span></h2>
-  <p class="sectlead">
-    RQ1이 패키지 효과이므로, PMI-shift의 순기여를 격리하려면 아래 arm들을 <b>같은 데이터·하이퍼파라미터·grader</b>로 돌려야 한다.
-    아직 실행 전이며, 각 단계에 결정 규칙을 미리 못박아 둔다.
-  </p>
-
-  <div class="ladder">
-    <div class="rung">
-      <div class="step"><div class="dot">B</div><div class="line"></div></div>
-      <div class="body">
-        <h3>매치드-베이스</h3>
-        <div class="arm">arm: base (meta 기제 제거, 5-head 중 pmi-shift·emit·cal·meta OFF)</div>
-        <p>모든 비교의 기준선. RQ1에서 이미 확보된 gs300.</p>
-      </div>
-    </div>
-    <div class="rung">
-      <div class="step"><div class="dot">G</div><div class="line"></div></div>
-      <div class="body">
-        <h3>Gandhi-arm (form-only)</h3>
-        <div class="arm">arm: 메타 형식은 보상하되 PMI-shift 신호는 OFF</div>
-        <p>메타를 <i>쓰는 것</i>(form)만으로 오르는가, 아니면 신호가 필요한가를 가른다.</p>
-        <p class="rule-lbl">결정 규칙 (미리 못박음)</p>
-        <div class="ruleset">
-          <div class="ruleline"><span class="cond">Gandhi ≈ base</span><span class="arrow">→</span><span>form만으로는 부족 — <b>신호가 진짜 레버</b>.</span></div>
-          <div class="ruleline"><span class="cond">Gandhi ≫ base</span><span class="arrow">→</span><span>이득의 상당부가 형식/emit에서 옴 — <b>PMI-shift 주장 약화</b>.</span></div>
-        </div>
-      </div>
-    </div>
-    <div class="rung">
-      <div class="step"><div class="dot">S</div><div class="line"></div></div>
-      <div class="body">
-        <h3>shift-only arm</h3>
-        <div class="arm">arm: PMI-shift만 ON (cal·emit·len_cost 등 보조 head OFF)</div>
-        <p>PMI-shift 단독의 순효과. 이것이 우리가 주장하고 싶은 핵심 레버.</p>
-        <p class="rule-lbl">결정 규칙 (미리 못박음)</p>
-        <div class="ruleset">
-          <div class="ruleline"><span class="cond">shift-only &gt; Gandhi</span><span class="arrow">→</span><span>PMI-shift가 form을 넘는 <b>순기여</b> (주장 성립).</span></div>
-          <div class="ruleline"><span class="cond">shift-only ≈ Gandhi</span><span class="arrow">→</span><span>이득은 신호가 아니라 형식/보일러플레이트 (→ <a href="#limits">AntiSD 긴장</a> 현실화).</span></div>
-        </div>
-      </div>
-    </div>
-    <div class="rung">
-      <div class="step"><div class="dot">P</div></div>
-      <div class="body">
-        <h3>placebo · decoy-shuffle</h3>
-        <div class="arm">arm: SHIFT를 무작위/뒤섞은 decoy로 계산</div>
-        <p>SHIFT 보상이 진짜 gold−decoy 구조를 잡는지, 아니면 아무 스칼라나 밀어도 오르는지 검정.</p>
-        <p class="rule-lbl">결정 규칙 (미리 못박음)</p>
-        <div class="ruleset">
-          <div class="ruleline"><span class="cond">placebo ≈ base</span><span class="arrow">→</span><span>SHIFT의 구조가 <b>인과적</b> (clean).</span></div>
-          <div class="ruleline"><span class="cond">placebo ≈ shift-only</span><span class="arrow">→</span><span>SHIFT는 장식, 다른 head가 진짜 레버.</span></div>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ===== RQ3 ===== -->
-<section id="rq3">
-  <span class="rqtag real">RQ3 · 실측</span>
-  <h2>이득은 어려운 문제에 집중된다 (Q4 +34.8pp). 그런데 메타 발화는 비선택적이다</h2>
-  <p class="sectlead">
-    held-out 문제를 난이도 사분위(Q1 쉬움 → Q4 어려움)로 나눠 층화 분석했다.
-    쉬운 두 사분위는 이미 포화 상태(100%)이고, 이득은 뒤로 갈수록 커진다.
-  </p>
-  <div class="trace">
-    <span class="t">held-out <b>1030</b> · 난이도 층화</span>
-    <span class="t">eval <b>pmishift_1030_v2</b></span>
-  </div>
-
-  <figure>
-    <div class="figbox">
-      <div class="figtitle">난이도 사분위별 정확도 · 매치드-베이스(회색) vs meta arm(초록)</div>
-      <div class="anim bars">
-
-        <div class="barrow">
-          <div class="lab">Q1<span class="sub">가장 쉬움</span></div>
-          <div class="pair">
-            <div class="b"><span class="who">base</span><div class="track"><div class="fill base" style="width:100%">100</div></div></div>
-            <div class="b"><span class="who">meta</span><div class="track"><div class="fill meta" style="width:100%">100</div></div><span class="dv sat">포화</span></div>
-          </div>
-        </div>
-
-        <div class="barrow">
-          <div class="lab">Q2</div>
-          <div class="pair">
-            <div class="b"><span class="who">base</span><div class="track"><div class="fill base" style="width:100%">100</div></div></div>
-            <div class="b"><span class="who">meta</span><div class="track"><div class="fill meta" style="width:100%">100</div></div><span class="dv sat">포화</span></div>
-          </div>
-        </div>
-
-        <div class="barrow">
-          <div class="lab">Q3</div>
-          <div class="pair">
-            <div class="b"><span class="who">base</span><div class="track"><div class="fill base" style="width:84.6%">84.6</div></div></div>
-            <div class="b"><span class="who">meta</span><div class="track"><div class="fill meta" style="width:95.7%">95.7</div></div><span class="dv">+11.1</span></div>
-          </div>
-        </div>
-
-        <div class="barrow">
-          <div class="lab">Q4<span class="sub">가장 어려움</span></div>
-          <div class="pair">
-            <div class="b"><span class="who">base</span><div class="track"><div class="fill base" style="width:12.1%">12.1</div></div></div>
-            <div class="b"><span class="who">meta</span><div class="track"><div class="fill meta" style="width:46.9%">46.9</div></div><span class="dv">+34.8</span></div>
-          </div>
-        </div>
-
-      </div>
-      <div class="figcap">
-        <b>이득 = 난이도 의존적.</b> Q1/Q2는 포화, Q3 +11.1pp, Q4에서 <b>+34.8pp</b>로 최대.
-        그런데 메타 발화율은 사분위 전반 <b>86–96%로 거의 일정</b>하다. 즉 발화는 비선택적인데 보상(payoff)만 난이도에 따라 달라진다.
-      </div>
-    </div>
-  </figure>
-
-  <div class="callout blue">
-    <b>비선택적 발화의 의미.</b> 모델은 쉬운 문제에서도 거의 항상 메타를 쓴다(always-on).
-    이득이 어려운 곳에 몰리는 건 메타를 <i>언제</i> 쓰는지 골라서가 아니라, 어려운 문제에서만 메타가 실제로 믿음을 옮길 여지가 크기 때문이다.
-    "유용할 때만 메타를 쓰는" 선택성은 아직 학습되지 않았다.
-  </div>
-</section>
-
-<!-- ===== RQ4 ===== -->
-<section id="rq4">
-  <span class="rqtag real">RQ4 · 실측</span>
-  <h2>보정은 대체로 좋지만 AIME에서 과신한다. base는 신뢰도를 아예 안 낸다</h2>
-  <p class="sectlead">
-    <b>측정.</b> meta arm의 verbalized confidence(모델이 스스로 말하는 신뢰도)를 <b>ECE</b>로 쟀다.
-    <span class="muted">ECE = 신뢰도와 실제 정답률의 평균 격차, 낮을수록 좋음(15-bin).</span>
-  </p>
-  <p class="sectlead">
-    <b>결과.</b> 쉬운 벤치는 잘 맞지만, AIME에서는 크게 과신한다.
-  </p>
-  <p class="sectlead">
-    <b>비대칭.</b> 매치드-베이스는 메타를 0% 내므로 신뢰도 축 자체가 없다. 이 지점은 두 arm을 비교할 수 없다.
-  </p>
-  <div class="trace">
-    <span class="t">meta arm only · <b>ECE(15)</b></span>
-    <span class="t">eval <b>pmishift_1030_v2</b></span>
-    <span class="t">base emits <b>0% meta</b> → uncomparable</span>
-  </div>
-
-  <figure>
-    <div class="figbox">
-      <div class="figtitle">ECE(15-bin) · 낮을수록 잘 보정됨</div>
-      <div class="anim">
-      <svg viewBox="0 0 820 250" role="img" aria-label="ECE by benchmark">
-        <!-- baseline good/bad zones -->
-        <line x1="120" y1="20" x2="120" y2="210" stroke="#e6e7ea"/>
-        <text x="120" y="232" font-size="11" fill="#147a41" text-anchor="middle">잘 보정 ◀</text>
-        <text x="700" y="232" font-size="11" fill="#b3271e" text-anchor="middle">▶ 과신</text>
-        <!-- scale ref lines -->
-        <line x1="120" y1="20" x2="120" y2="210" stroke="#cbd2dc" stroke-dasharray="2 3"/>
-        <text x="120" y="16" font-size="9" fill="#9aa0a8" text-anchor="middle">0</text>
-        <line x1="420" y1="20" x2="420" y2="210" stroke="#e6e7ea" stroke-dasharray="2 3"/>
-        <text x="420" y="16" font-size="9" fill="#9aa0a8" text-anchor="middle">0.2</text>
-        <line x1="720" y1="20" x2="720" y2="210" stroke="#e6e7ea" stroke-dasharray="2 3"/>
-        <text x="720" y="16" font-size="9" fill="#9aa0a8" text-anchor="middle">0.4</text>
-
-        <!-- GSM8K 0.082 -> width scale: 0.4 == 600px so 1500px/unit -->
-        <text x="112" y="48" font-size="12" fill="#33353a" text-anchor="end" font-weight="640">GSM8K</text>
-        <rect x="120" y="36" height="18" rx="4" fill="#1a9850"><animate attributeName="width" from="0" to="123" dur="1.1s" fill="freeze"/></rect>
-        <text x="252" y="49" font-size="11" fill="#147a41" font-weight="700">0.082</text>
-
-        <text x="112" y="88" font-size="12" fill="#33353a" text-anchor="end" font-weight="640">MATH500</text>
-        <rect x="120" y="76" height="18" rx="4" fill="#1a9850"><animate attributeName="width" from="0" to="78" dur="1.1s" fill="freeze"/></rect>
-        <text x="207" y="89" font-size="11" fill="#147a41" font-weight="700">0.052</text>
-
-        <text x="112" y="128" font-size="12" fill="#33353a" text-anchor="end" font-weight="640">AIME</text>
-        <rect x="120" y="116" height="18" rx="4" fill="#d24040"><animate attributeName="width" from="0" to="603" dur="1.3s" fill="freeze"/></rect>
-        <text x="732" y="129" font-size="11" fill="#b3271e" font-weight="800">0.402</text>
-
-        <text x="112" y="168" font-size="12" fill="#5f6671" text-anchor="end" font-weight="640">pooled</text>
-        <rect x="120" y="156" height="18" rx="4" fill="#475569"><animate attributeName="width" from="0" to="80" dur="1.1s" fill="freeze"/></rect>
-        <text x="209" y="169" font-size="11" fill="#475569" font-weight="700">0.053</text>
-
-        <!-- base row: no confidence -->
-        <text x="112" y="200" font-size="12" fill="#9aa0a8" text-anchor="end" font-weight="640">base</text>
-        <rect x="120" y="188" width="220" height="18" rx="4" fill="none" stroke="#cbd2dc" stroke-dasharray="4 3"/>
-        <text x="230" y="201" font-size="10.5" fill="#9aa0a8" text-anchor="middle">신뢰도 없음 · 비교 불가</text>
-      </svg>
-      </div>
-      <div class="figcap">
-        <b>읽는 법.</b> AIME만 과신한다 — 정답률이 낮은데 평균 신뢰도가 높아, 샘플의 <b>81.8%가 과신</b>이다.
-        나머지 벤치는 잘 보정된다. <b>구조적 비대칭:</b> 매치드-베이스는 메타를 0% 내므로
-        신뢰도 축에서 비교 자체가 불가능하다(점선 막대).
-      </div>
-    </div>
-  </figure>
-
-  <div class="callout blue">
-    <b>핵심 인사이트: 보정 ≠ 통제.</b> pooled ECE 0.053으로 보정은 대체로 성립하지만,
-    그것이 곧 "행동을 옳게 바꾸는" 메타인지 통제를 뜻하지는 않는다.
-    AIME에서 보정이 무너지는데도 RQ1의 이득이 존재한다는 사실은, <b>보정은 필요조건일 뿐 충분조건이 아님</b>을 보여준다.
-  </div>
-</section>
-
-<!-- ===== LIMITS ===== -->
 <section id="limits">
-  <span class="rqtag pending">한계 · 정직하게 읽기</span>
-  <h2>믿기 전에 읽을 것</h2>
-
-  <div class="limits">
-    <div class="lim data">
-      <h3><span class="mk">□</span> 단일 시드 · PRELIMINARY</h3>
-      <p>모든 수치는 <b>single seed</b>다. avg@8 / AIME avg@16으로 rollout 분산은 줄였지만, 시드 간 재현은 아직 없다.
-      결론은 예비적이며 다중 시드 확증이 필요하다.</p>
-    </div>
-
-    <div class="lim pkg">
-      <h3><span class="mk">□</span> 패키지 효과 (PMI-shift 단독 아님)</h3>
-      <p>RQ1은 5-head 패키지 vs vanilla GRPO. PMI-shift의 순기여는 <a href="#rq2">RQ2 분해</a>(Gandhi-arm · shift-only · placebo)가
-      끝나야 주장할 수 있다. <b>아직 미실행.</b></p>
-    </div>
-
-    <div class="lim tension">
-      <h3><span class="mk">□</span> 보일러플레이트 위험 (AntiSD 긴장)</h3>
-      <p>SHIFT 보상이 진짜 자각이 아니라 "verify처럼 보이는 상투구"를 밀어올릴 수 있다. 이는
-      <a href="#prior">AntiSD</a>가 진단한 shortcut/deliberation-억제와 같은 실패 클래스다.
-      RQ3의 비선택적 발화(86–96%)가 이 위험의 방증. placebo 검정이 이래서 필수다.</p>
-    </div>
-
-    <div class="lim data">
-      <h3><span class="mk">□</span> AIME degeneration은 완화지 해결 아님</h3>
-      <p>16k에서 base가 ~73% 잘리는 비종료 degeneration을 메타가 완화(→50%)하지만 없애지 못한다.
-      4k→16k 이득이 평탄하다는 건 더 긴 예산이 답이 아니라는 뜻이다.</p>
-    </div>
-
-    <div class="lim data">
-      <h3><span class="mk">□</span> SFT v2 · grader</h3>
-      <p>수치는 robust <b>math_verify</b> 재채점 기준(이전 broken-grader 수치와 다름)이며 held-out 1030에서 측정.
-      SFT 초기화 버전(v2)과 데이터 구성에 결과가 의존한다.</p>
-    </div>
-
-    <div class="lim" style="border-left-color:var(--green)">
-      <h3><span class="mk">✓</span> 안정적으로 성립하는 것</h3>
-      <p>매치드-베이스 대비 6/6 벤치 우위, 이득의 난이도 집중(Q4 +34.8pp), 그리고
-      base가 유발한 16k degeneration을 메타가 <b>완화</b>한다는 방향성, 이 세 가지는 단일 시드 안에서 일관된다.</p>
-    </div>
-  </div>
+  <span class="tag">한계</span>
+  <h2>이 결과를 믿기 전에</h2>
+  <ul>
+    <li><b>평가 세트가 하나이고 자체 제작이다.</b> 표준 벤치마크 결과가 나오기 전에는 «정확도가 오른다»고 쓰지 않는다.</li>
+    <li><b>학습 후반의 번짐.</b> 증류를 쓴 팔 대부분이 후반에 맞은 첫 답을 깨뜨려 안전 장치(파괴 가드)로 중단됐다. 리셋 단독 설계는 씨앗 3·4에서 중단, 리셋+KL도 씨앗 4에서 중단됐다. 완주한 것은 씨앗 2·3이다.
+      <a href="history/2026-10-07-cd9-distill-spread.html">자세한 경과 →</a></li>
+    <li><b>첫 박스가 약간 낮아진다.</b> 합산 −1.3pp [−3.7, +1.2]. 구간은 0을 포함하지만, 씨앗 2·3 모두 하한이 사전 기준(−3pp)보다 낮았다.</li>
+    <li><b>학습과 시험의 앞부분이 다르다.</b> 학습은 base가 쓴 앞부분에 이어쓰고, 시험은 모델이 자기 앞부분을 쓴다.</li>
+    <li><b>남은 병목은 «알아채기».</b> 틀렸다는 쪽지만 주면 학습 없이도 고침이 .026에서 .216으로 8배 오른다(망침 ≈ 0). 모델은 고칠 줄 알지만 <b>언제 다시 볼지</b>를 모른다.</li>
+    <li><b>새로움은 낮음~중간.</b> 가장 가까운 선행은 Contextual Drag(arXiv 2602.04288) 등이다. 위약과 선행 처방과의 비교가 필요하다.</li>
+  </ul>
 </section>
 
-<!-- ===== 내부 방법 계보 (비교군) ===== -->
-<section id="lineage">
-  <span class="rqtag">내부 계보 · 다섯 자기증류 신호</span>
-  <h2>PMI-shift에 도달하기까지 — 수식 하나, 그림 하나</h2>
-  <p class="sectlead">각 방법은 모델 자신의 롤아웃에서 대조를 캐내는 한 가지 방식이다. 그림이 메커니즘이고, 수식·설명은 펼쳐 본다.</p>
+<section id="now">
+  <span class="tag">진행 중</span>
+  <h2>10-16까지 돌아가는 것</h2>
+  <ul>
+    <li><b>표준 벤치마크</b>: base · 균등 · 리셋+KL, 씨앗 둘.</li>
+    <li><b>말 단위 배분</b>: 교사가 고른 말에 크레딧을 몰아 주는 변형(고침을 겨냥).</li>
+    <li><b>«다른 길» 교사</b>: 체계적 오답(같은 방식으로 다시 풀면 또 틀리는 경우)을 겨냥해, 교사 문맥에 «다른 방법으로»를 넣는 관문.</li>
+    <li><b>세 번째 씨앗</b>: 리셋+KL과 균등 GRPO를 씨앗 5로 추가.</li>
+  </ul>
+  <p class="small">결과가 원장(<code>docs/RESULTS_cd9.md</code>)에 올라오면 이 페이지의 «한눈에» 표를 먼저 고친다.</p>
+</section>
 
-  <div class="lgrid">
-
-  <div class="lcard">
-    <div class="hd"><h3>PMI</h3><span class="chip on">always-on</span><span class="badge">Δ +0.010</span></div>
-    <figure class="lg-animfig">
-    <svg viewBox="0 0 340 150" role="img" aria-label="애니메이션: meta가 켜지면 이어지는 답의 모든 토큰 logp가 함께 올라간다">
-      <text x="10" y="16" font-size="10" fill="#5f6671">자기 continuation의 토큰별 log p</text>
-      <g class="lgp-meta">
-        <rect x="238" y="6" width="92" height="20" rx="5" fill="#edeffc" stroke="#3f5bd6"/>
-        <text x="284" y="20" font-size="10.5" font-weight="700" fill="#3f5bd6" text-anchor="middle">&lt;|meta|&gt; ON</text>
-      </g>
-      <line x1="14" y1="120" x2="326" y2="120" stroke="#e6e7ea" stroke-width="1.5"/>
-      <rect class="lgbar lgp-b" x="30"  y="40" width="30" height="80" fill="#9aa0a8"/>
-      <rect class="lgbar lgp-b" x="85"  y="40" width="30" height="80" fill="#9aa0a8" style="animation-delay:.12s"/>
-      <rect class="lgbar lgp-b" x="140" y="40" width="30" height="80" fill="#9aa0a8" style="animation-delay:.24s"/>
-      <rect class="lgbar lgp-b" x="195" y="40" width="30" height="80" fill="#9aa0a8" style="animation-delay:.36s"/>
-      <rect class="lgbar lgp-b" x="250" y="40" width="30" height="80" fill="#9aa0a8" style="animation-delay:.48s"/>
-      <g class="lgp-warn">
-        <text x="170" y="142" font-size="10.5" font-weight="700" fill="#b3271e" text-anchor="middle">전부 올라간다 — 필요성 검사 없음 → emit 0.96 표류</text>
-      </g>
-    </svg>
-    </figure>
-    <details><summary>수식 · 왜 넘어갔나</summary>
-      <div class="formulabox">R = mean_min<sub>t∈C</sub>[ log p(c<sub>t</sub> | prefix+<b>meta</b>) − log p(c<sub>t</sub> | prefix) ]</div>
-      <p class="lg-cap">자신만만한 meta는 <b>모든</b> 토큰을 들어올린다 — 이미 풀린 문제까지 발화해서 망가뜨린다.</p>
-    </details>
-  </div>
-
-  <div class="lcard">
-    <div class="hd"><h3>CF ★</h3><span class="chip sel">selectivity</span><span class="badge">Δ +0.040 최고</span></div>
-    <figure class="lg-animfig">
-    <svg viewBox="0 0 340 150" role="img" aria-label="애니메이션: meta가 결과를 뒤집으면 +R, 둘 다 맞으면 보상 없음">
-      <text x="88" y="16" font-size="10" fill="#5f6671" text-anchor="middle">without meta</text>
-      <text x="252" y="16" font-size="10" fill="#5f6671" text-anchor="middle">with meta</text>
-      <rect x="28" y="24" width="120" height="72" rx="6" fill="#fafbfc" stroke="#e6e7ea"/>
-      <rect x="192" y="24" width="120" height="72" rx="6" fill="#fafbfc" stroke="#3f5bd6"/>
-      <rect x="200" y="32" width="46" height="14" rx="4" fill="#edeffc" stroke="#3f5bd6" stroke-width=".8"/>
-      <text x="223" y="42" font-size="8.5" fill="#3f5bd6" text-anchor="middle">meta</text>
-      <g>
-        <text class="lgc-x2" x="88" y="72" font-size="26" font-weight="800" fill="#b3271e" text-anchor="middle">✗</text>
-        <text class="lgc-v2" x="88" y="72" font-size="26" font-weight="800" fill="#147a41" text-anchor="middle">✓</text>
-      </g>
-      <g>
-        <text class="lgc-x1" x="252" y="72" font-size="26" font-weight="800" fill="#b3271e" text-anchor="middle">✗</text>
-        <text class="lgc-v1" x="252" y="72" font-size="26" font-weight="800" fill="#147a41" text-anchor="middle">✓</text>
-      </g>
-      <g class="lgc-r1">
-        <rect x="120" y="112" width="100" height="24" rx="7" fill="#e8f5ec" stroke="#147a41"/>
-        <text x="170" y="128" font-size="12" font-weight="800" fill="#147a41" text-anchor="middle">flip! → +R</text>
-      </g>
-      <g class="lgc-r0">
-        <text x="170" y="128" font-size="11" font-weight="700" fill="#9aa0a8" text-anchor="middle">둘 다 맞으면 R=0 (+over-penalty)</text>
-      </g>
-    </svg>
-    </figure>
-    <details><summary>수식 · 왜 넘어갔나</summary>
-      <div class="formulabox">R<sub>meta</sub> ∝ acc(with meta) − acc(without meta)&nbsp;&nbsp;<span class="muted">+ 이미 풀린 문제 over-penalty</span></div>
-      <p class="lg-cap">결과를 실제로 뒤집는 meta만 보상 → 발화율 0.20의 선택성. 한계 = 자기검증 천장.</p>
-    </details>
-  </div>
-
-  <div class="lcard">
-    <div class="hd"><h3>gm</h3><span class="chip on">always-on</span><span class="chip couple">coupling</span></div>
-    <figure class="lg-animfig">
-    <svg viewBox="0 0 340 150" role="img" aria-label="애니메이션: 진짜 catch는 gold만 올리고, 장식용 meta는 넷 다 올린다">
-      <line x1="14" y1="112" x2="326" y2="112" stroke="#e6e7ea" stroke-width="1.5"/>
-      <rect class="lgbar lgg-gm"   x="38"  y="32" width="34" height="80" fill="#1a9850"/>
-      <rect class="lgbar lgg-rest" x="106" y="32" width="34" height="80" fill="#a7d3b8"/>
-      <rect class="lgbar lgg-rest" x="174" y="32" width="34" height="80" fill="#d24040" style="animation-delay:.1s"/>
-      <rect class="lgbar lgg-rest" x="242" y="32" width="34" height="80" fill="#eda6a6" style="animation-delay:.2s"/>
-      <text x="55"  y="127" font-size="9" fill="#5f6671" text-anchor="middle">gold|meta</text>
-      <text x="123" y="127" font-size="9" fill="#5f6671" text-anchor="middle">gold|plac</text>
-      <text x="191" y="127" font-size="9" fill="#5f6671" text-anchor="middle">decoy|meta</text>
-      <text x="259" y="127" font-size="9" fill="#5f6671" text-anchor="middle">decoy|plac</text>
-      <text class="lgg-pos"  x="170" y="20" font-size="11" font-weight="800" fill="#147a41" text-anchor="middle">진짜 catch: gold|meta만 ↑ → gm &gt; 0</text>
-      <text class="lgg-zero" x="170" y="20" font-size="11" font-weight="800" fill="#9aa0a8" text-anchor="middle">장식용 meta: 넷 다 ↑ → gm ≈ 0</text>
-      <text x="170" y="145" font-size="9.5" fill="#5f6671" text-anchor="middle">placebo(내용 없는 meta) 기준선의 gold−decoy 이중차분</text>
-    </svg>
-    </figure>
-    <details><summary>수식 · 왜 넘어갔나</summary>
-      <div class="formulabox">gm = [log p(gold|meta) − log p(gold|plac)] − [log p(decoy|meta) − log p(decoy|plac)]</div>
-      <p class="lg-cap">가산형(독립 head) Δ −0.003 중립 · 곱셈형(correctness 결박)은 인식적 헤징 붕괴로 Δ −0.029 net-harm.</p>
-    </details>
-  </div>
-
-  <div class="lcard">
-    <div class="hd"><h3>asym_cf</h3><span class="chip inert">inert-centering(수정)</span></div>
-    <figure class="lg-animfig">
-    <svg viewBox="0 0 340 150" role="img" aria-label="애니메이션: 이로운 meta의 보상은 작게, 해로운 meta의 벌은 크게">
-      <line x1="170" y1="30" x2="170" y2="120" stroke="#e6e7ea" stroke-width="1.5"/>
-      <text x="88" y="24" font-size="10" fill="#5f6671" text-anchor="middle">meta가 살림 (wrong→right)</text>
-      <text x="252" y="24" font-size="10" fill="#5f6671" text-anchor="middle">meta가 망침 (right→wrong)</text>
-      <g class="lga-up">
-        <path d="M88,100 L88,58" stroke="#1a9850" stroke-width="7" stroke-linecap="round"/>
-        <path d="M78,68 L88,52 L98,68" fill="none" stroke="#1a9850" stroke-width="7" stroke-linejoin="round"/>
-        <text x="88" y="122" font-size="12" font-weight="800" fill="#147a41" text-anchor="middle">+α (작다)</text>
-      </g>
-      <g class="lga-dn">
-        <path d="M252,52 L252,102" stroke="#d24040" stroke-width="13" stroke-linecap="round"/>
-        <path d="M236,88 L252,112 L268,88" fill="none" stroke="#d24040" stroke-width="13" stroke-linejoin="round"/>
-        <text x="252" y="136" font-size="13" font-weight="800" fill="#b3271e" text-anchor="middle">−β (훨씬 크다)</text>
-      </g>
-    </svg>
-    </figure>
-    <details><summary>수식 · 왜 넘어갔나</summary>
-      <div class="formulabox">R = α·max(0, c₁−c₀) − β·max(0, c₀−c₁) − γ·1[둘 다 정답],&nbsp;&nbsp;β &gt; α</div>
-      <p class="lg-cap">"meta everywhere" 표류에 세금. centering 버그(신호가 0으로 증발)는 수정 — 억제는 여전히 약함(γ↑ 보류).</p>
-    </details>
-  </div>
-
-  </div><!-- /.lgrid -->
-
-  <div class="lcard">
-    <div class="hd"><h3>PMI-shift</h3><span class="badge">현역 · B3</span><span class="chip form">form ≠ behavior</span><span class="chip ceil">ceiling</span></div>
-    <figure class="lg-animfig">
-    <svg viewBox="0 0 340 195" role="img" aria-label="애니메이션: 믿음 바늘이 meta 블록을 지나며 decoy에서 gold로 넘어가면 save 보상">
-      <rect x="20"  y="10" width="96" height="22" rx="5" fill="#f4f5f8" stroke="#e6e7ea"/>
-      <text x="68" y="25" font-size="10" fill="#5f6671" text-anchor="middle">body</text>
-      <rect x="122" y="10" width="96" height="22" rx="5" fill="#edeffc" stroke="#3f5bd6"/>
-      <text x="170" y="25" font-size="10" font-weight="700" fill="#3f5bd6" text-anchor="middle">&lt;|meta|&gt; … &lt;|/meta|&gt;</text>
-      <rect x="224" y="10" width="96" height="22" rx="5" fill="#f4f5f8" stroke="#e6e7ea"/>
-      <text x="272" y="25" font-size="10" fill="#5f6671" text-anchor="middle">continuation</text>
-      <g class="lgs-probe">
-        <path d="M110,38 L110,52" stroke="#17181b" stroke-width="2"/>
-        <circle cx="110" cy="38" r="3.5" fill="#17181b"/>
-      </g>
-      <text x="110" y="66" font-size="9" fill="#5f6671" text-anchor="middle">OPEN</text>
-      <text x="228" y="66" font-size="9" fill="#5f6671" text-anchor="middle">CLOSE</text>
-      <path d="M100 165 A 70 70 0 0 1 240 165" fill="none" stroke="#e6e7ea" stroke-width="8" stroke-linecap="round"/>
-      <text x="80"  y="178" font-size="10.5" font-weight="700" fill="#b3271e" text-anchor="middle">decoy</text>
-      <text x="260" y="178" font-size="10.5" font-weight="700" fill="#147a41" text-anchor="middle">gold</text>
-      <g class="lgs-needle">
-        <path d="M170,165 L170,102" stroke="#17181b" stroke-width="3.5" stroke-linecap="round"/>
-        <circle cx="170" cy="165" r="5" fill="#17181b"/>
-      </g>
-      <g class="lgs-save">
-        <rect x="248" y="98" width="72" height="24" rx="7" fill="#e8f5ec" stroke="#147a41"/>
-        <text x="284" y="114" font-size="12" font-weight="800" fill="#147a41" text-anchor="middle">+save</text>
-      </g>
-      <text x="170" y="191" font-size="9.5" fill="#5f6671" text-anchor="middle">같은 롤아웃 두 지점에서 gold−decoy log-odds를 재고, 반전만 보상한다</text>
-    </svg>
-    </figure>
-    <details open><summary>수식 · 한 줄 설명</summary>
-      <div class="formulabox">shift = PMI<sub>close</sub> − PMI<sub>open</sub>,&nbsp;&nbsp;PMI@t = Σ<sub>divergent</sub>[log p(gold) − log p(decoy)]&nbsp;&nbsp;·&nbsp;&nbsp;decoy→gold 반전 +save, 역방향 −derail(≥save)</div>
-      <p class="lg-cap">meta 앞뒤 <b>인과적 믿음 이동</b>을 직접 잰다 — 장식은 shift를 못 만든다. 잔여 한계: 자기검증 천장(같은 모델의 맹점 공유) → placebo 검정 + own≠gold 층화 필수.</p>
-    </details>
-  </div>
-
-  <p class="small" style="color:var(--muted)">보조 arm(cf 재생성 · cf_group 원형 · RLSD 변형 · gandhi/shiftonly 분해)도 전부 보존돼 있다.</p>
+<section id="path">
+  <span class="tag">지나온 길</span>
+  <h2>닫힌 가설</h2>
+  <p>아래 가설은 측정으로 닫혔다. 일부는 현재 방법의 설계 이유가 된다. 자세한 수치는 <a href="history/2026-10-03-cd9-closed-axes.html">닫힌 축과 닻 진단</a>에 있다.</p>
+  <div class="scroll"><table>
+    <tr><th>가설</th><th>결과 한 줄</th></tr>
+    <tr><td>풀이 중간에 검산·전환 문장을 심으면 답이 바뀐다</td><td>답이 거의 안 바뀐다(동률 88~93%).</td></tr>
+    <tr><td>모델 내부 상태로 «이 시도가 틀렸다»를 알 수 있다</td><td>같은 문제 안에서는 우연에 가깝다(AUC ≈ .57).</td></tr>
+    <tr><td>같은 문맥에서 «다시 보라»고 하면 구제된다</td><td>닻에 걸려 0/1,248. → 현재 방법의 출발점.</td></tr>
+    <tr><td>비판·계획 같은 메타 문장의 내용이 정확도를 올린다</td><td>내용 효과는 0, 이득은 길이로 설명된다.</td></tr>
+    <tr><td>자발적 수정에 크레딧을 얹은 RL</td><td>네 종류 모두 실패. 수정을 오히려 줄였다.</td></tr>
+    <tr><td>성공 형제와의 대조로 말에 크레딧을 배분(CH)</td><td>첫 풀이가 무너져 base보다 −12pp, 균등보다도 나빴다. 더 올리지 않는다.</td></tr>
+  </table></div>
+  <p class="small">2026-07의 rq3 매치드 래더와 PMI-shift 결과는 감사에서 불인증되어 <a href="legacy/rq3-matched-ladder.html">보관용 페이지</a>로 옮겼다.</p>
 </section>
 
 <footer>
-  PMI-shift 메타인지 자기증류 · PRELIMINARY (single seed) ·
-  checkpoint <code>pmishift/gs300</code> · eval <code>pmishift_1030_v2</code> · held-out 1030 ·
-  수치는 robust math_verify 재채점 기준. RQ2 분해 및 다중 시드 확증은 진행 예정.
+  원장 <code>docs/RESULTS_cd9.md</code> · 사전등록 <code>docs/PREREGISTRATION_cd9_math_judgment.md</code> ·
+  <a href="history/index.html">날짜별 로그</a> · <a href="archive.html">옛 결과 아카이브</a> · <a href="legacy/rq3-matched-ladder.html">2026-07 보관 페이지</a>
 </footer>
-
 </div>
-</body>
-</html>
+</body></html>

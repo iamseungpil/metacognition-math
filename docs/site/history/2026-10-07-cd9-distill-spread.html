@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="ko"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>2026-10-07 · cd9 증류의 후반 번짐과 바탕 확정 · 메타인지 셀프 디스틸</title>
+<link rel="stylesheet" href="hist.css">
+</head><body>
+<nav class="sticky"><div class="inner">
+  <a href="../index.html" class="brand">메타인지 셀프 디스틸</a>
+  <a href="index.html">날짜별 로그</a>
+  <span class="sp"></span>
+  <a href="2026-10-04-cd9-reset-self-distill.html">← 이전: dsu 첫 결과</a>
+</div></nav>
+
+<div class="wrap">
+<header class="hero">
+  <div class="eyebrow">날짜별 로그 · cd9 · 수정 53–62</div>
+  <div class="date">2026-10-04 오후 ~ 2026-10-07</div>
+  <h1>증류는 후반에 번졌다 — KL 끈을 더한 «리셋+KL»이 바탕이 되었다</h1>
+  <div>
+    <span class="pill prelim">PRELIMINARY</span>
+    <span class="pill run">Qwen3-4B-Instruct-2507</span>
+    <span class="pill run">hdev 288문제 · 32k</span>
+  </div>
+  <div class="lede">
+    <b>한 줄 요약.</b> 10-04의 «dsu 첫 양성»은 최종 구성이 아니었다. 증류 팔 대부분이 학습 후반에 맞은 첫 답을 깨뜨렸고,
+    KL 끈을 더한 <b>리셋+KL</b>이 씨앗 2·3에서 완주해 새 바탕이 되었다. 균등 GRPO 대비 <b>엄격 +7.8pp [+5.4, +10.2]</b>,
+    <b>같은 오답 −9.7pp [−14.6, −5.4]</b>지만 <b>관대 정확도는 같다</b>(+0.7pp [−1.7, +2.9]). 이득의 대부분은 반복·잘림 제거다.
+  </div>
+</header>
+
+<section>
+  <span class="rqtag">10-04 → 10-05</span>
+  <h2>증류 팔 대부분이 후반에 번졌다</h2>
+  <table>
+    <tr><th>팔</th><th>결과</th></tr>
+    <tr><td>dsu 씨앗 3</td><td class="neg">스텝 10 가드 중단. 맞은 첫 답의 깨짐 .225로 급등</td></tr>
+    <tr><td>dsu 씨앗 4</td><td class="neg">스텝 11 가드 중단. 토큰 918 → 3,991</td></tr>
+    <tr><td>chds (대조 + 증류)</td><td class="neg">스텝 18 가드 중단</td></tr>
+    <tr><td>dsu 씨앗 2 (10-04 «첫 양성»)</td><td>통과. 단 가드 기준선이 높았을 뿐이다(.0697, 다른 씨앗은 .039~.044). 낮은 기준선이었다면 스텝 8에서 중단</td></tr>
+  </table>
+  <div class="callout fail"><b>정정</b>
+    «3개 중 2개 중단»이 아니라 «<strong>3개 모두 번짐, 1개가 높은 기준선으로 통과</strong>»다. dsu의 시험 결과는 유효하지만 «번짐 없음»으로 읽지 않는다.
+    또 dsu − 균등의 엄격 +5.77은 거의 전부 <strong>«잘림 0»</strong> 효과였다(균등의 잘림 손실 4.2pp). 관대 차이는 +0.61 [−2.69, +3.65]로 같은 수준이다.</div>
+</section>
+
+<section>
+  <span class="rqtag">수정 53</span>
+  <h2>씨앗 3 판정: 사전 기준을 모두 넘은 팔은 없었다</h2>
+  <p>한 변경씩 시험했다. 리셋 증류에 KL 끈 0.05를 더한 <b>dskl</b>, 맞은 줄을 «원래의 나»로 당기는 유지 증류를 더한 <b>dskp</b>, 증류 세기 β를 .25로 낮춘 <b>ds025</b>.</p>
+  <div style="overflow-x:auto"><table>
+    <tr><th>288 (32k)</th><th>관대</th><th>엄격</th><th>첫 박스</th><th>잘림</th><th>고침</th><th>같은 오답</th><th>맞은 첫 답 엄격</th></tr>
+    <tr><td>base</td><td class="num">.621</td><td class="num">.598</td><td class="num">.588</td><td class="num">.061</td><td class="num">.137</td><td class="num">.518</td><td class="num">.934</td></tr>
+    <tr><td>균등 (씨앗 3)</td><td class="num">.641</td><td class="num">.514</td><td class="num">.607</td><td class="num">.296</td><td class="num">.143</td><td class="num">.688</td><td class="num">.793</td></tr>
+    <tr><td>리셋 + 유지 (dskp)</td><td class="num">.637</td><td class="num">.621</td><td class="num">.608</td><td class="num">.066</td><td class="num">.138</td><td class="num">.575</td><td class="num">.943</td></tr>
+    <tr><td><b>리셋 + KL (dskl)</b></td><td class="num">.642</td><td class="num">.609</td><td class="num">.587</td><td class="num">.094</td><td class="num">.181</td><td class="num">.584</td><td class="num">.926</td></tr>
+    <tr><td>리셋 β .25 (ds025)</td><td class="num">.630</td><td class="num">.630</td><td class="num">.576</td><td class="num">.005</td><td class="num">.184</td><td class="num">.587</td><td class="num">.959</td></tr>
+  </table></div>
+  <ul>
+    <li><b>dskp</b>: 번짐과 반복을 막았지만 고침이 균등 수준으로 돌아가 기준 하나 미달(실패). 지키기 쪽 끝이다.</li>
+    <li><b>ds025</b>: 고침은 높지만 학습 중 번짐 .076(&gt; .06)과 선택성 없음(비 .99)으로 실패. 고치기 쪽 끝이다.</li>
+    <li><b>dskl</b>: 가운데. 첫 박스 하한 −4.99가 사전 기준(−3)을 못 넘은 것 외에 통과. 씨앗 4는 스텝 15에서 중단.</li>
+  </ul>
+  <p>세기를 바꾸면 «고치기(고침·probe) ↔ 지키기(번짐·선택성·첫 답)»가 한 축 위에서 맞바뀐다. 어느 조합도 두 축을 동시에 넘지 못했다.</p>
+</section>
+
+<section>
+  <span class="rqtag">위약 · 재현</span>
+  <h2>교사의 «말 내용»은 고침을 올리고, 닻 감소는 행 수준의 힘이다</h2>
+  <p><b>위약</b>(dsklx)은 교사 신호 d의 자리를 같은 행 안에서 섞은 대조다. 교사가 말 하나하나를 고르는 정보를 없애고 행 수준의 당김만 남긴다.</p>
+  <table>
+    <tr><th>비교 (씨앗 3, hdev 288)</th><th>차이</th></tr>
+    <tr><td>위약 − 균등: 같은 오답</td><td class="num pos">−14.3pp [−19.9, −8.7]</td></tr>
+    <tr><td>위약 − 균등: 잘림</td><td class="num pos">−13.8pp</td></tr>
+    <tr><td>리셋+KL − 위약: 고침</td><td class="num pos">+6.0pp [+1.0, +10.6]</td></tr>
+    <tr><td>리셋+KL − 위약: 엄격</td><td class="num pos">+4.5pp [+1.7, +7.3]</td></tr>
+    <tr><td>리셋+KL − 위약: 같은 오답</td><td class="num">+3.3pp [−2.5, +9.1] (0 포함)</td></tr>
+  </table>
+  <p>같은 오답 감소와 잘림 감소는 위약도 재현한다 → 행 수준의 효과. 고침과 엄격 이득은 교사의 말 내용에서 온다. 단일 씨앗이며 주 지표 세 개 중 하나라도 통과하면 되는 다중 비교의 한계가 있다.</p>
+  <p><b>재현(씨앗 2·3 합산, 리셋+KL − 균등)</b>: 엄격 +7.8pp [+5.4, +10.2] · 관대 +0.7pp [−1.7, +2.9] · 첫 박스 −1.3pp [−3.7, +1.2] · 잘림 −16.6pp ·
+  같은 오답 −9.7pp [−14.6, −5.4] · 고침 +1.8pp [−1.4, +5.0]. 씨앗 2 단독의 엄격은 +5.9pp [+2.8, +9.2]다.</p>
+</section>
+
+<section>
+  <span class="rqtag">오라클 쪽지</span>
+  <h2>병목은 «알아채기»다</h2>
+  <p>모델이 잘 고치지 못하는 이유가 능력 부족인지 판단 부족인지 가르려고, 학습 없이 «이 답은 틀렸다»는 쪽지만 주고 다시 풀게 했다(probe 350문제×16).</p>
+  <table>
+    <tr><th>모델</th><th>쪽지 없음: 고침</th><th>쪽지 있음: 고침</th><th>망침(맞은 답)</th></tr>
+    <tr><td>base</td><td class="num">.026</td><td class="num pos">.216</td><td class="num">.001</td></tr>
+    <tr><td>리셋 + 유지(dskp)</td><td class="num">.099</td><td class="num pos">.331</td><td class="num">.004</td></tr>
+  </table>
+  <p>표시만 주면 학습 없이도 고침이 8배가 된다. 모델은 <b>고칠 줄은 알지만 언제 다시 볼지</b>를 모른다. 학습은 고치는 실력(.216 → .331)을 올렸다.
+  남은 일은 정답지 없이 «알아채기» 신호를 만들어 학생의 습관으로 옮기는 것이다.</p>
+</section>
+
+<section>
+  <span class="rqtag">10-06 ~ 10-07</span>
+  <h2>닫은 길과 남은 빈칸</h2>
+  <ul>
+    <li><b>리셋을 모든 행에 적용(dskla)</b>: 스텝 12 가드 중단. 교사가 맞은 답을 15% 망치므로 틀린 첫 답 줄 전용으로 남긴다.</li>
+    <li><b>유지 구간을 «결정 구간»으로만 좁힘(dskpd)</b>: 잘림이 .066 → .155로 돌아와 실패. 이 축은 닫는다.</li>
+    <li><b>빈칸 진단</b>: 틀린 첫 답 줄의 «같은 답 재확인» .59~.61 중 약 절반은 닻, 약 ⅓은 같은 방식으로 다시 풀어도 또 틀리는 <b>체계적 오답</b>이다.
+      풀이를 가린 같은 모델도 같은 맹점을 가진다 — 리셋의 구조적 천장.</li>
+    <li><b>다음 수</b>: «다른 방법으로» 풀게 하는 교사의 품질 관문, 말 단위 배분(dskal), 표준 벤치마크(base · 균등 · 리셋+KL, 씨앗 둘), 세 번째 씨앗. 결과는 10-16 이후 반영한다.</li>
+  </ul>
+</section>
+
+<footer class="wrap">
+  원장 <code>docs/RESULTS_cd9.md</code> «10-04 16:4x ~ 10-07 12:xx» (브랜치 <code>cd9-reset-distill-1004</code>) ·
+  <a href="../index.html">← 메인</a> · <a href="index.html">날짜별 로그</a>
+</footer>
+</div>
+</body></html>

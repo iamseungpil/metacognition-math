@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="ko"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>2026-10-03 · cd9 닫힌 축과 닻(anchoring) 진단</title>
+<link rel="stylesheet" href="hist.css">
+</head><body>
+<nav class="sticky"><div class="inner">
+  <a href="../index.html" class="brand">메타인지 셀프 디스틸</a>
+  <a href="index.html">히스토리</a>
+  <span class="sp"></span>
+  <a href="2026-10-04-cd9-reset-self-distill.html">다음: 리셋 셀프 디스틸 →</a>
+</div></nav>
+
+<div class="wrap">
+<header class="hero">
+  <div class="eyebrow">실험 히스토리 · cd9 · 09-13 ~ 10-03</div>
+  <div class="date">2026-10-03</div>
+  <h1>세 주의 음성 결과가 병목 하나로 모였다: 닻(anchoring)</h1>
+  <div>
+    <span class="pill fail">네 축 종결</span>
+    <span class="pill fail">크레딧 RL 전부 실패</span>
+    <span class="pill fix">병목 진단</span>
+    <span class="pill run">Qwen3-4B-Instruct-2507</span>
+  </div>
+  <div class="lede">
+    <b>한 줄 요약.</b> 7월의 PMI-shift 설계 뒤 방향을 «특정 언어 패턴인 메타인지(첫 <code>\boxed</code> 뒤 스스로 되짚어 틀린 답을 고치는 말)를
+    내부 신호로 강화하는 셀프 디스틸레이션»으로 고정했다(정확도가 목표, 버릇은 수단). 9월 13일부터 열흘 남짓 자리 라벨·불확실성 자·문맥 안 재시도·
+    메타 내용 네 축이 닫혔고, 자발적 답 수정 하나만 신호가 남았다. 그 위의 크레딧 RL도 모두 실패했다.
+    원인을 가르자 병목은 크레딧이 아니라 <b>자기 오답이 문맥에 있을 때 그 답에 끌려가는 현상</b>이었다.
+  </div>
+</header>
+
+<section>
+  <span class="rqtag">전면 주의</span>
+  <h2>숫자를 읽기 전에</h2>
+  <div class="callout fail"><b>0916 채점기 위음성</b>
+    구분자 없는 gold 파싱 실패로 L5 pass@1이 .681 → .860, MATH-500이 .744 → .940으로 재채점됐다.
+    그 전의 수치는 재채점이 명시된 것만 믿는다. M_G0/M_G1/M_RETRY는 RL 보상 자체가 위음성 채점기였다.</div>
+  <div class="callout"><b>0923 시점 요약</b>
+    cd9 전체에서 신뢰구간이 0을 배제한 <strong>학습 이득은 0건</strong>이었다. 학습이 유의하게 움직인 방향은 전부 «수정을 덜 한다»였다.</div>
+</section>
+
+<section>
+  <span class="rqtag">9/13 – 9/23</span>
+  <h2>네 축이 닫혔다</h2>
+  <table>
+    <tr><th>축</th><th>시도</th><th>측정</th></tr>
+    <tr><td>자리 반사실 라벨</td><td>풀이 중간에 verify/redirect를 심어 200~400곳, K=8~32</td><td>tie 88~93.5%, SAVE 0~2.8%, own ≈ donor</td></tr>
+    <tr><td>은닉·불확실성 자</td><td>은닉 프로브, 형제 기하, 12지표</td><td>문제 안 AUC 천장 ≈ .57 (풀링 AUC .78~.86은 난이도)</td></tr>
+    <tr><td>문맥 안 재시도</td><td>같은 문맥에서 «다시 보라»</td><td>두 번째 답 정답 0/1,248 · 문맥 안 .252 대 재풀이 .600</td></tr>
+    <tr><td>메타 내용</td><td>비판·계획·진단·지시 문장</td><td>자기 .566 = 남 .567 &lt; 눈감음 .600. 이득은 길이로 설명됨</td></tr>
+  </table>
+  <div class="callout fix"><b>유일하게 남은 신호: 자발적 답 수정</b>
+    base L5 800×8, 문제 안 짝비교(109그룹)에서 수정한 풀이의 첫 답 오답률 <strong>.826</strong> 대 안 한 풀이 <strong>.303</strong>.
+    수정률 2.9%(8k)/4.19%(12k). 진술형 메타 신호는 짝비교에서 전부 사라졌다. 단 base에서 수정이 벌어 주는 순이득은 <strong>1.52pp</strong>뿐이라 기대치의 상한이 낮다.</div>
+</section>
+
+<section>
+  <span class="rqtag">9/17 – 9/23</span>
+  <h2>자발 수정에 크레딧을 얹은 RL은 모두 실패했다</h2>
+  <table>
+    <tr><th>팔</th><th>칭찬 방식</th><th>결과</th><th>원인</th></tr>
+    <tr><td>M_REV v1/v2</td><td>구간 크레딧 + 그룹 결과</td><td>12k +0.13pp, 수정률 2.6~3.5% (&lt; base 4.19%)</td><td>크레딧 질량 0.3%, 결과 보상이 «시도»를 벌함</td></tr>
+    <tr><td>SPONT_PMI gold</td><td>구간 전체 PMI</td><td>12k +0.44pp (CI ∋ 0), 수정률 3.84%</td><td>답을 안 바꾼 확인 행에도 칭찬 → 의례 성장</td></tr>
+    <tr><td>SPONT_DIR 다수결</td><td>틀린 첫 답 행에만</td><td>첫 답 .665 → .606 (사행 규칙 발동)</td><td>틀려야 칭찬받음 → 첫 답을 일부러 약하게</td></tr>
+    <tr><td>SPONT_DIR_ANCHOR</td><td>DIR + 첫 답 β .5</td><td>사행 없음, 버릇 성장 신호 없음</td><td>틀렸을 때 시도 −0.36, 맞고 가만히 +0.67</td></tr>
+  </table>
+  <p><b>공통 해석.</b> 크레딧의 크기가 아니라 <b>부호 구조</b>가 문제였다. 형제 대비 결과 보상 아래에서는 «맞고 가만히»가 최고 보상이라
+  크레딧을 얹어도 모델은 수정을 줄인다. 스텝 1 덤프 한 장으로 미리 볼 수 있었던 구조를 세 번의 25스텝(약 75 GPU 시간)을 쓴 뒤에야 확인했다.
+  그 뒤로는 <b>발사 전에 행 종류별 칭찬 부호표를 먼저 본다</b>.</p>
+  <p class="small" style="color:var(--muted);font-size:.85rem">PMI 자체는 «자»로는 통과했다(문제 안 AUC .906, 위약 .487). 다만 2턴 텍스트에서 쟀고 닫는 자리가 곧 쓸 답 직전이라 동어반복 의심이 남았다.</p>
+</section>
+
+<section>
+  <span class="rqtag">9/29 – 10/02</span>
+  <h2>CH(문맥 대조 크레딧)도 탈락: 손실의 80%가 첫 박스</h2>
+  <p>CH는 «고친 성공 행 안의 어느 말이 실제로 고침에 기여했나»를 문맥 대조로 배분하는 크레딧이다(메타 말 토큰 평균 가중 1.215 대 .998).
+  어려운 문제(hdev)에서 균등 칭찬을 이긴 적이 없다.</p>
+  <table>
+    <tr><th>비교 (hdev 한 문항 288)</th><th>정확도 차이</th><th>첫 박스 차이</th></tr>
+    <tr><td>CH(hc) − base</td><td class="num neg">−12.24 [−15.93, −8.29]</td><td class="num neg">−9.85 [−13.59, −5.99]</td></tr>
+    <tr><td>균등(uhc) − base</td><td class="num">—</td><td class="num">−2.65 [−5.51, +0.39]</td></tr>
+  </table>
+  <p>CH는 되짚기 <b>질</b>(probe 고침)은 올렸지만(날카로운 chdir: 고침|틀림 .212 대 균등 .068), 대가로 첫 풀이를 크게 깎았다 —
+  «첫 답은 대충, 나중에 고치기» 꼴이다. 상한(adv cap 4)을 걸어 첫 박스 관문은 통과했으나 학습 중 반복이 커져 loopcheck에서 탈락했다.</p>
+</section>
+
+<section>
+  <span class="rqtag">병목 진단</span>
+  <h2>오답의 절반은 «다시 봤지만 같은 오답»이다</h2>
+  <table>
+    <tr><th>행 비율</th><th>base</th><th>균등(uhc)</th><th>CH(chhc)</th></tr>
+    <tr><td>최종 오답</td><td class="num">.402</td><td class="num">.539</td><td class="num">.574</td></tr>
+    <tr><td>b1 틀린 첫 답에서 그냥 멈춤</td><td class="num">.204</td><td class="num">.195</td><td class="num">.190</td></tr>
+    <tr><td>b2 다시 열었지만 못 고침</td><td class="num">.115</td><td class="num">.043</td><td class="num">.084</td></tr>
+    <tr><td>b3 틀린 답 다시 열다 반복·잘림</td><td class="num">.045</td><td class="num">.183</td><td class="num">.217</td></tr>
+    <tr><td>d 맞은 답을 반복·잘림으로 잃음</td><td class="num">.016</td><td class="num">.111</td><td class="num">.062</td></tr>
+  </table>
+  <p>외부 검토(Fable)의 순위: ① 문맥 안 되짚기의 기대 이득 ≈ 0(닻), ② 교실 분포, ③ GRPO 정규화가 신호를 지우거나 과장.
+  base에서 틀린 첫 답(다시 엶)의 결말은 <b>안 엶 .25 · 같은 오답 유지 .52 · 다른 오답 .09 · 고침 .14</b>였다.</p>
+  <div class="callout fix"><b>0단계 «정박 천장» 측정 (학습 없음)</b>
+    풀이를 가리고 새로 풀면 <strong>고침|틀림이 .353 대 문맥 안 .121(2.9배)</strong>이다. 대가로 맞은 답도 .154 망친다(문맥 안 .061).
+    정책 모의로 «항상 새 눈»은 base 대비 <strong>+4.01pp [+1.32, +6.60]</strong>(토큰 10,121 대 6,536) — 프로젝트에서 관측된 가장 큰 정확도 이득이지만 학습 없는 프로토콜이고 토큰이 1.5배다.</div>
+  <p><b>다음 수.</b> 새 눈의 행동을 단일 패스로 내재화할 수 있는가. 이것이 수정 52, 리셋 셀프 디스틸이다.
+  <a href="2026-10-04-cd9-reset-self-distill.html">결과는 다음 항목 →</a></p>
+</section>
+
+<footer class="wrap">
+  원장 <code>docs/RESULTS_cd9.md</code> · 회고 <code>docs/RETRO_cd9_experiments_0923.md</code> ·
+  <a href="index.html">← 히스토리</a>
+</footer>
+</div>
+</body></html>
