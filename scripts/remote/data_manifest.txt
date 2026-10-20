@@ -1,0 +1,18 @@
+# $ROOT/scratch 기준 상대 경로 — R1+R2 에 필요한 것만. 새 모델 앞부분 데이터는 원격에서 다시 만든다(q17_prep.sh).
+data/dapo_src_0.parquet   # DAPO-Math-17k 문제 묶음(800문제씩) — 두 번째 모델 앞부분 준비 입력
+data/dapo_src_1.parquet   # DAPO-Math-17k 문제 묶음(800문제씩) — 두 번째 모델 앞부분 준비 입력
+data/dapo_src_2.parquet   # DAPO-Math-17k 문제 묶음(800문제씩) — 두 번째 모델 앞부분 준비 입력
+data/dapo_src_3.parquet   # DAPO-Math-17k 문제 묶음(800문제씩) — 두 번째 모델 앞부분 준비 입력
+data/dapo_src_4.parquet   # DAPO-Math-17k 문제 묶음(800문제씩) — 두 번째 모델 앞부분 준비 입력
+data/dapo_src_5.parquet   # DAPO-Math-17k 문제 묶음(800문제씩) — 두 번째 모델 앞부분 준비 입력
+data/dapo_src_6.parquet   # DAPO-Math-17k 문제 묶음(800문제씩) — 두 번째 모델 앞부분 준비 입력
+data/dapo_src_7.parquet   # DAPO-Math-17k 문제 묶음(800문제씩) — 두 번째 모델 앞부분 준비 입력
+data/dapo_src_8.parquet   # DAPO-Math-17k 문제 묶음(800문제씩) — 두 번째 모델 앞부분 준비 입력
+data/dapo_src_9.parquet   # DAPO-Math-17k 문제 묶음(800문제씩) — 두 번째 모델 앞부분 준비 입력
+data/dapo_src_10.parquet   # DAPO-Math-17k 문제 묶음(800문제씩) — 두 번째 모델 앞부분 준비 입력
+data/dapo_src_11.parquet   # DAPO-Math-17k 문제 묶음(800문제씩) — 두 번째 모델 앞부분 준비 입력
+data/math_val_plain.parquet        # run.sh DATA_VAL · mc.pool --val
+data/hdev_all.parquet              # a79 hdev 시험 + 분리 검사
+data/eval_extra_mathl5.parquet     # a79 가 eval_extra_*.parquet 를 자동 포함
+data/eval_extra_mmlupro.parquet
+eval/probe_commit_selection.json   # a75_model2 mid · mc.pool --probe_selection (학습 앞부분과 탐침 문제 분리)

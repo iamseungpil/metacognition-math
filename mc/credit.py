@@ -1,4 +1,4 @@
-r"""크레딧 — 순수 함수만(torch 없음). H4 형제 다수결 라벨 · 근사오답(후보 집합) · CH-Fork 토큰 가중치(표준화·방향 비례)."""
+r"""크레딧 — 순수 함수만(torch 없음). H4 형제 다수결 라벨 · 근사오답(후보 집합)."""
 from __future__ import annotations
 
 import hashlib
@@ -105,21 +105,3 @@ def label_correct(answer: str, *, gold: str = "", label: str = "gold",
         return None
     from mc.grade import answers_equivalent  # noqa: PLC0415
     return float(bool(a) and answers_equivalent(mj, a))
-
-
-def fork_weights(scores, sign: float, lam: float = 1.0, cap: float = 3.0, min_n: int = 16) -> list[float]:
-    r"""수정 28 CH-Fork — 행 안 토큰 가중(평균 1 = 행 총량 보존). z = 행 안 표준화(sign·대조 PMI), w = 1 + λ·clip(z, 0,
-    cap) 를 평균 1 로 나눔: 결과 방향(성공 +, 실패 −)으로 성공·실패 이웃을 가른 토큰에 행의 결과 adv 를 몰아준다.
-    분산 0 이거나 min_n 토큰 미만이면 균등(= B; 몇 토큰짜리 z 는 잡음)."""
-    x = [sign * float(v) for v in scores]
-    n = len(x)
-    if n < max(2, min_n):
-        return [1.0] * n
-    m = sum(x) / n
-    sd = (sum((v - m) ** 2 for v in x) / n) ** 0.5
-    if sd <= 1e-12:
-        return [1.0] * n
-    w = [1.0 + lam * min(max((v - m) / sd, 0.0), cap) for v in x]
-    mw = sum(w) / n
-    return [v / mw for v in w]
-

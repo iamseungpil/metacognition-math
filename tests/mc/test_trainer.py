@@ -53,10 +53,10 @@ def test_worker_env_keys_cover_every_live_knob():
     """Ray 워커는 드라이버 env 를 상속하지 않는다 — 손잡이를 빼먹으면 팔이 조용히 대조군이
     된다(이 저장소에 두 번 있던 사고). SPONT_PFX 만 남은 뒤(0925)의 live 손잡이만 남는다."""
     for k in ("LABEL", "MC_CKPT_DIR", "PROMPT_VARIANT", "MC_DUMP_ADV", "OUTCOME_MODE", "PFX_WEIGHT_KEY", "PFX_TRUNC",
-              "PFX_FORK", "PFX_REP", "PFX_BREAK_W"):
+              "PFX_FORK", "PFX_REP", "PFX_BREAK_W", "PFX_VERDICT", "PFX_VERDICT_MIN", "PFX_ROUTE"):
         assert k in T.WORKER_ENV_KEYS
     for k in ("W_PMI", "W_PMI2", "SCORE_ALPHA_POS", "SCORE_ALPHA_NEG", "DECISION_TOKENS", "ZONE_SCALE",
-              "BETA_FIRST", "OPT_GRADE", "W_DISTILL", "MC_TEACHER_PATH", "T2_LEN", "PFX_CHECK_COST", "PFX_RIGHT_SHARE"):
+              "BETA_FIRST", "OPT_GRADE", "W_DISTILL", "MC_TEACHER_PATH", "T2_LEN", "PFX_CHECK_COST", "PFX_RIGHT_SHARE", "PFX_FIN", "PFX_OUTCOME"):
         assert k not in T.WORKER_ENV_KEYS
 
 
@@ -238,23 +238,24 @@ def test_run_sh_pfx_lineage_suffixes(tmp_path):
                              env={**base, **kw}, capture_output=True, text=True).stdout
         return re.search(r"LINEAGE=(\S+)", out).group(1)
     assert lineage() == "mc_SPONT_PFX_gold_s2_r4096_p1333sw"
-    assert lineage(PFX_FORK="ch") == "mc_SPONT_PFX_gold_s2_r4096_forkch_p1333sw"
-    assert lineage(PFX_TRUNC="mask", PFX_FORK="ch", PFX_BREAK_W="2", PFX_REP="0.25") == "mc_SPONT_PFX_gold_s2_r4096_forkch_tm_bw2_rp0.25_p1333sw"
-    assert lineage(PFX_FORK="ch", PFX_REP="0.25", PFX_ADV_CAP="4") == "mc_SPONT_PFX_gold_s2_r4096_forkch_rp0.25_ac4_p1333sw"
-    assert lineage(PFX_REP="0.25", PFX_DISTILL="0.5", PFX_KEEP="0.5", KL_COEF="0.05") == \
-        "mc_SPONT_PFX_gold_s2_r4096_rp0.25_ds0.5_kp0.5_kl0.05_p1333sw"                         # 수정 53
+    assert lineage(PFX_TRUNC="mask", PFX_BREAK_W="2", PFX_REP="0.25") == "mc_SPONT_PFX_gold_s2_r4096_tm_bw2_rp0.25_p1333sw"
+    assert lineage(PFX_REP="0.25", PFX_ADV_CAP="4") == "mc_SPONT_PFX_gold_s2_r4096_rp0.25_ac4_p1333sw"
+    assert lineage(PFX_DISTILL="0.5", PFX_VERDICT="0.1", PFX_ROUTE="gold", KL_COEF="0.05") == \
+        "mc_SPONT_PFX_gold_s2_r4096_ds0.5_vr0.1_rtgold_kl0.05_p1333sw"                           # 수정 83
+    assert lineage(PFX_DISTILL="0.5", PFX_VERDICT="0.5", PFX_VERDICT_MIN="32") == "mc_SPONT_PFX_gold_s2_r4096_ds0.5_vr0.5_vm32_p1333sw"  # 수정 84
     assert lineage(PFX_REP="0.25", PFX_DISTILL="0.5", PFX_DISTILL_SHUF="1", KL_COEF="0.05") == \
         "mc_SPONT_PFX_gold_s2_r4096_rp0.25_ds0.5x_kl0.05_p1333sw"                               # 수정 55 위약
-    assert lineage(PFX_REP="0.25", PFX_DISTILL="0.5", PFX_ALLOC="0.5", KL_COEF="0.05") == \
-        "mc_SPONT_PFX_gold_s2_r4096_rp0.25_ds0.5_al0.5_kl0.05_p1333sw"                          # 수정 61 말 단위 배분
-    assert lineage(PFX_REP="0.25", PFX_DISTILL="0.5", PFX_ALLOC="0.5", PFX_ALLOC_SHUF="1", KL_COEF="0.05") == \
-        "mc_SPONT_PFX_gold_s2_r4096_rp0.25_ds0.5_al0.5x_kl0.05_p1333sw"                         # 수정 61e 배분 위약
+    assert lineage(PFX_DISTILL="0.5", PFX_DISTILL_SIGN="1", KL_COEF="0.05") == "mc_SPONT_PFX_gold_s2_r4096_ds0.5g_kl0.05_p1333sw"  # 수정 87
+    assert lineage(PFX_TRUNC="mask", PFX_BREAK_W="2", PFX_REP="0.25", PFX_DISTILL="0.5", KL_COEF="0.05") == \
+        "mc_SPONT_PFX_gold_s2_r4096_tm_bw2_rp0.25_ds0.5_kl0.05_p1333sw"                          # 확정 방법(65b) 리셋 + 끈
+    assert lineage(PFX_FORK="rlrt", KL_COEF="0", CLIP_HIGH="0.28", MINI_BATCH="32") == \
+        "mc_SPONT_PFX_gold_s2_r4096_forkrlrt_kl0_chi0.28_mb32_p1333sw"                         # 수정 70 RLRT 세팅·비교군
     assert lineage(PFX_REP="0.25", PFX_DISTILL="0.5") == "mc_SPONT_PFX_gold_s2_r4096_rp0.25_ds0.5_p1333sw"
     cmd = subprocess.run(["bash", "mc/run.sh", "SPONT_PFX", "2", "20", "--dry-run"], cwd=root, env={**base, "KL_COEF": "0.05"},
                          capture_output=True, text=True).stdout
     assert "actor_rollout_ref.actor.kl_loss_coef=0.05" in cmd and "kl_loss_coef" not in subprocess.run(
         ["bash", "mc/run.sh", "SPONT_PFX", "2", "20", "--dry-run"], cwd=root, env=base, capture_output=True, text=True).stdout
-    assert lineage(PFX_TRUNC="mask", PFX_FORK="ch") == "mc_SPONT_PFX_gold_s2_r4096_forkch_tm_p1333sw"   # 수정 32
+    assert lineage(PFX_TRUNC="mask", PFX_FORK="blind") == "mc_SPONT_PFX_gold_s2_r4096_forkblind_tm_p1333sw"   # 수정 32
     assert lineage(PFX_TRUNC="keep") == "mc_SPONT_PFX_gold_s2_r4096_p1333sw"                # 기본값 = 옛 계보
 
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 r"""verl 진입점 `python -u -m mc.trainer <hydra overrides…>`. 한 스텝: ①`compute_advantage` 앞 — 결과
-보상만 ②verl GRPO 중심화 ③뒤 — `add_span_credit`(CH-Fork 곱 재배분 · 멈춤 순위 크레딧 가산)."""
+보상만 ②verl GRPO 중심화 ③뒤 — `add_span_credit`(곱 재배분 · 자기 선생님 크레딧 가산)."""
 from __future__ import annotations
 
 import functools
@@ -22,11 +22,14 @@ class MCAbort(RuntimeError):
 #: 훅들이 읽는 프로세스 전역(트레이너·토크나이저). Ray 워커가 아니라 **메인프로세스** 전용.
 CTX: dict = {}
 
+#: 자기 선생님 가산 크레딧(`train_hook.pfx_rewards` 의 tel 키) — 리셋(51) · ver_credit = 판정 보상(83) · rt_credit = 판정 교사(83).
+CREDIT_KEYS = ("ds_credit", "ver_credit", "rt_credit")
+
 #: 워커에 실을 환경변수 — Ray 워커는 드라이버 env 를 **상속하지 않는다**(사고 2회).
 WORKER_ENV_KEYS = ("LABEL", "MC_CKPT_DIR", "PROMPT_VARIANT", "MC_DUMP_ADV",
                    "OUTCOME_MODE", "PFX_WEIGHT_KEY", "PFX_TRUNC", "PFX_FORK", "PFX_REP",
-                   "PFX_BREAK_W", "PFX_ADV_CAP", "PFX_DISTILL", "PFX_DISTILL_SHUF",
-                   "PFX_ALLOC", "PFX_ALLOC_SHUF", "PFX_KEEP", "PFX_GUARD_ABS")
+                   "PFX_BREAK_W", "PFX_ADV_CAP", "PFX_DISTILL", "PFX_DISTILL_SHUF", "PFX_DISTILL_SIGN",
+                   "PFX_VERDICT", "PFX_VERDICT_MIN", "PFX_VERDICT_SRC", "PFX_PROBE_TAU", "PFX_ROUTE", "PFX_GUARD_ABS", "PFX_TEACHER")
 
 
 def reward_loop_score(data_source=None, solution_str="", ground_truth="", extra_info=None, **kw):
@@ -147,8 +150,8 @@ def _split_returns(data):
 
 
 def add_span_credit(data, credit: dict, tel: dict, step=0):
-    r"""구간 크레딧을 **advantages 의 그 자리에** 더한다(중심화 뒤·마스크 밖 버림, 0921). CH-Fork(수정 28)
-    는 먼저 행 안 합 보존 재배분(곱), 멈춤(수정 33) 같은 딕셔너리 크레딧은 더한다(합). `mass_share`(로그) =
+    r"""구간 크레딧을 **advantages 의 그 자리에** 더한다(중심화 뒤·마스크 밖 버림, 0921). 곱 재배분(`pfx_weights`: 수정 43 BREAK_W·70 비교군)
+    은 먼저 행 안에서 곱하고, 반복 벌(수정 43) 같은 딕셔너리 크레딧은 더한다(합). `mass_share`(로그) =
     Σ|크레딧|/(Σ|크레딧|+Σ|결과 adv|) — token-mean(유효 토큰마다 1/batch_num_tokens) 기준, seq-mean-token-mean
     이면 경고. critic 용 returns 도."""
     import torch
@@ -156,7 +159,7 @@ def add_span_credit(data, credit: dict, tel: dict, step=0):
     from mc.train_hook import outcome_mode  # noqa: PLC0415
     dump_n = int(float(os.environ.get("MC_DUMP_ADV") or 0))
     om = outcome_mode()
-    if not credit and dump_n <= 0 and not any(tel.get(k) for k in ("pfx_weights", "ds_credit", "keep_credit")) \
+    if not credit and dump_n <= 0 and not any(tel.get(k) for k in ("pfx_weights", *CREDIT_KEYS)) \
             and not os.environ.get("PFX_ADV_CAP"):
         return data
     adv, ret = _split_returns(data)
@@ -164,10 +167,10 @@ def add_span_credit(data, credit: dict, tel: dict, step=0):
     T = adv.shape[-1]
     before = adv.detach().clone() if dump_n > 0 else None
     cnum = cden = 0.0
-    for i, ws in (tel.get("pfx_weights") or {}).items():   # CH-Fork(수정 28): 행 안 합 보존 재배분(곱) — 결과 adv 유지
+    for i, ws in (tel.get("pfx_weights") or {}).items():   # 곱 재배분(수정 43·70) — 결과 adv 유지
         k = min(len(ws), T)
         w = torch.as_tensor(ws[:k], dtype=adv.dtype, device=adv.device)
-        if ds := (tel.get("ds_credit") or {}).get(i):      # 56c: CH 이동 adv·(w−1) 과 리셋 가산의 부호 충돌 몫(계기만)
+        if ds := (tel.get("ds_credit") or {}).get(i):      # 56c: 곱 이동 adv·(w−1) 과 리셋 가산의 부호 충돌 몫(계기만)
             j0, v = int(ds[0]), torch.as_tensor(ds[1], dtype=adv.dtype, device=adv.device)
             n = max(0, min(k, j0 + len(v)) - j0)
             mv, v = adv[i, j0:j0 + n] * (w[j0:j0 + n] - 1), v[:n]
@@ -201,7 +204,7 @@ def add_span_credit(data, credit: dict, tel: dict, step=0):
         tot = sum(abs(v) for _, vals in credit.values() for v in vals)
         tel["credit_scale"] = k = min(1.0, cap / (1.0 - cap) * outcome_mass / max(tot, 1e-9))
         credit = {i: (j0, [k * v for v in vals]) for i, (j0, vals) in credit.items()}
-    credit_mass, extra = 0.0, {k: 0.0 for k in ("ds_credit", "keep_credit")}   # 수정 51–53 증류·유지는 상한 밖(가산)
+    credit_mass, extra = 0.0, {k: 0.0 for k in CREDIT_KEYS}   # 자기 선생님 가산(수정 51·53)은 상한 밖
     spans = [(k, i, j0, vals) for k in extra for i, (j0, vals) in (tel.get(k) or {}).items()]
     for src, i, j0, vals in [*spans, *((None, i, j0, vals) for i, (j0, vals) in credit.items())]:
         for t, v in enumerate(vals):
@@ -226,7 +229,7 @@ def add_span_credit(data, credit: dict, tel: dict, step=0):
     for k, m in extra.items():                 # ds_share(수정 52 검출력 ≥ .02) · keep_share(수정 53 ≤ .30)
         tel[k.replace("credit", "share")] = m / max(1e-9, credit_mass + outcome_mass)
     print(f"[MC] step={step} credit_mass={credit_mass:.4f} credit_scale={tel.get('credit_scale', 1.0):.3f} "
-          f"outcome_mass={outcome_mass:.4f} mass_share={tel['mass_share']:.4f} ds_share={tel['ds_share']:.4f} keep_share={tel['keep_share']:.4f} "
+          f"outcome_mass={outcome_mass:.4f} mass_share={tel['mass_share']:.4f} " + " ".join(f"{k[:-6]}share={tel[k[:-6] + 'share']:.4f}" for k in CREDIT_KEYS) + " "
           f"outcome_mode={om}", flush=True)
     if dump_n > 0 and int(step) <= dump_n:
         dump_advantages(data, credit, tel, step, before)
@@ -333,7 +336,7 @@ def pfx_sampler(data_config, dataset):
                                                   len(ws), replacement=True, generator=g)
 
 
-# ── 참조(frozen ref) 접두 공유 채점 — mc/shift_check.box_requests · mc/train_hook.pfx_fork 가 쓴다 ──
+# ── 참조(frozen ref) 접두 공유 채점 — mc/shift_check.box_requests · mc/train_hook 의 선생님 채점이 쓴다 ──
 def tree_inputs(prefix, blocks, align: int = 16):
     r"""한 행의 트리 입력 — 접두(프롬프트+응답[:t_K]) 뒤에 블록 (t, 토큰열, 대상 수 m) 을 잇는다. 블록 토큰은
     접두[:t] 와 블록 안 앞 토큰만 본다(bool 4D 마스크, 위치 t 부터) → 자리마다 따로 넣은 것과 같은 조건부.
@@ -372,7 +375,7 @@ def tree_score(model, prefix, blocks, dev=None, per_token: bool = False) -> list
     out = model(input_ids=ids[None].to(dev), position_ids=pos[None].to(dev), attention_mask=ok[None, None].to(dev),
                 logits_to_keep=torch.as_tensor(keep, device=dev), use_cache=False).logits[0]
     lp = torch.log_softmax(out.float(), -1).gather(-1, torch.as_tensor(lab, device=out.device)[:, None])[:, 0]
-    if per_token:                           # 블록마다 대상 토큰별 log p(수정 28 CH-Fork)
+    if per_token:                           # 블록마다 대상 토큰별 log p(수정 28)
         v, own = lp.double().cpu(), torch.as_tensor(own)
         return [v[own == q].tolist() for q in range(len(blocks))]
     return torch.zeros(len(blocks), dtype=torch.float64).index_add_(
@@ -381,8 +384,18 @@ def tree_score(model, prefix, blocks, dev=None, per_token: bool = False) -> list
 
 def ref_tree_score(trainer, trees, per_token: bool = False) -> list:
     """trees = [(접두 ids, [(t, 토큰열, m)])] → 이어 붙인 블록 점수(동결 ref 워커 `mc.ref_worker.MCRefWorker`);
-    per_token 이면 블록마다 토큰별 목록."""
+    per_token 이면 블록마다 토큰별 목록. `PFX_TEACHER=policy`(수정 74) → 학습 중 정책(actor 워커, π_old)이 채점."""
+    if teacher_is_policy():
+        return trainer.actor_rollout_wg.mc_tree_score(trees, per_token, True)[0]
     return (trainer.ref_policy_wg.mc_tree_score(trees, True) if per_token else trainer.ref_policy_wg.mc_tree_score(trees))[0]
+
+
+def teacher_is_policy() -> bool:
+    """수정 74 — 자기 선생님 = 학습 중 정책(RLSD·RLRT 논문 식 π_θ, sg) 인가(기본: 얼린 ref)."""
+    v = os.environ.get("PFX_TEACHER") or ""
+    if v not in ("", "policy"):                 # 리뷰 10-12: 오타면 계보만 바뀌고 얼린 선생님으로 도는 오표기
+        raise ValueError(f"[MC] PFX_TEACHER={v!r} — 비우거나 policy")
+    return v == "policy"
 
 
 # ── 트레이너 ─────────────────────────────────────────────────────────────────
@@ -410,7 +423,7 @@ def main_task(config):
     from verl.utils import hf_processor, hf_tokenizer
     from verl.utils.dataset.rl_dataset import collate_fn
     from verl.utils.fs import copy_to_local
-    from verl.workers.engine_workers import ActorRolloutRefWorker, TrainingWorker
+    from verl.workers.engine_workers import TrainingWorker
 
     from mc.ref_worker import MCRefWorker  # noqa: PLC0415 — 최상위 클래스(참조 피클)
     try:
@@ -455,7 +468,7 @@ def main_task(config):
     sampler = pfx_sampler(config.data, train_ds) if arm == "SPONT_PFX" else None   # 수정 25 표집 무게
     trainer = build_trainer_cls()(
         config=config, tokenizer=tokenizer, processor=processor,
-        role_worker_mapping={Role.ActorRollout: ray.remote(ActorRolloutRefWorker),
+        role_worker_mapping={Role.ActorRollout: ray.remote(MCRefWorker),   # 수정 74: actor 도 mc_tree_score
                              Role.Critic: ray.remote(TrainingWorker),
                              Role.RefPolicy: ray.remote(MCRefWorker)},
         resource_pool_manager=rpm, ray_worker_group_cls=RayWorkerGroup,

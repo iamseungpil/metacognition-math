@@ -32,7 +32,7 @@ def load_problems(dataset: str, limit: int = 0) -> list[dict]:
         from datasets import load_dataset  # noqa: PLC0415
         _, hf_id, split = dataset.split(":", 2)
         ds = load_dataset(hf_id, split=split)
-        rows = [{"problem": r["problem"], "gold": str(r["answer"])} for r in ds]
+        rows = [{"problem": r["problem"] if "problem" in r else r["question"], "gold": str(r["answer"])} for r in ds]   # math-ai/amc23·minervamath 는 question 열
     else:
         from datasets import load_dataset  # noqa: PLC0415
         ds = load_dataset(dataset, split="test")
@@ -41,11 +41,11 @@ def load_problems(dataset: str, limit: int = 0) -> list[dict]:
 
 
 def single_pass(llm, tok, problems, *, k, max_tokens, temperature, top_p, seed,
-                variant=None) -> list[dict]:
+                variant=None, top_k: int = -1) -> list[dict]:
     """단일 패스(12,288토큰) — `mc.eval.summarize_single` 스키마의 행을 낸다."""
     from vllm import SamplingParams  # noqa: PLC0415
     prompts = [ctx.turn1_prompt(tok, p["problem"], variant) for p in problems]
-    outs = llm.generate(prompts, SamplingParams(n=k, temperature=temperature, top_p=top_p,
+    outs = llm.generate(prompts, SamplingParams(n=k, temperature=temperature, top_p=top_p, top_k=top_k,
                                                 max_tokens=max_tokens, seed=seed))
     rows = []
     for gi, (src, o) in enumerate(zip(problems, outs)):
@@ -58,19 +58,23 @@ def single_pass(llm, tok, problems, *, k, max_tokens, temperature, top_p, seed,
 
 
 def run_eval(a) -> list[dict]:
-    """mc/eval.py 의 생성 경로 — 단일 패스(`--max_tokens`, 기본 12,288). 같은 문제·seed·K 로 짝비교한다."""
+    """mc/eval.py 의 생성 경로 — 단일 패스(`--max_tokens`, 기본 12,288). 같은 문제·seed·K 로 짝비교한다.
+    표집 기본 = 온도 1 · top-p 1(옛 평가와 같음); RLRT 규약(수정 70)은 --temperature .7 --top_p .8 --top_k 20."""
     max_tokens = getattr(a, "max_tokens", None) or 12288
     llm, tok = build_engine(a.model_path, max_tokens=max_tokens, gpu_util=a.gpu_util, seed=a.seed)
     return single_pass(llm, tok, load_problems(a.dataset, getattr(a, "limit", 0) or 0), k=max(1, a.k),
-                       max_tokens=max_tokens, temperature=1.0, top_p=1.0, seed=a.seed)
+                       max_tokens=max_tokens, temperature=getattr(a, "temperature", 1.0), top_p=getattr(a, "top_p", 1.0),
+                       top_k=getattr(a, "top_k", -1), seed=a.seed)
 
 
 def build_engine(model_path: str, *, max_tokens: int, gpu_util: float = 0.8, seed: int = 11):
     from vllm import LLM  # noqa: PLC0415
+    gpu_util = float(os.environ.get("MC_GPU_UTIL") or gpu_util)   # 원격 40GB 카드용 덮어쓰기(기본 없음 = 인자 그대로)
+    extra = {"max_num_seqs": int(os.environ["MC_MAX_NUM_SEQS"])} if os.environ.get("MC_MAX_NUM_SEQS") else {}
     # MC_EAGER=0 → CUDA 그래프(작은 배치 해독 ~3배, 수정 41). 기본 1 = 옛 평가와 같은 엔진 — 짝비교는 같은 값끼리만.
     llm = LLM(model=model_path, dtype="bfloat16", seed=seed,
               gpu_memory_utilization=gpu_util,
-              max_model_len=max_tokens + 2048, enforce_eager=os.environ.get("MC_EAGER", "1") != "0")
+              max_model_len=max_tokens + 2048, enforce_eager=os.environ.get("MC_EAGER", "1") != "0", **extra)
     return llm, llm.get_tokenizer()
 
 

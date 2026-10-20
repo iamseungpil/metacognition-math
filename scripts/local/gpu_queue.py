@@ -41,9 +41,10 @@ import time
 import uuid
 from pathlib import Path
 
-QUEUE_ROOT = Path("/hdd_data/seungpil/queue")
+ROOT = Path(os.environ.get("ROOT", "/hdd_data/seungpil"))   # 원격 서버: ROOT 만 바꾸면 된다(기본 = 이 박스)
+QUEUE_ROOT = ROOT / "queue"
 STATES = ("pending", "running", "done", "failed")
-WORK = Path(os.environ.get("WORK", "/hdd_data/seungpil/scratch"))
+WORK = Path(os.environ.get("WORK", str(ROOT / "scratch")))
 LOG_DIR = WORK / "logs"
 PIDS_DIR = QUEUE_ROOT / "pids"
 
@@ -133,15 +134,16 @@ def cmd_status(args: argparse.Namespace) -> int:
             print(f"  ... and {len(files) - 20} more")
         print()
 
-    print("== GPUs 0-3 (nvidia-smi memory.used/memory.total MiB) ==")
-    for row in _gpu_memory_table({0, 1, 2, 3}):
+    show = {int(x) for x in os.environ.get("QUEUE_STATUS_GPUS", "0,1,2,3").split(",")}
+    print(f"== GPUs {sorted(show)} (nvidia-smi memory.used/memory.total MiB) ==")
+    for row in _gpu_memory_table(show):
         print(f"  {row}")
 
-    du_hdd = shutil.disk_usage("/hdd_data") if Path("/hdd_data").exists() else None
+    du_hdd = shutil.disk_usage(ROOT) if ROOT.exists() else None
     du_root = shutil.disk_usage("/")
     if du_hdd:
         pct = 100.0 * du_hdd.used / du_hdd.total
-        print(f"\n/hdd_data usage: {pct:.1f}% ({du_hdd.used/1e9:.0f}GB / {du_hdd.total/1e9:.0f}GB)")
+        print(f"\n{ROOT} usage: {pct:.1f}% ({du_hdd.used/1e9:.0f}GB / {du_hdd.total/1e9:.0f}GB)")
     print(f"/ free: {du_root.free/1e9:.1f}GB")
     return 0
 
@@ -149,10 +151,10 @@ def cmd_status(args: argparse.Namespace) -> int:
 # ── disk guard ────────────────────────────────────────────────────────────
 def _disk_ok() -> tuple[bool, str]:
     try:
-        du_hdd = shutil.disk_usage("/hdd_data")
+        du_hdd = shutil.disk_usage(ROOT)
         pct = 100.0 * du_hdd.used / du_hdd.total
         if pct > DISK_USAGE_PCT_MAX:
-            return False, f"/hdd_data at {pct:.1f}% > {DISK_USAGE_PCT_MAX}%"
+            return False, f"{ROOT} at {pct:.1f}% > {DISK_USAGE_PCT_MAX}%"
     except FileNotFoundError:
         pass
     du_root = shutil.disk_usage("/")
@@ -351,8 +353,14 @@ def _finalize_job(gpu: int, job_path: Path, job: dict, rc: int) -> None:
     os.rename(tmp, dest)                       # 최종 내용(exit_code·finished_at)으로 덮는다
     print(f"[worker gpu={gpu}] {job_path.name} -> {final_state} (rc={rc})")
     # 사이트 갱신 트리거(감시 없음) — 워커를 막지 않도록 백그라운드·timeout, 실패해도 무시.
-    subprocess.Popen("timeout 900 bash /hdd_data/seungpil/mc_site/refresh.sh >> /hdd_data/seungpil/mc_site/refresh.log 2>&1",
-                     shell=True, start_new_session=True)
+    if (ROOT / "mc_site" / "refresh.sh").exists():
+        subprocess.Popen(f"timeout 900 bash {ROOT}/mc_site/refresh.sh >> {ROOT}/mc_site/refresh.log 2>&1",
+                         shell=True, start_new_session=True)
+    hook = os.environ.get("QUEUE_DONE_HOOK")   # 원격: 잡이 끝나면 `$hook <이름> <상태> <rc>` (예: scripts/remote/queue_done_hook.sh → HF 업로드)
+    if hook:
+        import shlex  # noqa: PLC0415
+        subprocess.Popen(f"{hook} {shlex.quote(str(job.get('name')))} {final_state} {rc} >> {WORK}/logs/queue_done_hook.log 2>&1",
+                         shell=True, start_new_session=True)
 
 
 def _worker_loop(gpu: int, use_lock: bool, poll_s: float) -> None:

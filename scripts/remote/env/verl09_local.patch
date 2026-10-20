@@ -1,0 +1,36 @@
+--- a/verl/utils/attention_utils.py
++++ b/verl/utils/attention_utils.py
+@@ -27,7 +27,10 @@
+     if is_torch_npu_available(check_device=False):
+         from verl.utils.npu_flash_attn_utils import index_first_axis, pad_input, rearrange, unpad_input
+     else:
+-        from flash_attn.bert_padding import index_first_axis, pad_input, rearrange, unpad_input
++        try:
++            from flash_attn.bert_padding import index_first_axis, pad_input, rearrange, unpad_input
++        except ImportError:   # 0921 metacognition-math: flash-attn 미설치 env — 순수 torch 사본(BSD-3, flash-attn 2.8.3)
++            from verl.utils._bert_padding_torch import index_first_axis, pad_input, rearrange, unpad_input
+ 
+     _index_first_axis, _pad_input, _rearrange, _unpad_input = index_first_axis, pad_input, rearrange, unpad_input
+ 
+--- a/verl/workers/rollout/vllm_rollout/utils.py
++++ b/verl/workers/rollout/vllm_rollout/utils.py
+@@ -406,7 +406,7 @@
+         VERL_ZMQ_BASE_TRAINER_RANK offset maps them back to trainer ranks.
+         """
+         replica_rank = os.environ.get("VERL_REPLICA_RANK", "0")
+-        job_id = os.environ.get("VERL_RAY_JOB_ID", "0")
++        job_id = os.environ.get("VERL_RAY_JOB_ID", "0") + os.environ.get("MC_ZMQ_TAG", "")  # mc 0928: 송신 쪽과 같은 꼬리표
+         vllm_config = getattr(self.model_runner, "vllm_config", None)
+         parallel_config = getattr(vllm_config, "parallel_config", None)
+         local_rank = _resolve_vllm_weight_sync_local_rank(self.local_rank, parallel_config)
+--- a/verl/workers/rollout/vllm_rollout/vllm_rollout.py
++++ b/verl/workers/rollout/vllm_rollout/vllm_rollout.py
+@@ -137,7 +137,7 @@
+         # verl jobs on the same host (or a new run after a crashed one with a
+         # stale socket file) cannot collide on the shared /tmp namespace.
+         local_rank = self.rollout_rank % local_world_size
+-        job_id = ray.get_runtime_context().get_job_id()
++        job_id = ray.get_runtime_context().get_job_id() + os.environ.get("MC_ZMQ_TAG", "")  # mc 0928: 잡마다 다른 소켓(각자 Ray → 같은 job id)
+         self.zmq_handle = f"ipc:///tmp/rl-colocate-zmq-{job_id}-replica-{self.replica_rank}-rank-{local_rank}.sock"
+ 
+         self.use_shm = not is_support_ipc()
