@@ -1,4 +1,4 @@
-r"""크레딧 — 순수 함수만(torch 없음). H4 형제 다수결 라벨 · 근사오답(후보 집합) · CH-Fork 토큰 가중치(표준화·방향 비례)."""
+r"""크레딧 — 순수 함수만(torch 없음). H4 형제 다수결 라벨 · 근사오답(후보 집합)."""
 from __future__ import annotations
 
 import hashlib
@@ -105,36 +105,3 @@ def label_correct(answer: str, *, gold: str = "", label: str = "gold",
         return None
     from mc.grade import answers_equivalent  # noqa: PLC0415
     return float(bool(a) and answers_equivalent(mj, a))
-
-
-def fork_weights(scores, sign: float, lam: float = 1.0, cap: float = 3.0, min_n: int = 16) -> list[float]:
-    r"""수정 28 CH-Fork — 행 안 토큰 가중(평균 1 = 행 총량 보존). z = 행 안 표준화(sign·대조 PMI), w = 1 + λ·clip(z, 0,
-    cap) 를 평균 1 로 나눔: 결과 방향(성공 +, 실패 −)으로 성공·실패 이웃을 가른 토큰에 행의 결과 adv 를 몰아준다.
-    분산 0 이거나 min_n 토큰 미만이면 균등(= B; 몇 토큰짜리 z 는 잡음)."""
-    x = [sign * float(v) for v in scores]
-    n = len(x)
-    if n < max(2, min_n):
-        return [1.0] * n
-    m = sum(x) / n
-    sd = (sum((v - m) ** 2 for v in x) / n) ** 0.5
-    if sd <= 1e-12:
-        return [1.0] * n
-    w = [1.0 + lam * min(max((v - m) / sd, 0.0), cap) for v in x]
-    mw = sum(w) / n
-    return [v / mw for v in w]
-
-
-def dir_weights(scores, sign: float, mix: float = 0.3, tau: float = 0.05, cap_frac: float = 0.2, min_n: int = 16) -> list[float]:
-    r"""수정 45 방향 비례(`PFX_FORK=chdir`) — 행 결과 쪽으로 기운 만큼만 몫: p_t = max(sign·CH_t − τ, 0)(성공 행은 성공 쪽,
-    실패 행은 대조를 거꾸로 한 실패 쪽 말에만; 반대쪽·애매한 말 0), 균등 mix 섞음 → 평균 1. 상한은 **행 총량의 몫**으로:
-    말 하나 ≤ max(cap_frac, 4/n)(가중 ≤ max(4, cap_frac·n)). 기운 말이 드문 행(대부분)에서 «평균의 k 배» 상한은 몫을 k/n 로 묶어 균등과
-    같아졌다(10-02 chdir 첫 실행 fork_moved .03–.07 = ch 와 같음) — 결정적인 몇 말에 벌·상을 실제로 몰아주려면 몫 상한이어야 한다.
-    `fork_weights` 는 행 안 표준화라 반대쪽 말도 바닥 몫을 받고 균등과 ~7% 만 달랐다(hc 학습 계기 fork_moved)."""
-    n = len(scores)
-    p = [max(sign * float(v) - tau, 0.0) for v in scores]
-    if n < max(2, min_n) or sum(p) <= 1e-12:
-        return [1.0] * n
-    d = [v * n / sum(p) for v in p]                                   # 평균 1
-    mx, cap = max(d), max(4.0, cap_frac * n)
-    m = max(mix, (mx - cap) / (mx - 1.0)) if mx > cap else mix       # 몰린 행은 균등 몫을 늘려 최댓값 = cap(평균 1 유지)
-    return [m + (1.0 - m) * v for v in d]

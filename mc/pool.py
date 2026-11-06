@@ -6,9 +6,6 @@ p = 사건(답이 바뀜 ∧ 첫 답이 **K 롤아웃 LOO 다수결**로 오답)
 산출: parquet(`prompt` 는 PROMPT_VARIANT 로 굽는다) · `.texts.jsonl`(전 롤아웃) · `.prefixes.jsonl`
 (**선별 안 된** 문제의 첫 박스 닫힘까지 앞부분 → mc/probe.py) · `.summary.json`.
 
-    PROMPT_VARIANT=plain python -m mc.pool --dataset parquet:<train> --model_path <ckpt> \
-        --k 8 --max_tokens 8192 --select learnability --keep_n 200 --out $WORK/data/pool.parquet
-
 `--pfx_from <pool>.texts.jsonl`(SPONT_PFX, GPU 없음) = **선별된** 문제의 앞부분 + LOO 라벨 parquet
 (`pfx_records`) — `--probe_selection`·`--val` 과 문제가 겹치면 즉사. `--model_path` = 토큰 경계·길이용 토크나이저.
 `--commit_scores <box_scores.jsonl>`(수정 22, `mc.shift_check --boxes` 산출) = 약속 무게 ≥ .5 인 첫 박스에서 자르고 gold 라벨·

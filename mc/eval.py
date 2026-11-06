@@ -13,6 +13,7 @@ import argparse
 import json
 import random
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -51,6 +52,10 @@ def paired_bootstrap(per_problem: list[tuple[float, float]], n: int = BOOTSTRAP_
 
 
 # ── 단일 패스 요약(자발 수정 계측) ────────────────────────────────────────────
+def _acc(r: dict) -> float:
+    return float(grade_math(str(r.get("text") or ""), str(r.get("gold") or "")))
+
+
 def summarize_single(rows: list[dict]) -> dict:
     """rows: text/gold/n_tok/group_id(또는 problem_id). 채점은 mc.grade 로 **다시** 한다."""
     n = len(rows)
@@ -60,8 +65,8 @@ def summarize_single(rows: list[dict]) -> dict:
     g_state = {g: str(agreement_state([str(rows[i].get("final_answer") or "")
                                        for i in idx])["state"])
                for g, idx in groups.items()}
-    acc_flags = [float(grade_math(str(r.get("text") or ""), str(r.get("gold") or "")))
-                 for r in rows]
+    with ProcessPoolExecutor(16) as ex:   # 10-14: CPU 채점을 병렬로 — 평가 잡이 GPU 를 쥔 채 쉬는 시간을 줄인다
+        acc_flags = list(ex.map(_acc, rows, chunksize=32))
     revised = w2r = r2w = same = confirmed = 0
     state_tab: dict[str, dict] = {}
     for i, r in enumerate(rows):
@@ -115,12 +120,8 @@ def vs_ref(summary: dict, ref_path: str) -> dict:
 
 
 def load_jsonl(path: str) -> list[dict]:
-    rows = []
     with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            if line.strip():
-                rows.append(json.loads(line))
-    return rows
+        return [json.loads(line) for line in fh if line.strip()]
 
 
 def main(argv=None) -> int:
@@ -138,6 +139,9 @@ def main(argv=None) -> int:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--max_tokens", type=int, default=12288,
                     help="토큰 예산(기본 12,288 — L5 800). 어려운 시험지·전이 평가는 32768.")
+    ap.add_argument("--temperature", type=float, default=1.0)   # 수정 70 RLRT 규약 = .7 · .8 · 20
+    ap.add_argument("--top_p", type=float, default=1.0)
+    ap.add_argument("--top_k", type=int, default=-1)
     a = ap.parse_args(argv)
 
     out = Path(a.out_dir)
@@ -153,7 +157,8 @@ def main(argv=None) -> int:
         rows = run_eval(a)
         summ = summarize_single(rows)
         summ.update({"protocol": a.protocol, "model_path": a.model_path, "dataset": a.dataset,
-                     "k": a.k, "seed": a.seed, "max_tokens": a.max_tokens})
+                     "k": a.k, "seed": a.seed, "max_tokens": a.max_tokens,
+                     "temperature": a.temperature, "top_p": a.top_p, "top_k": a.top_k})
         with (out / "texts.jsonl").open("w") as fh:
             fh.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
     if a.ref:

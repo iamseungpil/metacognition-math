@@ -31,7 +31,7 @@ from mc.rollout import merged_model
 ANSWER_HEAD = "\n\nFinal answer: \\boxed{"
 V5_HEADS = (ANSWER_HEAD, "\n\nSo the final answer is \\boxed{", "\n\nTherefore, the answer is \\boxed{")  #: 수정 19 H=3
 _NAN = float("nan")
-W = "/hdd_data/seungpil/scratch/"
+W = (os.environ.get("WORK") or "/hdd_data/seungpil/scratch") + "/"   # 원격: WORK 로 바꾼다(기본 = 이 박스)
 BOX_CAP = 8          #: 수정 22 박스 채점 — 롤아웃마다 앞 8개 박스까지
 TREE_MAX = 16384     #: 트리 한 번의 토큰 상한
 TREE_TFLOPS = 26.0   #: 실측 유효 처리량 — v1p_dense 22.6M 토큰 트리 189분(0924, H100·sdpa 임의 가림)
@@ -70,7 +70,7 @@ def leak_point(cont: str, answers=()) -> int:
     r"""누설 = 첫 새 `\boxed` 또는 answers(L · 행 자신의 최종 답) 중 하나의 첫 **진술** 시작. 진술 = `= a`·`is a`·
     `equals a`·`answer … a`(같은 줄)·a 로 끝나는 줄(# 제목 제외). 앞 [\w.\-/^_{] · 뒤 [\w/^]·`.숫자` 가 붙으면 아니다
     («-1/3» 안의 1·3, «6.5» 안의 6). \frac{a}{b} ≡ a/b ≡ \dfrac{a}{b}. 없으면 끝.
-    쓰는 곳: `train_hook.pfx_fork`(CH-Fork 가중 구간 = 누설 전) · 관문 G1 채점(`analysis/u_checks_0925/a38_g1_score.py`)."""
+    쓰는 곳: 관문 G1 채점(`analysis/u_checks_0925/a38_g1_score.py`; CH-Fork 가중 구간은 수정 83 에서 삭제)."""
     w, hits = r"[ \t]*(?:\$\$?|\*\*|\\[()\[\]])?[ \t]*", [cont.find("\\boxed")]
     for a in (str(a) for a in answers if a):
         for v in filter(None, {a, re.sub(r"\\d?frac\{([^{}]+)\}\{([^{}]+)\}", r"\1/\2", a), a.replace("\\frac", "\\dfrac")}):
@@ -136,7 +136,7 @@ def score_trees(model, trees, max_tok: int = TREE_MAX, log_every: int = 200, dev
         try:
             return tree_score(model, pre, ch, dev, per_token=True) if per_token else tree_score(model, pre, ch, dev)
         except torch.cuda.OutOfMemoryError:
-            if len(ch) < 2 and per_token:    # 수정 28b: 토큰별(CH-Fork) 한 블록 OOM → None(호출자가 균등 가중·계수)
+            if len(ch) < 2 and per_token:    # 수정 28b: 토큰별 한 블록 OOM → None(호출자가 건너뛰고 계수)
                 torch.cuda.empty_cache()
                 return [None]
             if len(ch) < 2:

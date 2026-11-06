@@ -82,6 +82,10 @@ def render_generation_prompt(tok, variant: str | None, problem: str) -> str:
 #: 수정 51 문맥 증류 선생님 머리(문제 뒤) — 자기 풀이 없이 «이전 답 X» 사실만(정오 없음). 0921 H1 fact/notx 원문.
 FACT_TMPL = ("\n\nNote: a previous attempt at this problem answered {answer}. Solve it "
              "again from scratch and give the final answer in \\boxed{{}}.")
+#: 수정 85 셋째 풀이 교사 머리(문제 뒤) — 두 답이 엇갈린다는 사실만(풀이·정답·정오 없음).
+TIE_TMPL = ("\n\nNote: two previous attempts at this problem answered {x} and {y}, which disagree. Solve it "
+            "again from scratch and give the final answer in \\boxed{{}}.")
+STOP_NOTE = "\n\n[Verification: the final answer above is correct. No further checking is needed; finish your response.]"   #: 수정 82 끝내기 선생님 문맥
 
 AGREE_STATES = ("ALL_SAME", "DOMINANT", "SPLIT", "SCATTER", "NOANS")
 

@@ -34,7 +34,8 @@ fi
 export WANDB_MODE=disabled
 
 # ── 2. Conda env activation snippet (being installed per task; tolerant). ───
-_SIMPLERL_ACTIVATE=/hdd_data/seungpil/envs/activate_simplerl.sh
+export ROOT="${ROOT:-/hdd_data/seungpil}"   # 원격 서버: ROOT 만 바꾸면 된다(기본값 = 이 박스)
+_SIMPLERL_ACTIVATE="${ROOT}/envs/activate_simplerl.sh"
 if [ -f "${_SIMPLERL_ACTIVATE}" ]; then
   # shellcheck disable=SC1090
   source "${_SIMPLERL_ACTIVATE}"
@@ -47,7 +48,7 @@ fi
 export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 
 # ── 3. Work root. ─────────────────────────────────────────────────────────
-export WORK=/hdd_data/seungpil/scratch
+export WORK="${ROOT}/scratch"
 mkdir -p "${WORK}/logs" "${WORK}/checkpoints" "${WORK}/models" "${WORK}/data" "${WORK}/merged" "${WORK}/eval"
 
 # ── 4. Ray / vLLM / misc knobs (per task spec). ──────────────────────────────
@@ -69,5 +70,5 @@ export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
 echo "[env.sh] REPO_ROOT=${REPO_ROOT} WORK=${WORK} HF_TOKEN=$([ -n "${HF_TOKEN:-}" ] && echo set || echo unset) WANDB_MODE=${WANDB_MODE:-online}"
 # 0905: 루트 디스크(200GB)를 타 프로젝트가 채워 12MB 까지 떨어짐 → ~/.cache 계열(vLLM 컴파일·torch inductor)도 /hdd_data 로.
-export XDG_CACHE_HOME="/hdd_data/seungpil/xdg_cache"; mkdir -p "${XDG_CACHE_HOME}"
+export XDG_CACHE_HOME="${ROOT}/xdg_cache"; mkdir -p "${XDG_CACHE_HOME}"
 export VLLM_CACHE_ROOT="${XDG_CACHE_HOME}/vllm"; export TORCHINDUCTOR_CACHE_DIR="${XDG_CACHE_HOME}/torchinductor"; export FLASHINFER_WORKSPACE_BASE="${XDG_CACHE_HOME}/flashinfer"

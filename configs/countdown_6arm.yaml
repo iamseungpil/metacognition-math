@@ -52,7 +52,7 @@
 # verl's need_reference_policy is gated on it, and the PMI scorer IS the frozen ref
 # worker (the shift terms of arms B/C/F have no material without it). Turning
 # use_kl_loss off would skip ref-worker init and crash the first PMI batch.
-# kl_loss_coef 0.002 is the inherited proven value and is identical in all six arms.
+# kl_loss_coef 0.002 is the inherited default; mc/run.sh KL_COEF overrides it per arm (cd9 수정 53, lineage _kl<c>).
 
 mode: COUNTDOWN_6ARM
 num_examine: 1

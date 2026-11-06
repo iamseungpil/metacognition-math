@@ -1,0 +1,4 @@
+python: Python 3.10.20
+torch 2.11.0+cu130 cuda 13.0 cudnn 91900
+vllm 0.20.2 ray 2.58.0 transformers 5.10.4
+driver (this server): 580.105.08, NVIDIA H100 80GB HBM3
